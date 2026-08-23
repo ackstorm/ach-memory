@@ -14,6 +14,7 @@ governs who may call these routes.
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import Field
 from sqlalchemy.orm import Session
 
 from memory.api.app import current_on_behalf_of, current_principal
@@ -21,6 +22,7 @@ from memory.api.memory import (
     MAX_PAGE_SIZE,
     MemoryResponse,
     ScopedRequest,
+    _check_content_size,
     _resolve_bank,
     _strip_bank_id,
     scoped_query_params,
@@ -33,7 +35,10 @@ router = APIRouter(prefix="/v1/directives", tags=["directives"])
 
 
 class CreateDirectiveRequest(ScopedRequest):
-    name: str
+    # max_length on name mirrors every other bounded identifier in the
+    # service; content gets the MEMORY_MAX_CONTENT_BYTES check below rather
+    # than a character bound, because the ceiling is in bytes.
+    name: str = Field(max_length=256)
     content: str
     priority: int | None = None
     is_active: bool | None = None
@@ -43,7 +48,7 @@ class CreateDirectiveRequest(ScopedRequest):
 
 
 class UpdateDirectiveRequest(ScopedRequest):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=256)
     content: str | None = None
     priority: int | None = None
     is_active: bool | None = None
@@ -94,6 +99,11 @@ def create_directive(
     avoid that 500 -- only `create_directive` needs the row to pre-exist
     (SPEC §19.5) -- so the PUT upsert stays only on this route.
     """
+    # Same MEMORY_MAX_CONTENT_BYTES ceiling `retain` and `correct` carry
+    # (SPEC §20). For project scope this text is a standing rule prepended to
+    # every reflect for everyone on the project (§14.1) -- the last caller
+    # text in the service that was left uncapped.
+    _check_content_size(body.content)
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "directives.create", is_write=True
     )
@@ -163,6 +173,9 @@ def update_directive(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
+    # An UPDATE may legitimately omit content; only bound it when supplied.
+    if body.content is not None:
+        _check_content_size(body.content)
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "directives.update", is_write=True
     )

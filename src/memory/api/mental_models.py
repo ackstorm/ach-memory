@@ -22,6 +22,7 @@ from memory.api.memory import (
     MAX_PAGE_SIZE,
     MemoryResponse,
     ScopedRequest,
+    _check_content_size,
     _resolve_bank,
     _strip_bank_id,
     scoped_query_params,
@@ -44,7 +45,10 @@ class MentalModelTrigger(BaseModel):
 
 
 class CreateMentalModelRequest(ScopedRequest):
-    name: str
+    # max_length on name mirrors every other bounded identifier in the
+    # service; source_query gets the MEMORY_MAX_CONTENT_BYTES check below
+    # rather than a character bound, because the ceiling is in bytes.
+    name: str = Field(max_length=256)
     source_query: str
     # Mirrors hindsight-api 0.9.1's own Field(ge=256, le=8192). Upstream is
     # FastAPI, so its rejection is a 422 that _request cannot distinguish from
@@ -64,7 +68,7 @@ class CreateMentalModelRequest(ScopedRequest):
 
 
 class UpdateMentalModelRequest(ScopedRequest):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=256)
     source_query: str | None = None
     max_tokens: int | None = Field(default=None, ge=256, le=8192)
     trigger: MentalModelTrigger | None = None
@@ -104,6 +108,7 @@ def create_mental_model(
     everyone on the project, so managing it is governance an agent cannot
     grant itself.
     """
+    _check_content_size(body.source_query)
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "mental_models.create", is_write=True
     )
@@ -171,6 +176,9 @@ def update_mental_model(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
+    # An UPDATE may legitimately omit source_query; only bound it when supplied.
+    if body.source_query is not None:
+        _check_content_size(body.source_query)
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "mental_models.update", is_write=True
     )

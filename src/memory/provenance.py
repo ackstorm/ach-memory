@@ -1,4 +1,7 @@
-from memory.errors import InvalidMetadata
+import json
+
+from memory.config import get_settings
+from memory.errors import ContentTooLarge, InvalidMetadata
 
 # SPEC §13.4, "reserved at minimum". A client may not set any of these: the
 # server is authoritative for them, and a memory that lies about who wrote it
@@ -88,6 +91,19 @@ def build(
             raise InvalidMetadata(
                 "that metadata key is reserved by the server", key=key
             )
+
+    # Bounded here, not at each route: both REST and MCP funnel through this
+    # one function, the same argument api/memory.py's own
+    # `_check_content_size` docstring makes for itself. That helper sees only
+    # `content`, so `{"note": "<8 MB>"}` used to ride alongside a 1-byte
+    # content straight into Hindsight's extraction input -- unbounded spend
+    # on a server-level key (SPEC §19.4), against an append-only store (§12)
+    # with no cheap undo. Reimplemented rather than calling
+    # `api.memory._check_content_size` directly: that module imports
+    # `provenance`, so importing back would be circular.
+    limit = get_settings().max_content_bytes
+    if len(json.dumps(supplied, default=str).encode("utf-8")) > limit:
+        raise ContentTooLarge(f"metadata exceeds {limit} bytes")
 
     # Normalized the same way the reserved-key check above is: an unnormalized
     # membership test here let `OS`/`ARCH`/`Client_Name`/`Client_Version`

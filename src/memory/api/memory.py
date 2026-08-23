@@ -322,6 +322,10 @@ def recall(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
+    # Same MEMORY_MAX_CONTENT_BYTES ceiling `retain` and `correct` carry
+    # (SPEC §20), reused rather than a new bound: `query` is the same shared
+    # field `reflect` below spends model tokens on.
+    _check_content_size(body.query)
     bank_id, resolved_from, project_slug = _resolve_bank(
         body, db, principal, on_behalf_of, "memory.recall", is_write=True
     )
@@ -352,6 +356,11 @@ def reflect(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
+    # `reflect` shares RecallRequest.query with `recall` above and spends
+    # model tokens on a server-level credential with no per-user cost
+    # attribution (SPEC §19.4) -- the actual thing the write limiter defends
+    # against. `retain` was capped and this token-spending route was not.
+    _check_content_size(body.query)
     bank_id, resolved_from, project_slug = _resolve_bank(
         body, db, principal, on_behalf_of, "memory.reflect", is_write=True
     )

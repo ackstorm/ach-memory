@@ -21,6 +21,23 @@ TEST_DATABASE_URL = os.environ.get(
 MASTER_PLAINTEXT = "mem_master_secret_for_tests"
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _default_settings_env():
+    """Baseline so `Settings()` can construct for any test.
+
+    `provenance.build` reads `get_settings().max_content_bytes` (task 16's
+    metadata size cap) -- some tests (test_provenance.py, test_content_caps.py)
+    call `build()` directly with no `app`/`client` fixture, so without this
+    the required `MEMORY_DATABASE_URL`/`MEMORY_MASTER_KEY_HASH`/
+    `MEMORY_HINDSIGHT_URL` fields are simply missing and construction 422s.
+    `os.environ.setdefault` so the `app` fixture's function-scoped
+    `monkeypatch.setenv` (the real values) still takes precedence per test.
+    """
+    os.environ.setdefault("MEMORY_DATABASE_URL", TEST_DATABASE_URL)
+    os.environ.setdefault("MEMORY_MASTER_KEY_HASH", "unused")
+    os.environ.setdefault("MEMORY_HINDSIGHT_URL", "http://hindsight.test")
+
+
 def _ensure_database_exists(url: str) -> None:
     """Create the test database if it isn't there yet.
 
