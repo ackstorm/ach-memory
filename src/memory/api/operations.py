@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import (
+    MAX_PAGE_SIZE,
     MemoryResponse,
     ScopedRequest,
     _resolve_bank,
@@ -21,14 +22,16 @@ router = APIRouter(prefix="/v1/memory/operations", tags=["operations"])
 class ListOperationsRequest(ScopedRequest):
     status: str | None = None
     type: str | None = None
-    # Bounded to match Hindsight's `integer, minimum: 0` for both fields, so an
-    # out-of-range value is a typed 422 at the boundary, not a 502 blaming the
-    # backend for the caller's typo. Defaulted to concrete values (20/0), NOT
-    # left unset like ListMemoriesRequest in memory/api/curation.py -- this
-    # route always sends both params to Hindsight rather than omitting them
-    # for Hindsight's own defaults to apply. Same shape as ListDocumentsRequest
-    # in memory/api/documents.py.
-    limit: int = Field(default=20, ge=0)
+    # Bounded on both sides so an out-of-range value is a typed 422 at the
+    # boundary, not a 502 blaming the backend for the caller's typo.
+    # Defaulted to concrete values (20/0), NOT left unset like
+    # ListMemoriesRequest in memory/api/curation.py -- this route always
+    # sends both params to Hindsight rather than omitting them for
+    # Hindsight's own defaults to apply. Same shape as ListDocumentsRequest
+    # in memory/api/documents.py. High side capped at MAX_PAGE_SIZE (see
+    # memory/api/memory.py); low side is ge=1, not ge=0 -- a zero-size page
+    # is meaningless and was forwarded upstream verbatim.
+    limit: int = Field(default=20, ge=1, le=MAX_PAGE_SIZE)
     offset: int = Field(default=0, ge=0)
 
 

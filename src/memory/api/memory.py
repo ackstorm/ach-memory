@@ -32,6 +32,13 @@ def _must_be_uuid(value: str) -> str:
 
 Scope = Literal["user", "project"]
 
+# One ceiling for every paginated route. `admin.list_audit` chose le=500 and
+# was the ONLY route that bounded the high side; the other five bounded only
+# ge=0, so `limit=10**20` reached Hindsight and came back as a 502 blaming the
+# backend for the caller's typo -- the exact outcome curation.py's own comment
+# claimed to prevent.
+MAX_PAGE_SIZE = 500
+
 # A UUID in any form uuid.UUID() accepts. Not `pydantic.UUID4`, which would
 # coerce the value to a UUID object and re-serialize it in canonical form —
 # SPEC §15 says the caller's id is passed through verbatim.

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import (
+    MAX_PAGE_SIZE,
     MemoryResponse,
     ScopedRequest,
     _resolve_bank,
@@ -119,7 +120,7 @@ def list_directives(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
     active_only: bool | None = None,
-    limit: Annotated[int | None, Query(ge=0)] = None,
+    limit: Annotated[int | None, Query(ge=1, le=MAX_PAGE_SIZE)] = None,
     offset: Annotated[int | None, Query(ge=0)] = None,
 ) -> MemoryResponse:
     bank_id, resolved_from, project_slug = _bank(

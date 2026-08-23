@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import (
+    MAX_PAGE_SIZE,
     MemoryResponse,
     ScopedRequest,
     _check_content_size,
@@ -31,11 +32,13 @@ class ListMemoriesRequest(ScopedRequest):
     # Unset by default (not 0/100) so _present omits them and Hindsight's own
     # defaults apply, rather than the wrapper silently overriding them on
     # every request that doesn't ask for paging.
-    # Bounded to match Hindsight's `integer, minimum: 0` for both fields, so
-    # an out-of-range value is a typed 422 at the boundary, not a 502 blaming
-    # the backend for the caller's typo -- the same reasoning as git_locator's
-    # bound and operation_id's validator on ScopedRequest/RetainRequest.
-    limit: int | None = Field(default=None, ge=0)
+    # Bounded on both sides so an out-of-range value is a typed 422 at the
+    # boundary, not a 502 blaming the backend for the caller's typo -- the
+    # same reasoning as git_locator's bound and operation_id's validator on
+    # ScopedRequest/RetainRequest. High side capped at MAX_PAGE_SIZE (see
+    # memory/api/memory.py); low side is ge=1, not ge=0 -- a zero-size page
+    # is meaningless and was forwarded upstream verbatim.
+    limit: int | None = Field(default=None, ge=1, le=MAX_PAGE_SIZE)
     offset: int | None = Field(default=None, ge=0)
 
 

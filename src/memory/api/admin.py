@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session
 
 from memory import audit
 from memory.api.app import current_on_behalf_of, require_master
-from memory.api.memory import MemoryResponse, ScopedRequest, _resolve_bank, _strip_bank_id
+from memory.api.memory import (
+    MAX_PAGE_SIZE,
+    MemoryResponse,
+    ScopedRequest,
+    _resolve_bank,
+    _strip_bank_id,
+)
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.errors import RetiredSlugNotFound
@@ -54,12 +60,12 @@ def list_audit(
     actor_key_id: str | None = None,
     on_behalf_of: str | None = None,
     since: datetime | None = None,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[AuditEventResponse]:
     """SPEC §6.1's mitigation, made readable. Tenant-filtered always, and the
-    page size is bounded (le=500) so this can never become an unbounded dump
-    of the tenant's whole history.
+    page size is bounded (le=MAX_PAGE_SIZE) so this can never become an
+    unbounded dump of the tenant's whole history.
 
     Ordered by created_at DESC, id DESC -- not created_at alone. Several
     events from one request (e.g. a project creation that also transfers)
