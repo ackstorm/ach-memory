@@ -4,3 +4,17 @@
 .git/
 tests/
 docs/
+
+# Not reachable today -- both Dockerfiles copy explicit paths, never `COPY . .`
+# -- but these cost nothing and make the file robust to a future COPY. The
+# __pycache__ entries matter now: COPY src/ ships whatever bytecode a local
+# test run left behind, busting the layer cache on every build.
+# The **/ prefix is required here: verified against this build's Docker
+# (29.7.1 / buildx 0.36.0) that a bare `__pycache__/` or `*.pyc` pattern does
+# NOT exclude nested paths, only a top-level match -- contrary to the
+# .gitignore-style "implicit **/" docs claim. See task-11-report.md.
+**/__pycache__/
+**/*.pyc
+**/.mypy_cache/
+.env
+.env.*
