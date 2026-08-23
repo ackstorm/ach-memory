@@ -1170,6 +1170,41 @@ def test_a_reserved_metadata_key_under_project_scope_creates_no_project(
     ), "the refused retain committed a project row anyway"
 
 
+def test_oversize_metadata_under_project_scope_creates_no_project(
+    call_tool, session, monkeypatch
+):
+    """2026-08-23 review, finding 3: `provenance.build`'s metadata size cap
+    ran only inside `call`, AFTER `tc.db.commit()` -- `body_factory` moved
+    the reserved-key check (`provenance.check_reserved`) earlier for exactly
+    this reason (SPEC §13.4) but left the size cap behind, so an oversize
+    metadata still permanently squatted the project slug it named
+    (invariant 8: slugs are unique across live AND retired names, never
+    recoverable). Reproduced live as `mcp-squat` staying unreclaimable while
+    REST's twin correctly left no project row. Mirrors
+    test_a_reserved_metadata_key_under_project_scope_creates_no_project.
+    """
+    from memory.config import get_settings
+    from memory.models import Project
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
+    get_settings.cache_clear()
+
+    key = call_tool.make_user()
+    slug = "mcp-oversize-metadata-squat"
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "retain", key, scope="project", project_slug=slug,
+            content="x", metadata={"note": "y" * 300},
+        )
+
+    assert exc_info.value.code == "CONTENT_TOO_LARGE"
+    assert (
+        session.query(Project).filter_by(project_slug=slug).count() == 0
+    ), "the refused retain committed a project row anyway"
+
+
 def test_invalid_request_names_the_offending_field(call_tool):
     """`_validation_message` used to join only `e['msg']`, so a multi-field
     failure read like two unattributed sentences with no indication of WHICH

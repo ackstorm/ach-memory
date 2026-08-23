@@ -681,23 +681,29 @@ def _retain(ctx, scope, content, project_slug, git_locator, document_id,
         )
         _check_content_size(body.content)
         # SPEC §13.4: a reserved metadata key must raise with NOTHING
-        # written. body_factory runs before _resolve_bank/commit (Task 19),
-        # so checking here -- rather than in `call`, which only runs after
-        # the project row is committed -- is what keeps a refused retain
-        # from permanently squatting the project slug it named (invariant 8:
-        # slugs are unique across live AND retired names, never recoverable).
-        # This only needs `metadata`, not the resolved slug, so it doesn't
-        # need `provenance.build`'s full mapping -- `call` below still runs
-        # that, stamping the RESOLVED slug in after resolution.
-        provenance.check_reserved(metadata)
+        # written -- and the same holds for an oversize metadata mapping
+        # (CONTENT_TOO_LARGE). body_factory runs before _resolve_bank/commit
+        # (Task 19), so checking here -- rather than in `call`, which only
+        # runs after the project row is committed -- is what keeps a refused
+        # retain from permanently squatting the project slug it named
+        # (invariant 8: slugs are unique across live AND retired names,
+        # never recoverable). `provenance.build` runs both checks (reserved
+        # keys, then the size cap); its return value is discarded here
+        # because it doesn't have the resolved slug yet -- `call` below
+        # re-runs `build` to stamp that in after resolution. Review finding
+        # 3 (2026-08-23): the size cap used to run only inside `call`, after
+        # `tc.db.commit()`, so an oversize retain left the project row
+        # committed -- reproduced live as `mcp-squat` staying unreclaimable.
+        provenance.build(metadata, project_slug=None)
         return body
 
     def call(bank_id, db, principal, slug):
-        # The reserved-key check itself already ran in body_factory, before
-        # the project row was committed (SPEC §13.4). build() re-runs it
-        # (cheap, and keeps build() correct on its own for REST's callers),
-        # but its real job here is stamping the RESOLVED slug -- unavailable
-        # until after _resolve_bank -- into the extraction mapping.
+        # The reserved-key check and the size cap both already ran in
+        # body_factory, before the project row was committed (SPEC §13.4).
+        # build() re-runs both (cheap, and keeps build() correct on its own
+        # for REST's callers), but its real job here is stamping the
+        # RESOLVED slug -- unavailable until after _resolve_bank -- into the
+        # extraction mapping.
         #
         # `slug` is `_resolve_bank`'s RESOLVED project slug, not the raw
         # `project_slug` argument above: None for scope=user (the argument is
