@@ -820,3 +820,47 @@ def test_reflect_against_a_retired_slug_forwards_and_pins_resolved_from(
     assert body["resolved_from"] == "payments-api"
     assert body["project_slug"] == "payments-service"
     assert body["notice"] == "PROJECT_RENAMED"
+
+
+def test_a_master_key_cannot_reach_another_tenants_user_bank(
+    client, master_headers, tenant, session
+):
+    """Mutating banks.py's `user.tenant_id != principal.tenant_id` away
+    survived the whole suite: a master key in tenant A could then address a
+    user in tenant B's private bank via scope=user&user_id=... . The control
+    -plane equivalent of this test exists (tests/test_users_api.py:499-536);
+    the data-plane one never did (2026-08-23 review, R4-I4).
+
+    `tenant` is required (the brief's draft omitted it): resolve_user_bank's
+    master-key branch audit-logs cross-tenant bank access with
+    tenant_id=principal.tenant_id ("default") before this test's own
+    assertions run, so without a "default" Tenant row the mutated code path
+    fails on a FOREIGN KEY violation instead of the 200 this test means to
+    catch."""
+    from memory.models import Tenant, User
+
+    session.add(Tenant(id="other"))
+    session.add(
+        User(id="usr_elsewhere", tenant_id="other", bank_id="user_other-bank-id")
+    )
+    session.flush()
+
+    with respx.mock:
+        route = respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        response = client.post(
+            "/v1/memory/recall",
+            json={"scope": "user", "user_id": "usr_elsewhere", "query": "x"},
+            headers=master_headers,
+        )
+
+    # 404, not 403 (resolved 2026-08-23, after Task 24). From tenant A's
+    # point of view a user that lives only in tenant B does not exist, and
+    # saying USER_NOT_FOUND discloses nothing -- whereas 403 would imply "it
+    # exists but you may not have it", which is a cross-tenant existence
+    # signal. Task 24's branch already answers not-found for both `user is
+    # None` and a tenant mismatch, so this asserts exactly what it does.
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "USER_NOT_FOUND", response.text
+    assert route.call_count == 0, "the request reached Hindsight before being refused"
