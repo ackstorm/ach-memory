@@ -540,3 +540,35 @@ def test_a_lost_rename_race_is_a_conflict_not_a_500(session, tenant, monkeypatch
 
     with pytest.raises(ProjectSlugConflict):
         projects.rename(session, juan, result.project, "payments")
+
+
+def test_a_lost_race_on_the_tombstone_is_also_a_conflict(session, tenant):
+    """rename() mutates through TWO unique constraints, and the suite only
+    drove one of them.
+
+    `_slug_taken` checks the NEW slug; nothing checks whether the OLD slug's
+    tombstone already exists. Two concurrent renames of the same project both
+    insert RetiredSlug(tenant, old_slug), and the loser violates that composite
+    primary key -- a different constraint from the `projects` one
+    `_force_race` exercises, reaching the same savepoint. Unguarded it was a
+    500; §18 requires PROJECT_SLUG_CONFLICT for both.
+    """
+    from memory.models import RetiredSlug
+
+    _user(session, tenant, "usr_owner")
+    principal = _principal(tenant, "usr_owner")
+    project = projects.resolve(session, principal, "alpha").project
+    session.flush()
+
+    # The winner of the race already retired "alpha" and committed.
+    session.add(
+        RetiredSlug(
+            tenant_id=tenant,
+            retired_slug="alpha",
+            project_internal_id=project.internal_id,
+        )
+    )
+    session.flush()
+
+    with pytest.raises(ProjectSlugConflict):
+        projects.rename(session, principal, project, "beta")

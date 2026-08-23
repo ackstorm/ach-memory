@@ -64,3 +64,19 @@ def test_a_master_hash_with_stray_whitespace_still_authenticates(monkeypatch):
     monkeypatch.setenv("MEMORY_HINDSIGHT_URL", REQUIRED["MEMORY_HINDSIGHT_URL"])
 
     assert keys.verify_key("some-master-key", Settings().master_key_hash)
+
+
+def test_a_zero_or_negative_write_window_is_refused(monkeypatch):
+    """A window of 0 makes `cutoff = now - window` evict every hit immediately,
+    so the limiter never fires again -- SPEC §20's MUST silently bypassed with
+    no error and no log. Quieter than the write_limit=0 crash beside it, which
+    at least announced itself as a 500."""
+    import pytest
+    from pydantic import ValidationError
+
+    from memory.config import Settings
+
+    for value in ("0", "-5"):
+        monkeypatch.setenv("MEMORY_WRITE_WINDOW_SECONDS", value)
+        with pytest.raises(ValidationError):
+            Settings()

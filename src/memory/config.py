@@ -38,7 +38,11 @@ class Settings(BaseSettings):
     # True on an empty deque, then IndexError on `hits[0]` -- a 500 on every
     # write rather than the 429 the operator asked for.
     write_limit: int = Field(default=60, ge=1)
-    write_window_seconds: float = 60.0
+    # gt=0 for the same reason write_limit has ge=1, and this one fails more
+    # quietly: a window of 0 makes `cutoff = now - window` evict every hit
+    # immediately, so the limiter never fires again. SPEC §20's MUST is
+    # bypassed with no error and no log -- a silently disabled quota.
+    write_window_seconds: float = Field(default=60.0, gt=0)
 
     @field_validator("master_key_hash")
     @classmethod
