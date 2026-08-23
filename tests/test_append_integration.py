@@ -15,12 +15,20 @@ import pytest
 pytestmark = pytest.mark.integration
 
 API = os.environ.get("API", "http://localhost:8000")
-MASTER = os.environ.get("MEMORY_MASTER_KEY", "mem_local_master_change_me")
+# No default. scripts/smoke.sh and scripts/e2e.py both refuse to run without an
+# explicit MEMORY_MASTER_KEY; this test silently fell back to the literal the
+# README used to publish, which meant it would happily run against a stack
+# still using that compromised key. Checked in the fixture, not at import, so
+# collection still works when this module is deselected.
+MASTER = os.environ.get("MEMORY_MASTER_KEY")
 
 
 @pytest.fixture
 def live_client():
     import httpx
+
+    if not MASTER:
+        pytest.fail("set MEMORY_MASTER_KEY to the plaintext master key")
 
     with httpx.Client(base_url=API) as client:
         yield client
