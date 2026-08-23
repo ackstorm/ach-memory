@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -40,7 +40,9 @@ class ApiKey(Base):
     # key is configuration, never a row (SPEC §5.2), so a user-less row is not
     # a legitimate state — and if one existed, principal resolution must never
     # be able to read it as "this key is the master key".
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    # index=True: GET /v1/users/{id}/keys filters on exactly this column, and
+    # every other tenant-scoped FK in this schema already carries one.
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     secret_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(16), default="active")
     created_at: Mapped[datetime] = mapped_column(
@@ -126,5 +128,14 @@ class AuditEvent(Base):
     # truncated audit record is its own kind of wrong).
     resource: Mapped[str] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, index=True
+        # server_default: the Python-side default stamps each replica's own
+        # clock on the row, and the Helm chart exposes replicaCount. One clock
+        # -- the database's -- is what makes list_audit's ordering mean
+        # anything; `admin.list_audit` already concedes its id tiebreak "buys
+        # determinism, not recency". `default=utcnow` stays as the
+        # client-side fallback for rows built outside a DB default.
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+        index=True,
     )
