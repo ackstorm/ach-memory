@@ -29,7 +29,7 @@ def test_bound_parameters_never_reach_an_exception_string(configured_env):
     crosses the boundary" (inv. 29) holds for responses and fails for logs.
 
     Reproduced live against the dev database before this test was written:
-    hide_parameters=False -> the value appears in str(exc); True -> it does not.
+    hide_parameters=False -> a NUL-free substring appears in str(exc); True -> it does not.
 
     `get_engine()` reads settings directly and isn't otherwise exercised by
     this suite (every other test bypasses it via a patched
@@ -54,11 +54,19 @@ def test_bound_parameters_never_reach_an_exception_string(configured_env):
     # states. A NUL byte raises sqlalchemy.exc.DataError with a generic
     # driver message instead -- confirmed live against the dev database:
     # hide_parameters=False leaks the value, True does not.
+    # The NUL byte is what makes psycopg raise DataError at parameter
+    # adaptation. The ASSERTION, though, must target a NUL-free substring:
+    # SQLAlchemy renders a leaked parameter with repr(), which escapes the
+    # embedded NUL as the four characters \x00, so comparing against the
+    # Python string (one real NUL) never matches -- and the assertion passed
+    # whether or not the value leaked. Verified live: "00000000dead" is
+    # present with hide_parameters=False and absent with True.
     secret = "project_00000000-0000-0000-0000-00000000dead\x00tail"
+    marker = "00000000dead"
     with engine.connect() as conn:
         try:
             conn.execute(text("select :bank_id"), {"bank_id": secret})
         except Exception as exc:  # noqa: BLE001 -- the string is the assertion
-            assert secret not in str(exc)
+            assert marker not in str(exc)
         else:
             raise AssertionError("expected the NUL byte to be rejected")
