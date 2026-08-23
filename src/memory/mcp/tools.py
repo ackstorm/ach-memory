@@ -100,8 +100,17 @@ class MCPToolError(Exception):
 
 def _validation_message(exc: ValidationError) -> str:
     """A pydantic error's own messages are safe to surface verbatim: they
-    describe the shape of the caller's OWN input, never server state."""
-    return "; ".join(e["msg"] for e in exc.errors())
+    describe the shape of the caller's OWN input, never server state.
+
+    `loc` is included for the same reason: it names the caller's own fields.
+    Without it a multi-field failure read "Input should be 'user' or
+    'project'; Input should be greater than or equal to 0" with no indication
+    of WHICH arguments were wrong, so INVALID_REQUEST was unactionable.
+    """
+    return "; ".join(
+        f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" if e["loc"] else e["msg"]
+        for e in exc.errors()
+    )
 
 
 def _run(
@@ -114,9 +123,13 @@ def _run(
     is_write: bool = False,
 ) -> ToolResult:
     """The shared pipeline. `body_factory` takes no arguments and returns the
-    validated `ScopedRequest` (or subclass) for this call — built inside the
-    try below so a bad field is caught by the same boundary as everything
-    else. `call` receives (bank_id, db, principal, project_slug) — the LAST
+    validated `ScopedRequest` (or subclass) for this call — built inside
+    `with tool_session(ctx)`, after authentication, so a caller who presented
+    no credential never reaches pydantic's bounds or `_check_content_size`
+    (both would otherwise hand an unauthenticated party a free oracle for the
+    request shape and the configured content-size limit). It is also inside
+    the same try, so the ValidationError/DomainError mapping below is
+    unchanged. `call` receives (bank_id, db, principal, project_slug) — the LAST
     one is `_resolve_bank`'s resolved, current slug (None for scope=user),
     never the caller's raw argument: it is the only value SPEC §13.4 allows
     into extraction metadata, since a project rename or an attacker-chosen
@@ -136,8 +149,15 @@ def _run(
     `memory.ratelimit.Limiter`.
     """
     try:
-        body = body_factory()
         with tool_session(ctx) as tc:
+            # body_factory runs INSIDE the session, not before it: tool_session
+            # is the only thing that reads the Authorization header, so
+            # building the model first meant every pydantic bound and
+            # _check_content_size executed for an unauthenticated caller.
+            # REST resolves current_principal before any handler body runs;
+            # this is the same ordering. It stays inside the same try, so the
+            # ValidationError/DomainError mapping below is unchanged.
+            body = body_factory()
             bank_id, resolved_from, slug = _resolve_bank(
                 body, tc.db, tc.principal, None, action,
                 create=create, is_write=is_write,
@@ -147,6 +167,30 @@ def _run(
             # bank is materialized upstream orphans it unreachably.
             tc.db.commit()
             result = call(bank_id, tc.db, tc.principal, slug)
+            # Built inside the try so a failure cannot escape to the SDK
+            # dispatcher, which would wrap it verbatim -- including pydantic's
+            # `input_value=` repr of the upstream payload.
+            #
+            # Its OWN except, though, not the outer INVALID_REQUEST one:
+            # ToolResult.result is typed dict[str, Any], so an upstream 200
+            # whose body is a JSON array or scalar fails here -- and by this
+            # point the bank is resolved, the row is committed and the upstream
+            # call has happened. SPEC §18 defines INVALID_REQUEST as input that
+            # "failed validation before anything was resolved or written", so
+            # reporting this as INVALID_REQUEST would blame the caller for an
+            # upstream response shape. INTERNAL_ERROR is §18's catch-all "for
+            # an exception no DomainError subclass claims", which is what this
+            # is.
+            try:
+                return ToolResult(
+                    result=_strip_bank_id(result, bank_id),
+                    project_slug=slug,
+                    resolved_from=resolved_from,
+                    notice="PROJECT_RENAMED" if resolved_from else None,
+                )
+            except ValidationError as exc:
+                logger.error("upstream response was not a JSON object", exc_info=exc)
+                raise MCPToolError("INTERNAL_ERROR", "internal error") from None
     except DomainError as exc:
         # Same disclosure REST's JSON envelope makes (code + message +
         # details) — SPEC §18 already decided a `ProjectAccessDenied`'s
@@ -162,12 +206,6 @@ def _run(
         # eyes only, and never echoed to the caller.
         logger.error("unhandled MCP tool error", exc_info=exc)
         raise MCPToolError("INTERNAL_ERROR", "internal error") from None
-    return ToolResult(
-        result=_strip_bank_id(result, bank_id),
-        project_slug=slug,
-        resolved_from=resolved_from,
-        notice="PROJECT_RENAMED" if resolved_from else None,
-    )
 
 
 def register(mcp: MCPServer) -> None:
@@ -642,12 +680,24 @@ def _retain(ctx, scope, content, project_slug, git_locator, document_id,
             operation_id=operation_id,
         )
         _check_content_size(body.content)
+        # SPEC §13.4: a reserved metadata key must raise with NOTHING
+        # written. body_factory runs before _resolve_bank/commit (Task 19),
+        # so checking here -- rather than in `call`, which only runs after
+        # the project row is committed -- is what keeps a refused retain
+        # from permanently squatting the project slug it named (invariant 8:
+        # slugs are unique across live AND retired names, never recoverable).
+        # This only needs `metadata`, not the resolved slug, so it doesn't
+        # need `provenance.build`'s full mapping -- `call` below still runs
+        # that, stamping the RESOLVED slug in after resolution.
+        provenance.check_reserved(metadata)
         return body
 
     def call(bank_id, db, principal, slug):
-        # provenance.build must run before retain: a reserved metadata key
-        # must raise before anything is written upstream (SPEC §13.4). It is
-        # called first in this body, not last.
+        # The reserved-key check itself already ran in body_factory, before
+        # the project row was committed (SPEC §13.4). build() re-runs it
+        # (cheap, and keeps build() correct on its own for REST's callers),
+        # but its real job here is stamping the RESOLVED slug -- unavailable
+        # until after _resolve_bank -- into the extraction mapping.
         #
         # `slug` is `_resolve_bank`'s RESOLVED project slug, not the raw
         # `project_slug` argument above: None for scope=user (the argument is

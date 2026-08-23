@@ -1122,3 +1122,66 @@ async def test_no_tool_input_schema_exposes_bank_tenant_or_user_id():
     for tool in await mcp.list_tools():
         properties = tool.input_schema.get("properties", {})
         assert forbidden.isdisjoint(properties), (tool.name, sorted(properties))
+
+
+def test_an_unauthenticated_oversize_retain_is_refused_before_validation(app):
+    """`tool_session` is the only thing that reads the Authorization header;
+    `body_factory` used to run before it, so an unauthenticated caller's
+    oversize content was validated (and rejected with the configured
+    MEMORY_MAX_CONTENT_BYTES value) before authentication ever ran. REST
+    resolves current_principal before any handler body runs -- MCP must
+    match that ordering (2026-08-23 review, R3-I-6/M-2)."""
+    from memory.mcp.tools import REGISTRY, MCPToolError
+
+    class NoAuth:
+        headers: ClassVar = {}
+
+    with pytest.raises(MCPToolError) as exc_info:
+        REGISTRY["retain"](scope="user", content="x" * 300_000, ctx=NoAuth())
+
+    assert exc_info.value.code == "UNAUTHORIZED"
+    assert "256000" not in str(exc_info.value), (
+        "the configured content limit leaked to an unauthenticated caller"
+    )
+
+
+@respx.mock
+def test_a_reserved_metadata_key_under_project_scope_creates_no_project(
+    call_tool, session
+):
+    """SPEC §13.4: INVALID_METADATA and NOTHING IS WRITTEN. MCP used to commit
+    the project row before `provenance.build` ran, so a refused retain still
+    permanently created and owned the project it named -- unrecoverable,
+    since invariant 8 makes a slug unique across live AND retired names. The
+    existing regression test (`test_a_reserved_metadata_key_is_refused_and_
+    nothing_is_retained`) uses scope="user", which has no row to create, so
+    it could not see this (2026-08-23 review, R3-I-2)."""
+    from memory.models import Project
+
+    key = call_tool.make_user()
+    slug = "reserved-key-probe"
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "retain", key, scope="project", project_slug=slug,
+            content="x", metadata={"user_id": "someone"},
+        )
+
+    assert exc_info.value.code == "INVALID_METADATA"
+    assert (
+        session.query(Project).filter_by(project_slug=slug).count() == 0
+    ), "the refused retain committed a project row anyway"
+
+
+def test_invalid_request_names_the_offending_field(call_tool):
+    """`_validation_message` used to join only `e['msg']`, so a multi-field
+    failure read like two unattributed sentences with no indication of WHICH
+    argument was wrong. `loc` names the caller's own field -- never server
+    state -- so including it is safe and makes INVALID_REQUEST actionable."""
+    key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("retain", key, scope="not-a-real-scope", content="x")
+
+    assert exc_info.value.code == "INVALID_REQUEST"
+    assert "scope" in str(exc_info.value)

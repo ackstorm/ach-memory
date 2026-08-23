@@ -12,6 +12,8 @@ the model calling the tool: SPEC §11.4 blesses update_mode="append" and
 nothing in the schema said it existed.
 """
 
+from typing import ClassVar
+
 import pytest
 
 
@@ -70,3 +72,38 @@ def test_the_advertised_schema_carries_the_vocabulary_the_models_enforce():
     for tool in ("list_memories", "list_documents", "list_operations"):
         limit = schemas[tool]["properties"]["limit"]
         assert "500" in str(limit), (tool, limit)
+
+
+def test_a_malformed_upstream_body_is_internal_error_not_invalid_request(
+    client, master_headers, tenant
+):
+    """SPEC §18 defines INVALID_REQUEST as input that "failed validation before
+    anything was resolved or written". By the time ToolResult is built the bank
+    is resolved, the row is committed and the upstream call has happened -- so
+    a non-object upstream 200 is a backend fault, not a caller mistake.
+    Reporting it as INVALID_REQUEST would blame the caller for Hindsight's
+    response shape.
+    """
+    import httpx
+    import respx
+
+    from memory.mcp.tools import REGISTRY, MCPToolError
+
+    uid = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+    secret = client.post(
+        f"/v1/users/{uid}/keys", json={}, headers=master_headers
+    ).json()["key"]
+
+    class Ctx:
+        headers: ClassVar[dict[str, str]] = {"Authorization": f"Bearer {secret}"}
+
+    with respx.mock:
+        # A JSON array, not an object -- ToolResult.result is dict[str, Any].
+        respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
+            return_value=httpx.Response(200, json=["not", "an", "object"])
+        )
+        with pytest.raises(MCPToolError) as excinfo:
+            REGISTRY["recall"](scope="user", query="x", ctx=Ctx())
+
+    assert excinfo.value.code == "INTERNAL_ERROR", excinfo.value.code
+    assert "not" not in str(excinfo.value), "the upstream payload leaked to the caller"

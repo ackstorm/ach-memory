@@ -46,6 +46,29 @@ _SERVER_OWNED = RESERVED_KEYS - {"agent", "client_name"}
 AUDIT_ONLY_KEYS = frozenset({"os", "arch", "client_version", "client_name"})
 
 
+def check_reserved(client_metadata: dict[str, str] | None) -> None:
+    """Raises InvalidMetadata if the client tried to set a server-owned key.
+
+    Split out of `build()` so a caller that has the metadata but not yet the
+    resolved project slug (MCP's `_retain`, which must run this before
+    `_resolve_bank`/commit so SPEC §13.4's "nothing is written" holds) can run
+    just this half. `build()` below still runs it too -- cheap and correct to
+    repeat, and it keeps `build()` self-contained for REST's callers.
+    """
+    supplied = client_metadata or {}
+    for key in supplied:
+        if key.strip().lower() in _SERVER_OWNED:
+            # Checked over the whole submitted mapping before any merging,
+            # so §13.4's "nothing is written" holds for the whole request,
+            # not just for the offending key. Matched on the normalized form
+            # so a near-miss spelling (`User_Id`, `" user_id"`) can't slip a
+            # reserved-looking key into extraction; the original spelling is
+            # still reported back to the client.
+            raise InvalidMetadata(
+                "that metadata key is reserved by the server", key=key
+            )
+
+
 def build(
     client_metadata: dict[str, str] | None,
     *,
@@ -79,18 +102,7 @@ def build(
     as absent (no `project_slug` key in the returned mapping).
     """
     supplied = dict(client_metadata or {})
-
-    for key in supplied:
-        if key.strip().lower() in _SERVER_OWNED:
-            # Checked over the whole submitted mapping before any merging,
-            # so §13.4's "nothing is written" holds for the whole request,
-            # not just for the offending key. Matched on the normalized form
-            # so a near-miss spelling (`User_Id`, `" user_id"`) can't slip a
-            # reserved-looking key into extraction; the original spelling is
-            # still reported back to the client.
-            raise InvalidMetadata(
-                "that metadata key is reserved by the server", key=key
-            )
+    check_reserved(supplied)
 
     # Bounded here, not at each route: both REST and MCP funnel through this
     # one function, the same argument api/memory.py's own
