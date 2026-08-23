@@ -1205,6 +1205,36 @@ def test_oversize_metadata_under_project_scope_creates_no_project(
     ), "the refused retain committed a project row anyway"
 
 
+@respx.mock
+def test_a_malformed_upstream_body_logs_once_not_twice(call_tool, caplog):
+    """2026-08-23 review, finding 6: the inner `except ValidationError`
+    handler for a non-JSON-object upstream body fires INSIDE the outer
+    `try`, so `except Exception` used to catch the re-raised MCPToolError
+    too, log "unhandled MCP tool error" a SECOND time, and re-raise an
+    equivalent INTERNAL_ERROR. The inner handler is load-bearing -- it
+    stops `except ValidationError` mislabelling this as INVALID_REQUEST --
+    only the duplicate log line was the bug.
+    """
+    import logging
+
+    _mock_bank()
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
+        return_value=httpx.Response(200, json=["not", "an", "object"])
+    )
+    key = call_tool.make_user()
+
+    with (
+        caplog.at_level(logging.ERROR, logger="memory.mcp"),
+        pytest.raises(MCPToolError) as exc_info,
+    ):
+        call_tool("recall", key, scope="user", query="hi")
+
+    assert exc_info.value.code == "INTERNAL_ERROR"
+    messages = [r.message for r in caplog.records]
+    assert messages.count("upstream response was not a JSON object") == 1
+    assert messages.count("unhandled MCP tool error") == 0
+
+
 def test_invalid_request_names_the_offending_field(call_tool):
     """`_validation_message` used to join only `e['msg']`, so a multi-field
     failure read like two unattributed sentences with no indication of WHICH

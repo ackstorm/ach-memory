@@ -200,6 +200,15 @@ def _run(
         raise MCPToolError(exc.code, exc.message, exc.details) from None
     except ValidationError as exc:
         raise MCPToolError("INVALID_REQUEST", _validation_message(exc)) from None
+    except MCPToolError:
+        # Already the intended shape (e.g. the malformed-upstream-body
+        # branch above, raised INSIDE the try on purpose so it reaches THIS
+        # except chain rather than the SDK dispatcher). Without this branch
+        # `except Exception` below caught it too, logged a second, identical
+        # "unhandled MCP tool error", and re-raised an equivalent error --
+        # noise, since the first log line already said everything (review
+        # finding 6, 2026-08-23).
+        raise
     except Exception as exc:
         # Anything else is unexpected and may carry backend internals (SQL,
         # a connection string, a bank id) in its text — logged here, for our
