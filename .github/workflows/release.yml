@@ -31,13 +31,29 @@ jobs:
           # separate from docker's -- `docker login` above does not cover `helm push`.
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Build and push the service image
+      - name: Derive and validate the release version
         run: |
           version="${GITHUB_REF_NAME#v}"
+          # SemVer, optionally with a pre-release, but NOT build metadata:
+          # `+` is valid in SemVer and ILLEGAL in an OCI tag, so a v1.0.0+build.5
+          # tag would die inside `docker build` with a bare "invalid reference
+          # format" that names neither the tag nor the cause. Helm does not
+          # enforce SemVer at package time either -- `--version 1` succeeds --
+          # so without this a tag like `v1` publishes silently as version "1".
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "FAIL: tag '${GITHUB_REF_NAME}' does not yield a publishable version." >&2
+            echo "Expected vMAJOR.MINOR.PATCH[-prerelease], e.g. v1.2.3 or v1.2.3-rc.1." >&2
+            echo "Build metadata (+...) is not supported: it is illegal in an OCI tag." >&2
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "publishing version ${version}"
+
+      - name: Build and push the service image
+        run: |
           image="ghcr.io/ackstorm/ach-memory"
-          docker build --build-arg GIT_SHA="${GITHUB_SHA}" -t "${image}:${version}" .
-          docker push "${image}:${version}"
-          echo "IMAGE_REF=${image}:${version}" >> "$GITHUB_ENV"
+          docker build --build-arg GIT_SHA="${GITHUB_SHA}" -t "${image}:${VERSION}" .
+          docker push "${image}:${VERSION}"
 
       # No Hindsight image published. CUT 2026-08-23 as YAGNI: it is a
       # fourteen-line wrapper around `pip install hindsight-api==0.9.1`, which
@@ -48,9 +64,8 @@ jobs:
 
       - name: Push the Helm chart as an OCI artifact
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          helm package deploy/helm/ach-memory --version "${version}" --app-version "${version}"
-          helm push "ach-memory-${version}.tgz" \
+          helm package deploy/helm/ach-memory --version "${VERSION}" --app-version "${VERSION}"
+          helm push "ach-memory-${VERSION}.tgz" \
             "oci://ghcr.io/ackstorm/charts"
 
       # No provenance attestation. CUT 2026-08-23 as YAGNI: it is supply-chain
