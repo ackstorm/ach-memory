@@ -1,4 +1,4 @@
-def test_every_error_code_is_in_the_spec_closed_list():
+def test_every_error_code_is_in_the_spec_closed_list(configured_env):
     """§18 is declared CLOSED and the codebase reasons about it that way.
     Five codes were missing when this test was written (review finding I7).
 
@@ -33,10 +33,25 @@ def test_every_error_code_is_in_the_spec_closed_list():
     closed_list = re.search(r"```text\n(.*?)\n```", section, re.DOTALL).group(1)
     spec_codes = set(closed_list.split())
 
+    # Enumerate SUBCLASSES, not vars(errors). The previous version only saw
+    # classes declared in errors.py itself, so `UserAlreadyExists` -- the one
+    # DomainError declared in a route module -- was invisible to a test whose
+    # entire purpose is catching exactly that (2026-08-23 review, R1-#2/R2-I7).
+    # create_app() is called first so every route module is imported and any
+    # subclass declared outside errors.py is registered before we look.
+    from memory.api.app import create_app
+
+    create_app()
+
+    def _subclasses(cls) -> set[type]:
+        found = set()
+        for sub in cls.__subclasses__():
+            found.add(sub)
+            found |= _subclasses(sub)
+        return found
+
     declared = {
-        obj.code
-        for obj in vars(errors).values()
-        if isinstance(obj, type) and issubclass(obj, errors.DomainError)
+        obj.code for obj in _subclasses(errors.DomainError) | {errors.DomainError}
     }
     mcp_tools_source = (
         Path(mcp.__file__).parent / "tools.py"

@@ -1326,6 +1326,7 @@ KEY_NOT_FOUND
 USER_NOT_FOUND
 GROUP_NOT_FOUND
 GROUP_ALREADY_EXISTS
+USER_ALREADY_EXISTS
 CONTENT_TOO_LARGE
 HINDSIGHT_ERROR
 UPSTREAM_REJECTED
@@ -1346,6 +1347,11 @@ the group REST routes and by project ownership resolution when the named
 owner is a group.
 
 `GROUP_ALREADY_EXISTS` (409): `POST` on a group id that already exists.
+
+`USER_ALREADY_EXISTS` (409): `POST /v1/users` with an explicit id that already
+exists. The ACH provisioning path (§16.3) supplies its own ids and retries, so
+this is an ordinary idempotent-retry outcome a client must be able to branch
+on -- not a server fault.
 
 `INTERNAL_ERROR` (500): the catch-all for an exception no `DomainError`
 subclass claims -- `api/app.py`'s unhandled-exception handler and
