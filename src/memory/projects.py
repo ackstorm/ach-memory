@@ -15,7 +15,7 @@ from memory.errors import (
     ProjectSlugConflict,
     UserNotFound,
 )
-from memory.api.identifiers import reject_control_characters
+from memory.identifiers import reject_control_characters
 from memory.models import Group, GroupMember, Project, RetiredSlug, User
 from memory.slugs import canonical_locator, normalize_slug
 

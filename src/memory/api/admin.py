@@ -8,12 +8,12 @@ from sqlalchemy.orm import Session
 
 from memory import audit
 from memory.api.app import current_on_behalf_of, require_master
-from memory.api.identifiers import is_unstorable, reject_control_characters
 from memory.api.memory import MemoryResponse, ScopedRequest, _resolve_bank, _strip_bank_id
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.errors import RetiredSlugNotFound
 from memory.hindsight.client import get_client
+from memory.identifiers import is_unstorable, reject_control_characters
 from memory.models import AuditEvent, RetiredSlug
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])

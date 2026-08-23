@@ -7,11 +7,11 @@ from sqlalchemy.orm import Session
 
 from memory import audit, ids
 from memory.api.app import current_on_behalf_of, require_master
-from memory.api.identifiers import reject_control_characters
 from memory.auth import keys
 from memory.auth.principal import Principal
 from memory.db import ensure_tenant, get_session
 from memory.errors import DomainError, KeyNotFound, UserNotFound
+from memory.identifiers import reject_control_characters
 from memory.models import ApiKey, User
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
