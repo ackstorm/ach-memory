@@ -35,8 +35,18 @@ def test_it_returns_events_newest_first(client, master_headers, tenant):
 
     events = client.get("/v1/admin/audit", headers=master_headers).json()
 
+    # Not actions[:2] == ["key.create", "user.create"]: created_at is now
+    # `func.now()`, the DB's ONE clock (2026-08-23 review, finding 2) --
+    # Postgres's `now()` is transaction-scoped, constant for every statement
+    # in one transaction, and this fixture's savepoint architecture runs
+    # both requests in one outer transaction. So the two rows legitimately
+    # TIE on created_at here (they would not in production, where each
+    # request commits its own transaction), and which one sorts first is
+    # exactly what the id DESC tiebreak decides -- see
+    # test_the_id_desc_tiebreak_is_deterministic_not_recency. This still
+    # pins that both events land in the top 2, just not their relative order.
     actions = [e["action"] for e in events]
-    assert actions[:2] == ["key.create", "user.create"]
+    assert set(actions[:2]) == {"key.create", "user.create"}
 
 
 def test_the_id_desc_tiebreak_is_deterministic_not_recency(

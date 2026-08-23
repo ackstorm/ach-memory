@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 
 from memory import ids
@@ -170,3 +171,48 @@ def test_audit_event_records_the_actor(session, tenant):
     session.flush()
 
     assert session.query(AuditEvent).one().on_behalf_of == "usr_alice"
+
+
+def test_audit_event_created_at_is_a_db_default_not_a_python_default(
+    session, connection, tenant
+):
+    """2026-08-23 review, finding 2: `default=utcnow` and `server_default=
+    func.now()` were both set on this column. SQLAlchemy always prefers the
+    Python-side `default` when both are present, so it stamped the
+    INSERTING POD's clock on every row and the DDL default never fired --
+    the migration that added server_default was decorative.
+
+    Pinned directly on the compiled INSERT, the same way the review found
+    it: reintroducing `default=utcnow` puts `created_at` back in the
+    column list below with a bound parameter, turning this red.
+    """
+    from memory.models import AuditEvent
+
+    captured = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        if "INSERT INTO audit_events" in statement:
+            captured.append(statement)
+
+    event.listen(connection, "before_cursor_execute", _capture)
+    try:
+        session.add(
+            AuditEvent(
+                id=ids.new_audit_id(),
+                tenant_id=tenant,
+                actor_key_id=None,
+                on_behalf_of=None,
+                action="project.transfer",
+                resource="payments-api",
+            )
+        )
+        session.flush()
+    finally:
+        event.remove(connection, "before_cursor_execute", _capture)
+
+    assert captured, "no INSERT INTO audit_events observed"
+    # `created_at` legitimately appears in the ORM's own RETURNING clause
+    # (how it reads a DB-generated default back onto the object) -- it's a
+    # bound VALUES parameter, `%(created_at)s`, that means the Python-side
+    # default won and the DDL default never fired.
+    assert "%(created_at)s" not in captured[0], captured[0]

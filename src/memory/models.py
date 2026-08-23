@@ -128,14 +128,19 @@ class AuditEvent(Base):
     # truncated audit record is its own kind of wrong).
     resource: Mapped[str] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(
-        # server_default: the Python-side default stamps each replica's own
-        # clock on the row, and the Helm chart exposes replicaCount. One clock
-        # -- the database's -- is what makes list_audit's ordering mean
-        # anything; `admin.list_audit` already concedes its id tiebreak "buys
-        # determinism, not recency". `default=utcnow` stays as the
-        # client-side fallback for rows built outside a DB default.
+        # server_default ONLY -- no `default=utcnow`. The Python-side default
+        # stamps each replica's own clock on the row, and the Helm chart
+        # exposes replicaCount. One clock -- the database's -- is what makes
+        # list_audit's ordering mean anything; `admin.list_audit` already
+        # concedes its id tiebreak "buys determinism, not recency". A
+        # `default` and a `server_default` on the same column both being set
+        # is not "belt and suspenders": SQLAlchemy always prefers the
+        # Python-side `default` when both are present, so `default=utcnow`
+        # here silently defeated server_default's whole point -- every insert
+        # still carried the column in its VALUES list with a bound
+        # `created_at` parameter, and the DDL default never fired. Verified
+        # against the compiled INSERT (test_models.py).
         DateTime(timezone=True),
-        default=utcnow,
         server_default=func.now(),
         index=True,
     )
