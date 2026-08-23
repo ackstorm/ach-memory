@@ -1116,7 +1116,14 @@ async def test_no_tool_input_schema_exposes_bank_tenant_or_user_id():
     register(mcp)
     forbidden = {"bank_id", "tenant_id", "user_id"}
 
-    for tool in await mcp.list_tools():
+    tools = await mcp.list_tools()
+    # Assert the count FIRST. Without it this loop iterates an empty list and
+    # passes green, while the docstring above claims it "covers all fifteen
+    # permanently" -- a register() regression returning nothing would satisfy
+    # it exactly as well as a correct surface does.
+    assert len(tools) == len(MCP_IS_WRITE_TABLE), [t.name for t in tools]
+
+    for tool in tools:
         properties = tool.input_schema.get("properties", {})
         assert forbidden.isdisjoint(properties), (tool.name, sorted(properties))
 
