@@ -61,15 +61,11 @@ def test_create_mental_model(client, juan, tenant):
     assert sent == {"name": "n", "source_query": "how do we deploy?"}
 
 
-@respx.mock
-def test_create_mental_model_never_sends_tags_even_if_the_caller_supplies_them(
-    client, juan, tenant
-):
-    route = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$"
-    ).mock(return_value=httpx.Response(201, json={"id": MM_ID}))
-
-    client.post(
+def test_create_mental_model_rejects_tags_the_caller_supplies(client, juan, tenant):
+    """`tags` is Hindsight's in-bank visibility scope, not a field on
+    CreateMentalModelRequest. ScopedRequest's `extra="forbid"` means a
+    caller-supplied `tags` is a 422, not a silent drop."""
+    response = client.post(
         "/v1/mental-models",
         json={
             "scope": "user",
@@ -80,8 +76,7 @@ def test_create_mental_model_never_sends_tags_even_if_the_caller_supplies_them(
         headers=juan["headers"],
     )
 
-    sent = json.loads(route.calls.last.request.content)
-    assert "tags" not in sent
+    assert response.status_code == 422, response.text
 
 
 @respx.mock

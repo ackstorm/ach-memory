@@ -368,7 +368,7 @@ def test_curation_route_on_an_unknown_slug_creates_no_project(
     slug for whoever asked first."""
     response = client.post(
         "/v1/memory/list",
-        json={"scope": "project", "project_slug": "typo-slug", "memory_id": "x"},
+        json={"scope": "project", "project_slug": "typo-slug"},
         headers=juan["headers"],
     )
 

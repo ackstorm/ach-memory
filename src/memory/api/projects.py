@@ -18,6 +18,10 @@ router = APIRouter(prefix="/v1/projects", tags=["projects"])
 
 
 class Owner(BaseModel):
+    # extra="forbid": this doubles as the PATCH .../owner request body, where
+    # a typoed key would transfer ownership to a None id.
+    model_config = ConfigDict(extra="forbid")
+
     type: str
     id: str
 

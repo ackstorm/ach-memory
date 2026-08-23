@@ -64,21 +64,13 @@ def test_create_directive(client, juan, tenant):
     assert sent == {"name": "n", "content": "Always use uv."}
 
 
-@respx.mock
-def test_create_directive_never_sends_tags_even_if_the_caller_supplies_them(
-    client, juan, tenant
-):
+def test_create_directive_rejects_tags_the_caller_supplies(client, juan, tenant):
     """SPEC §14/§13.6: Hindsight's directive `tags` is an in-bank visibility
-    scope this service does not model. Not just undocumented on the request
-    model -- pydantic's default `extra="ignore"` means a caller-supplied
-    `tags` is silently dropped by parsing, but this pins that it can never
-    ride along to Hindsight even if a future model change adds the field."""
-    _mock_bank()
-    route = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/directives$"
-    ).mock(return_value=httpx.Response(201, json={"id": DIR_ID}))
-
-    client.post(
+    scope this service does not model, and it is not a field on
+    CreateDirectiveRequest. ScopedRequest's `extra="forbid"` means a
+    caller-supplied `tags` is a 422, not a silent drop -- it can never ride
+    along to Hindsight even if a future model change adds the field."""
+    response = client.post(
         "/v1/directives",
         json={
             "scope": "user",
@@ -89,8 +81,7 @@ def test_create_directive_never_sends_tags_even_if_the_caller_supplies_them(
         headers=juan["headers"],
     )
 
-    sent = json.loads(route.calls.last.request.content)
-    assert "tags" not in sent
+    assert response.status_code == 422, response.text
 
 
 @respx.mock

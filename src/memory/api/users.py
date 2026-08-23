@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,12 @@ router = APIRouter(prefix="/v1/users", tags=["users"])
 
 
 class CreateUserRequest(BaseModel):
+    # extra="forbid": `{"user_id": "ach-user-82f"}` (SPEC §16.3's field is
+    # `id`) used to 201 with a service-generated id while ACH's own id was
+    # silently dropped -- a provisioning failure indistinguishable from
+    # success.
+    model_config = ConfigDict(extra="forbid")
+
     # Bounded to match User.id (String(128)) so an oversize explicit id is a
     # typed 422 at the boundary, not a 500 (DataError, not IntegrityError --
     # db.begin_nested()'s except clause never sees a length overflow) from

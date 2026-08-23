@@ -2,7 +2,14 @@ import uuid
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy.orm import Session
 
 from memory import audit, provenance, ratelimit
@@ -38,7 +45,15 @@ class ScopedRequest(BaseModel):
     scope=user (a master key naming its target); it is ignored under
     scope=project, where the project slug selects the bank (pinned by
     test_user_id_is_ignored_under_project_scope).
+
+    extra="forbid" on the BASE, so every data-plane and §14 model inherits it:
+    a typoed field used to validate cleanly with the real field left None, so
+    a PATCH sent an empty body upstream and answered 200 having changed
+    nothing -- Plan 6's finding I1, which was fixed on the project models and
+    on no others.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     scope: Scope
     user_id: str | None = None

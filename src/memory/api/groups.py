@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,6 +18,11 @@ router = APIRouter(prefix="/v1/groups", tags=["groups"])
 
 
 class CreateGroupRequest(BaseModel):
+    # extra="forbid": a typoed key (e.g. "nmae") otherwise validates cleanly
+    # with the real field left None, silently creating a nameless group.
+    # Same reasoning as CreateUserRequest.id.
+    model_config = ConfigDict(extra="forbid")
+
     # Bounded to match Group.id/Group.name (String(128)/String(256)) so an
     # oversize value is a typed 422 at the boundary, not a 500 (DataError, not
     # IntegrityError -- db.begin_nested()'s except clause never sees a length
