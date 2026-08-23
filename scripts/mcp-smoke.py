@@ -15,8 +15,8 @@ Requires the compose stack up and migrated:
 import asyncio
 import json
 import os
-import re
 import sys
+from pathlib import Path
 
 import httpx
 import httpx2
@@ -36,11 +36,10 @@ EXPECTED_TOOLS = {
     "get_operation", "list_operations", "cancel_operation",
 }
 
-# The same check scripts/smoke.sh does: a literal "bank_id" key, or the
-# opaque bank id itself (user_<uuid>/project_<uuid>), or the internal
-# project id (prj_<hex>) -- never a substring match on our own exposed
-# usr_/key_/grp_ ids, which are meant to be visible.
-LEAK_RE = re.compile(r'"bank_id"|user_[0-9a-f]{8}-|project_[0-9a-f]{8}-|prj_[0-9a-f]{8}')
+# The pattern lives in scripts/leakscan.py so smoke.sh, e2e.py and this
+# script cannot drift apart again.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from leakscan import LEAK_RE
 
 
 def fail(msg: str) -> None:

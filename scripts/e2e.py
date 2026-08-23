@@ -40,10 +40,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -72,16 +72,13 @@ RUN = uuid.uuid4().hex[:10]
 
 # ---------------------------------------------------------------------------
 # Leak scanning -- applied to every response this script ever collects.
-# Mirrors the exact convention scripts/smoke.sh and scripts/mcp-smoke.py
-# already use: a literal "bank_id" key, or the opaque bank id itself
-# (user_<uuid> / project_<uuid>). Deliberately does NOT match the exposed
-# usr_/grp_/key_/prj_ id prefixes, which are meant to be visible.
-# ---------------------------------------------------------------------------
-LEAK_RE = re.compile(
-    r'"bank_id"'
-    r"|\buser_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
-    r"|\bproject_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
-)
+# The pattern lives in scripts/leakscan.py so smoke.sh, mcp-smoke.py and this
+# script cannot drift apart again: this file's own copy was \b-anchored and
+# therefore could not see a bank id embedded in a chunk_id, the one shape the
+# scan existed to catch.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from leakscan import LEAK_RE
+
 LEAKS: list[tuple[str, str]] = []
 
 

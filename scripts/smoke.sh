@@ -168,14 +168,14 @@ echo "${ops_listed}" | python3 -c 'import json,sys; assert json.load(sys.stdin)[
   || { echo "FAIL: operations/list returned nothing after sync_retain" >&2; echo "${ops_listed}" >&2; exit 1; }
 echo "operations/list saw the retain's operation"
 
-# No bank id anywhere in any of it. Every response body this script collected,
-# not just the three that happened to be here when this check was written --
-# `recalled`'s raw upstream body embeds the bank id inside chunk_id, and that
-# was the one leak this loop existed to catch, yet it was never in the loop.
+# No bank id anywhere in any of it. Uses scripts/leakscan.py, the same pattern
+# e2e.py and mcp-smoke.py use, so the three cannot drift: this loop's inline
+# regex and e2e.py's disagreed on whether an embedded bank id counts (it does)
+# and on whether prj_ counts (it does).
 for body in "${recalled}" "${cross}" "${proj}" "${listed}" "${after}" \
             "${reflected}" "${docs_listed}" "${ops_listed}" "${op_got}"; do
-  echo "${body}" | grep -qE '"bank_id"|user_[0-9a-f]{8}-|project_[0-9a-f]{8}-' \
-    && { echo "FAIL: a bank id reached the client" >&2; exit 1; }
+  echo "${body}" | python3 "$(dirname "$0")/leakscan.py" \
+    || { echo "FAIL: leak scan rejected a response body" >&2; exit 1; }
 done
 echo "no bank_id in any response this script collected"
 
