@@ -248,19 +248,33 @@ def rename(
         raise ProjectSlugConflict("that slug is taken", project_slug=new_slug)
 
     old_slug = project.project_slug
-    project.project_slug = new_slug
 
-    # Nothing repoints existing tombstones, and nothing needs to: a rename
-    # mutates the slug on the same Project row, so internal_id never changes.
-    # Every tombstone already points at the row, so resolution after a chain of
-    # renames is still ONE lookup — no transitive walk, no cycles.
-    db.add(
-        RetiredSlug(
-            tenant_id=principal.tenant_id,
-            retired_slug=old_slug,
-            project_internal_id=project.internal_id,
-        )
-    )
+    # A savepoint, exactly like create() four functions up, and for the same
+    # reason: `_slug_taken` above is a check-then-act, and TWO unique
+    # constraints can lose the race here -- projects (tenant_id,
+    # project_slug) and retired_slugs' composite PK. Unguarded, the loser's
+    # IntegrityError reached api/app.py's catch-all as a 500 where SPEC §18
+    # requires PROJECT_SLUG_CONFLICT, and get_session's rollback also
+    # discarded any git_locator repair carried in the same PATCH.
+    try:
+        with db.begin_nested():
+            project.project_slug = new_slug
+            # Nothing repoints existing tombstones, and nothing needs to: a
+            # rename mutates the slug on the same Project row, so internal_id
+            # never changes. Every tombstone already points at the row, so
+            # resolution after a chain of renames is still ONE lookup -- no
+            # transitive walk, no cycles.
+            db.add(
+                RetiredSlug(
+                    tenant_id=principal.tenant_id,
+                    retired_slug=old_slug,
+                    project_internal_id=project.internal_id,
+                )
+            )
+            db.flush()
+    except IntegrityError as exc:
+        raise ProjectSlugConflict("that slug is taken", project_slug=new_slug) from exc
+
     audit.record(
         db,
         principal,

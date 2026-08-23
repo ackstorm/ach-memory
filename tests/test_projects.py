@@ -8,6 +8,7 @@ from memory.errors import (
     ProjectInvalidSlug,
     ProjectLocatorMismatch,
     ProjectNotFound,
+    ProjectSlugConflict,
     UserNotFound,
 )
 from memory.models import Group, GroupMember, Project, User
@@ -520,3 +521,22 @@ def test_a_denial_after_a_forward_does_not_disclose_the_new_slug(session, tenant
 
     assert caught.value.details["project_slug"] == "old-slug"
     assert "secret-new-slug" not in str(caught.value.details)
+
+
+def test_a_lost_rename_race_is_a_conflict_not_a_500(session, tenant, monkeypatch):
+    """create() got a savepoint and an IntegrityError -> ProjectSlugConflict
+    mapping; rename() got neither, though it mutates through TWO unique
+    constraints (projects and retired_slugs). SPEC §18 names "rename to an
+    existing live or retired slug" as PROJECT_SLUG_CONFLICT, and it was a 500
+    (2026-08-23 review, R1-#1)."""
+    _user(session, tenant, "usr_juan")
+    juan = _principal(tenant, "usr_juan")
+    result = projects.resolve(session, juan, "payments-api")
+
+    # Another caller already took "payments" -- _force_race also patches
+    # _slug_taken so rename()'s own pre-check misses it, exactly as it would
+    # if the winner's commit landed between the check and the write.
+    _force_race(monkeypatch, session, tenant, "payments", "user", "usr_juan")
+
+    with pytest.raises(ProjectSlugConflict):
+        projects.rename(session, juan, result.project, "payments")
