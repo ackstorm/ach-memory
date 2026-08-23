@@ -11,6 +11,7 @@ the same §7 bank rule as everywhere else in this service -- this file adds no
 new permission model, only a narrower surface.
 """
 
+import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -109,6 +110,12 @@ def create_mental_model(
     grant itself.
     """
     _check_content_size(body.source_query)
+    # trigger is extra="allow" (SPEC §14.5) with no shape bound, forwarded
+    # verbatim -- every other caller-authored blob in this service is capped
+    # (review finding 5, 2026-08-23). The pass-through itself stays: only
+    # the size is bounded.
+    if body.trigger is not None:
+        _check_content_size(json.dumps(body.trigger.model_dump(exclude_none=True)))
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "mental_models.create", is_write=True
     )
@@ -179,6 +186,9 @@ def update_mental_model(
     # An UPDATE may legitimately omit source_query; only bound it when supplied.
     if body.source_query is not None:
         _check_content_size(body.source_query)
+    # Same bound as create_mental_model's trigger check above.
+    if body.trigger is not None:
+        _check_content_size(json.dumps(body.trigger.model_dump(exclude_none=True)))
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "mental_models.update", is_write=True
     )

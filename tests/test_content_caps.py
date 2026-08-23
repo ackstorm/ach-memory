@@ -25,6 +25,18 @@ OVERSIZE = "x" * 300_000  # MEMORY_MAX_CONTENT_BYTES defaults to 256_000
             "/v1/mental-models",
             {"scope": "user", "name": OVERSIZE, "source_query": "q"},
         ),
+        (
+            # finding 5 (2026-08-23): MentalModelTrigger is extra="allow"
+            # (SPEC §14.5, deliberate) with no size bound, forwarded
+            # verbatim -- the last uncapped caller-authored blob.
+            "/v1/mental-models",
+            {
+                "scope": "user",
+                "name": "n",
+                "source_query": "q",
+                "trigger": {"note": OVERSIZE},
+            },
+        ),
     ],
 )
 def test_oversize_governance_text_is_refused(client, master_headers, tenant, path, body):
@@ -44,6 +56,10 @@ def test_oversize_governance_text_is_refused(client, master_headers, tenant, pat
         (
             "/v1/mental-models/mm-1234567890abcdef1234567890abcdef",
             {"scope": "user", "source_query": OVERSIZE},
+        ),
+        (
+            "/v1/mental-models/mm-1234567890abcdef1234567890abcdef",
+            {"scope": "user", "trigger": {"note": OVERSIZE}},
         ),
     ],
 )
