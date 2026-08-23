@@ -38,6 +38,15 @@ config:
   writeLimit: 60
   writeWindowSeconds: 60
 
+  # MEMORY_HINDSIGHT_TIMEOUT_SECONDS / MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS.
+  # The LLM one covers `sync_retain` and `reflect`, which block on the model
+  # Hindsight is configured with -- the deployment-specific knob. Too low and
+  # a slow-but-succeeding write returns HINDSIGHT_ERROR (502), which tells an
+  # agent to retry while the upstream worker completes the original write
+  # anyway, duplicating it.
+  timeoutSeconds: 30
+  llmTimeoutSeconds: 180
+
   hindsight:
     # MEMORY_HINDSIGHT_URL. Required. Points at a Hindsight instance this
     # chart does not run.

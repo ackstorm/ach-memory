@@ -51,6 +51,10 @@ spec:
                   key: {{ .Values.masterKeySecret.key }}
             - name: MEMORY_TENANT_ID
               value: {{ .Values.config.tenantId | quote }}
+            - name: MEMORY_HINDSIGHT_TIMEOUT_SECONDS
+              value: {{ .Values.config.timeoutSeconds | quote }}
+            - name: MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS
+              value: {{ .Values.config.llmTimeoutSeconds | quote }}
             - name: MEMORY_MAX_CONTENT_BYTES
               value: {{ .Values.config.maxContentBytes | quote }}
             - name: MEMORY_WRITE_LIMIT
