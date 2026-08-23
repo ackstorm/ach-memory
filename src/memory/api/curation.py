@@ -22,7 +22,13 @@ router = APIRouter(prefix="/v1/memory", tags=["curation"])
 
 class ListMemoriesRequest(ScopedRequest):
     q: str | None = None
-    type: str | None = None
+    # Bound to Hindsight's own type enum, same reasoning as `state` below --
+    # a bogus value forwarded the caller's typo upstream instead of a
+    # boundary 422 (review finding 4, 2026-08-23). mcp/tools.py already
+    # has this same Literal as FactType, but mcp/tools.py imports FROM this
+    # module (ListMemoriesRequest), so importing it back here would be
+    # circular; restated rather than sharing.
+    type: Literal["world", "experience", "observation"] | None = None
     # Bound to Hindsight's own enum (measured against a live server: any
     # other value 400s with "Invalid state '...': expected 'valid' or
     # 'invalidated'.") so a bogus value is a typed 422 at the boundary

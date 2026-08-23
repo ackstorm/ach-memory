@@ -408,6 +408,23 @@ def test_list_memories_rejects_a_negative_offset(client, juan, tenant):
     assert response.status_code == 422
 
 
+def test_list_memories_rejects_a_bogus_type_not_blamed_on_hindsight(
+    client, juan, tenant
+):
+    """2026-08-23 review, finding 4: REST's `type` was bare `str | None`
+    while its MCP twin (`list_memories`) already typed it as
+    Literal["world", "experience", "observation"] -- and `state`, right
+    below, got the same Literal treatment in this very branch. A typo here
+    forwarded upstream instead of a boundary 422."""
+    response = client.post(
+        "/v1/memory/list",
+        json={"scope": "user", "type": "nonsence"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 422
+
+
 def test_list_memories_rejects_a_bogus_state_not_blamed_on_hindsight(
     client, juan, tenant
 ):
