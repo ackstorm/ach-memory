@@ -34,6 +34,30 @@ def test_oversize_governance_text_is_refused(client, master_headers, tenant, pat
         assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
 
 
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        (
+            "/v1/directives/11111111-1111-1111-1111-111111111111",
+            {"scope": "user", "content": OVERSIZE},
+        ),
+        (
+            "/v1/mental-models/mm-1234567890abcdef1234567890abcdef",
+            {"scope": "user", "source_query": OVERSIZE},
+        ),
+    ],
+)
+def test_oversize_governance_text_is_refused_on_update(client, master_headers, tenant, path, body):
+    """update routes guard with `if body.x is not None` since an update may
+    legitimately omit the field -- so the field must be supplied here to
+    exercise the check at all. Rejected at validation before the id (which
+    does not need to exist) is ever looked up."""
+    response = client.patch(path, json=body, headers=master_headers)
+    assert response.status_code in (413, 422), response.text
+    if response.status_code == 413:
+        assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
+
+
 def test_an_oversize_recall_query_is_refused(client, master_headers, tenant):
     """reflect spends model tokens on a server-level key with no per-user cost
     attribution (§19.4). retain is capped; the token-spending route was not."""
