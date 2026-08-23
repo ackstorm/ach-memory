@@ -128,21 +128,30 @@ def test_the_governance_table_covers_every_route_in_all_five_files(client):
     documents and operations went uncovered -- five is_write=True flags were
     individually deletable with the suite green (2026-08-23 review, R4-I2)."""
     schema = client.get("/openapi.json").json()
+    # Router PREFIXES, not the individual paths they happen to expose today.
+    # Enumerating curation's own sub-paths ("/v1/memory/forget", ...) made
+    # this guard blind for that router: a NEW route in curation.py matched no
+    # prefix, so it was silently dropped from `routes` and the assertion
+    # passed -- the exact omission this test exists to make impossible, on the
+    # exact router the task was closing. Proved by adding a dummy route.
     prefixes = (
         "/v1/directives",
         "/v1/mental-models",
-        "/v1/memory/list",
-        "/v1/memory/get",
-        "/v1/memory/forget",
-        "/v1/memory/restore",
-        "/v1/memory/correct",
-        "/v1/memory/documents",
-        "/v1/memory/operations",
+        "/v1/memory",  # curation.py, documents.py and operations.py all sit here
     )
+    # memory.py's data plane shares the /v1/memory prefix but is governed
+    # elsewhere: tests/test_ratelimit.py pins retain/sync_retain/recall/reflect
+    # directly. Listing them here would duplicate that ownership.
+    governed_elsewhere = {
+        "/v1/memory/retain",
+        "/v1/memory/sync_retain",
+        "/v1/memory/recall",
+        "/v1/memory/reflect",
+    }
     routes = {
         f"{method.upper()} {path}"
         for path, ops in schema["paths"].items()
-        if path.startswith(prefixes)
+        if path.startswith(prefixes) and path not in governed_elsewhere
         for method in ops
     }
     # GOVERNANCE_ROUTES paths carry concrete ids for the request to hit
