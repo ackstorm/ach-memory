@@ -47,7 +47,10 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = os.environ.get("MEMORY_DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+    # No second os.environ read: the module-level block above already folded
+    # MEMORY_DATABASE_URL into config's sqlalchemy.url, so this is the one
+    # source of truth for both the offline and online paths.
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -66,14 +69,11 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-        # alembic.ini's sqlalchemy.url points at localhost:5433 for host-side use;
-    # inside a container that host doesn't exist. MEMORY_DATABASE_URL, when
-    # set, is the container-visible URL the app itself uses — prefer it so
-    # there is one source of truth instead of a second hardcoded URL here.
+    # Same single source of truth as the offline path: the module-level block
+    # has already written MEMORY_DATABASE_URL into config, so nothing here
+    # needs to read the environment again. (The comment that used to sit here
+    # was also mis-indented by four spaces -- valid Python, unreadable diff.)
     section = config.get_section(config.config_ini_section, {})
-    db_url = os.environ.get("MEMORY_DATABASE_URL")
-    if db_url:
-        section["sqlalchemy.url"] = db_url
 
     connectable = engine_from_config(
         section,

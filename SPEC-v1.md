@@ -503,10 +503,30 @@ cwd
 ```
 
 ```text
-git@github.com:acme/payments-api.git       -> github-com-acme-payments-api
-https://github.com/acme/payments-api.git   -> github-com-acme-payments-api
-https://gitlab.com/customer/payments-api   -> gitlab-com-customer-payments-api
+git@github.com:acme/payments-api.git       -> github.com-acme-payments-api-dab6719d
+https://github.com/acme/payments-api.git   -> github.com-acme-payments-api-dab6719d
+https://gitlab.com/customer/payments-api   -> gitlab.com-customer-payments-api-bc401689
 ```
+
+**The trailing digest is required, not decoration.** Slug normalization
+collapses `/`, `.` and `-` to a single separator, so flattening ALONE still
+collides:
+
+```text
+github.com/acme/payments-api   -> github.com-acme-payments-api   \
+                                                                  } same slug
+github.com/acme-payments/api   -> github.com-acme-payments-api   /
+```
+
+Two unrelated repositories sharing one memory bank is precisely the failure
+this section exists to prevent, so a derived slug MUST carry a short digest of
+the CANONICAL locator (host kept; scheme, userinfo, port and a trailing `.git`
+removed; lowercased). Taking it over the canonical form is what makes the same
+repository yield the same slug however its remote is spelled -- the first two
+examples above differ only in transport and still agree.
+
+Deriving the slug is the CLIENT's job (§10). This service normalizes and
+stores whatever slug it is given; it never derives one.
 
 The locator is also stored as `git_locator` metadata (§8.3).
 

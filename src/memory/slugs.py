@@ -49,7 +49,7 @@ def normalize_slug(raw: str) -> str:
 
     Deliberately lossy: it also normalizes human-supplied slugs like
     MEMORY_PROJECT=payments-api, where collapsing separators is what you want.
-    Derived slugs carry a digest (see slug_from_locator) precisely because this
+    A slug DERIVED from a Git remote must carry a digest (SPEC §8.2) precisely because this
     collapsing cannot tell a path separator from a literal hyphen.
     """
     slug = _NON_SLUG.sub("-", raw.strip().lower()).strip("-.")
@@ -63,7 +63,18 @@ def normalize_slug(raw: str) -> str:
 
 
 def slug_from_locator(remote_url: str) -> str:
-    """The whole locator flattened, never the repository basename (inv. 10).
+    """Reference implementation of SPEC §8.2. NOT called by this service.
+
+    Deriving a slug from a Git remote is the CLIENT's job (§8.2, §10) and this
+    repository ships no client, so nothing in `src/` calls this. It is kept,
+    and tested, for one concrete reason: SPEC §8.2's worked examples are
+    generated from it (`tests/test_slugs.py` asserts they still match), and
+    they were WRONG before that guard existed -- the spec showed digest-free
+    slugs, under which `acme/payments-api` and `acme-payments/api` collide
+    into one memory bank, the exact failure §8.2 exists to prevent. A prose
+    rule with no executable counterpart drifts; this is the counterpart.
+
+    The whole locator flattened, never the repository basename (inv. 10).
 
     The digest suffix is not decoration. normalize_slug collapses `/`, `.` and
     `-` to one separator, so without it acme/payments-api and acme-payments/api

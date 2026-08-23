@@ -329,6 +329,32 @@ run to back it.
 the default `localhost:8000` this compose file publishes; only add to
 `MEMORY_MCP_ALLOWED_HOSTS` if you map the api to a different host or port.
 
+## Configuration
+
+Every setting uses the `MEMORY_` prefix. Defined in `src/memory/config.py`;
+`tests/test_config.py` pins the required-vs-defaulted split.
+
+| Variable | Default | Required | Meaning |
+|---|---|---|---|
+| `MEMORY_DATABASE_URL` | — | **yes** | Postgres DSN. |
+| `MEMORY_MASTER_KEY_HASH` | — | **yes** | SHA-256 of the master key. Reaches every bank in the tenant. Trailing whitespace and case are normalized, so a `sha256sum`/mounted-Secret value works as pasted. |
+| `MEMORY_HINDSIGHT_URL` | — | **yes** | Hindsight base URL. |
+| `MEMORY_HINDSIGHT_API_KEY` | `""` | no | Bearer token for Hindsight. Empty means unauthenticated. |
+| `MEMORY_TENANT_ID` | `default` | no | Scopes our own DB rows only; never reaches Hindsight (§19.1). |
+| `MEMORY_MAX_CONTENT_BYTES` | `256000` | no | Ceiling for every caller-authored free-text field and for retain metadata. |
+| `MEMORY_MCP_ALLOWED_HOSTS` | `127.0.0.1,localhost` | no | DNS-rebinding allowlist. A wrong value means **421 on every MCP call** while REST keeps working — the #1 measured MCP failure mode. |
+| `MEMORY_HINDSIGHT_TIMEOUT_SECONDS` | `30` | no | Ordinary upstream calls. |
+| `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS` | `180` | no | `sync_retain` and `reflect`, which block on a model. |
+| `MEMORY_WRITE_LIMIT` | `60` | no | Writes per window, **per credential and per replica**. Must be ≥ 1. |
+| `MEMORY_WRITE_WINDOW_SECONDS` | `60` | no | The window. Must be > 0 — a zero would silently disable the limiter. |
+
+The three required variables have no defaults on purpose: `Settings()` raises
+at import of `create_app`, so a misconfigured deployment fails at startup
+rather than at the first request.
+
+The write limiter is **in-process, per replica**. With N replicas the
+effective ceiling is N × `MEMORY_WRITE_LIMIT`; lower it if you scale up.
+
 ## State and hard-won knowledge
 
 `docs/PROJECT-STATE.md` — what is done, what is next, and the traps that cost

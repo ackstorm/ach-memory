@@ -21,8 +21,14 @@ RESERVED_KEYS = frozenset(
 # Reserved keys the server enforces against client overwrite. `agent` and
 # `client_name` are deliberately excluded: they are reserved (RESERVED_KEYS)
 # so a client cannot clobber an authoritative value, but the server has no
-# authoritative value of its own for them in v1 — the client's is the only
-# value there is, so it is let through and kept.
+# authoritative value of its own for them in v1 -- the client's is the only
+# value there is, so both are let THROUGH this check.
+#
+# They then part company downstream, which the previous wording ("let through
+# and kept") got wrong for one of them: `agent` is one of §13.2's extraction
+# six and reaches Hindsight, while `client_name` is in AUDIT_ONLY_KEYS and is
+# DROPPED from the extraction mapping -- nothing in this service persists it.
+# Verified: build({"agent": ..., "client_name": ...}) returns only `agent`.
 _SERVER_OWNED = RESERVED_KEYS - {"agent", "client_name"}
 
 # SPEC §13.2 splits client-supplied runtime fields two ways: the extraction
@@ -117,6 +123,13 @@ def build(
     if len(json.dumps(supplied, default=str).encode("utf-8")) > limit:
         raise ContentTooLarge(f"metadata exceeds {limit} bytes")
 
+    # A DENYLIST, not an allowlist: every key EXCEPT AUDIT_ONLY_KEYS goes to
+    # extraction. §13.3's MEMORY_PROJECT_METADATA example ({"profile":
+    # "security", ...}) is exactly the unknown-key case that must reach
+    # extraction, so forwarding by default is correct -- but a reader who
+    # takes the module docstring's "the extraction six" literally will expect
+    # unknown keys to be held back, and they are not.
+    #
     # Normalized the same way the reserved-key check above is: an unnormalized
     # membership test here let `OS`/`ARCH`/`Client_Name`/`Client_Version`
     # straight through to extraction (measured live) while the lowercase

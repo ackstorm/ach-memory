@@ -80,3 +80,32 @@ def test_a_zero_or_negative_write_window_is_refused(monkeypatch):
         monkeypatch.setenv("MEMORY_WRITE_WINDOW_SECONDS", value)
         with pytest.raises(ValidationError):
             Settings()
+
+
+def test_the_readme_documents_every_setting():
+    """The README's Configuration table is the only place an operator
+    deploying outside Helm/Compose learns which variables exist and which are
+    required. Nothing kept it in step with `Settings`, and five of these were
+    undocumented before it was written.
+
+    Same guard as tests/test_slugs.py's SPEC §8.2 check, for the same reason:
+    a prose rule with no executable counterpart drifts, and this project has
+    already shipped one that did.
+    """
+    import re
+    from pathlib import Path
+
+    from memory.config import Settings
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    section = re.search(
+        r"## Configuration\n(.*?)\nThe three required variables", readme, re.DOTALL
+    )
+    assert section, "README's Configuration section moved -- update this guard"
+
+    documented = set(re.findall(r"\| `(MEMORY_[A-Z_]+)`", section.group(1)))
+    actual = {f"MEMORY_{name.upper()}" for name in Settings.model_fields}
+    assert documented == actual, (
+        f"undocumented: {sorted(actual - documented)}; "
+        f"documented but not real: {sorted(documented - actual)}"
+    )

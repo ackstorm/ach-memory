@@ -102,3 +102,44 @@ def test_normalize_slug_is_idempotent():
 def test_unusable_slug_is_rejected(raw):
     with pytest.raises(ProjectInvalidSlug):
         slugs.normalize_slug(raw)
+
+
+def test_the_spec_worked_examples_match_this_implementation():
+    """SPEC §8.2's example block is generated from `slug_from_locator`, and
+    nothing kept them in step before this test.
+
+    They had already drifted: §8.2 showed digest-free slugs
+    (`github-com-acme-payments-api`), under which `acme/payments-api` and
+    `acme-payments/api` derive the SAME slug -- two unrelated repositories
+    sharing one memory bank, which is the precise failure that section exists
+    to prevent. §10 makes derivation the client's job, so a wrapper author
+    following the spec literally would have shipped that collision.
+    """
+    import re
+    from pathlib import Path
+
+    spec = (Path(__file__).resolve().parents[1] / "SPEC-v1.md").read_text()
+    section = re.search(r"### 8\.2 Git-derived slug\n(.*?)\n### 8\.3", spec, re.DOTALL)
+    assert section, "SPEC §8.2 heading moved -- update this guard"
+    block = re.search(r"```text\n(git@github\.com.*?)```", section.group(1), re.DOTALL)
+    assert block, "SPEC §8.2's worked-example block moved -- update this guard"
+
+    pairs = [
+        tuple(part.strip() for part in line.split("->"))
+        for line in block.group(1).strip().splitlines()
+        if "->" in line
+    ]
+    assert pairs, "no worked examples found in SPEC §8.2"
+    for url, documented in pairs:
+        assert slugs.slug_from_locator(url) == documented, url
+
+
+def test_flattening_without_a_digest_would_collide():
+    """The reason the digest is normative in §8.2, pinned so nobody 'simplifies'
+    it away: these two unrelated repositories flatten to one slug without it."""
+    a = "https://github.com/acme/payments-api"
+    b = "https://github.com/acme-payments/api"
+    flattened_a = slugs.normalize_slug(slugs.canonical_locator(a))
+    flattened_b = slugs.normalize_slug(slugs.canonical_locator(b))
+    assert flattened_a == flattened_b, "premise changed: flattening no longer collides"
+    assert slugs.slug_from_locator(a) != slugs.slug_from_locator(b)
