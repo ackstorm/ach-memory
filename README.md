@@ -294,7 +294,8 @@ export MEMORY_MASTER_KEY_HASH=$(python3 -c \
   "import hashlib,os; print(hashlib.sha256(os.environ['MEMORY_MASTER_KEY'].encode()).hexdigest())")
 
 docker compose up -d --build
-docker compose run --rm api python -m alembic upgrade head
+# Migrations run automatically: the `migrate` service applies `alembic
+# upgrade head` and `api` waits for it to complete.
 ./scripts/smoke.sh
 uv run python scripts/mcp-smoke.py
 ```

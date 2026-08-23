@@ -77,9 +77,25 @@ services:
       timeout: 5s
       retries: 60
 
+  # Runs to completion before `api` starts. Without this, `docker compose up
+  # -d` gives four healthy-looking containers and a stack that 500s on every
+  # request against an empty schema -- the failure is only visible in
+  # `docker logs`, because api/app.py's handler deliberately never echoes the
+  # cause. The chart does the same thing with a pre-install hook Job.
+  migrate:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MEMORY_DATABASE_URL: postgresql+psycopg://memory:memory@postgres:5432/memory
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+
   api:
     build: .
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       hindsight:
