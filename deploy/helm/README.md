@@ -1,5 +1,26 @@
 # ach-memory Helm chart
 
+## Before you install
+
+This chart is published publicly (`oci://ghcr.io/ackstorm/charts`); the
+service's source repository is not.
+
+- `image.repository` defaults to `ghcr.io/ackstorm/ach-memory`, this
+  organisation's registry -- no override needed to install from ackstorm.
+  Anyone reusing this chart elsewhere must set
+  `--set image.repository=<their registry>/ach-memory`.
+- `masterKeySecret.name` (an existing Secret) is the **recommended** way to
+  supply `MEMORY_MASTER_KEY_HASH`. `masterKeySecret.value` puts the hash in
+  your values file -- fine for a local trial, wrong for anything shared. That
+  credential reaches every bank in the tenant.
+- The chart runs the service only. Postgres and Hindsight are dependencies you
+  point it at; an in-chart database is how test data ends up in production.
+- Licence: `MIT`.
+- GHCR visibility flip (Task 12, Step 5b): pending -- occurs after this
+  repository's first push and first tagged release. Record the date here once
+  `ach-memory` and `charts/ach-memory` are confirmed pullable with no
+  credentials.
+
 Ships the `ach-memory` service only. Postgres and Hindsight are dependencies
 you point it at (`config.databaseUrl`, `config.hindsight.url`) — this chart
 does not run either, so no test data ever ends up in a production database by

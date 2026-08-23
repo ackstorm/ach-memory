@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    # Digest-pinned, matching the base-image reasoning in Dockerfile: a moved
+    # tag would make a local dev stack silently diverge from what CI and the
+    # published image were built against.
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     environment:
       POSTGRES_USER: memory
       POSTGRES_PASSWORD: memory
@@ -24,7 +27,7 @@ services:
     # column and fails at query time with `could not access file "$$libdir/vector"`
     # on a stock image. The failure surfaces as a 500 on the first retain, long
     # after startup looked healthy.
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
     environment:
       POSTGRES_USER: hindsight
       POSTGRES_PASSWORD: hindsight

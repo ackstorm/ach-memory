@@ -1,0 +1,63 @@
+name: Release
+
+# Tag-driven, never on push to main: a published public artifact must
+# correspond to a version somebody chose, not to whatever landed last.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Elevated HERE and nowhere else: the lint/test/image jobs in ci.yml run
+    # repository-controlled code (ruff, pytest, docker build) and must never
+    # hold a token that can write packages.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          # Helm's OCI client keeps its own credential store (~/.config/helm/registry),
+          # separate from docker's -- `docker login` above does not cover `helm push`.
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push the service image
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          image="ghcr.io/ackstorm/ach-memory"
+          docker build --build-arg GIT_SHA="${GITHUB_SHA}" -t "${image}:${version}" .
+          docker push "${image}:${version}"
+          echo "IMAGE_REF=${image}:${version}" >> "$GITHUB_ENV"
+
+      # No Hindsight image published. CUT 2026-08-23 as YAGNI: it is a
+      # fourteen-line wrapper around `pip install hindsight-api==0.9.1`, which
+      # anyone can build in seconds from a Dockerfile that is in the chart's
+      # documentation. Publishing it buys convenience nobody has asked for and
+      # adds a third artifact to keep versioned, scanned and public. Add it
+      # when someone actually wants to pull it.
+
+      - name: Push the Helm chart as an OCI artifact
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          helm package deploy/helm/ach-memory --version "${version}" --app-version "${version}"
+          helm push "ach-memory-${version}.tgz" \
+            "oci://ghcr.io/ackstorm/charts"
+
+      # No provenance attestation. CUT 2026-08-23 as YAGNI: it is supply-chain
+      # ceremony for an artifact with no external consumers yet, and nobody
+      # has asked to verify it. Digest-pinned bases (Dockerfile/Dockerfile
+      # .hindsight) and SHA-pinned actions (ci.yml, this file) earn their
+      # place because they make a published version reproducible; an
+      # attestation nobody checks does not. Add
+      # `actions/attest-build-provenance` (and its `id-token: write`) the
+      # first time a consumer asks.
