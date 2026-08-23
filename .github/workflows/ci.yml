@@ -1,8 +1,21 @@
 name: CI
 
 on:
+  # push matters more than pull_request here: this repository's history is
+  # linear direct commits to main, so a PR-only trigger meant the image gate
+  # below -- the one that catches a mis-grouped dependency before it ships --
+  # had never run on the branch that ships.
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
+
+# Least privilege. Without this the token inherits the repository default,
+# which on older repos is read/write across contents and packages -- held by
+# three jobs that all execute repository-controlled code (ruff, pytest,
+# docker build).
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -11,15 +24,21 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          # Pinned to match both Dockerfiles (python:3.12-slim). Unpinned, uv
+          # resolves whatever it finds or downloads -- so a change relying on
+          # 3.13 behaviour passes here and fails inside the shipped image.
+          python-version: "3.12"
       - run: uv run --frozen ruff check .
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17-alpine
@@ -44,6 +63,10 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          # Pinned to match both Dockerfiles (python:3.12-slim). Unpinned, uv
+          # resolves whatever it finds or downloads -- so a change relying on
+          # 3.13 behaviour passes here and fails inside the shipped image.
+          python-version: "3.12"
       - run: uv run --frozen pytest -m "not integration"
 
   # The most valuable job here is not the unit tests above -- it's this one.
@@ -55,6 +78,7 @@ jobs:
   # This job builds the actual production image and proves it starts.
   image:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17-alpine
