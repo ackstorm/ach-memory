@@ -14,6 +14,11 @@ helm install ach-memory deploy/helm/ach-memory \
   --set masterKeySecret.name=mem-master-key
 ```
 
+`image.repository` defaults to `ghcr.io/ackstorm/ach-memory`, this
+organisation's registry, so the install above works with no override.
+Anyone reusing this chart outside ackstorm must set `--set
+image.repository=<their registry>/ach-memory`.
+
 `masterKeySecret.name` must reference an existing `Secret` in the target
 namespace containing the key `master-key-hash` (configurable via
 `masterKeySecret.key`) — e.g.:

@@ -47,12 +47,40 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: helm lint deploy/helm/ach-memory
-      - run: |
+      - name: helm template must refuse with no master key
+        run: |
+          if helm template t deploy/helm/ach-memory \
+            --set config.databaseUrl=postgresql+psycopg://u:p@h:5432/m \
+            --set config.hindsight.url=http://hindsight:8888 >/dev/null 2>&1
+          then
+            echo "FAIL: the chart rendered with no master key configured" >&2
+            exit 1
+          fi
+          echo "correctly refused"
+      - name: helm template with a master key must render hardened manifests
+        run: |
           helm template ach-memory deploy/helm/ach-memory \
             --set image.repository=ghcr.io/ackstorm/ach-memory \
             --set config.databaseUrl=postgresql+psycopg://u:p@h:5432/m \
             --set config.hindsight.url=http://hindsight:8888 \
-            --set masterKeySecret.value=deadbeef > /dev/null
+            --set masterKeySecret.value=deadbeef > /tmp/rendered.yaml
+
+          fail=0
+          count=$(grep -c 'securityContext:' /tmp/rendered.yaml || true)
+          if [ "$count" -lt 4 ]; then
+            echo "FAIL: expected at least 4 securityContext: blocks (pod + container, Deployment + migration Job), found $count" >&2
+            fail=1
+          fi
+          if ! grep -q 'runAsNonRoot: true' /tmp/rendered.yaml; then
+            echo "FAIL: runAsNonRoot: true not found in rendered manifests" >&2
+            fail=1
+          fi
+          if ! grep -q 'runAsUser: 10001' /tmp/rendered.yaml; then
+            echo "FAIL: runAsUser: 10001 not found in rendered manifests" >&2
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "rendered manifests contain the required hardening blocks"
 
   test:
     runs-on: ubuntu-latest

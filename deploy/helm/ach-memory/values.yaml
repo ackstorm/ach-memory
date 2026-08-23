@@ -126,12 +126,20 @@ securityContext:
 # under node memory pressure -- for a memory service that means it is the
 # first thing killed on any node it lands on. Tune these for your workload;
 # do not remove them back to {}.
+#
+# No limits.cpu: any CPU request already promotes the pod out of BestEffort
+# to Burstable, which is the only QoS goal here -- a CPU limit adds nothing
+# to that. What it does add is throttling: the kernel's CFS bandwidth
+# controller enforces a CPU limit in fixed ~100ms periods, so a request
+# burst gets throttled even when the node has idle CPU to spare. This
+# service's hot path is a synchronous API making outbound HTTP calls to an
+# LLM-backed upstream -- exactly where a throttling-induced tail-latency
+# spike hurts most.
 resources:
   requests:
     cpu: 100m
     memory: 256Mi
   limits:
-    cpu: 500m
     memory: 512Mi
 nodeSelector: {}
 tolerations: []
