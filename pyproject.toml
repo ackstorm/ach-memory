@@ -19,6 +19,14 @@ dependencies = [
     # `ModuleNotFoundError: No module named 'mcp'` -- every unit test run
     # masked it because `uv run pytest` always installs the dev group.
     "mcp>=2.0.0",
+    # Imported directly by src/memory/mcp/tools.py (ToolAnnotations), so it is
+    # production code -- but it only ever reached the image as a transitive
+    # dep of `mcp`. Third instance of the failure mode the two comments above
+    # already record: `mcp` mis-grouped, `httpx2` undeclared, this one
+    # undeclared. A transitive dep that stops being transitive is a
+    # crash-looping container, and the CI import guard only catches it once
+    # CI actually runs (see .github/workflows/ci.yml's push trigger).
+    "mcp-types>=2.0.0",
 ]
 
 [dependency-groups]
