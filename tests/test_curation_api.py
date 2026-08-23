@@ -37,15 +37,15 @@ def _mock_bank() -> None:
     respx.put(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
         return_value=httpx.Response(200, json={})
     )
-    respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/config").mock(
-        return_value=httpx.Response(200, json={})
-    )
 
 
 @respx.mock
 def test_list_memories_reaches_the_list_subpath(client, juan, tenant):
     route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list").mock(
-        return_value=httpx.Response(200, json={"memories": [{"id": "mem_1"}]})
+        # "items", not "memories": that is what hindsight-api 0.9.1 actually
+        # sends (PROJECT-STATE.md:262). A mock whose shape has drifted from
+        # the real upstream is how the chunk_id bank-id leak went unseen.
+        return_value=httpx.Response(200, json={"items": [{"id": "mem_1"}]})
     )
 
     response = client.post(
@@ -55,7 +55,7 @@ def test_list_memories_reaches_the_list_subpath(client, juan, tenant):
     )
 
     assert response.status_code == 200
-    assert response.json()["result"]["memories"] == [{"id": "mem_1"}]
+    assert response.json()["result"]["items"] == [{"id": "mem_1"}]
     assert dict(route.calls.last.request.url.params) == {"q": "alembic", "limit": "5"}
 
 
@@ -216,7 +216,12 @@ def test_idor_list_memories_cannot_reach_an_unauthorized_bank(
     )
     listed = respx.get(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list"
-    ).mock(return_value=httpx.Response(200, json={"memories": []}))
+    ).mock(
+        # "items", not "memories": that is what hindsight-api 0.9.1 actually
+        # sends (PROJECT-STATE.md:262). A mock whose shape has drifted from
+        # the real upstream is how the chunk_id bank-id leak went unseen.
+        return_value=httpx.Response(200, json={"items": []})
+    )
 
     response = client.post(
         "/v1/memory/list",
@@ -476,7 +481,10 @@ def test_curation_route_still_enriches_git_locator_on_an_existing_project(
         headers=juan["headers"],
     )
     route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list").mock(
-        return_value=httpx.Response(200, json={"memories": []})
+        # "items", not "memories": that is what hindsight-api 0.9.1 actually
+        # sends (PROJECT-STATE.md:262). A mock whose shape has drifted from
+        # the real upstream is how the chunk_id bank-id leak went unseen.
+        return_value=httpx.Response(200, json={"items": []})
     )
 
     response = client.post(

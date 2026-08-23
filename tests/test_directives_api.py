@@ -37,9 +37,6 @@ def _mock_bank() -> None:
     respx.put(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
         return_value=httpx.Response(200, json={})
     )
-    respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/config").mock(
-        return_value=httpx.Response(200, json={})
-    )
 
 
 DIR_ID = "11111111-1111-1111-1111-111111111111"
