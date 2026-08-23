@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,7 @@ from memory.api.common import RenameForwarding
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.errors import Forbidden, ProjectAccessDenied
+from memory.identifiers import has_control_character
 from memory.models import Project
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
@@ -40,6 +41,16 @@ class CreateProjectRequest(BaseModel):
     # oversize value is a typed 422 at the boundary, not a 500 from the DB.
     git_locator: str | None = Field(default=None, max_length=512)
 
+    @field_validator("git_locator")
+    @classmethod
+    def _no_control_characters(cls, value: str | None) -> str | None:
+        # Reaches the projects INSERT. A control character there is a
+        # psycopg DataError -> 500, not the IntegrityError this route's
+        # `except` guards for -- same reasoning as ScopedRequest.git_locator.
+        if value and has_control_character(value):
+            raise ValueError("git_locator must not contain control characters")
+        return value
+
 
 class UpdateProjectRequest(BaseModel):
     # extra="forbid": the silent no-op this replaces IS review finding I1 --
@@ -56,6 +67,15 @@ class UpdateProjectRequest(BaseModel):
     # locator information and almost always signals a caller bug -- the two
     # intents must not collapse into the same silent-clear behavior.
     git_locator: str | None = Field(default=None, max_length=512, min_length=1)
+
+    @field_validator("git_locator")
+    @classmethod
+    def _no_control_characters(cls, value: str | None) -> str | None:
+        # Reaches the projects UPDATE. A control character there is a
+        # psycopg DataError -> 500, same as CreateProjectRequest.git_locator.
+        if value and has_control_character(value):
+            raise ValueError("git_locator must not contain control characters")
+        return value
 
 
 class ProjectResponse(RenameForwarding):

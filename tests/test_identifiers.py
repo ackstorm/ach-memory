@@ -159,3 +159,110 @@ def test_i2_a_control_character_group_id_is_a_422_not_a_409(
     response = client.post("/v1/groups", json={"id": NUL}, headers=master_headers)
     assert response.status_code == 422, response.text
     assert "error" not in response.json(), response.text
+
+
+# --- 2026-08-23 whole-branch review, finding 1: control-character screening
+# closed on 8 sites, left open on 4 (git_locator on ScopedRequest/
+# CreateProjectRequest/UpdateProjectRequest, CreateGroupRequest.name, and
+# every scoped_query_params route). All six reproduced live as 500
+# INTERNAL_ERROR before the fix. ------------------------------------------
+
+
+def _create_user_key(client, master_headers) -> str:
+    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
+        "user_id"
+    ]
+    return client.post(
+        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
+    ).json()["key"]
+
+
+def test_r1_a_control_character_git_locator_on_retain_is_a_422(
+    client, master_headers, tenant
+):
+    """ScopedRequest.git_locator reaches the projects INSERT via
+    _resolve_bank -- same DataError -> 500 as ScopedRequest.user_id."""
+    key = _create_user_key(client, master_headers)
+    response = client.post(
+        "/v1/memory/retain",
+        json={
+            "scope": "project",
+            "project_slug": "p",
+            "content": "x",
+            "git_locator": f"github.com/a/b{NUL}c",
+        },
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert response.status_code != 500, response.text
+    assert response.status_code == 422, response.text
+
+
+def test_r1_a_control_character_git_locator_on_create_project_is_a_422(
+    client, master_headers, tenant
+):
+    key = _create_user_key(client, master_headers)
+    response = client.post(
+        "/v1/projects",
+        json={"project_slug": "p", "git_locator": f"github.com/a/b{NUL}c"},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert response.status_code != 500, response.text
+    assert response.status_code == 422, response.text
+
+
+def test_r1_a_control_character_git_locator_on_patch_project_is_a_422(
+    client, master_headers, tenant
+):
+    key = _create_user_key(client, master_headers)
+    headers = {"Authorization": f"Bearer {key}"}
+    client.post("/v1/projects", json={"project_slug": "pp"}, headers=headers)
+
+    response = client.patch(
+        "/v1/projects/pp",
+        json={"git_locator": f"github.com/a/b{NUL}c"},
+        headers=headers,
+    )
+    assert response.status_code != 500, response.text
+    assert response.status_code == 422, response.text
+
+
+def test_r1_a_control_character_group_name_is_a_422_not_a_500(
+    client, master_headers, tenant
+):
+    response = client.post(
+        "/v1/groups", json={"name": f"team{NUL}x"}, headers=master_headers
+    )
+    assert response.status_code != 500, response.text
+    assert response.status_code == 422, response.text
+
+
+def test_r1_a_control_character_query_param_user_id_is_a_422_not_a_500(
+    client, master_headers, tenant
+):
+    """scoped_query_params builds a ScopedRequest inside its own function
+    body, not through FastAPI's request-model validation -- so a raised
+    pydantic ValidationError previously escaped as a 500 from api/app.py's
+    catch-all instead of a 422. Affects all eight scoped_query_params
+    routes; pinned here on GET /v1/directives."""
+    response = client.get(
+        "/v1/directives",
+        params={"scope": "user", "user_id": f"usr_{NUL}bad"},
+        headers=master_headers,
+    )
+    assert response.status_code != 500, response.text
+    assert response.status_code == 422, response.text
+
+
+def test_r1_a_control_character_admin_clear_user_id_is_a_422_not_a_500(
+    client, master_headers, tenant
+):
+    """_admin_scope has the identical bug: admin.py's clear/delete routes
+    take user_id as a bare query param, so the same ScopedRequest
+    ValidationError escapes as a 500."""
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        params={"user_id": f"usr_{NUL}bad"},
+        headers=master_headers,
+    )
+    assert response.status_code != 500, response.text
+    assert response.status_code == 422, response.text

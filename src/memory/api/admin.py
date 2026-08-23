@@ -122,7 +122,12 @@ def clear_memories(
     principal: Annotated[Principal, Depends(require_master)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-    user_id: str | None = None,
+    # pattern: FastAPI enforces this pre-route as a 422, matching
+    # current_on_behalf_of's header (memory/api/app.py). Without it, a
+    # control character reaches ScopedRequest's own validator INSIDE
+    # `_admin_scope` -- not the route -- so pydantic's ValidationError
+    # escapes as a 500 from api/app.py's catch-all instead of FastAPI's 422.
+    user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
     project_slug: str | None = None,
     type: MemoryType | None = None,
 ) -> MemoryResponse:
@@ -160,7 +165,7 @@ def delete_bank(
     principal: Annotated[Principal, Depends(require_master)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-    user_id: str | None = None,
+    user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
     project_slug: str | None = None,
 ) -> MemoryResponse:
     """SPEC §11.7 + §12.3: irreversible, whole-bank. For scope=user this is

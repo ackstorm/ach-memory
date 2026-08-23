@@ -11,7 +11,7 @@ from memory.api.app import current_on_behalf_of, require_master
 from memory.auth.principal import Principal
 from memory.db import ensure_tenant, get_session
 from memory.errors import GroupAlreadyExists, GroupNotFound, UserNotFound
-from memory.identifiers import reject_control_characters
+from memory.identifiers import has_control_character, reject_control_characters
 from memory.models import Group, GroupMember, User
 
 router = APIRouter(prefix="/v1/groups", tags=["groups"])
@@ -30,15 +30,16 @@ class CreateGroupRequest(BaseModel):
     id: str | None = Field(default=None, max_length=128)
     name: str | None = Field(default=None, max_length=256)
 
-    @field_validator("id")
+    @field_validator("id", "name")
     @classmethod
     def _no_control_characters(cls, value: str | None) -> str | None:
         # Same bound as oversize, same shape: a control character is also an
         # unstorable id, so it gets the same 422 rather than a 409 that reads
         # as GROUP_ALREADY_EXISTS for an id that never existed. Mirrors
-        # CreateUserRequest.id's validator.
-        if value and any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
-            raise ValueError("id must not contain control characters")
+        # CreateUserRequest.id's validator. Covers `name` too: it reaches the
+        # same INSERT and hits the same psycopg DataError -> 500.
+        if value and has_control_character(value):
+            raise ValueError("must not contain control characters")
         return value
 
 

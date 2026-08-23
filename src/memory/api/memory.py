@@ -21,6 +21,7 @@ from memory.config import get_settings
 from memory.db import get_session
 from memory.errors import ContentTooLarge
 from memory.hindsight.client import get_client
+from memory.identifiers import has_control_character
 
 router = APIRouter(prefix="/v1/memory", tags=["memory"])
 
@@ -75,16 +76,32 @@ class ScopedRequest(BaseModel):
         # Reaches `db.get(User, ...)` in banks.resolve_user_bank. A control
         # character there is a psycopg DataError -> 500; a typed 422 at the
         # boundary is the same treatment git_locator's max_length gets.
-        if value and any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+        if value and has_control_character(value):
             raise ValueError("user_id must not contain control characters")
+        return value
+
+    @field_validator("git_locator")
+    @classmethod
+    def _git_locator_no_control_characters(cls, value: str | None) -> str | None:
+        # Reaches the projects INSERT in projects.py. A control character
+        # there is a psycopg DataError -> 500, same as user_id above.
+        if value and has_control_character(value):
+            raise ValueError("git_locator must not contain control characters")
         return value
 
 
 def scoped_query_params(
     scope: Scope,
-    user_id: str | None = None,
+    # pattern: FastAPI enforces this pre-route as a 422, the same shape
+    # current_on_behalf_of's header already uses (memory/api/app.py). Without
+    # it, a control character reaches ScopedRequest's own validator INSIDE
+    # this function body -- not the route -- so pydantic's ValidationError
+    # escapes as a 500 from api/app.py's catch-all instead of FastAPI's 422.
+    user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
     project_slug: str | None = None,
-    git_locator: Annotated[str | None, Query(max_length=512)] = None,
+    git_locator: Annotated[
+        str | None, Query(max_length=512, pattern=r"^[^\x00-\x1f\x7f]*$")
+    ] = None,
 ) -> ScopedRequest:
     """`ScopedRequest`, sourced from the query string instead of a JSON body.
 

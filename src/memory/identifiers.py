@@ -20,7 +20,13 @@ why it was rejected -- the same reasoning `_reject_path_traversal` documents.
 from memory.errors import DomainError
 
 
-def _has_control_character(value: str) -> bool:
+def has_control_character(value: str) -> bool:
+    """True if `value` contains a C0 control character or DEL.
+
+    Public: reused directly by pydantic field validators (memory/api/memory.py,
+    projects.py, groups.py) that must raise ValueError, not a DomainError, so
+    they can't go through `reject_control_characters` below.
+    """
     return any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
 
 
@@ -34,7 +40,7 @@ def reject_control_characters(value: str | None, not_found: type[DomainError]) -
     """
     if not value:
         return
-    if _has_control_character(value):
+    if has_control_character(value):
         raise not_found("no such object")
 
 
@@ -46,4 +52,4 @@ def is_unstorable(value: str | None) -> bool:
     result, not the 500 psycopg would otherwise raise at parameter
     adaptation. See admin.list_audit.
     """
-    return bool(value) and _has_control_character(value)
+    return bool(value) and has_control_character(value)
