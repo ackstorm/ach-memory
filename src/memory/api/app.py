@@ -35,8 +35,15 @@ def current_on_behalf_of(
     principal: Annotated[Principal, Depends(current_principal)],
     # Bounded to match AuditEvent.on_behalf_of (String(128)) so an oversize
     # header is a typed 422 at the boundary, not a 500 from the DB -- same
-    # reasoning as git_locator's bound in memory/api/memory.py.
-    on_behalf_of: Annotated[str | None, Header(max_length=128)] = None,
+    # reasoning as git_locator's bound in memory/api/memory.py. The pattern
+    # excludes C0 controls and DEL for the same reason: unscreened, the value
+    # flows to audit.record() -> AuditEvent.on_behalf_of -> INSERT, and a NUL
+    # byte there is a psycopg DataError, not an IntegrityError, so it reaches
+    # the catch-all as a 500. Confirmed live (FastAPI 0.141 / pydantic 2.13)
+    # that `pattern` on a Header is enforced pre-route as a 422.
+    on_behalf_of: Annotated[
+        str | None, Header(max_length=128, pattern=r"^[^\x00-\x1f\x7f]*$")
+    ] = None,
 ) -> str | None:
     """The subject a master key is acting for (SPEC §16.5).
 

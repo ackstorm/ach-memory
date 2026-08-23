@@ -28,7 +28,6 @@ NUL_PATH = "a%00b"
     [
         ("GET", f"/v1/users/{NUL_PATH}", None, None, "USER_NOT_FOUND"),
         ("GET", f"/v1/users/{NUL_PATH}/keys", None, None, "USER_NOT_FOUND"),
-        ("POST", "/v1/users", None, {"id": NUL}, "USER_ALREADY_EXISTS"),
         ("GET", f"/v1/groups/{NUL_PATH}", None, None, "GROUP_NOT_FOUND"),
         (
             "POST",
@@ -79,3 +78,84 @@ def test_a_control_character_in_a_scoped_user_id_is_not_a_500(
         headers=master_headers,
     )
     assert response.status_code != 500, response.text
+
+
+# --- Review findings C1, C2, I1, I2 (2026-08-23) -----------------------
+
+
+@pytest.mark.parametrize(
+    "owner_type,expected_code",
+    [("user", "USER_NOT_FOUND"), ("group", "GROUP_NOT_FOUND")],
+)
+def test_c1_a_control_character_owner_id_is_not_a_500(
+    client, master_headers, tenant, owner_type, expected_code
+):
+    """_validate_owner is the choke point for both create() and transfer();
+    this pins create() (POST /v1/projects). An unstorable owner id names no
+    object, so it is a LOOKUP -- the route's own not-found error, not a 500."""
+    response = client.post(
+        "/v1/projects",
+        json={"project_slug": "p", "owner": {"type": owner_type, "id": NUL}},
+        headers=master_headers,
+    )
+    assert response.status_code != 500, response.text
+    assert response.json()["error"]["code"] == expected_code, response.text
+
+
+def test_c1_a_control_character_owner_id_on_transfer_is_not_a_500(
+    client, master_headers, tenant
+):
+    """The other caller of _validate_owner (PATCH .../owner)."""
+    owner = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+    client.post(
+        "/v1/projects",
+        json={"project_slug": "p", "owner": {"type": "user", "id": owner}},
+        headers=master_headers,
+    )
+
+    response = client.patch(
+        "/v1/projects/p/owner",
+        json={"type": "user", "id": NUL},
+        headers=master_headers,
+    )
+    assert response.status_code != 500, response.text
+    assert response.json()["error"]["code"] == "USER_NOT_FOUND", response.text
+
+
+def test_c2_a_control_character_in_on_behalf_of_is_a_422(
+    client, master_headers, tenant
+):
+    """The header is provenance, neither a lookup nor a filter -- bounded at
+    the boundary as a 422, like the header's own max_length already is.
+
+    A raw NUL in a header value IS accepted by httpx and reaches the server
+    (unlike a URL path, where the same byte makes httpx itself raise
+    InvalidURL before the request is sent), so no percent-encoding is needed
+    here.
+    """
+    headers = {**master_headers, "On-Behalf-Of": NUL}
+    response = client.post("/v1/users", json={}, headers=headers)
+    assert response.status_code == 422, response.text
+
+
+def test_i1_a_control_character_user_id_is_a_422_not_a_409(
+    client, master_headers, tenant
+):
+    """Same field already answers 422 for an oversize id (Field max_length);
+    a control-character id is the other kind of unstorable value and must
+    get the same treatment, not USER_ALREADY_EXISTS -- which would tell a
+    client that retrying with a different id fixes the problem, when it
+    doesn't."""
+    response = client.post("/v1/users", json={"id": NUL}, headers=master_headers)
+    assert response.status_code == 422, response.text
+    # FastAPI's own validation-error shape ({"detail": [...]}), never the
+    # domain-error envelope with a code that would contradict this status.
+    assert "error" not in response.json(), response.text
+
+
+def test_i2_a_control_character_group_id_is_a_422_not_a_409(
+    client, master_headers, tenant
+):
+    response = client.post("/v1/groups", json={"id": NUL}, headers=master_headers)
+    assert response.status_code == 422, response.text
+    assert "error" not in response.json(), response.text

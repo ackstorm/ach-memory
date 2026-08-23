@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,17 @@ class CreateUserRequest(BaseModel):
     # db.begin_nested()'s except clause never sees a length overflow) from
     # the DB. Same reasoning as git_locator's bound in memory/api/memory.py.
     id: str | None = Field(default=None, max_length=128)
+
+    @field_validator("id")
+    @classmethod
+    def _no_control_characters(cls, value: str | None) -> str | None:
+        # Same bound as oversize, same shape: a control character is also an
+        # unstorable id, so it gets the same 422 rather than a 409 that reads
+        # as USER_ALREADY_EXISTS for an id that never existed. Mirrors
+        # ScopedRequest.user_id's validator in memory/api/memory.py.
+        if value and any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+            raise ValueError("id must not contain control characters")
+        return value
 
 
 class CreateUserResponse(BaseModel):
@@ -70,7 +81,6 @@ def create_user(
 ) -> CreateUserResponse:
     """Provisioning. An explicit id is the ACH path; omitting it is standalone."""
     ensure_tenant(db, principal.tenant_id)
-    reject_control_characters(body.id, UserAlreadyExists)
 
     user = User(
         id=body.id or ids.new_user_id(),

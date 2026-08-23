@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -24,6 +24,17 @@ class CreateGroupRequest(BaseModel):
     # overflow) from the DB. Same pattern as CreateUserRequest.id.
     id: str | None = Field(default=None, max_length=128)
     name: str | None = Field(default=None, max_length=256)
+
+    @field_validator("id")
+    @classmethod
+    def _no_control_characters(cls, value: str | None) -> str | None:
+        # Same bound as oversize, same shape: a control character is also an
+        # unstorable id, so it gets the same 422 rather than a 409 that reads
+        # as GROUP_ALREADY_EXISTS for an id that never existed. Mirrors
+        # CreateUserRequest.id's validator.
+        if value and any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+            raise ValueError("id must not contain control characters")
+        return value
 
 
 class GroupResponse(BaseModel):
@@ -56,7 +67,6 @@ def create_group(
     db: Session = Depends(get_session),
 ) -> GroupResponse:
     ensure_tenant(db, principal.tenant_id)
-    reject_control_characters(body.id, GroupAlreadyExists)
 
     group = Group(
         id=body.id or ids.new_group_id(),

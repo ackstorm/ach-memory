@@ -15,6 +15,7 @@ from memory.errors import (
     ProjectSlugConflict,
     UserNotFound,
 )
+from memory.api.identifiers import reject_control_characters
 from memory.models import Group, GroupMember, Project, RetiredSlug, User
 from memory.slugs import canonical_locator, normalize_slug
 
@@ -67,10 +68,12 @@ def _validate_owner(
     the project: authorize() then denies everyone and only a master key can
     undo it. Shared by create() and transfer()."""
     if owner_type == "user":
+        reject_control_characters(owner_id, UserNotFound)
         owner = db.get(User, owner_id)
         if owner is None or owner.tenant_id != tenant_id:
             raise UserNotFound(user_id=owner_id)
     elif owner_type == "group":
+        reject_control_characters(owner_id, GroupNotFound)
         owner = db.get(Group, owner_id)
         if owner is None or owner.tenant_id != tenant_id:
             raise GroupNotFound(group_id=owner_id)
