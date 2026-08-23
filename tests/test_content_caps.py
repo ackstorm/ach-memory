@@ -85,6 +85,48 @@ def test_an_oversize_recall_query_is_also_refused_on_recall(client, master_heade
         assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
 
 
+def test_an_oversize_forget_reason_is_refused(client, master_headers, tenant):
+    """reason is caller free text forwarded verbatim to Hindsight; rejected
+    before the memory_id (which does not need to exist) is ever looked up."""
+    response = client.post(
+        "/v1/memory/forget",
+        json={
+            "scope": "user",
+            "user_id": "nobody",
+            "memory_id": "11111111-1111-1111-1111-111111111111",
+            "reason": OVERSIZE,
+        },
+        headers=master_headers,
+    )
+    assert response.status_code in (413, 422), response.text
+    if response.status_code == 413:
+        assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
+
+
+def test_an_oversize_list_memories_q_is_refused(client, master_headers, tenant):
+    """q carries the same embedding-spend risk class as recall's query."""
+    response = client.post(
+        "/v1/memory/list",
+        json={"scope": "user", "user_id": "nobody", "q": OVERSIZE},
+        headers=master_headers,
+    )
+    assert response.status_code in (413, 422), response.text
+    if response.status_code == 413:
+        assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
+
+
+def test_an_oversize_list_documents_q_is_refused(client, master_headers, tenant):
+    """q carries the same embedding-spend risk class as recall's query."""
+    response = client.post(
+        "/v1/memory/documents/list",
+        json={"scope": "user", "user_id": "nobody", "q": OVERSIZE},
+        headers=master_headers,
+    )
+    assert response.status_code in (413, 422), response.text
+    if response.status_code == 413:
+        assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
+
+
 def test_oversize_metadata_is_refused_even_when_content_is_tiny():
     """_check_content_size sees 1 byte; the 8 MB rides alongside it."""
     from memory.errors import ContentTooLarge

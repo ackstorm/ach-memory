@@ -386,6 +386,94 @@ def test_oversize_content_is_rejected_over_mcp(call_tool, monkeypatch):
 
 
 @respx.mock
+def test_oversize_recall_query_is_rejected_over_mcp(call_tool, monkeypatch):
+    """REST's recall caps body.query (_check_content_size); MCP's twin built
+    a bare ScopedRequest that never forwarded query to the check at all. No
+    route registered on purpose -- a request that reached Hindsight fails via
+    respx's own AllMockedAssertionError."""
+    from memory.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
+    get_settings.cache_clear()
+    key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("recall", key, scope="user", query="x" * 100)
+
+    assert exc_info.value.code == "CONTENT_TOO_LARGE"
+
+
+@respx.mock
+def test_oversize_reflect_query_is_rejected_over_mcp(call_tool, monkeypatch):
+    """reflect spends model tokens on a server-level credential with no
+    per-user cost attribution (SPEC §19.4) -- the same cap REST's reflect
+    already carries."""
+    from memory.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
+    get_settings.cache_clear()
+    key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("reflect", key, scope="user", query="x" * 100)
+
+    assert exc_info.value.code == "CONTENT_TOO_LARGE"
+
+
+@respx.mock
+def test_oversize_forget_reason_is_rejected_over_mcp(call_tool, monkeypatch):
+    """reason is caller free text forwarded verbatim to Hindsight; rejected
+    before the memory_id (which does not need to exist) is ever looked up."""
+    from memory.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
+    get_settings.cache_clear()
+    key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "forget", key, scope="user", memory_id=GHOST, reason="x" * 100
+        )
+
+    assert exc_info.value.code == "CONTENT_TOO_LARGE"
+
+
+@respx.mock
+def test_oversize_list_memories_q_is_rejected_over_mcp(call_tool, monkeypatch):
+    """q carries the same embedding-spend risk class as recall's query."""
+    from memory.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
+    get_settings.cache_clear()
+    key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("list_memories", key, scope="user", q="x" * 100)
+
+    assert exc_info.value.code == "CONTENT_TOO_LARGE"
+
+
+@respx.mock
+def test_oversize_list_documents_q_is_rejected_over_mcp(call_tool, monkeypatch):
+    """q carries the same embedding-spend risk class as recall's query."""
+    from memory.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
+    get_settings.cache_clear()
+    key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("list_documents", key, scope="user", q="x" * 100)
+
+    assert exc_info.value.code == "CONTENT_TOO_LARGE"
+
+
+@respx.mock
 def test_a_bogus_update_mode_on_retain_is_rejected_not_blamed_on_hindsight_over_mcp(
     call_tool,
 ):

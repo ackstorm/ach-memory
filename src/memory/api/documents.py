@@ -9,6 +9,7 @@ from memory.api.memory import (
     MAX_PAGE_SIZE,
     MemoryResponse,
     ScopedRequest,
+    _check_content_size,
     _resolve_bank,
     _strip_bank_id,
 )
@@ -72,6 +73,10 @@ def list_documents(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
+    # q is a caller-authored search query, same embedding-spend risk class as
+    # recall's query; optional, so guarded like the UPDATE routes.
+    if body.q is not None:
+        _check_content_size(body.q)
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.documents.list"
     )

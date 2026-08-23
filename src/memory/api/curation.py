@@ -104,6 +104,10 @@ def list_memories(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
+    # q is a caller-authored search query, same embedding-spend risk class as
+    # recall's query; optional, so guarded like the UPDATE routes.
+    if body.q is not None:
+        _check_content_size(body.q)
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.list"
     )
@@ -153,6 +157,10 @@ def forget(
     An agent that invalidates a fact must not be able to destroy the evidence,
     and a wrong invalidation is recoverable with /restore.
     """
+    # reason is caller free text forwarded verbatim to Hindsight; optional, so
+    # guarded like the UPDATE routes' `if x is not None`.
+    if body.reason is not None:
+        _check_content_size(body.reason)
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.forget", is_write=True
     )

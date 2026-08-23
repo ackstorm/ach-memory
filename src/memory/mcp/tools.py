@@ -225,11 +225,20 @@ def register(mcp: MCPServer) -> None:
         # `reflect` is gated for, plus this persistent side effect `reflect`
         # doesn't have -- so the same gate applies here, even though the read
         # itself is free.
+        def body_factory() -> ScopedRequest:
+            body = ScopedRequest(
+                scope=scope, project_slug=project_slug, git_locator=git_locator
+            )
+            # Same MEMORY_MAX_CONTENT_BYTES ceiling REST's recall carries
+            # (SPEC §20) -- REST's _check_content_size(body.query) was never
+            # mirrored here, so MCP forwarded an oversize query straight to
+            # Hindsight.
+            _check_content_size(query)
+            return body
+
         return _run(
             ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
+            body_factory,
             "memory.recall",
             lambda bank, db, p, slug: get_client().recall(bank, query),
             create=True,
@@ -250,11 +259,19 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
     ) -> ToolResult:
+        def body_factory() -> ScopedRequest:
+            body = ScopedRequest(
+                scope=scope, project_slug=project_slug, git_locator=git_locator
+            )
+            # reflect spends model tokens on a server-level credential with no
+            # per-user cost attribution (SPEC §19.4) -- the same cap REST's
+            # _check_content_size(body.query) already applies, mirrored here.
+            _check_content_size(query)
+            return body
+
         return _run(
             ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
+            body_factory,
             "memory.reflect",
             lambda bank, db, p, slug: get_client().reflect(bank, query),
             create=True,
@@ -277,8 +294,7 @@ def register(mcp: MCPServer) -> None:
         limit: int | None = None,
         offset: int | None = None,
     ) -> ToolResult:
-        return _run(
-            ctx,
+        def body_factory() -> ListMemoriesRequest:
             # Reuses ListMemoriesRequest itself (the REST model) rather than a
             # bare ScopedRequest -- the same fix _retain already got for
             # RetainRequest. A bare ScopedRequest here dropped `state`'s
@@ -286,11 +302,20 @@ def register(mcp: MCPServer) -> None:
             # bounds, so a bogus state or a negative limit reached Hindsight
             # as a 502 blaming the backend instead of a typed rejection at
             # the boundary.
-            lambda: ListMemoriesRequest(
+            body = ListMemoriesRequest(
                 scope=scope, project_slug=project_slug, git_locator=git_locator,
                 q=q, type=type, state=state, document_id=document_id,
                 limit=limit, offset=offset,
-            ),
+            )
+            # q is a caller-authored search query, same embedding-spend risk
+            # class as recall's query; optional, so guarded.
+            if q is not None:
+                _check_content_size(q)
+            return body
+
+        return _run(
+            ctx,
+            body_factory,
             "memory.list",
             lambda bank, db, p, slug: get_client().list_memories(
                 bank, q=q, type=type, state=state, document_id=document_id,
@@ -336,11 +361,19 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
     ) -> ToolResult:
+        def body_factory() -> ScopedRequest:
+            body = ScopedRequest(
+                scope=scope, project_slug=project_slug, git_locator=git_locator
+            )
+            # reason is caller free text forwarded verbatim to Hindsight;
+            # optional, so guarded like the UPDATE routes' `if x is not None`.
+            if reason is not None:
+                _check_content_size(reason)
+            return body
+
         return _run(
             ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
+            body_factory,
             "memory.forget",
             lambda bank, db, p, slug: get_client().curate(
                 bank, memory_id, state="invalidated", reason=reason
@@ -623,7 +656,12 @@ def _list_documents(ctx, scope, project_slug, git_locator, q, limit, offset) -> 
             kwargs["limit"] = limit
         if offset is not None:
             kwargs["offset"] = offset
-        return ListDocumentsRequest(**kwargs)
+        body = ListDocumentsRequest(**kwargs)
+        # q is a caller-authored search query, same embedding-spend risk
+        # class as recall's query; optional, so guarded.
+        if q is not None:
+            _check_content_size(q)
+        return body
 
     def call(bank_id, db, principal, slug):
         return get_client().list_documents(bank_id, q=q, limit=limit, offset=offset)
