@@ -5,7 +5,11 @@
 # database is how test data ends up in production.
 
 image:
-  repository: ach-memory
+  # Must include the registry host. "ach-memory" with no host resolves to
+  # docker.io/library/ach-memory, which does not exist -- the migration Job
+  # (a pre-install hook) then sits in ImagePullBackOff and `helm install`
+  # blocks until the hook times out, leaving the release "pending-install".
+  repository: ghcr.io/ackstorm/ach-memory
   tag: ""    # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -74,10 +78,18 @@ migration:
 # required) is the same unauthenticated liveness signal scripts/smoke.sh
 # already polls -- 200 once the app is serving requests. It does not check
 # database or Hindsight connectivity.
+#
+# startupProbe gates liveness/readiness until the container has had up to
+# startupPeriodSeconds * startupFailureThreshold (150s) to answer once, so a
+# cold image or slow DB DNS on first boot cannot be killed by liveness's
+# initialDelaySeconds/failureThreshold budget below (that pair only starts
+# counting once startupProbe has already succeeded once).
 probes:
   path: /docs
   initialDelaySeconds: 5
   periodSeconds: 10
+  startupPeriodSeconds: 5
+  startupFailureThreshold: 30
 
 service:
   type: ClusterIP
@@ -109,7 +121,18 @@ securityContext:
   capabilities:
     drop: ["ALL"]
 
-resources: {}
+# Unset (resources: {}) makes every pod BestEffort QoS: the scheduler treats
+# it as free to pack anywhere, and the kubelet evicts BestEffort pods FIRST
+# under node memory pressure -- for a memory service that means it is the
+# first thing killed on any node it lands on. Tune these for your workload;
+# do not remove them back to {}.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
 nodeSelector: {}
 tolerations: []
 affinity: {}

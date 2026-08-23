@@ -36,4 +36,6 @@ spec:
           env:
             - name: MEMORY_DATABASE_URL
               value: {{ required "config.databaseUrl is required (MEMORY_DATABASE_URL)" .Values.config.databaseUrl | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
 {{- end }}

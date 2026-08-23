@@ -36,6 +36,24 @@ jobs:
           python-version: "3.12"
       - run: uv run --frozen ruff check .
 
+  # Renders the chart the README documents as part of this build. Catches
+  # the class of defect an image/values.yaml mismatch can introduce (a bad
+  # default that lints clean but never renders, or a rendered manifest
+  # missing a value it required) before anyone runs `helm install` by hand.
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/ach-memory
+      - run: |
+          helm template ach-memory deploy/helm/ach-memory \
+            --set image.repository=ghcr.io/ackstorm/ach-memory \
+            --set config.databaseUrl=postgresql+psycopg://u:p@h:5432/m \
+            --set config.hindsight.url=http://hindsight:8888 \
+            --set masterKeySecret.value=deadbeef > /dev/null
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20

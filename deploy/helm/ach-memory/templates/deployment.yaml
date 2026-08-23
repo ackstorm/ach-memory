@@ -65,6 +65,12 @@ spec:
             - name: MEMORY_MCP_ALLOWED_HOSTS
               value: {{ join "," $hosts | quote }}
             {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.startupPeriodSeconds }}
+            failureThreshold: {{ .Values.probes.startupFailureThreshold }}
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.path }}
