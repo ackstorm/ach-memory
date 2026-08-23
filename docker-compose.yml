@@ -6,7 +6,11 @@ services:
       POSTGRES_PASSWORD: memory
       POSTGRES_DB: memory
     ports:
-      - "5433:5432"
+      # Loopback only. This stack is for local development: the credentials
+      # below are `memory`/`memory` and the master key the README generates
+      # is a dev-only secret, so binding 0.0.0.0 hands anyone routable to
+      # this host the whole tenant.
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U memory"]
       interval: 2s
@@ -59,7 +63,12 @@ services:
       # Change this only with a ./scripts/smoke.sh run to back it.
       HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-bedrock.openai.gpt-oss-20b-1-0}
     ports:
-      - "8888:8888"
+      # Loopback only, and only for scripts/e2e.py -- the `api` service
+      # reaches Hindsight in-network at http://hindsight:8888 and does not
+      # need this published at all. Hindsight takes MEMORY_HINDSIGHT_API_KEY,
+      # which defaults to empty, so anyone who can reach this port talks to
+      # every user's and project's bank with no credential.
+      - "127.0.0.1:8888:8888"
     healthcheck:
       test:
         - CMD-SHELL
@@ -88,7 +97,8 @@ services:
       # host port.
       MEMORY_MCP_ALLOWED_HOSTS: ${MEMORY_MCP_ALLOWED_HOSTS:-127.0.0.1,localhost,localhost:8000}
     ports:
-      - "8000:8000"
+      # Loopback only. See the postgres/hindsight services above for why.
+      - "127.0.0.1:8000:8000"
 
 volumes:
   memory-pgdata:

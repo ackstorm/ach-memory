@@ -277,10 +277,19 @@ Proven against a live server, not just `respx` mocks:
 Four services: our API and database, Hindsight and its database. The only
 external dependency is LiteLLM.
 
+> **Local development only.** `docker-compose.yml` binds every published port
+> to `127.0.0.1` and ships development credentials. It is not a deployment
+> topology — use `deploy/helm/ach-memory` for that.
+
+> If you followed an earlier version of this README, the master key was a
+> published literal (`mem_local_master_change_me`) — rotate it.
+
 ```bash
 export LITELLM_BASE_URL=https://api.ackstorm.ai
 export LITELLM_API_KEY=...
-export MEMORY_MASTER_KEY="mem_local_master_change_me"
+# Generate one. The old literal in this README was a working credential for
+# every stack anyone set up by following it.
+export MEMORY_MASTER_KEY="mem_local_$(openssl rand -hex 32)"
 export MEMORY_MASTER_KEY_HASH=$(python3 -c \
   "import hashlib,os; print(hashlib.sha256(os.environ['MEMORY_MASTER_KEY'].encode()).hexdigest())")
 
