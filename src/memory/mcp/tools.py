@@ -22,16 +22,17 @@ its safe, caller-authored message, and anything else becomes a fixed
 """
 
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from memory import provenance
 from memory.api.curation import CorrectRequest, ListMemoriesRequest
 from memory.api.documents import ListDocumentsRequest
 from memory.api.memory import (
+    MAX_PAGE_SIZE,
     RetainRequest,
     ScopedRequest,
     _check_content_size,
@@ -46,6 +47,18 @@ from memory.mcp.server import tool_session
 logger = logging.getLogger("memory.mcp")
 
 Scope = Literal["user", "project"]
+
+# The tool SIGNATURE is what the SDK turns into the advertised JSON Schema, so
+# a bound living only on the pydantic model is invisible to the model calling
+# the tool. REST's OpenAPI publishes these enums for the identical operations;
+# MCP published bare `str`. SPEC §11.4 blesses update_mode="append" for
+# interactive coding sessions and nothing in the advertised schema said
+# `append` existed at all.
+UpdateMode = Literal["replace", "append"]
+MemoryState = Literal["valid", "invalidated"]
+FactType = Literal["world", "experience", "observation"]
+PageLimit = Annotated[int | None, Field(ge=1, le=MAX_PAGE_SIZE)]
+PageOffset = Annotated[int | None, Field(ge=0)]
 
 # Populated by register(). The tests call through it, so an unregistered tool
 # fails there exactly as it would over the wire.
@@ -172,7 +185,7 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
         document_id: str | None = None,
-        update_mode: str = "replace",
+        update_mode: UpdateMode = "replace",
         metadata: dict[str, str] | None = None,
         operation_id: str | None = None,
     ) -> ToolResult:
@@ -191,7 +204,7 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
         document_id: str | None = None,
-        update_mode: str = "replace",
+        update_mode: UpdateMode = "replace",
         metadata: dict[str, str] | None = None,
         operation_id: str | None = None,
     ) -> ToolResult:
@@ -206,8 +219,13 @@ def register(mcp: MCPServer) -> None:
         )
 
     @mcp.tool(
+        # No readOnlyHint. `create=True` below mints a Project row for an
+        # unseen slug -- permanently, since invariant 8 makes a slug unique
+        # across live AND retired names, so none is ever recoverable.
+        # readOnlyHint is what an MCP client uses to skip confirmation and
+        # auto-approve inside an agent loop, so advertising it here invited
+        # exactly the squat the comment below measures (80 projects in 5.1s).
         description="Search memory and return the matching facts.",
-        annotations=ToolAnnotations(readOnlyHint=True),
     )
     def recall(
         scope: Scope,
@@ -250,7 +268,8 @@ def register(mcp: MCPServer) -> None:
             "Ask memory a question and get a synthesized answer rather than "
             "a list of facts. Costs more than recall."
         ),
-        annotations=ToolAnnotations(readOnlyHint=True),
+        # No readOnlyHint, same reason as recall: create=True mints a
+        # permanent Project row for an unseen slug.
     )
     def reflect(
         scope: Scope,
@@ -288,11 +307,11 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
         q: str | None = None,
-        type: str | None = None,
-        state: str | None = None,
+        type: FactType | None = None,
+        state: MemoryState | None = None,
         document_id: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
+        limit: PageLimit = None,
+        offset: PageOffset = None,
     ) -> ToolResult:
         def body_factory() -> ListMemoriesRequest:
             # Reuses ListMemoriesRequest itself (the REST model) rather than a
@@ -351,7 +370,9 @@ def register(mcp: MCPServer) -> None:
             "deleted: it leaves the active set but the record survives, and "
             "restore brings it back."
         ),
-        annotations=ToolAnnotations(destructiveHint=True),
+        # idempotentHint, not destructiveHint: this description says in so
+        # many words that the record survives and `restore` brings it back.
+        annotations=ToolAnnotations(idempotentHint=True),
     )
     def forget(
         scope: Scope,
@@ -382,7 +403,12 @@ def register(mcp: MCPServer) -> None:
             is_write=True,
         )
 
-    @mcp.tool(description="Replace the text of an existing memory.")
+    @mcp.tool(
+        description="Replace the text of an existing memory.",
+        # The one memory operation that irreversibly overwrites caller text,
+        # and it carried no annotations at all.
+        annotations=ToolAnnotations(destructiveHint=True),
+    )
     def correct(
         scope: Scope,
         memory_id: str,
@@ -420,7 +446,9 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description="Bring back a memory that forget retired.",
-        annotations=ToolAnnotations(idempotentHint=True),
+        # destructiveHint=False stated explicitly: the MCP spec DEFAULTS it to
+        # true, so a purely additive operation was advertised as destructive.
+        annotations=ToolAnnotations(idempotentHint=True, destructiveHint=False),
     )
     def restore(
         scope: Scope,
@@ -456,8 +484,8 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
         q: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
+        limit: PageLimit = None,
+        offset: PageOffset = None,
     ) -> ToolResult:
         return _list_documents(
             ctx, scope, project_slug, git_locator, q, limit, offset
@@ -546,8 +574,8 @@ def register(mcp: MCPServer) -> None:
         git_locator: str | None = None,
         status: str | None = None,
         type: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
+        limit: PageLimit = None,
+        offset: PageOffset = None,
     ) -> ToolResult:
         return _list_operations(
             ctx, scope, project_slug, git_locator, status, type, limit, offset
