@@ -12,7 +12,18 @@ from memory.models import Tenant
 
 @lru_cache
 def get_engine() -> Engine:
-    return create_engine(get_settings().database_url, pool_pre_ping=True)
+    # hide_parameters=True: without it, any StatementError's str() carries
+    # `[parameters: {...}]`, and api/app.py's catch-all logs the full
+    # traceback of every unhandled exception -- so a DataError on the
+    # projects INSERT prints bank_id and internal_id into the application
+    # log. Reachable by an ordinary user key (a control character in
+    # git_locator is enough), which makes it the same class as the httpx
+    # logger muted in api/app.py, through a different pipe. The parameters
+    # are not needed for diagnosis: the statement and the exception class
+    # are still logged.
+    return create_engine(
+        get_settings().database_url, pool_pre_ping=True, hide_parameters=True
+    )
 
 
 @lru_cache
