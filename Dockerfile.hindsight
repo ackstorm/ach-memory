@@ -1,0 +1,20 @@
+# Hindsight publishes no container image, so we build a thin one from the
+# published pip package. The version is pinned on purpose: an unpinned memory
+# engine is a silently moving end-to-end baseline.
+FROM python:3.12-slim
+RUN pip install --no-cache-dir "hindsight-api==0.9.1"
+
+# hindsight-api is the server entry point. NOT hindsight-local-mcp, which
+# embeds its own Postgres and ignores HINDSIGHT_API_DATABASE_URL — in compose
+# the database is a real service. The background task worker runs in-process
+# (HINDSIGHT_API_WORKER_ENABLED defaults to true), which matters because our
+# retain is asynchronous by default: with no worker, retained memories would
+# never be extracted.
+# Non-root, same as the service image, and numeric for the same kubelet
+# reason. hindsight-api keeps its state in Postgres, so an unprivileged uid
+# with its own $HOME is enough.
+RUN useradd --system --uid 10001 --create-home --home-dir /home/app \
+    --shell /usr/sbin/nologin app
+USER 10001
+EXPOSE 8888
+CMD ["hindsight-api", "--host", "0.0.0.0", "--port", "8888"]

@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ach-memory.fullname" . }}
+  labels:
+    {{- include "ach-memory.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ach-memory.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ach-memory.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ach-memory
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: MEMORY_DATABASE_URL
+              value: {{ required "config.databaseUrl is required (MEMORY_DATABASE_URL)" .Values.config.databaseUrl | quote }}
+            - name: MEMORY_HINDSIGHT_URL
+              value: {{ required "config.hindsight.url is required (MEMORY_HINDSIGHT_URL)" .Values.config.hindsight.url | quote }}
+            {{- if .Values.config.hindsight.apiKeySecret.name }}
+            - name: MEMORY_HINDSIGHT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.hindsight.apiKeySecret.name }}
+                  key: {{ .Values.config.hindsight.apiKeySecret.key }}
+            {{- else }}
+            - name: MEMORY_HINDSIGHT_API_KEY
+              value: {{ .Values.config.hindsight.apiKey | quote }}
+            {{- end }}
+            - name: MEMORY_MASTER_KEY_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ach-memory.masterKeySecretName" . }}
+                  key: {{ .Values.masterKeySecret.key }}
+            - name: MEMORY_TENANT_ID
+              value: {{ .Values.config.tenantId | quote }}
+            - name: MEMORY_MAX_CONTENT_BYTES
+              value: {{ .Values.config.maxContentBytes | quote }}
+            - name: MEMORY_WRITE_LIMIT
+              value: {{ .Values.config.writeLimit | quote }}
+            - name: MEMORY_WRITE_WINDOW_SECONDS
+              value: {{ .Values.config.writeWindowSeconds | quote }}
+            {{- $hosts := .Values.config.mcpAllowedHosts }}
+            {{- if and (not $hosts) .Values.ingress.enabled .Values.ingress.host }}
+            {{- $hosts = list .Values.ingress.host }}
+            {{- end }}
+            {{- if $hosts }}
+            - name: MEMORY_MCP_ALLOWED_HOSTS
+              value: {{ join "," $hosts | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

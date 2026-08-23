@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: memory
+      POSTGRES_PASSWORD: memory
+      POSTGRES_DB: memory
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - memory-pgdata:/var/lib/postgresql/data
+
+  hindsight-db:
+    # pgvector, not plain postgres: Hindsight stores embeddings in a vector
+    # column and fails at query time with `could not access file "$$libdir/vector"`
+    # on a stock image. The failure surfaces as a 500 on the first retain, long
+    # after startup looked healthy.
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: hindsight
+      POSTGRES_PASSWORD: hindsight
+      POSTGRES_DB: hindsight
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hindsight"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - hindsight-pgdata:/var/lib/postgresql/data
+
+  hindsight:
+    build:
+      context: .
+      dockerfile: Dockerfile.hindsight
+    depends_on:
+      hindsight-db:
+        condition: service_healthy
+    environment:
+      HINDSIGHT_API_DATABASE_URL: postgresql://hindsight:hindsight@hindsight-db:5432/hindsight
+      # Explicit LLM wiring. Without these, Hindsight falls back to
+      # provider=openai/gpt-4o-mini with no base URL, and the OpenAI SDK then
+      # silently picks up whatever OPENAI_BASE_URL happens to be in the ambient
+      # environment — which is how a green test on a laptop becomes a red one
+      # everywhere else.
+      HINDSIGHT_API_LLM_PROVIDER: openai
+      HINDSIGHT_API_LLM_BASE_URL: ${LITELLM_BASE_URL:?set LITELLM_BASE_URL}/v1
+      HINDSIGHT_API_LLM_API_KEY: ${LITELLM_API_KEY:?set LITELLM_API_KEY}
+      # Verified working: bedrock.openai.gpt-oss-20b-1-0 (fast, the default)
+      # and bedrock.openai.gpt-oss-120b-1-0 and ackstorm.smart.
+      # Verified BROKEN: ackstorm.fast and gemini.gemini-flash-latest answer
+      # with finish_reason=tool_calls and empty message content, which
+      # Hindsight's fact extractor rejects — every retain dies after 4 retries
+      # while the service still looks healthy. kubeai.gpt-oss-20b times out.
+      # Change this only with a ./scripts/smoke.sh run to back it.
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-bedrock.openai.gpt-oss-20b-1-0}
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8888/openapi.json').status==200 else 1)"
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hindsight:
+        condition: service_healthy
+    environment:
+      MEMORY_DATABASE_URL: postgresql+psycopg://memory:memory@postgres:5432/memory
+      MEMORY_MASTER_KEY_HASH: ${MEMORY_MASTER_KEY_HASH:?set MEMORY_MASTER_KEY_HASH}
+      MEMORY_HINDSIGHT_URL: http://hindsight:8888
+      MEMORY_HINDSIGHT_API_KEY: ${MEMORY_HINDSIGHT_API_KEY:-}
+      MEMORY_TENANT_ID: default
+      # The SDK's DNS-rebinding guard matches Host including the port. This
+      # compose file always publishes the api on localhost:8000, so that exact
+      # host:port must be allowed or every MCP call 421s -- default covers the
+      # documented `docker compose up` path; override if you map a different
+      # host port.
+      MEMORY_MCP_ALLOWED_HOSTS: ${MEMORY_MCP_ALLOWED_HOSTS:-127.0.0.1,localhost,localhost:8000}
+    ports:
+      - "8000:8000"
+
+volumes:
+  memory-pgdata:
+  hindsight-pgdata:

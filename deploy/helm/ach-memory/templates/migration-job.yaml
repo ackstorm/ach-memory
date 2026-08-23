@@ -1,0 +1,39 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ach-memory.fullname" . }}-migrate
+  labels:
+    {{- include "ach-memory.labels" . | nindent 4 }}
+  annotations:
+    # A pre-install/pre-upgrade hook Job runs to completion before Helm
+    # applies the Deployment at all -- ordered strictly before the Deployment
+    # becomes ready, not racing it.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "ach-memory.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["python", "-m", "alembic", "upgrade", "head"]
+          env:
+            - name: MEMORY_DATABASE_URL
+              value: {{ required "config.databaseUrl is required (MEMORY_DATABASE_URL)" .Values.config.databaseUrl | quote }}
+{{- end }}

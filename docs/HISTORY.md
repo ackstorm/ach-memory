@@ -1,0 +1,185 @@
+# History before the flat first commit
+
+174 commits, squashed into one root commit on 2026-08-23 when this
+repository moved to github.com/ackstorm/ach-memory (private).
+
+Kept because `docs/PROJECT-STATE.md` named `git log` as the recovery
+path for the git-ignored task ledger, and squashing removed it. The
+reasoning behind these commits lives in the code comments; these are the
+subject lines, in order, so a later reader can still see what was built
+when, and in what sequence.
+
+- 2026-08-21 spec: initial draft v1 (pre-Hindsight research)
+- 2026-08-21 spec: rev.2 — mirror Hindsight surface, zero retrieval tags, deletion model
+- 2026-08-21 spec: rev.3 — merge both rev.2 drafts, narrow MCP surface, bootstrapped mental model
+- 2026-08-21 spec: rev.5 — locator-derived slugs, forwarding tombstones, cost + content defense
+- 2026-08-21 spec: drop bank tuning and refresh env var; use Hindsight defaults
+- 2026-08-21 docs: plan 1 — user memory vertical slice
+- 2026-08-21 docs: plan 1 pre-flight fixes — commit uv.lock, no placeholder router, no duplicated deps in Dockerfile
+- 2026-08-21 feat: project skeleton and settings
+- 2026-08-21 feat: identifier generation and API key crypto
+- 2026-08-21 feat: database models, session handling and initial migration
+- 2026-08-21 docs: correct Task 3 interfaces — no SessionLocal, factory stays private
+- 2026-08-21 fix: make test session fixture actually roll back on internal rollback
+- 2026-08-21 docs: pin savepoint join mode in the plan's test fixture
+- 2026-08-21 feat: principal resolution from bearer credentials
+- 2026-08-21 docs: api_keys.user_id NOT NULL; is_master never derived from a column
+- 2026-08-21 fix: api_keys.user_id NOT NULL, never derive is_master from a column
+- 2026-08-21 feat: user and API key provisioning endpoints
+- 2026-08-21 docs: fallback error handler and 409 on duplicate user id
+- 2026-08-21 fix: guarantee the error envelope and return 409 on duplicate user id
+- 2026-08-21 feat: Hindsight client with retain, recall and bank materialization
+- 2026-08-21 docs: pin real Hindsight paths and config body shape from live discovery
+- 2026-08-21 docs: full e2e scenario in docker-compose, explicit Hindsight LLM wiring
+- 2026-08-21 fix: do not chain the httpx exception, it carries the bank ID
+- 2026-08-21 fix: raise outside the except block so the exception chain is empty
+- 2026-08-21 docs: plan matches the empty-chain client
+- 2026-08-21 feat: retain and recall for scope=user
+- 2026-08-21 docs: restore /v1/memory/retain — a blanket replace had rewritten our own route
+- 2026-08-21 fix: serve retain at /v1/memory/retain, consistent with its sibling routes
+- 2026-08-21 fix: scrub bank_id recursively and materialize each bank once per process
+- 2026-08-21 docs: use gemini.gemini-flash-latest for Hindsight extraction
+- 2026-08-21 feat: container packaging and full end-to-end compose scenario
+- 2026-08-21 docs: plan records pgvector and the working model
+- 2026-08-21 docs: record that ackstorm.fast and gemini-flash both fail fact extraction
+- 2026-08-21 fix: commit before responding, mute httpx logs, expire the materialization cache
+- 2026-08-21 docs: plan reflects rollback-only session dependency
+- 2026-08-21 feat: default to bedrock gpt-oss-20b, record the model survey
+- 2026-08-21 docs: plan 2 — projects, ownership and groups
+- 2026-08-21 test: one session per request, and scope the conflict rollback to a savepoint
+- 2026-08-21 docs: session-isolation test must not escape the test transaction
+- 2026-08-21 test: prove session isolation without escaping the test transaction
+- 2026-08-21 feat: canonical Git locators and project slug normalization
+- 2026-08-21 docs: derived slugs must not collide across path segmentation
+- 2026-08-21 fix: derived slugs must not collide across path segmentation
+- 2026-08-21 feat: group provisioning and flat membership
+- 2026-08-21 docs: honest 404 for a missing user, 409 for a duplicate group id
+- 2026-08-21 fix: name the missing entity honestly and return 409 on a duplicate group id
+- 2026-08-21 docs: project state and hard-won knowledge, indexed from the README
+- 2026-08-21 feat: keep dots literal in slugs so derived ones stay readable
+- 2026-08-21 docs: plan matches dot-preserving slugs
+- 2026-08-21 feat: project, retired slug and audit models
+- 2026-08-21 docs: on_behalf_of is supplied, never derived from the principal
+- 2026-08-21 fix: on_behalf_of is supplied by the caller, never derived from the principal
+- 2026-08-21 feat: project resolution, ownership authorization, rename and transfer
+- 2026-08-21 docs: drop the no-op tombstone update, name the owner-type error honestly
+- 2026-08-21 fix: drop the no-op tombstone update and name the owner-type error honestly
+- 2026-08-21 docs: validate the new owner, keep tenant checks local, do not disclose rename targets
+- 2026-08-21 fix: validate the new owner, keep tenant checks local, do not disclose rename targets
+- 2026-08-21 feat: project control plane with rename, transfer and forwarding
+- 2026-08-21 fix(projects): unify listing authorization and close 4 untested gaps
+- 2026-08-21 drop the dead ensure_tenant call from project creation
+- 2026-08-21 cover the listing's master and group-member paths
+- 2026-08-21 feat: scope=project end to end
+- 2026-08-21 Cover commit ordering, surface renamed project slug, dedupe notice rule
+- 2026-08-21 ignore .env
+- 2026-08-21 Close the final review gaps in Plan 2: locator canonicalization, size bound, negative-auth coverage
+- 2026-08-21 Fix documentation drift found in the Plan 2 review
+- 2026-08-21 plan the memory surface and provenance (Plan 3)
+- 2026-08-21 add the reflect, curation, document and operation client calls
+- 2026-08-21 fix(hindsight): close review gaps in the client's new 404/id-mapping code
+- 2026-08-21 docs(plan): fix Task 4/6 test ids for the new local UUID validation
+- 2026-08-21 raise the uuid guard's error outside its except, unencode a plan regex
+- 2026-08-21 split provenance into extraction metadata and audit context
+- 2026-08-21 fix(provenance): route audit-only runtime fields away from extraction input
+- 2026-08-21 attach provenance to retain and expose reflect
+- 2026-08-21 Strengthen provenance/reflect tests, validate operation_id, dedupe fixtures
+- 2026-08-21 reject a malformed operation_id at the boundary, not with a new error code
+- 2026-08-21 add memory curation routes with bank-scoped authorization
+- 2026-08-21 fix(memory): stop curation routes from lazily creating projects
+- 2026-08-21 add document list, get and delete routes
+- 2026-08-21 add operation get, list and cancel routes
+- 2026-08-22 fix(memory): close document_id path-traversal escape from the authorized bank
+- 2026-08-22 test(memory): cover the remaining IDOR gaps and fix a false comment
+- 2026-08-22 audit master-key actions and record the On-Behalf-Of subject
+- 2026-08-22 audit master-key project access and give master actions distinct names
+- 2026-08-22 fix two 500s from caller-supplied strings overflowing bounded columns
+- 2026-08-22 prove curation and reflect against live Hindsight, update the docs
+- 2026-08-22 fix(provenance): normalize case in the audit-only-key split
+- 2026-08-22 test(curation): add the missing §20.1 IDOR tests for list/get/restore/correct
+- 2026-08-22 fix(smoke): cover every response for the no-bank-id check
+- 2026-08-22 fix(documents,app): control-char document_id 500 and a traceback-free catch-all
+- 2026-08-22 fix(hindsight): reject traversal-shaped document_id at the retain write boundary too
+- 2026-08-22 refactor(provenance): collapse build() to the extraction mapping only
+- 2026-08-22 fix(operations): get_operation on an absent id is 200 status=not_found, not a 404
+- 2026-08-22 fix(memory,curation): bound update_mode/state and require document_id for append
+- 2026-08-22 fix(users,groups): bound explicit id/name fields against DataError 500s
+- 2026-08-22 fix(tests): isolate the test database from the dev stack's database
+- 2026-08-22 test(app,smoke): pin the route set and exercise the async retain lifecycle
+- 2026-08-22 docs(project-state): record the bank-auto-materialization trap and final review counts
+- 2026-08-22 give the smoke test a fresh project slug per run
+- 2026-08-22 record the measured mcp 2.0 SDK surface
+- 2026-08-22 plan the MCP surface and rate limiting (Plan 4)
+- 2026-08-22 mount an MCP server and centralize its tool pipeline
+- 2026-08-22 let the MCP endpoint answer the host it is deployed under
+- 2026-08-22 add the four core memory tools
+- 2026-08-22 fix(mcp): stop stamping the raw project_slug and echoing raw exceptions
+- 2026-08-22 fix(mcp): make create keyword-only and reuse REST's retain validation
+- 2026-08-22 test(mcp): cover sync_retain and pin the caller's real bank id
+- 2026-08-22 add the five curation tools
+- 2026-08-22 add the three document tools
+- 2026-08-22 add the three operation tools
+- 2026-08-22 pin the advertised MCP tool surface
+- 2026-08-22 rate-limit writes per credential
+- 2026-08-22 prove the MCP surface against live Hindsight, document it
+- 2026-08-22 fix(mcp): rate-limit recall's unmetered project-creation loop
+- 2026-08-22 fix(mcp): refuse the master key over MCP
+- 2026-08-22 test(mcp): pin every tool's create/is_write flag by mutation
+- 2026-08-22 fix(mcp): validate list_memories/documents/operations like their REST twins
+- 2026-08-22 test(mcp): five missing IDOR tests plus SPEC §24 scenario Z
+- 2026-08-22 fix: six smaller correctness and doc-accuracy issues from the review
+- 2026-08-22 docs: document rate limiting, INVALID_REQUEST, and resolve the §13.3 ledger gap
+- 2026-08-22 plan admin, governance and packaging (Plan 5)
+- 2026-08-22 record what Memory Defense actually enforces in this build
+- 2026-08-22 feat(admin): make the audit trail readable via GET /v1/admin/audit
+- 2026-08-22 feat(admin): master-key-only destructive plane (clear/delete/slug release)
+- 2026-08-22 feat(directives): add REST-only directive management (SPEC §14)
+- 2026-08-22 feat(mental-models): add REST-only mental model management (SPEC §14)
+- 2026-08-22 feat(deploy): add Helm chart for the memory service
+- 2026-08-22 ci: add lint/test/image workflow and prove the shipped image starts
+- 2026-08-22 test: add a live end-to-end script exercising the whole product
+- 2026-08-22 fix(hindsight): mental-model ids are mm-<hex32>, not UUIDs
+- 2026-08-22 fix(hindsight): evict the materialization cache on delete_bank
+- 2026-08-22 fix(directives): materialize a never-touched bank before create
+- 2026-08-22 test(admin): pin bank-id redaction on the destructive plane
+- 2026-08-22 test(governance): REST equivalent of the MCP is_write table
+- 2026-08-22 ci(image): extend the guard with migrations and an authenticated probe
+- 2026-08-22 docs(spec): add three reachable error codes to §18's closed list
+- 2026-08-22 test(authz): cover the group-member and master-key rows of SPEC §14's table
+- 2026-08-22 docs: fix README/helm-readme claims, lint scripts/e2e.py
+- 2026-08-22 map a refused curate to its own code instead of a backend error
+- 2026-08-22 docs(plan): Plan 6 -- review remediation
+- 2026-08-22 stop configuring banks: no Memory Defense, no TTL cache
+- 2026-08-22 fix(review): retire stale store_document_text/memory_defense claims, drop dead bank_config
+- 2026-08-22 docs(readme): the wrapper no longer sets store_document_text
+- 2026-08-22 docs(readme): Memory Defense was enabled until Plan 6, not now
+- 2026-08-22 docs: _retain no longer calls ensure_bank; drop the dead config mock
+- 2026-08-22 test(append): pin the wire body and prove append against the real engine
+- 2026-08-22 fix(operations): report failed instead of polling pending forever
+- 2026-08-22 test(operations): pin the empty-list and null child shapes
+- 2026-08-22 feat(keys): list users, list keys, and revoke a leaked key
+- 2026-08-22 fix(keys): close test gaps and two docstring/check issues from task-4 review
+- 2026-08-22 test(users): close the eleven mutation-surviving credential gaps from task-4
+- 2026-08-22 fix(projects): make SPEC 8.4's locator repair path real
+- 2026-08-22 test(projects): close the three mutation-surviving locator-repair gaps from task-5 review
+- 2026-08-22 fix(admin): do not record an erasure the backend refused
+- 2026-08-22 docs(spec): record 12.3's commit ordering and its residual gap
+- 2026-08-22 fix(errors): stop reporting caller mistakes as backend faults
+- 2026-08-22 fix(paths): pin Hindsight's tenant segment, it was never configurable
+- 2026-08-22 docs(spec): close 18's closed list, and test that it stays closed
+- 2026-08-22 fix(concurrency): lock the rate limiter and savepoint ensure_tenant
+- 2026-08-22 docs: reconcile the ledger with the admin API and Plan 6
+- 2026-08-22 fix(mcp): route correct through CorrectRequest, closing I5 on MCP
+- 2026-08-22 fix(projects): reject unknown fields on project create, not just update
+- 2026-08-22 test(errors): make the SPEC §18 closed-list check actually two-way
+- 2026-08-22 test(mental-models): cover UpdateMentalModelRequest's bounds too
+- 2026-08-22 docs(spec): name delete_document as the real lever for a captured secret
+- 2026-08-22 docs(readme): fix Memory Defense paragraph's non-sequitur
+- 2026-08-22 build: declare httpx2 as a dev dependency
+- 2026-08-22 test(mcp): fix stale rename_project in FORBIDDEN_TOOLS, add missing names
+- 2026-08-22 style: use re.DOTALL instead of the re.S alias
+- 2026-08-22 docs(tests): move the cleartext-storage mutant warning into the fixture
+- 2026-08-22 fix(smoke): bounded retry on reflect, matching e2e.py's reflect_with_retry
+- 2026-08-22 fix(curation): cap correct's content on REST too, not just MCP
+- 2026-08-22 test(mental-models): pin the max_tokens ceiling on the create route too
+- 2026-08-22 docs: record the mutation-review lesson where it survives git clean

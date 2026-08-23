@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv run --frozen ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: memory
+          POSTGRES_PASSWORD: memory
+          POSTGRES_DB: memory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U memory"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      # conftest.py connects to the server's "postgres" maintenance database
+      # to create memory_test itself -- it does not need POSTGRES_DB above to
+      # match, only the same user/password.
+      MEMORY_TEST_DATABASE_URL: postgresql+psycopg://memory:memory@localhost:5432/memory_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv run --frozen pytest -m "not integration"
+
+  # The most valuable job here is not the unit tests above -- it's this one.
+  # In an earlier plan, `mcp` was declared a dev dependency while production
+  # code imported it; the Dockerfile builds with `uv export --no-dev`, so the
+  # shipped container crash-looped with ModuleNotFoundError for seven tasks
+  # straight, and every one of those tasks was green, because `uv run pytest`
+  # always installs the dev group regardless. Nothing automated caught it.
+  # This job builds the actual production image and proves it starts.
+  image:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: memory
+          POSTGRES_PASSWORD: memory
+          POSTGRES_DB: memory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U memory"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the production image
+        run: docker build -t ach-memory:ci .
+
+      # The whole regression guard, in one line: import the production entry
+      # points inside the shipped image, with no dev dependency group
+      # installed. Fails fast on exactly the class of defect above, before
+      # the slower full-container check below even starts.
+      - name: Import guard -- production entry points must import cleanly
+        run: docker run --rm ach-memory:ci python -c "import memory.api.app, memory.mcp.tools"
+
+      # This import guard alone does NOT cover every production dependency:
+      # `alembic` and `psycopg[binary]` are never imported by
+      # memory.api.app/memory.mcp.tools (SQLAlchemy imports psycopg lazily,
+      # by driver name, when a connection is actually opened), so moving
+      # either into [dependency-groups.dev] leaves the guard above green.
+      # This step is what would actually fail: the chart's own
+      # pre-install/pre-upgrade migration Job runs exactly this command, and
+      # it needs alembic + a working psycopg driver to do anything.
+      - name: Run database migrations against the Postgres service
+        run: |
+          docker run --rm --network host \
+            -e MEMORY_DATABASE_URL="postgresql+psycopg://memory:memory@localhost:5432/memory" \
+            ach-memory:ci python -m alembic upgrade head
+
+      - name: Start the container against the Postgres service
+        run: |
+          docker run -d --name ach-memory-ci --network host \
+            -e MEMORY_DATABASE_URL="postgresql+psycopg://memory:memory@localhost:5432/memory" \
+            -e MEMORY_MASTER_KEY_HASH="edc1d6f618e2c53cbcb9f859d548c9ad19f60663eb2a738d5f0a57a9fdca451c" \
+            -e MEMORY_HINDSIGHT_URL="http://localhost:1" \
+            ach-memory:ci
+
+      # Bounded wait with an explicit failure path -- never `until ...; do
+      # sleep; done`: if the container never comes up, that loop hangs
+      # forever with no signal. `/docs` used to be the probe here, but it is
+      # unauthenticated and touches neither the database nor Hindsight -- it
+      # certified an image that could not serve one real request (measured:
+      # moving alembic+psycopg to the dev group left /docs green while every
+      # other request 500'd). `GET /v1/projects` with a real master key
+      # exercises auth AND a live DB round trip through psycopg. The
+      # plaintext below is CI-only, matched to the hash passed above
+      # (sha256("ci-master-key")); it authenticates nothing outside this job.
+      - name: Wait for an authenticated request to answer
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ci-master-key" \
+              http://localhost:8000/v1/projects)
+            if [ "$code" = "200" ]; then
+              echo "answered 200 after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: the image never answered an authenticated request within 60s" >&2
+          exit 1
+
+      - name: Container logs (always, for diagnosis)
+        if: always()
+        run: docker logs ach-memory-ci || true
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f ach-memory-ci || true

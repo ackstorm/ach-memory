@@ -1,0 +1,68 @@
+[project]
+name = "ach-memory"
+version = "0.1.0"
+description = "Multi-tenant memory service for coding agents, over Hindsight"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0.36",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.14",
+    "httpx>=0.28",
+    # Mounted in src/memory/api/app.py and imported by src/memory/mcp/* --
+    # production code, not test scaffolding. Measured live: the Dockerfile
+    # builds with `uv export --no-dev`, so leaving this in the dev group (as
+    # it was through Task 7) ships an image that crashes on startup with
+    # `ModuleNotFoundError: No module named 'mcp'` -- every unit test run
+    # masked it because `uv run pytest` always installs the dev group.
+    "mcp>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "respx>=0.22",
+    "ruff>=0.8",
+    # scripts/e2e.py imports this directly (MCP's streamable_http_client
+    # needs an httpx2.AsyncClient, not httpx's). It only reached the venv as
+    # a transitive dep of `mcp` -- declare it, same failure mode as the
+    # `mcp` entry above caught once already (undeclared instead of
+    # mis-grouped this time).
+    "httpx2>=2.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memory"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "integration: requires a live Hindsight on MEMORY_HINDSIGHT_URL",
+]
+filterwarnings = [
+    # Upstream Starlette nudge toward `httpx2`. That package is real and now
+    # declared (see the dev group above, used directly by scripts/e2e.py);
+    # this warning is about starlette.testclient specifically, which stays on
+    # httpx -- the correct, already-declared dependency (SPEC Task 5 Step 1).
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = [
+    # `Depends(...)` as an argument default is FastAPI's own idiomatic
+    # dependency-injection pattern (every route in src/memory/api/* uses it),
+    # not the accidental-mutable-default bug this bugbear rule exists to
+    # catch. FastAPI's own docs recommend it; see astral-sh/ruff#4429.
+    "B008",
+]
