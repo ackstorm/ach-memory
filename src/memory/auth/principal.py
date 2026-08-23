@@ -8,7 +8,7 @@ from memory.config import get_settings
 from memory.errors import Unauthorized
 from memory.models import ApiKey
 
-BEARER = "Bearer "
+BEARER = "bearer "
 
 
 @dataclass(frozen=True)
@@ -22,7 +22,10 @@ class Principal:
 
 
 def resolve_principal(authorization: str | None, db: Session) -> Principal:
-    if not authorization or not authorization.startswith(BEARER):
+    # RFC 7235 makes the auth scheme case-insensitive. `bearer <key>` used to
+    # answer "missing or malformed Authorization header", indistinguishable
+    # from a bad key.
+    if not authorization or not authorization.lower().startswith(BEARER):
         raise Unauthorized("missing or malformed Authorization header")
 
     plaintext = authorization[len(BEARER) :].strip()

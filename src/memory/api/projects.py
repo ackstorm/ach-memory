@@ -183,7 +183,13 @@ def update_project(
         )
 
     db.commit()
-    return _response(project)
+    # result.resolved_from, not a bare _response(project): SPEC §8.6 says a
+    # request that reached the project through a rename tombstone is
+    # annotated, and this route is forwarding-capable exactly like
+    # get_project. Dropping it meant a client keying off `notice` to update a
+    # stale MEMORY_PROJECT never learned it had followed one -- which is the
+    # entire purpose of the tombstone.
+    return _response(project, result.resolved_from)
 
 
 @router.patch("/{project_slug}/owner", response_model=ProjectResponse)
@@ -199,4 +205,5 @@ def transfer_project(
         db, principal, result.project, body.type, body.id, on_behalf_of=on_behalf_of
     )
     db.commit()
-    return _response(project)
+    # Same SPEC §8.6 forwarding annotation as update_project above.
+    return _response(project, result.resolved_from)

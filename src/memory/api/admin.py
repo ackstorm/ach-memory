@@ -21,6 +21,7 @@ from memory.errors import RetiredSlugNotFound
 from memory.hindsight.client import get_client
 from memory.identifiers import is_unstorable, reject_control_characters
 from memory.models import AuditEvent, RetiredSlug
+from memory.slugs import normalize_slug
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -213,6 +214,11 @@ def release_slug(
     as every other tombstone lookup in this codebase.
     """
     reject_control_characters(retired_slug, RetiredSlugNotFound)
+    # normalize_slug like every other slug lookup in this service. Without it
+    # `POST /v1/admin/slugs/Payments-API/release` 404s against a tombstone
+    # stored as `payments-api` -- on the one route whose whole purpose is an
+    # operator typing a name by hand.
+    retired_slug = normalize_slug(retired_slug)
     tombstone = db.get(RetiredSlug, (principal.tenant_id, retired_slug))
     if tombstone is None:
         raise RetiredSlugNotFound("no such retired slug", retired_slug=retired_slug)

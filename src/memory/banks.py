@@ -2,7 +2,12 @@ from sqlalchemy.orm import Session
 
 from memory import projects
 from memory.auth.principal import Principal
-from memory.errors import Forbidden, InvalidScope, ProjectContextUnavailable
+from memory.errors import (
+    Forbidden,
+    InvalidScope,
+    ProjectContextUnavailable,
+    UserNotFound,
+)
 from memory.models import User
 
 
@@ -26,7 +31,16 @@ def resolve_user_bank(
 
     user = db.get(User, target_id)
     if user is None or user.tenant_id != principal.tenant_id:
-        # Same shape as a cross-tenant miss: no existence signal either way.
+        if principal.is_master:
+            # A master key already bypasses ownership inside its tenant (SPEC
+            # §20.3), so there is no existence fact to withhold from it, and
+            # §18 names USER_NOT_FOUND for exactly this case. A 403 sent an
+            # operator with a typo hunting a permissions problem that does not
+            # exist. From tenant A's view a user living only in tenant B does
+            # not exist either, so this still discloses nothing cross-tenant.
+            raise UserNotFound(user_id=target_id)
+        # For a USER key the shape stays: same as a cross-tenant miss, no
+        # existence signal either way.
         raise Forbidden("no accessible memory for the requested user")
 
     return user.bank_id
