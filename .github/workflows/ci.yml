@@ -187,9 +187,16 @@ jobs:
       - name: Wait for an authenticated request to answer
         run: |
           for i in $(seq 1 30); do
+            # `|| true` is load-bearing: the step's shell is `bash -e`, and
+            # curl exits 7 (couldn't connect) for as long as uvicorn has not
+            # bound the port -- which is always true on the first attempt,
+            # ~0.3s after `docker run -d`. Without it, -e killed the script on
+            # attempt 1 and the bounded retry below never ran at all. The
+            # bound and the explicit failure path existed; they were simply
+            # unreachable.
             code=$(curl -s -o /dev/null -w '%{http_code}' \
               -H "Authorization: Bearer ci-master-key" \
-              http://localhost:8000/v1/projects)
+              http://localhost:8000/v1/projects || true)
             if [ "$code" = "200" ]; then
               echo "answered 200 after ${i} attempt(s)"
               exit 0
