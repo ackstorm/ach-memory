@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from memory import audit, ids
 from memory.api.app import current_on_behalf_of, require_master
+from memory.api.identifiers import reject_control_characters
 from memory.auth.principal import Principal
 from memory.db import ensure_tenant, get_session
 from memory.errors import GroupAlreadyExists, GroupNotFound, UserNotFound
@@ -32,6 +33,7 @@ class GroupResponse(BaseModel):
 
 
 def _load(db: Session, principal: Principal, group_id: str) -> Group:
+    reject_control_characters(group_id, GroupNotFound)
     group = db.get(Group, group_id)
     if group is None or group.tenant_id != principal.tenant_id:
         raise GroupNotFound(group_id=group_id)
@@ -54,6 +56,7 @@ def create_group(
     db: Session = Depends(get_session),
 ) -> GroupResponse:
     ensure_tenant(db, principal.tenant_id)
+    reject_control_characters(body.id, GroupAlreadyExists)
 
     group = Group(
         id=body.id or ids.new_group_id(),
@@ -108,6 +111,7 @@ def add_member(
     db: Session = Depends(get_session),
 ) -> Response:
     _load(db, principal, group_id)
+    reject_control_characters(user_id, UserNotFound)
     user = db.get(User, user_id)
     if user is None or user.tenant_id != principal.tenant_id:
         # The group exists; the user does not. Saying GROUP_NOT_FOUND here
@@ -137,6 +141,7 @@ def remove_member(
     db: Session = Depends(get_session),
 ) -> Response:
     _load(db, principal, group_id)
+    reject_control_characters(user_id, UserNotFound)
     membership = db.get(GroupMember, (group_id, user_id))
     if membership is not None:
         db.delete(membership)

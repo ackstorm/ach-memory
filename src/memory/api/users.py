@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from memory import audit, ids
 from memory.api.app import current_on_behalf_of, require_master
+from memory.api.identifiers import reject_control_characters
 from memory.auth import keys
 from memory.auth.principal import Principal
 from memory.db import ensure_tenant, get_session
@@ -69,6 +70,7 @@ def create_user(
 ) -> CreateUserResponse:
     """Provisioning. An explicit id is the ACH path; omitting it is standalone."""
     ensure_tenant(db, principal.tenant_id)
+    reject_control_characters(body.id, UserAlreadyExists)
 
     user = User(
         id=body.id or ids.new_user_id(),
@@ -95,6 +97,7 @@ def get_user(
     principal: Annotated[Principal, Depends(require_master)],
     db: Session = Depends(get_session),
 ) -> CreateUserResponse:
+    reject_control_characters(user_id, UserNotFound)
     user = db.get(User, user_id)
     if user is None or user.tenant_id != principal.tenant_id:
         raise UserNotFound(user_id=user_id)
@@ -108,6 +111,7 @@ def create_key(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> CreateKeyResponse:
+    reject_control_characters(user_id, UserNotFound)
     user = db.get(User, user_id)
     if user is None or user.tenant_id != principal.tenant_id:
         raise UserNotFound(user_id=user_id)
@@ -154,6 +158,7 @@ def list_keys(
 ) -> ListKeysResponse:
     """SPEC §16.3. Revoked keys stay listed: an operator auditing a leak needs
     to see that the revocation happened, not find the row gone."""
+    reject_control_characters(user_id, UserNotFound)
     user = db.get(User, user_id)
     if user is None or user.tenant_id != principal.tenant_id:
         raise UserNotFound(user_id=user_id)
@@ -197,6 +202,8 @@ def revoke_key(
     ("already gone"), which would tell an operator killing a leaked key that
     the job is done while the key is still live under the real user.
     """
+    reject_control_characters(user_id, UserNotFound)
+    reject_control_characters(key_id, KeyNotFound)
     user = db.get(User, user_id)
     if user is None or user.tenant_id != principal.tenant_id:
         raise UserNotFound(user_id=user_id)

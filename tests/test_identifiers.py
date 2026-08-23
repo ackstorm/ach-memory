@@ -1,0 +1,81 @@
+"""A control character in a caller-supplied identifier must be a typed 4xx.
+
+psycopg raises DataError ("PostgreSQL text fields cannot contain NUL (0x00)
+bytes") at parameter adaptation. SQLAlchemy wraps it as sqlalchemy.exc.
+DataError, which is NOT an IntegrityError -- so users.py's and groups.py's
+`except IntegrityError` never see it and it reaches api/app.py's catch-all as
+a 500. Eight routes were verified live in the 2026-08-23 review; this table
+pins all of them plus the two admin audit filters.
+"""
+
+import pytest
+
+NUL = "a\x00b"
+
+# For a path *segment* the raw NUL has to be percent-encoded: httpx's own URL
+# parser rejects a literal non-printable ASCII character in a URL string
+# before the request is ever sent (httpx2._urlparse.urlparse), which would
+# make the test fail the same way whether our guard exists or not. Starlette
+# decodes the percent-encoding while routing, so the handler still receives
+# the real "a\x00b" in the path parameter -- `params=`/`json=` (below) go
+# through httpx's own encoders, which already percent-encode a raw NUL, so
+# only path segments need this done by hand.
+NUL_PATH = "a%00b"
+
+
+@pytest.mark.parametrize(
+    "method,path,params,body,expected_code",
+    [
+        ("GET", f"/v1/users/{NUL_PATH}", None, None, "USER_NOT_FOUND"),
+        ("GET", f"/v1/users/{NUL_PATH}/keys", None, None, "USER_NOT_FOUND"),
+        ("POST", "/v1/users", None, {"id": NUL}, "USER_ALREADY_EXISTS"),
+        ("GET", f"/v1/groups/{NUL_PATH}", None, None, "GROUP_NOT_FOUND"),
+        (
+            "POST",
+            f"/v1/admin/slugs/{NUL_PATH}/release",
+            None,
+            None,
+            "RETIRED_SLUG_NOT_FOUND",
+        ),
+        # The two audit rows are FILTERS: they must answer 200 with an empty
+        # list, not an error. Asserted separately below.
+        ("GET", "/v1/admin/audit", {"actor_key_id": NUL}, None, None),
+        ("GET", "/v1/admin/audit", {"on_behalf_of": NUL}, None, None),
+    ],
+)
+def test_a_control_character_is_never_a_500(
+    client, master_headers, tenant, method, path, params, body, expected_code
+):
+    response = client.request(
+        method, path, params=params, json=body, headers=master_headers
+    )
+    assert response.status_code != 500, response.text
+    if expected_code is not None:
+        assert response.json()["error"]["code"] == expected_code, response.text
+
+
+@pytest.mark.parametrize("param", ["actor_key_id", "on_behalf_of", "action"])
+def test_an_unstorable_audit_filter_matches_nothing(
+    client, master_headers, tenant, param
+):
+    """A filter is not a lookup. A value Postgres cannot store matches nothing,
+    so 200 with an empty list is the correct answer -- raising some other
+    route's not-found error here would be borrowing a contract that does not
+    apply."""
+    response = client.get(
+        "/v1/admin/audit", params={param: NUL}, headers=master_headers
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+
+
+def test_a_control_character_in_a_scoped_user_id_is_not_a_500(
+    client, master_headers, tenant
+):
+    """The data plane's own identifier, reached through ScopedRequest."""
+    response = client.post(
+        "/v1/memory/recall",
+        json={"scope": "user", "user_id": NUL, "query": "hi"},
+        headers=master_headers,
+    )
+    assert response.status_code != 500, response.text

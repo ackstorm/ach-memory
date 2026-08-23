@@ -2,7 +2,7 @@ import uuid
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import AfterValidator, BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from memory import audit, provenance, ratelimit
@@ -46,6 +46,16 @@ class ScopedRequest(BaseModel):
     # Bounded to match the projects.git_locator column (String(512)) so an
     # oversize value is a typed 422 at the boundary, not a 500 from the DB.
     git_locator: str | None = Field(default=None, max_length=512)
+
+    @field_validator("user_id")
+    @classmethod
+    def _no_control_characters(cls, value: str | None) -> str | None:
+        # Reaches `db.get(User, ...)` in banks.resolve_user_bank. A control
+        # character there is a psycopg DataError -> 500; a typed 422 at the
+        # boundary is the same treatment git_locator's max_length gets.
+        if value and any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+            raise ValueError("user_id must not contain control characters")
+        return value
 
 
 def scoped_query_params(

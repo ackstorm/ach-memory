@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from memory import audit
 from memory.api.app import current_on_behalf_of, require_master
+from memory.api.identifiers import is_unstorable, reject_control_characters
 from memory.api.memory import MemoryResponse, ScopedRequest, _resolve_bank, _strip_bank_id
 from memory.auth.principal import Principal
 from memory.db import get_session
@@ -77,6 +78,13 @@ def list_audit(
     the log that matters. Every mutation, every delegated bank access, and
     every admin destructive operation IS recorded; see README.md.
     """
+    # Filters, not lookups: a value Postgres cannot store matches nothing, so
+    # an empty result IS the correct answer. Unguarded, psycopg raises
+    # DataError at parameter adaptation -- not an IntegrityError, so no
+    # `except` in this service catches it and it reaches api/app.py's
+    # catch-all as a 500, reporting a caller mistake as a backend fault.
+    if any(is_unstorable(v) for v in (action, actor_key_id, on_behalf_of)):
+        return []
     stmt = select(AuditEvent).where(AuditEvent.tenant_id == principal.tenant_id)
     if action is not None:
         stmt = stmt.where(AuditEvent.action == action)
@@ -198,6 +206,7 @@ def release_slug(
     on the project itself. Tenant-scoped via the composite primary key, same
     as every other tombstone lookup in this codebase.
     """
+    reject_control_characters(retired_slug, RetiredSlugNotFound)
     tombstone = db.get(RetiredSlug, (principal.tenant_id, retired_slug))
     if tombstone is None:
         raise RetiredSlugNotFound("no such retired slug", retired_slug=retired_slug)
