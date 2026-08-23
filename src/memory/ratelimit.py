@@ -76,6 +76,24 @@ def get_limiter() -> Limiter:
     return Limiter(settings.write_limit, settings.write_window_seconds)
 
 
-def check(principal: Principal) -> None:
-    """Rate-limit one write attributed to `principal`."""
-    get_limiter().check(principal.key_id or MASTER_KEY_ID)
+def check(principal: Principal, on_behalf_of: str | None = None) -> None:
+    """Rate-limit one write attributed to `principal`.
+
+    A user key is its own bucket. The master key is NOT one operator's
+    credential: SPEC §16.5 has ACH calling with the master key plus
+    On-Behalf-Of when acting for a human, so one shared bucket meant N
+    developers behind ACH split a single per-credential ceiling while each
+    direct user key got a whole one -- the delegated path Nx stricter than
+    the direct one, and one runaway agent 429ing every ACH user.
+
+    `on_behalf_of` is unverified provenance and never authorization evidence
+    -- but the master key is trusted wholesale by §20.3 anyway, so using it
+    for FAIRNESS costs nothing: the worst a forged value can do is give the
+    forger their own bucket, which is what an honest value does too.
+    """
+    if principal.key_id:
+        get_limiter().check(principal.key_id)
+    elif on_behalf_of:
+        get_limiter().check(f"{MASTER_KEY_ID}:{on_behalf_of}")
+    else:
+        get_limiter().check(MASTER_KEY_ID)

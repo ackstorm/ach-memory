@@ -199,7 +199,7 @@ def _resolve_bank(
     drops audit rows.
     """
     if is_write:
-        ratelimit.check(principal)
+        ratelimit.check(principal, on_behalf_of)
     if body.scope == "user":
         bank_id = resolve_user_bank(db, principal, body.user_id)
         if principal.is_master and body.user_id:

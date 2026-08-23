@@ -262,3 +262,61 @@ def test_the_limit_is_shared_across_rest_and_mcp_for_the_same_credential(
         REGISTRY["retain"](ctx=_Ctx(), scope="user", content="y")
 
     assert exc_info.value.code == "RATE_LIMITED"
+
+
+def test_delegated_master_traffic_is_bucketed_per_subject(monkeypatch):
+    """SPEC §16.5: ACH calls with the master key plus On-Behalf-Of when acting
+    for a human, so the master key is the SHARED credential for every
+    ACH-mediated user -- not one operator's key. One bucket for all of it means
+    20 developers share a 60/min ceiling while each direct user key gets its
+    own, making the delegated path 20x stricter than the direct one and letting
+    one runaway agent 429 everybody (2026-08-23 review, R1-#3)."""
+    from memory import ratelimit
+    from memory.auth.principal import Principal
+
+    limiter = ratelimit.Limiter(limit=1, window_seconds=60)
+    monkeypatch.setattr(ratelimit, "get_limiter", lambda: limiter)
+
+    master = Principal(tenant_id="default", user_id=None, is_master=True, key_id=None)
+
+    ratelimit.check(master, on_behalf_of="alice")
+    with pytest.raises(RateLimited):
+        ratelimit.check(master, on_behalf_of="alice")
+
+    # Bob is a different human behind the same master key.
+    ratelimit.check(master, on_behalf_of="bob")
+
+
+def test_the_limiter_is_keyed_per_credential_through_a_route(
+    client, master_headers, tenant, monkeypatch
+):
+    """tests above exercise Limiter directly and never touch check()'s key
+    derivation. Mutating `principal.key_id or MASTER_KEY_ID` to a constant
+    survived the whole suite: every credential in the tenant would then share
+    one bucket -- a trivial tenant-wide DoS contradicting §20's "per
+    credential" MUST (2026-08-23 review, R4-I3)."""
+    from memory import ratelimit
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_WRITE_LIMIT", "1")
+    get_settings.cache_clear()
+    ratelimit.get_limiter.cache_clear()
+
+    def _key() -> dict[str, str]:
+        uid = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+        secret = client.post(
+            f"/v1/users/{uid}/keys", json={}, headers=master_headers
+        ).json()["key"]
+        return {"Authorization": f"Bearer {secret}"}
+
+    alice, bob = _key(), _key()
+
+    with respx.mock:
+        respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        body = {"scope": "user", "content": "x"}
+        assert client.post("/v1/memory/retain", json=body, headers=alice).status_code == 200
+        assert client.post("/v1/memory/retain", json=body, headers=alice).status_code == 429
+        # Bob's own bucket must be untouched.
+        assert client.post("/v1/memory/retain", json=body, headers=bob).status_code == 200

@@ -40,3 +40,27 @@ def test_missing_required_setting_fails_loudly(monkeypatch):
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_a_zero_write_limit_is_refused(monkeypatch):
+    """MEMORY_WRITE_LIMIT=0 is the natural spelling of "block all writes" and
+    made Limiter.check evaluate len(hits) >= 0 -> True on an empty deque, then
+    IndexError on hits[0] -> 500 on every write instead of 429."""
+    monkeypatch.setenv("MEMORY_WRITE_LIMIT", "0")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_a_master_hash_with_stray_whitespace_still_authenticates(monkeypatch):
+    """`echo -n k | sha256sum` appends "  -"; a hash read from a mounted Secret
+    carries "\\n"; PowerShell's Get-FileHash is uppercase. Each silently
+    produced a master key that authenticates nothing, indistinguishable from a
+    wrong key -- on the one credential whose failure blocks all provisioning."""
+    from memory.auth import keys
+
+    real = keys.hash_key("some-master-key")
+    monkeypatch.setenv("MEMORY_MASTER_KEY_HASH", f"  {real.upper()}\n")
+    monkeypatch.setenv("MEMORY_DATABASE_URL", REQUIRED["MEMORY_DATABASE_URL"])
+    monkeypatch.setenv("MEMORY_HINDSIGHT_URL", REQUIRED["MEMORY_HINDSIGHT_URL"])
+
+    assert keys.verify_key("some-master-key", Settings().master_key_hash)
