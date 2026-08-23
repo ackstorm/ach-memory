@@ -34,6 +34,8 @@ def juan(client, master_headers, tenant) -> dict[str, str]:
 
 DIR_ID = "11111111-1111-1111-1111-111111111111"
 MM_ID = "mm-1234567890abcdef1234567890abcdef"
+MEM_ID = "33333333-3333-3333-3333-333333333333"
+OP_ID = "44444444-4444-4444-4444-444444444444"
 
 # name -> (method, path, json_body, params, expected is_write)
 GOVERNANCE_ROUTES: dict[str, tuple[str, str, dict | None, dict | None, bool]] = {
@@ -73,32 +75,88 @@ GOVERNANCE_ROUTES: dict[str, tuple[str, str, dict | None, dict | None, bool]] = 
     "mental_models.clear": (
         "POST", f"/v1/mental-models/{MM_ID}/clear", None, {"scope": "user"}, True,
     ),
+    # curation, documents, operations -- the three routers the original table
+    # never reached. `correct` writes caller text into the bank and
+    # `delete_document` is SPEC §12.2's only hard-delete lever; both were
+    # unmetered.
+    "memory.list": ("POST", "/v1/memory/list", {"scope": "user"}, None, False),
+    "memory.get": (
+        "POST", "/v1/memory/get",
+        {"scope": "user", "memory_id": MEM_ID}, None, False,
+    ),
+    "memory.forget": (
+        "POST", "/v1/memory/forget",
+        {"scope": "user", "memory_id": MEM_ID}, None, True,
+    ),
+    "memory.restore": (
+        "POST", "/v1/memory/restore",
+        {"scope": "user", "memory_id": MEM_ID}, None, True,
+    ),
+    "memory.correct": (
+        "POST", "/v1/memory/correct",
+        {"scope": "user", "memory_id": MEM_ID, "content": "fixed"}, None, True,
+    ),
+    "documents.list": (
+        "POST", "/v1/memory/documents/list", {"scope": "user"}, None, False,
+    ),
+    "documents.get": (
+        "POST", "/v1/memory/documents/get",
+        {"scope": "user", "document_id": "d1"}, None, False,
+    ),
+    "documents.delete": (
+        "POST", "/v1/memory/documents/delete",
+        {"scope": "user", "document_id": "d1"}, None, True,
+    ),
+    "operations.list": (
+        "POST", "/v1/memory/operations/list", {"scope": "user"}, None, False,
+    ),
+    "operations.get": (
+        "POST", "/v1/memory/operations/get",
+        {"scope": "user", "operation_id": OP_ID}, None, False,
+    ),
+    "operations.cancel": (
+        "POST", "/v1/memory/operations/cancel",
+        {"scope": "user", "operation_id": OP_ID}, None, True,
+    ),
 }
 
 
-def test_the_governance_table_covers_every_route_in_both_files(client):
-    """A twelfth/thirteenth route landing in either file without an entry
-    here must fail loudly, not be silently unverified by the test below."""
+def test_the_governance_table_covers_every_route_in_all_five_files(client):
+    """A new route landing in any of these files without an entry here must
+    fail loudly, not be silently unverified by the test below. Originally
+    scoped to directives + mental-models only, which is why curation,
+    documents and operations went uncovered -- five is_write=True flags were
+    individually deletable with the suite green (2026-08-23 review, R4-I2)."""
     schema = client.get("/openapi.json").json()
+    prefixes = (
+        "/v1/directives",
+        "/v1/mental-models",
+        "/v1/memory/list",
+        "/v1/memory/get",
+        "/v1/memory/forget",
+        "/v1/memory/restore",
+        "/v1/memory/correct",
+        "/v1/memory/documents",
+        "/v1/memory/operations",
+    )
     routes = {
         f"{method.upper()} {path}"
         for path, ops in schema["paths"].items()
-        if path.startswith(("/v1/directives", "/v1/mental-models"))
+        if path.startswith(prefixes)
         for method in ops
     }
-    expected = {
-        "POST /v1/directives", "GET /v1/directives",
-        "GET /v1/directives/{directive_id}", "PATCH /v1/directives/{directive_id}",
-        "DELETE /v1/directives/{directive_id}",
-        "POST /v1/mental-models", "GET /v1/mental-models",
-        "GET /v1/mental-models/{mental_model_id}",
-        "PATCH /v1/mental-models/{mental_model_id}",
-        "DELETE /v1/mental-models/{mental_model_id}",
-        "POST /v1/mental-models/{mental_model_id}/refresh",
-        "POST /v1/mental-models/{mental_model_id}/clear",
+    # GOVERNANCE_ROUTES paths carry concrete ids for the request to hit
+    # (DIR_ID, MM_ID); the OpenAPI schema reports the route template instead
+    # ("{directive_id}"). Normalize back to the template form to compare.
+    covered = {
+        f"{method} {path}".replace(DIR_ID, "{directive_id}").replace(
+            MM_ID, "{mental_model_id}"
+        )
+        for method, path, _, _, _ in GOVERNANCE_ROUTES.values()
     }
-    assert routes == expected
-    assert len(GOVERNANCE_ROUTES) == len(expected)
+    assert routes == covered, (
+        f"uncovered: {sorted(routes - covered)}; stale: {sorted(covered - routes)}"
+    )
 
 
 @respx.mock
@@ -131,3 +189,6 @@ def test_rest_is_write_flags_match_the_governance_table(client, juan, tenant, mo
             assert response.json()["error"]["code"] == "RATE_LIMITED", name
         else:
             assert response.status_code != 429, (name, response.text)
+            # != 429 alone let a route that regressed to 500 pass as "not
+            # rate limited". A read route must actually answer.
+            assert response.status_code < 500, (name, response.text)
