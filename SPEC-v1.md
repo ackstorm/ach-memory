@@ -499,7 +499,7 @@ cwd
   -> Git repository/worktree root
   -> origin remote URL
   -> canonical locator     github.com/acme/payments-api
-  -> normalized slug       github-com-acme-payments-api
+  -> derived slug          github.com-acme-payments-api-dab6719d
 ```
 
 ```text

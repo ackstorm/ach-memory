@@ -124,6 +124,18 @@ def test_the_spec_worked_examples_match_this_implementation():
     block = re.search(r"```text\n(git@github\.com.*?)```", section.group(1), re.DOTALL)
     assert block, "SPEC §8.2's worked-example block moved -- update this guard"
 
+    # The pipeline diagram above the examples states the SAME rule in a
+    # different shape, and anchoring only on the `git@github.com` block let it
+    # keep showing a digest-free slug after the examples were corrected -- the
+    # first thing a wrapper author reads, still describing the collision this
+    # section exists to prevent.
+    pipeline = re.search(
+        r"-> canonical locator\s+(\S+)\n\s*-> derived slug\s+(\S+)", section.group(1)
+    )
+    assert pipeline, "SPEC §8.2's pipeline diagram moved -- update this guard"
+    locator, documented_slug = pipeline.groups()
+    assert slugs.slug_from_locator(f"https://{locator}") == documented_slug
+
     pairs = [
         tuple(part.strip() for part in line.split("->"))
         for line in block.group(1).strip().splitlines()
