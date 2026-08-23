@@ -271,7 +271,10 @@ def rename(
                     project_internal_id=project.internal_id,
                 )
             )
-            db.flush()
+            # No explicit db.flush() here: `begin_nested()`'s context manager
+            # commits the savepoint on exit, which flushes -- verified at the
+            # route level, a lost race answers 409 with or without one. The
+            # line was in the plan and is redundant; do not re-add it.
     except IntegrityError as exc:
         raise ProjectSlugConflict("that slug is taken", project_slug=new_slug) from exc
 
