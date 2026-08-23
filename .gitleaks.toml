@@ -1,0 +1,33 @@
+[extend]
+useDefault = true
+
+# Allowlist — exempts ONLY the CI-job-scoped master key, by exact value and by
+# path. Deliberately NOT a broad `mem_*` or "any Bearer token" pattern: this
+# service's real credentials are `mem_` + 43 url-safe base64 chars, and a
+# prefix rule would suppress a genuine one committed anywhere in the repo.
+# Anchored equality cannot do that.
+#
+# What is exempted and why: `.github/workflows/ci.yml`'s image job starts the
+# container with a fixed hash and then authenticates one request against
+#127.0.0.1 inside the same ephemeral runner, to prove the shipped image can
+# serve a real authenticated request (the `/docs` probe it replaced certified
+# an image that 500'd on everything else). The plaintext and its sha256 are
+# both public by design and authenticate nothing outside that job.
+[[rules]]
+id = "curl-auth-header"
+description = "Bearer token on a curl command line"
+regex = '''-H ["']Authorization: Bearer [^"'$][^"']*["']'''
+[rules.allowlist]
+paths = ['''(^|/)\.github/workflows/ci\.yml$''']
+regexTarget = "match"
+regexes = ['''Bearer ci-master-key''']
+
+[allowlist]
+description = "CI-only master key, scoped to the workflow that creates it"
+paths = ['''(^|/)\.github/workflows/ci\.yml$''']
+regexTarget = "match"
+regexes = [
+  # sha256("ci-master-key") — the hash the CI container is started with.
+  '''^edc1d6f618e2c53cbcb9f859d548c9ad19f60663eb2a738d5f0a57a9fdca451c$''',
+  '''^ci-master-key$''',
+]

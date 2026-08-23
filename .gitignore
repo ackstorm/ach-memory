@@ -6,4 +6,8 @@ __pycache__/
 .superpowers/
 .env
 .env.*
+# ...but the example MUST be tracked: it is the only place the two required
+# variables are documented for someone cloning this repo, and `.env.*` above
+# silently swallowed it.
+!.env.example
 .claude/
