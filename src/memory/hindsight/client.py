@@ -96,7 +96,19 @@ class HindsightClient:
         # drives our own DB tenancy; it just no longer reaches Hindsight.
         self._tenant = tenant_id
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        self._http = httpx.Client(base_url=base_url, headers=headers, timeout=30.0)
+        settings = get_settings()
+        # Connect stays short whatever the call is -- an unreachable backend
+        # must fail fast. Only the READ side is extended, and only for the two
+        # calls that actually wait on a model.
+        self._default_timeout = httpx.Timeout(
+            settings.hindsight_timeout_seconds, connect=5.0
+        )
+        self._llm_timeout = httpx.Timeout(
+            settings.hindsight_llm_timeout_seconds, connect=5.0
+        )
+        self._http = httpx.Client(
+            base_url=base_url, headers=headers, timeout=self._default_timeout
+        )
 
     def _request(
         self,
@@ -107,10 +119,14 @@ class HindsightClient:
         params: dict[str, Any] | None = None,
         not_found: type[DomainError] | None = None,
         bad_request: type[DomainError] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> dict:
         response = None
         try:
-            response = self._http.request(method, path, json=payload, params=params)
+            response = self._http.request(
+                method, path, json=payload, params=params,
+                timeout=timeout or self._default_timeout,
+            )
         except httpx.HTTPError as exc:
             # Logged here and never attached to the raised error: the httpx
             # exception holds .request.url, which contains the bank ID.
@@ -151,12 +167,38 @@ class HindsightClient:
             raise UpstreamRejected("the memory backend rejected this request shape")
 
         if response.status_code >= 400:
-            raise HindsightError(
-                "memory backend rejected the request",
-                upstream_status=response.status_code,
-            )
+            # upstream_status is deliberately NOT in details: an upstream
+            # 401/403 means OUR MEMORY_HINDSIGHT_API_KEY is misconfigured, and
+            # the backend's auth state is not an untrusted MCP caller's
+            # business. Logged instead, where an operator can see it.
+            logger.warning("hindsight rejected the request: %s", response.status_code)
+            raise HindsightError("memory backend rejected the request")
 
-        return response.json()
+        if response.status_code >= 300:
+            # follow_redirects is False by default, so a trailing-slash
+            # redirect arrives here as a bodiless 3xx. Treating it as success
+            # meant .json() raised JSONDecodeError -- which is NOT an
+            # httpx.HTTPError, so it walked past the handler above and became
+            # INTERNAL_ERROR instead of a typed backend failure.
+            logger.warning("hindsight redirected: %s", response.status_code)
+            raise HindsightError("memory backend rejected the request")
+
+        if not response.content:
+            # 204 No Content is a legitimate success for a DELETE. An empty
+            # body is an empty result, not a parse failure.
+            return {}
+
+        try:
+            return response.json()
+        except ValueError:
+            # An HTML error page from an intermediary, or any other non-JSON
+            # 2xx. Same reasoning as the 3xx branch: a decode failure is a
+            # backend problem and must arrive as HINDSIGHT_ERROR, not as the
+            # catch-all's INTERNAL_ERROR.
+            logger.warning("hindsight returned a non-JSON success body")
+            raise HindsightError(
+                "memory backend returned an unreadable response"
+            ) from None
 
     def retain(
         self,
@@ -191,7 +233,12 @@ class HindsightClient:
             # Top-level on RetainRequest, not per-item: it identifies the
             # whole async operation.
             body["operation_id"] = operation_id
-        return self._request("POST", paths.retain(self._tenant, bank_id), body)
+        return self._request(
+            "POST", paths.retain(self._tenant, bank_id), body,
+            # Synchronous retain blocks on the extraction LLM; the async form
+            # returns an operation immediately and needs no extra headroom.
+            timeout=None if is_async else self._llm_timeout,
+        )
 
     def recall(self, bank_id: str, query: str) -> dict:
         return self._request(
@@ -200,7 +247,8 @@ class HindsightClient:
 
     def reflect(self, bank_id: str, query: str) -> dict:
         return self._request(
-            "POST", paths.reflect(self._tenant, bank_id), {"query": query}
+            "POST", paths.reflect(self._tenant, bank_id), {"query": query},
+            timeout=self._llm_timeout,  # a full synthesis call
         )
 
     def list_memories(self, bank_id: str, **filters: Any) -> dict:

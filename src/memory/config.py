@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     # writes" and instead made Limiter.check evaluate `len(hits) >= 0` as
     # True on an empty deque, then IndexError on `hits[0]` -- a 500 on every
     # write rather than the 429 the operator asked for.
+    # Two upstream timeouts, not one. A cheap GET and `sync_retain` are not
+    # the same call: sync_retain blocks until Hindsight has run fact
+    # extraction through an LLM, and `reflect` is a full synthesis.
+    # docs/PROJECT-STATE.md records one model as "works, slower" and another
+    # as timing out outright, so a shared 30s ceiling turned a slow-but-
+    # succeeding write into HINDSIGHT_ERROR (502) -- a code that means "retry"
+    # to an agent, while the upstream worker finished the original write
+    # anyway and the retry duplicated it.
+    hindsight_timeout_seconds: float = Field(default=30.0, gt=0)
+    hindsight_llm_timeout_seconds: float = Field(default=180.0, gt=0)
+
     write_limit: int = Field(default=60, ge=1)
     # gt=0 for the same reason write_limit has ge=1, and this one fails more
     # quietly: a window of 0 makes `cutoff = now - window` evict every hit

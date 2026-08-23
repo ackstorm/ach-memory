@@ -659,3 +659,85 @@ def test_an_upstream_422_is_not_reported_as_a_backend_fault(client):
         client.retain(BANK, "content")
 
     assert excinfo.value.status == 400
+
+
+def test_the_llm_bound_calls_get_a_longer_read_timeout(configured_env):
+    """`sync_retain` blocks until Hindsight has run extraction through an LLM
+    and `reflect` is a full synthesis, but both shared the 30s timeout a cheap
+    GET uses. A ReadTimeout surfaces as HINDSIGHT_ERROR 502 -- "retry" -- while
+    the upstream worker completes the original write anyway, so the retry
+    duplicates it."""
+    import respx
+
+    from memory.hindsight.client import get_client
+
+    get_client.cache_clear()
+    client = get_client()
+
+    with respx.mock:
+        sync = respx.post(url__regex=r".*/memories$").respond(200, json={})
+        client.retain("user_x", "content", is_async=False)
+        assert sync.calls.last.request.extensions["timeout"]["read"] >= 180
+
+    with respx.mock:
+        asy = respx.post(url__regex=r".*/memories$").respond(200, json={})
+        client.retain("user_x", "content", is_async=True)
+        assert asy.calls.last.request.extensions["timeout"]["read"] <= 30
+
+    with respx.mock:
+        refl = respx.post(url__regex=r".*/reflect$").respond(200, json={})
+        client.reflect("user_x", "q")
+        assert refl.calls.last.request.extensions["timeout"]["read"] >= 180
+
+    with respx.mock:
+        cheap = respx.get(url__regex=r".*/memories/list$").respond(200, json={})
+        client.list_memories("user_x")
+        assert cheap.calls.last.request.extensions["timeout"]["read"] <= 30
+
+
+def test_a_bodiless_or_non_json_success_is_not_an_internal_error(configured_env):
+    """`.json()` was called unconditionally on anything below 400. A
+    JSONDecodeError is not an httpx.HTTPError, so it walked past _request's
+    handler and became INTERNAL_ERROR -- a code outside every branch a caller
+    could reasonably handle."""
+    import pytest
+    import respx
+
+    from memory.errors import HindsightError
+    from memory.hindsight.client import get_client
+
+    get_client.cache_clear()
+    client = get_client()
+
+    # 204 No Content: an empty body is an empty result, not a failure.
+    with respx.mock:
+        respx.delete(url__regex=r".*/documents/.*").respond(204)
+        assert client.delete_document("user_x", "d1") == {}
+
+    # A non-JSON 2xx (an intermediary's HTML error page) must be a typed
+    # backend failure, never INTERNAL_ERROR.
+    with respx.mock:
+        respx.delete(url__regex=r".*/documents/.*").respond(
+            200, content=b"<html>gateway</html>", headers={"content-type": "text/html"}
+        )
+        with pytest.raises(HindsightError):
+            client.delete_document("user_x", "d2")
+
+
+def test_an_upstream_auth_failure_does_not_report_its_status(configured_env):
+    """An upstream 401 means OUR MEMORY_HINDSIGHT_API_KEY is misconfigured.
+    Reporting {'upstream_status': 401} told an untrusted MCP client about the
+    backend's auth state, which is not the caller's business."""
+    import pytest
+    import respx
+
+    from memory.errors import HindsightError
+    from memory.hindsight.client import get_client
+
+    get_client.cache_clear()
+    with respx.mock:
+        respx.post(url__regex=r".*/memories$").respond(401, json={"detail": "nope"})
+        with pytest.raises(HindsightError) as excinfo:
+            get_client().retain("user_x", "c")
+
+    assert "401" not in str(excinfo.value.details), excinfo.value.details

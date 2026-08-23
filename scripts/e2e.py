@@ -956,8 +956,11 @@ async def _() -> None:
     is no longer cancellable. Only an untyped/INTERNAL_ERROR shape (or a
     leak, scanned separately) is a real failure here.
 
-    Note: a race loss surfaces as HTTP 502 HINDSIGHT_ERROR with
-    upstream_status 409 (observed live) -- Hindsight's own 409 Conflict for
+    Note: a race loss surfaces as HTTP 502 HINDSIGHT_ERROR (observed live
+    when `details` still carried upstream_status 409; that field was removed
+    because it told an untrusted caller about the backend's auth state, so the
+    409 is now visible only in the service's own logs) -- Hindsight's own
+    409 Conflict for
     "already completed" gets folded into the same catch-all as a genuine
     backend fault by memory.hindsight.client._request's blanket
     `status >= 400 -> HindsightError`, which reads as "our backend is
