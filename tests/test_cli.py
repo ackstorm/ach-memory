@@ -1,4 +1,7 @@
 import asyncio
+import json
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +46,8 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
         return None
 
     monkeypatch.setattr(cli, "_preflight", preflight, raising=False)
+    monkeypatch.setattr(cli, "_require_executable", lambda _target: None, raising=False)
+    monkeypatch.setattr(cli, "_install_native", lambda *_args, **_kwargs: None, raising=False)
 
     assert cli.main(["init", target]) == 0
 
@@ -123,3 +128,138 @@ def test_preflight_rejects_empty_key_before_opening_connection(
 
     with pytest.raises(cli.CLIError, match="ACH_MEMORY_API_KEY"):
         asyncio.run(cli._preflight("https://memory.example.com/mcp/", ""))
+
+
+class _NativeRunner:
+    def __init__(self, target: str, *, marketplace_present: bool, installed: bool) -> None:
+        self.target = target
+        self.marketplace_present = marketplace_present
+        self.installed = installed
+        self.commands: list[list[str]] = []
+
+    def __call__(self, command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.commands.append(command)
+        if command[-3:] == ["marketplace", "list", "--json"]:
+            payload: object = (
+                {"marketplaces": [{"name": "ach-memory"}]}
+                if self.target == "codex"
+                else [{"name": "ach-memory"}]
+            ) if self.marketplace_present else ({"marketplaces": []} if self.target == "codex" else [])
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+        if command[-2:] == ["list", "--json"]:
+            payload = (
+                {"installed": [{"pluginId": "ach-memory@ach-memory"}]}
+                if self.target == "codex"
+                else [{"id": "ach-memory@ach-memory"}]
+            ) if self.installed else ({"installed": []} if self.target == "codex" else [])
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+        if "marketplace" in command and "add" in command:
+            self.marketplace_present = True
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_mcp", "install_command"),
+    [
+        (
+            "codex",
+            {
+                "mcpServers": {
+                    "ach-memory": {
+                        "type": "http",
+                        "url": "https://host/prefix/mcp/",
+                        "bearer_token_env_var": "ACH_MEMORY_API_KEY",
+                    }
+                }
+            },
+            ["codex", "plugin", "add", "ach-memory@ach-memory", "--json"],
+        ),
+        (
+            "claude",
+            {
+                "mcpServers": {
+                    "ach-memory": {
+                        "type": "http",
+                        "url": "https://host/prefix/mcp/",
+                        "headers": {"Authorization": "Bearer ${ACH_MEMORY_API_KEY}"},
+                    }
+                }
+            },
+            ["claude", "plugin", "install", "-y", "--scope", "user", "ach-memory@ach-memory"],
+        ),
+    ],
+)
+def test_native_install_renders_an_idempotent_secret_free_marketplace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    target: str,
+    expected_mcp: dict[str, object],
+    install_command: list[str],
+) -> None:
+    """Breaks if a native install writes a key, wrong MCP payload, or skips its first install."""
+    events: list[str] = []
+    runner = _NativeRunner(target, marketplace_present=False, installed=False)
+    real_copytree = cli.shutil.copytree
+
+    def which(command: str) -> str:
+        events.append(f"which:{command}")
+        return f"/bin/{command}"
+
+    def copytree(source: Path, destination: Path, *_args: object, **_kwargs: object) -> Path:
+        events.append("copytree")
+        return real_copytree(source, destination, *_args, **_kwargs)
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    monkeypatch.setattr(cli.shutil, "which", which)
+    monkeypatch.setattr(cli.shutil, "copytree", copytree)
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+
+    cli._install_native(target, "https://host/prefix/mcp/")
+
+    marketplace = tmp_path / "data" / "ach-memory" / f"{target}-marketplace"
+    mcp = marketplace / "plugins" / "ach-memory" / ".mcp.json"
+    first = {path.relative_to(marketplace): path.read_bytes() for path in marketplace.rglob("*") if path.is_file()}
+    contents = b"".join(first.values())
+
+    assert events[0] == f"which:{target}"
+    assert events.index("copytree") > 0
+    assert json.loads(mcp.read_text()) == expected_mcp
+    assert install_command in runner.commands
+    assert sum("marketplace" in command and "add" in command for command in runner.commands) == 1
+    assert b"user-secret" not in contents
+    assert all("user-secret" not in " ".join(command) for command in runner.commands)
+
+    cli._install_native(target, "https://host/prefix/mcp/")
+
+    second = {path.relative_to(marketplace): path.read_bytes() for path in marketplace.rglob("*") if path.is_file()}
+    assert second == first
+    assert sum("marketplace" in command and "add" in command for command in runner.commands) == 1
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_command"),
+    [
+        ("codex", ["codex", "plugin", "remove", "ach-memory@ach-memory"]),
+        ("claude", ["claude", "plugin", "update", "ach-memory@ach-memory"]),
+    ],
+)
+def test_native_install_refreshes_only_an_existing_ach_memory_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    target: str,
+    expected_command: list[str],
+) -> None:
+    """Breaks if an existing plugin is reinstalled or a different plugin is refreshed."""
+    runner = _NativeRunner(target, marketplace_present=True, installed=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+
+    cli._install_native(target, "https://host/prefix/mcp/")
+
+    assert expected_command in runner.commands
+    assert all(
+        "ach-memory@ach-memory" in command or "marketplace" in command or command[-2:] == ["list", "--json"]
+        for command in runner.commands
+    )
