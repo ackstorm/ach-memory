@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,7 +17,7 @@ from memory.api.memory import (
 )
 from memory.auth.principal import Principal
 from memory.db import get_session
-from memory.errors import RetiredSlugNotFound
+from memory.errors import InvalidScope, RetiredSlugNotFound
 from memory.hindsight.client import get_client
 from memory.identifiers import is_unstorable, reject_control_characters
 from memory.models import AuditEvent, RetiredSlug
@@ -110,9 +110,55 @@ def list_audit(
     return [_audit_response(row) for row in rows]
 
 
+class AdminScopeBody(BaseModel):
+    """Optional JSON body for the two admin scope routes.
+
+    Every data-plane route takes its scope in a JSON body, and these two took
+    it only in the query string. A caller who followed the house style got
+    `INVALID_SCOPE: master-key requests with scope=user must set user_id` --
+    naming the exact field they had just set, in the body that was silently
+    ignored. Accepting both spellings removes the trap; the query string stays
+    supported, so nothing that worked before stops working.
+
+    `scope` is deliberately absent: it comes from the path and there is no
+    second place to say it.
+
+    Declared as a route parameter so FastAPI validates it BEFORE the route
+    body runs. That matters for the same reason the `Query(pattern=...)` below
+    does: a control character reaching ScopedRequest's own validator inside
+    `_admin_scope` raises pydantic's ValidationError from route code, which
+    escapes as a 500 through api/app.py's catch-all instead of a typed 422.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str | None = Field(default=None, pattern=r"^[^\x00-\x1f\x7f]*$")
+    project_slug: str | None = None
+
+
+def _one_of(field: str, from_query: str | None, from_body: str | None) -> str | None:
+    """Whichever source supplied the value, refusing a contradiction.
+
+    Silently preferring one source would make the effective target of an
+    irreversible whole-bank erase depend on a precedence rule nobody read.
+    """
+    if from_query is not None and from_body is not None and from_query != from_body:
+        raise InvalidScope(
+            f"{field} was given twice with different values "
+            f"(query={from_query!r}, body={from_body!r}); send it once"
+        )
+    return from_body if from_query is None else from_query
+
+
 def _admin_scope(
-    scope: Scope, user_id: str | None, project_slug: str | None
+    scope: Scope,
+    user_id: str | None,
+    project_slug: str | None,
+    body: "AdminScopeBody | None" = None,
 ) -> ScopedRequest:
+    if body is not None:
+        user_id = _one_of("user_id", user_id, body.user_id)
+        project_slug = _one_of("project_slug", project_slug, body.project_slug)
     return ScopedRequest(scope=scope, user_id=user_id, project_slug=project_slug)
 
 
@@ -130,6 +176,7 @@ def clear_memories(
     user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
     project_slug: str | None = None,
     type: MemoryType | None = None,
+    body: AdminScopeBody | None = None,
 ) -> MemoryResponse:
     """SPEC §11.7 + §16.4: admin API + master key only, never advertised over
     MCP -- "an LLM that decides memory is 'stale' will use them." A user key
@@ -139,9 +186,9 @@ def clear_memories(
     `create=False` (via `_resolve_bank`): an admin must not be able to
     conjure a bank into existence by "clearing" one that never existed.
     """
-    body = _admin_scope(scope, user_id, project_slug)
+    scoped = _admin_scope(scope, user_id, project_slug, body)
     bank_id, resolved_from, resolved_slug = _resolve_bank(
-        body,
+        scoped,
         db,
         principal,
         on_behalf_of,
@@ -173,6 +220,7 @@ def delete_bank(
     db: Session = Depends(get_session),
     user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
     project_slug: str | None = None,
+    body: AdminScopeBody | None = None,
 ) -> MemoryResponse:
     """SPEC §11.7 + §12.3: irreversible, whole-bank. For scope=user this is
     the only complete right-to-erasure path for a departing user.
@@ -187,9 +235,9 @@ def delete_bank(
     live: Hindsight creates a bank on first retain, no upsert needed). Same
     `create=False` reasoning as clear above.
     """
-    body = _admin_scope(scope, user_id, project_slug)
+    scoped = _admin_scope(scope, user_id, project_slug, body)
     bank_id, resolved_from, resolved_slug = _resolve_bank(
-        body,
+        scoped,
         db,
         principal,
         on_behalf_of,

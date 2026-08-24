@@ -1239,6 +1239,13 @@ GET    /v1/admin/audit
 POST   /v1/admin/slugs/{retired_slug}/release
 ```
 
+The two `/memory/{scope}` routes take `user_id` / `project_slug` either as
+query parameters or in a JSON body, whichever the caller prefers; `scope`
+always comes from the path. Supplying the same field in both places is only an
+error when the two values disagree, in which case the request is refused rather
+than resolved by a precedence rule — the target of an irreversible whole-bank
+erase must never depend on one.
+
 Whole-bank clear/delete is never reachable over MCP. Releasing a retired slug
 (§8.6) is an explicit admin action.
 

@@ -605,3 +605,131 @@ def test_release_slug_is_scoped_to_the_callers_tenant(client, master_headers, te
     assert response.status_code == 404
     # And it's still there, untouched, for its own tenant.
     assert session.get(RetiredSlug, ("other", "a")) is not None
+
+
+# --- scope in the body, not only the query string -----------------------------
+# These two routes took user_id/project_slug ONLY as query parameters while every
+# data-plane route takes them in a JSON body. A caller who followed the house
+# style got `INVALID_SCOPE: master-key requests with scope=user must set
+# user_id` -- naming the field they had just set, in the body that was ignored.
+
+
+@respx.mock
+def test_clear_accepts_the_scope_in_the_body(client, juan, master_headers, tenant):
+    route = respx.delete(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories(\?|$)"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        json={"user_id": juan["user_id"]},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert route.called
+
+
+@respx.mock
+def test_delete_bank_accepts_the_scope_in_the_body(
+    client, juan, master_headers, tenant
+):
+    route = respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    response = client.request(
+        "DELETE",
+        "/v1/admin/memory/user",
+        json={"user_id": juan["user_id"]},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert route.called
+
+
+@respx.mock
+def test_clear_still_accepts_the_scope_in_the_query(
+    client, juan, master_headers, tenant
+):
+    """The old spelling keeps working -- this is additive, not a migration."""
+    route = respx.delete(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories(\?|$)"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        params={"user_id": juan["user_id"]},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 200
+    assert route.called
+
+
+@respx.mock
+def test_clear_refuses_a_contradiction_between_query_and_body(
+    client, juan, master_headers, tenant
+):
+    """Silently preferring one source would make the target of an irreversible
+    erase depend on a precedence rule nobody read."""
+    route = respx.delete(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories(\?|$)"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        params={"user_id": juan["user_id"]},
+        json={"user_id": "usr_somebody_else"},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_SCOPE"
+    assert "given twice" in response.json()["error"]["message"]
+    assert not route.called, "must not reach Hindsight on a contradictory target"
+
+
+@respx.mock
+def test_clear_agreeing_query_and_body_is_not_a_contradiction(
+    client, juan, master_headers, tenant
+):
+    route = respx.delete(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories(\?|$)"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        params={"user_id": juan["user_id"]},
+        json={"user_id": juan["user_id"]},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert route.called
+
+
+def test_clear_rejects_a_control_character_in_the_body_as_422_not_500(
+    client, master_headers, tenant
+):
+    """Validated as a route parameter, so FastAPI answers before the route body
+    runs. Raised inside `_admin_scope` instead, pydantic's ValidationError
+    escapes as a 500 through app.py's catch-all."""
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        json={"user_id": "usr_\x00bad"},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 422
+
+
+def test_clear_rejects_an_unknown_body_field(client, juan, master_headers, tenant):
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        json={"user_id": juan["user_id"], "scope": "user"},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 422, "scope comes from the path, not the body"
