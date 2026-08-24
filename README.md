@@ -320,12 +320,17 @@ healthy and then the first retain fails with
 
 **The model matters.** Hindsight extracts facts through function calling and
 rejects any response carrying `tool_calls` with empty message content. Verified
-working: `bedrock.openai.gpt-oss-20b-1-0` (the default, and fast) and
+working: `bedrock.openai.gpt-oss-20b-1-0` (fast) and
 `bedrock.openai.gpt-oss-120b-1-0`. Verified broken:
 `gemini.gemini-flash-latest` fails that way, and every retain
 dies after four retries while the service still reports healthy;
-`kubeai.gpt-oss-20b` times out. Change `HINDSIGHT_LLM_MODEL` only with a smoke
-run to back it.
+`kubeai.gpt-oss-20b` times out.
+
+The default, `gemini.gemini-3.7-flash`, is **not** in either list — it is set
+deliberately and no smoke run here has exercised it. Its sibling
+`gemini.gemini-flash-latest` is one of the failures above, so if retains die
+silently on a fresh stack, check that first and back any change to
+`HINDSIGHT_LLM_MODEL` with a smoke run.
 
 **The MCP endpoint 421s if `MEMORY_MCP_ALLOWED_HOSTS` doesn't name the exact
 `Host` a client sends, port included.** `docker-compose.yml` already covers

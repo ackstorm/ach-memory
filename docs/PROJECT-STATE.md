@@ -197,10 +197,15 @@ extracts facts through function calling and rejects any response carrying
 
 | Model | Result |
 |---|---|
-| `bedrock.openai.gpt-oss-20b-1-0` | works, whole smoke in ~2s — **the default** |
+| `gemini.gemini-3.7-flash` | **the default** — owner-set, *never smoke-tested here* |
+| `bedrock.openai.gpt-oss-20b-1-0` | works, whole smoke in ~2s |
 | `bedrock.openai.gpt-oss-120b-1-0` | works |
 | `gemini.gemini-flash-latest` | **fails**, same way |
 | `kubeai.gpt-oss-20b` | **times out** |
+
+The default is the one row in this table with no measurement behind it, and
+its sibling `gemini.gemini-flash-latest` is a measured failure. Nobody has
+disproved the default; nobody has proved it either.
 
 Never change `HINDSIGHT_LLM_MODEL` without a `./scripts/smoke.sh` run.
 

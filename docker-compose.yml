@@ -13,7 +13,7 @@ services:
       # below are `memory`/`memory` and the master key the README generates
       # is a dev-only secret, so binding 0.0.0.0 hands anyone routable to
       # this host the whole tenant.
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:${MEMORY_POSTGRES_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U memory"]
       interval: 2s
@@ -64,21 +64,25 @@ services:
       HINDSIGHT_API_LLM_PROVIDER: openai
       HINDSIGHT_API_LLM_BASE_URL: ${HINDSIGHT_LLM_BASE_URL:?set HINDSIGHT_LLM_BASE_URL}/v1
       HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_LLM_API_KEY:?set HINDSIGHT_LLM_API_KEY}
-      # Verified working: bedrock.openai.gpt-oss-20b-1-0 (fast, the default)
+      # The default is set by the owner and is NOT smoke-verified here: no
+      # ./scripts/smoke.sh run has exercised gemini.gemini-3.7-flash against
+      # this stack. Treat a fresh stack as unproven until one has.
+      # Verified working by real smoke runs: bedrock.openai.gpt-oss-20b-1-0
       # and bedrock.openai.gpt-oss-120b-1-0.
-      # Verified BROKEN: gemini.gemini-flash-latest answers
-      # with finish_reason=tool_calls and empty message content, which
-      # Hindsight's fact extractor rejects — every retain dies after 4 retries
-      # while the service still looks healthy. kubeai.gpt-oss-20b times out.
-      # Change this only with a ./scripts/smoke.sh run to back it.
-      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-bedrock.openai.gpt-oss-20b-1-0}
+      # Verified BROKEN: gemini.gemini-flash-latest — a sibling alias of the
+      # default below — answers with finish_reason=tool_calls and empty
+      # message content, which Hindsight's fact extractor rejects: every
+      # retain dies after 4 retries while the service still looks healthy.
+      # kubeai.gpt-oss-20b times out. If retains fail on the default, that
+      # failure mode is the first thing to check.
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-gemini.gemini-3.7-flash}
     ports:
       # Loopback only, and only for scripts/e2e.py -- the `api` service
       # reaches Hindsight in-network at http://hindsight:8888 and does not
       # need this published at all. Hindsight takes MEMORY_HINDSIGHT_API_KEY,
       # which defaults to empty, so anyone who can reach this port talks to
       # every user's and project's bank with no credential.
-      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:${MEMORY_HINDSIGHT_PORT:-8888}:8888"
     healthcheck:
       test:
         - CMD-SHELL
@@ -117,14 +121,14 @@ services:
       MEMORY_HINDSIGHT_API_KEY: ${MEMORY_HINDSIGHT_API_KEY:-}
       MEMORY_TENANT_ID: default
       # The SDK's DNS-rebinding guard matches Host including the port. This
-      # compose file always publishes the api on localhost:8000, so that exact
-      # host:port must be allowed or every MCP call 421s -- default covers the
-      # documented `docker compose up` path; override if you map a different
-      # host port.
+      # The default compose path publishes the api on localhost:8000, so that
+      # exact host:port must be allowed or every MCP call 421s. The isolated
+      # E2E runner publishes a Docker-assigned port and supplies a matching
+      # wildcard-port allowlist for loopback only.
       MEMORY_MCP_ALLOWED_HOSTS: ${MEMORY_MCP_ALLOWED_HOSTS:-127.0.0.1,localhost,localhost:8000}
     ports:
       # Loopback only. See the postgres/hindsight services above for why.
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${MEMORY_API_PORT:-8000}:8000"
 
 volumes:
   memory-pgdata:
