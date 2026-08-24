@@ -56,7 +56,7 @@ def test_manifests_and_marketplaces_reference_the_canonical_bundle() -> None:
 
     assert codex["skills"] == claude["skills"] == "./skills/"
     assert "hooks" not in codex  # Codex discovers hooks/hooks.json natively.
-    assert claude["hooks"] == "./hooks/hooks.json"
+    assert "hooks" not in claude  # Claude discovers hooks/hooks.json natively.
     assert codex["name"] == claude["name"] == "ach-memory"
     assert codex["version"] == claude["version"] == "0.1.0"
     assert codex_marketplace["name"] == claude_marketplace["name"] == "ach-memory"

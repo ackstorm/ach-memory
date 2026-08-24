@@ -593,6 +593,17 @@ def test_native_install_rejects_bare_list_codex_plugin_json(
     assert not (tmp_path / "data" / "ach-memory" / "codex-marketplace").exists()
 
 
+def test_installed_plugins_accepts_codex_available_catalog() -> None:
+    """Breaks if a real Codex plugin-list catalog blocks installation."""
+    assert cli._installed_plugins(
+        "codex",
+        {
+            "installed": [{"pluginId": "ach-memory@ach-memory"}],
+            "available": [],
+        },
+    ) == {"ach-memory@ach-memory"}
+
+
 @pytest.mark.parametrize(
     ("target", "expected_mcp", "install_command"),
     [
