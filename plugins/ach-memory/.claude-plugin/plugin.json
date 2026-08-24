@@ -1,0 +1,11 @@
+{
+  "name": "ach-memory",
+  "version": "0.1.0",
+  "description": "Durable memory for Claude through a local ach-memory service.",
+  "author": {
+    "name": "ackstorm"
+  },
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}

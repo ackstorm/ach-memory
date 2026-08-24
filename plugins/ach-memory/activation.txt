@@ -1,0 +1,1 @@
+ach-memory is available for durable context. Recall when prior decisions, preferences, or project facts may affect the task. Retain only durable, useful context after it is established. Never store secrets. Memory calls are explicit: do not recall or retain merely because a session, subagent, or greeting started.

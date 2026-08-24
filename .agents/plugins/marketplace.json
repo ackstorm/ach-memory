@@ -1,0 +1,20 @@
+{
+  "name": "ach-memory",
+  "interface": {
+    "displayName": "ach-memory"
+  },
+  "plugins": [
+    {
+      "name": "ach-memory",
+      "source": {
+        "source": "local",
+        "path": "./plugins/ach-memory"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

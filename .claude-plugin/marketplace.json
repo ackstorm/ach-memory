@@ -1,0 +1,16 @@
+{
+  "name": "ach-memory",
+  "description": "Durable memory for coding agents.",
+  "owner": {
+    "name": "ackstorm"
+  },
+  "plugins": [
+    {
+      "name": "ach-memory",
+      "version": "0.1.0",
+      "description": "Durable memory for Claude.",
+      "source": "./plugins/ach-memory",
+      "category": "productivity"
+    }
+  ]
+}
