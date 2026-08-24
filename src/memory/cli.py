@@ -27,6 +27,9 @@ def _mcp_url(base: str) -> str:
     if (
         parts.scheme not in {"http", "https"}
         or not parts.netloc
+        or parts.username is not None
+        or parts.password is not None
+        or not parts.hostname
         or parts.query
         or parts.fragment
     ):
@@ -70,8 +73,10 @@ def _require_executable(target: str) -> None:
 
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.pop("ACH_MEMORY_API_KEY", None)
     try:
-        result = subprocess.run(command, capture_output=True, check=False, text=True)
+        result = subprocess.run(command, capture_output=True, check=False, text=True, env=env)
     except OSError as exc:
         raise CLIError(f"{command[0]} plugin command failed") from exc
     if result.returncode:
@@ -257,12 +262,13 @@ def _marketplace_destination(target: str) -> Path:
 
 def _render_marketplace(target: str, url: str, bundle: Path | None = None) -> Path:
     destination = _marketplace_destination(target)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{target}-marketplace-", dir=destination.parent))
-    shutil.rmtree(staging)
+    staging: Path | None = None
     backup: Path | None = None
 
     try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{target}-marketplace-", dir=destination.parent))
+        shutil.rmtree(staging)
         plugin = staging / "plugins" / "ach-memory"
         shutil.copytree(bundle or _native_bundle(), plugin)
         server: dict[str, object] = {"type": "http", "url": url}
@@ -314,7 +320,7 @@ def _render_marketplace(target: str, url: str, bundle: Path | None = None) -> Pa
     except OSError as exc:
         raise CLIError(f"could not write {target} marketplace") from exc
     finally:
-        if staging.exists():
+        if staging is not None and staging.exists():
             shutil.rmtree(staging)
 
     return destination

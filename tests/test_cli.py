@@ -36,11 +36,38 @@ def test_mcp_url(base: str, expected: str) -> None:
         "ftp://example.com",
         "https://example.com/?x=1",
         "https://example.com/#x",
+        "https://user:pass@memory.example.com",
+        "https://user@memory.example.com",
+        "https://:pass@memory.example.com",
+        "https://:443",
+        "https:///memory",
     ],
 )
 def test_mcp_url_rejects_invalid_input(base: str) -> None:
     with pytest.raises(ValueError):
         cli._mcp_url(base)
+
+
+def test_run_removes_api_key_from_child_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Breaks if a plugin-manager subprocess inherits the MCP API key."""
+    captured: dict[str, object] = {}
+    secret = "test-user-secret"
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", secret)
+    monkeypatch.setenv("ACH_MEMORY_ORDINARY_TEST_VALUE", "kept")
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+
+    cli._run(["codex", "plugin", "list"])
+
+    child_env = captured.get("env")
+    assert isinstance(child_env, dict)
+    assert "ACH_MEMORY_API_KEY" not in child_env
+    assert secret not in child_env.values()
+    assert child_env["ACH_MEMORY_ORDINARY_TEST_VALUE"] == "kept"
 
 
 def test_main_rejects_missing_or_unknown_target() -> None:
@@ -602,6 +629,20 @@ def test_installed_plugins_accepts_codex_available_catalog() -> None:
             "available": [],
         },
     ) == {"ach-memory@ach-memory"}
+
+
+def test_render_marketplace_wraps_staging_creation_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if staging setup reaches users as an OSError traceback."""
+    def fail_staging(**_kwargs: object) -> str:
+        raise OSError("permission denied")
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(cli.tempfile, "mkdtemp", fail_staging)
+
+    with pytest.raises(cli.CLIError, match="could not write codex marketplace"):
+        cli._render_marketplace("codex", "https://host/prefix/mcp/")
 
 
 @pytest.mark.parametrize(

@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -183,14 +184,17 @@ def _compose_config(env_overrides: dict[str, str]) -> dict:
             **env_overrides,
         }
     )
-    result = subprocess.run(
-        ["docker", "compose", "config", "--format", "json"],
-        cwd=ROOT,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    with tempfile.TemporaryDirectory() as directory:
+        env_file = Path(directory) / ".env"
+        env_file.touch()
+        result = subprocess.run(
+            ["docker", "compose", "--env-file", str(env_file), "config", "--format", "json"],
+            cwd=ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     return json.loads(result.stdout)
 
 
