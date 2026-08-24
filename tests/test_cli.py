@@ -46,10 +46,14 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
         return None
 
     monkeypatch.setattr(cli, "_preflight", preflight, raising=False)
+    installed: list[str] = []
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None, raising=False)
-    monkeypatch.setattr(cli, "_install_native", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr(cli, "_install_native", lambda name, _url: installed.append(name), raising=False)
+    monkeypatch.setattr(cli, "_install_opencode", lambda _url: installed.append("opencode"), raising=False)
+    monkeypatch.setattr(cli, "_install_pi", lambda _url: installed.append("pi"), raising=False)
 
     assert cli.main(["init", target]) == 0
+    assert installed == ([target] if target != "all" else ["codex", "claude", "opencode", "pi"])
 
 
 def test_preflight_lists_required_tools_without_calling_memory_tools(
@@ -128,6 +132,120 @@ def test_preflight_rejects_empty_key_before_opening_connection(
 
     with pytest.raises(cli.CLIError, match="ACH_MEMORY_API_KEY"):
         asyncio.run(cli._preflight("https://memory.example.com/mcp/", ""))
+
+
+@pytest.mark.parametrize(
+    ("target", "config_name", "server_key", "expected_server", "owned_paths"),
+    [
+        (
+            "opencode",
+            "opencode.json",
+            "mcp",
+            {
+                "type": "remote",
+                "url": "https://host/next/mcp/",
+                "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
+            },
+            [
+                "plugins/ach-memory.js",
+                "plugins/ach-memory/activation.txt",
+                "skills/ach-memory/SKILL.md",
+            ],
+        ),
+        (
+            "pi",
+            "mcp.json",
+            "mcpServers",
+            {
+                "url": "https://host/next/mcp/",
+                "auth": "bearer",
+                "bearerTokenEnv": "ACH_MEMORY_API_KEY",
+                "lifecycle": "lazy",
+                "directTools": False,
+            },
+            [
+                "extensions/ach-memory.js",
+                "extensions/ach-memory/activation.txt",
+                "skills/ach-memory/SKILL.md",
+            ],
+        ),
+    ],
+)
+def test_config_install_upserts_only_ach_memory_and_refreshes_owned_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    target: str,
+    config_name: str,
+    server_key: str,
+    expected_server: dict[str, object],
+    owned_paths: list[str],
+) -> None:
+    """Breaks if an install overwrites host settings, persists a key, or leaves stale owned files."""
+    root = tmp_path / target
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    if target == "opencode":
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        root = tmp_path / "opencode"
+    else:
+        monkeypatch.setenv("PI_CODING_AGENT_DIR", str(root))
+    root.mkdir(parents=True)
+    config = root / config_name
+    config.write_text(json.dumps({"unrelated": {"keep": True}, server_key: {"other": {"url": "x"}}}))
+    for relative in owned_paths:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("stale")
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        cli,
+        "_run",
+        lambda command: commands.append(command) or subprocess.CompletedProcess(command, 0, "", ""),
+    )
+
+    getattr(cli, f"_install_{target}")("https://host/first/mcp/")
+    getattr(cli, f"_install_{target}")("https://host/next/mcp/")
+
+    installed = json.loads(config.read_text())
+    assert installed["unrelated"] == {"keep": True}
+    assert installed[server_key]["other"] == {"url": "x"}
+    assert installed[server_key]["ach-memory"] == expected_server
+    assert all((root / relative).read_text() != "stale" for relative in owned_paths)
+    assert all(b"user-secret" not in (root / relative).read_bytes() for relative in owned_paths)
+    assert all("user-secret" not in " ".join(command) for command in commands)
+    assert commands == ([] if target == "opencode" else [["pi", "install", "npm:pi-mcp-adapter"], ["pi", "install", "npm:pi-mcp-adapter"]])
+
+
+@pytest.mark.parametrize(
+    ("target", "config_name", "asset"),
+    [
+        ("opencode", "opencode.json", "plugins/ach-memory.js"),
+        ("pi", "mcp.json", "extensions/ach-memory.js"),
+    ],
+)
+def test_config_install_rejects_invalid_json_before_replacing_assets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str, config_name: str, asset: str
+) -> None:
+    """Breaks if corrupt host JSON is replaced or an owned file changes before parsing completes."""
+    root = tmp_path / target
+    if target == "opencode":
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        root = tmp_path / "opencode"
+    else:
+        monkeypatch.setenv("PI_CODING_AGENT_DIR", str(root))
+    root.mkdir(parents=True)
+    config = root / config_name
+    config.write_text("{not json")
+    destination = root / asset
+    destination.parent.mkdir(parents=True)
+    destination.write_text("keep this")
+    monkeypatch.setattr(cli, "_run", lambda _command: pytest.fail("Pi ran before config parsing"))
+
+    with pytest.raises(cli.CLIError, match="invalid JSON"):
+        getattr(cli, f"_install_{target}")("https://host/prefix/mcp/")
+
+    assert config.read_text() == "{not json"
+    assert destination.read_text() == "keep this"
 
 
 class _NativeRunner:

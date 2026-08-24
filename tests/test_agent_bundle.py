@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "ach-memory"
 ACTIVATION = (
@@ -30,6 +32,20 @@ def _hook(event: str, *, codex: bool = False, stdin: str | None = None) -> subpr
         check=False,
         env=env,
     )
+
+
+def _adapter(script: Path, source: str) -> dict:
+    result = subprocess.run(
+        ["node", "-e", source, str(script)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_bundle_contains_opencode_and_pi_adapters() -> None:
+    """Breaks if either supported host has no installable adapter."""
+    assert (PLUGIN / "adapters" / "opencode.js").is_file()
+    assert (PLUGIN / "adapters" / "pi.js").is_file()
 
 
 def test_manifests_and_marketplaces_reference_the_canonical_bundle() -> None:
@@ -99,3 +115,99 @@ def test_hook_is_silent_for_empty_malformed_or_unrecognized_input() -> None:
         assert result.returncode == 0
         assert result.stdout == ""
         assert result.stderr == ""
+
+
+def test_opencode_adapter_injects_the_adjacent_activation_once(tmp_path: Path) -> None:
+    """Breaks if the OpenCode hook is missing, duplicates activation, or registers extra hooks."""
+    installed = tmp_path / "plugins"
+    installed.mkdir()
+    (installed / "ach-memory.js").write_bytes((PLUGIN / "adapters" / "opencode.js").read_bytes())
+    (installed / "ach-memory").mkdir()
+    (installed / "ach-memory" / "activation.txt").write_text("ACTIVATION")
+
+    result = _adapter(
+        installed / "ach-memory.js",
+        """
+const plugin = require(process.argv[1]);
+(async () => {
+  const hooks = await plugin({});
+  const output = { system: ["BASE"] };
+  await hooks["experimental.chat.system.transform"]({}, output);
+  await hooks["experimental.chat.system.transform"]({}, output);
+  await hooks["experimental.chat.system.transform"](null, null);
+  process.stdout.write(JSON.stringify({ keys: Object.keys(hooks), system: output.system }));
+})().catch((error) => { console.error(error); process.exit(1); });
+""",
+    )
+
+    assert result == {"keys": ["experimental.chat.system.transform"], "system": ["BASE", "ACTIVATION"]}
+
+
+def test_pi_adapter_injects_the_adjacent_activation_once(tmp_path: Path) -> None:
+    """Breaks if Pi loses its base prompt, duplicates activation, or registers another event."""
+    installed = tmp_path / "extensions"
+    installed.mkdir()
+    (installed / "ach-memory.js").write_bytes((PLUGIN / "adapters" / "pi.js").read_bytes())
+    (installed / "ach-memory").mkdir()
+    (installed / "ach-memory" / "activation.txt").write_text("ACTIVATION")
+
+    result = _adapter(
+        installed / "ach-memory.js",
+        """
+const extension = require(process.argv[1]);
+const events = new Map();
+extension({ on(name, handler) { events.set(name, handler); } });
+(async () => {
+  const handler = events.get("before_agent_start");
+  const first = await handler({ systemPrompt: "BASE" });
+  const second = await handler(first);
+  const malformed = await handler(null);
+  process.stdout.write(JSON.stringify({ events: [...events.keys()], first, second: second ?? null, malformed: malformed ?? null }));
+})().catch((error) => { console.error(error); process.exit(1); });
+""",
+    )
+
+    assert result == {
+        "events": ["before_agent_start"],
+        "first": {"systemPrompt": "BASE\n\nACTIVATION"},
+        "second": None,
+        "malformed": None,
+    }
+
+
+@pytest.mark.parametrize("adapter", ["opencode", "pi"])
+def test_adapters_fail_open_without_activation_or_valid_event(adapter: str, tmp_path: Path) -> None:
+    """Breaks if optional activation data or malformed host events can crash a session."""
+    installed = tmp_path / "plugins"
+    installed.mkdir()
+    (installed / "ach-memory.js").write_bytes((PLUGIN / "adapters" / f"{adapter}.js").read_bytes())
+
+    source = (
+        """
+const plugin = require(process.argv[1]);
+(async () => {
+  const hooks = await plugin({});
+  const output = { system: [] };
+  const transform = hooks["experimental.chat.system.transform"];
+  if (transform) {
+    await transform(null, output);
+    await transform(null, null);
+  }
+  process.stdout.write(JSON.stringify({ hooks, output }));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+        if adapter == "opencode"
+        else """
+const extension = require(process.argv[1]);
+const events = new Map();
+extension({ on(name, handler) { events.set(name, handler); } });
+(async () => {
+  const handler = events.get("before_agent_start");
+  const result = handler ? await handler(null) : null;
+  process.stdout.write(JSON.stringify({ events: [...events.keys()], result }));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    )
+    result = _adapter(installed / "ach-memory.js", source)
+
+    assert result == ({"hooks": {}, "output": {"system": []}} if adapter == "opencode" else {"events": [], "result": None})

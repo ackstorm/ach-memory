@@ -130,6 +130,104 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
+def _write_json_atomic(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as file:
+            temporary = Path(file.name)
+            json.dump(value, file, indent=2)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _copy_file_atomic(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with source.open("rb") as input_file, tempfile.NamedTemporaryFile(
+            dir=destination.parent, delete=False
+        ) as output_file:
+            temporary = Path(output_file.name)
+            shutil.copyfileobj(input_file, output_file)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CLIError(f"invalid JSON in {path}") from exc
+    if not isinstance(value, dict):
+        raise CLIError(f"invalid JSON in {path}")
+    return value
+
+
+def _install_opencode(url: str) -> None:
+    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "opencode"
+    config_path = root / "opencode.json"
+    config = _read_json_object(config_path)
+    existing = config.get("mcp", {})
+    if not isinstance(existing, dict):
+        raise CLIError(f"invalid JSON in {config_path}")
+    mcp = dict(existing)
+    mcp["ach-memory"] = {
+        "type": "remote",
+        "url": url,
+        "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
+    }
+    config["mcp"] = mcp
+    bundle = _bundle_root()
+    for source, destination in (
+        (bundle / "adapters" / "opencode.js", root / "plugins" / "ach-memory.js"),
+        (bundle / "activation.txt", root / "plugins" / "ach-memory" / "activation.txt"),
+        (bundle / "skills" / "ach-memory" / "SKILL.md", root / "skills" / "ach-memory" / "SKILL.md"),
+    ):
+        _copy_file_atomic(source, destination)
+    _write_json_atomic(config_path, config)
+
+
+def _install_pi(url: str) -> None:
+    root = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent"))
+    config_path = root / "mcp.json"
+    config = _read_json_object(config_path)
+    existing = config.get("mcpServers", {})
+    if not isinstance(existing, dict):
+        raise CLIError(f"invalid JSON in {config_path}")
+    servers = dict(existing)
+    servers["ach-memory"] = {
+        "url": url,
+        "auth": "bearer",
+        "bearerTokenEnv": "ACH_MEMORY_API_KEY",
+        "lifecycle": "lazy",
+        "directTools": False,
+    }
+    config["mcpServers"] = servers
+    bundle = _bundle_root()
+    for source, destination in (
+        (bundle / "adapters" / "pi.js", root / "extensions" / "ach-memory.js"),
+        (bundle / "activation.txt", root / "extensions" / "ach-memory" / "activation.txt"),
+        (bundle / "skills" / "ach-memory" / "SKILL.md", root / "skills" / "ach-memory" / "SKILL.md"),
+    ):
+        _copy_file_atomic(source, destination)
+    _write_json_atomic(config_path, config)
+    _run(["pi", "install", "npm:pi-mcp-adapter"])
+
+
 def _marketplace_destination(target: str) -> Path:
     data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
     return data_home / "ach-memory" / f"{target}-marketplace"
@@ -240,6 +338,12 @@ def _native_targets(target: str) -> tuple[str, ...]:
     return (target,) if target in {"codex", "claude"} else ()
 
 
+def _config_targets(target: str) -> tuple[str, ...]:
+    if target == "all":
+        return "opencode", "pi"
+    return (target,) if target in {"opencode", "pi"} else ()
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ach-memory")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -256,12 +360,20 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         url = _mcp_url(os.environ.get("ACH_MEMORY_URL", "http://localhost:8000"))
-        targets = _native_targets(args.target)
-        for target in targets:
+        native_targets = _native_targets(args.target)
+        config_targets = _config_targets(args.target)
+        for target in native_targets:
             _require_executable(target)
+        if "pi" in config_targets:
+            _require_executable("pi")
         asyncio.run(_preflight(url, os.environ.get("ACH_MEMORY_API_KEY", "")))
-        for target in targets:
+        for target in native_targets:
             _install_native(target, url)
+        for target in config_targets:
+            if target == "opencode":
+                _install_opencode(url)
+            else:
+                _install_pi(url)
     except (CLIError, ValueError) as exc:
         print(f"ach-memory: {exc}", file=sys.stderr)
         return 1
