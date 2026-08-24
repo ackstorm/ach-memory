@@ -20,6 +20,24 @@ chart (`deploy/helm/ach-memory`, see `deploy/helm/README.md`) and CI
 (`.github/workflows/ci.yml`: lint, test, and a build-the-image-and-prove-it-starts
 job) package and gate this build.
 
+## Releases
+
+Manual tags are forbidden: only the release workflow creates `vX.Y.Z` tags and
+GitHub Releases. On a clean `main` branch, prepare and commit the synchronized
+bare release version, then hand off the marker commit:
+
+```bash
+make release-bump VERSION=1.2.3
+git add pyproject.toml deploy/helm/ach-memory/Chart.yaml
+git commit -m "chore: prepare 1.2.3"
+make release-cut VERSION=1.2.3
+```
+
+`release-cut` checks `main`, a clean tree, and all release metadata before it
+creates `chore(release): v1.2.3`, runs `make verify`, and pushes `main`. The
+GitHub workflow then publishes the bare `1.2.3` image/chart versions, creates
+the annotated `v1.2.3` tag, and generates the GitHub Release.
+
 ## What works today
 
 ```

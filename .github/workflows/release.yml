@@ -1,39 +1,51 @@
 name: Release
 
-# Tag-driven, never on push to main: a published public artifact must
-# correspond to a version somebody chose, not to whatever landed last.
+# A maintainer explicitly hands a verified marker commit to this workflow;
+# direct tag pushes are forbidden so no tag can publish an unreviewed commit.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   publish:
+    if: "${{ startsWith(github.event.head_commit.message, 'chore(release): v') }}"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Elevated HERE and nowhere else: the lint/test/image jobs in ci.yml run
     # repository-controlled code (ruff, pytest, docker build) and must never
     # hold a token that can write packages.
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0
 
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
 
       - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           # Helm's OCI client keeps its own credential store (~/.config/helm/registry),
           # separate from docker's -- `docker login` above does not cover `helm push`.
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+          printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Derive and validate the release version
+        env:
+          RELEASE_MARKER: ${{ github.event.head_commit.message }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$RELEASE_MARKER" | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "FAIL: marker '${RELEASE_MARKER}' is not an exact release marker." >&2
+            echo "Expected exactly chore(release): vMAJOR.MINOR.PATCH[-prerelease]." >&2
+            exit 1
+          fi
+          version="${RELEASE_MARKER#chore(release): v}"
           # SemVer, optionally with a pre-release, but NOT build metadata:
           # `+` is valid in SemVer and ILLEGAL in an OCI tag, so a v1.0.0+build.5
           # tag would die inside `docker build` with a bare "invalid reference
@@ -41,8 +53,8 @@ jobs:
           # enforce SemVer at package time either -- `--version 1` succeeds --
           # so without this a tag like `v1` publishes silently as version "1".
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "FAIL: tag '${GITHUB_REF_NAME}' does not yield a publishable version." >&2
-            echo "Expected vMAJOR.MINOR.PATCH[-prerelease], e.g. v1.2.3 or v1.2.3-rc.1." >&2
+            echo "FAIL: marker '${RELEASE_MARKER}' does not yield a publishable version." >&2
+            echo "Expected exactly chore(release): vMAJOR.MINOR.PATCH[-prerelease]." >&2
             echo "Build metadata (+...) is not supported: it is illegal in an OCI tag." >&2
             exit 1
           fi
@@ -67,6 +79,24 @@ jobs:
           helm package deploy/helm/ach-memory --version "${VERSION}" --app-version "${VERSION}"
           helm push "ach-memory-${VERSION}.tgz" \
             "oci://ghcr.io/ackstorm/charts"
+
+      # A pre-existing tag makes a re-run safe; another tag failure still
+      # fails the release rather than hiding a publication problem.
+      - name: Create and push the release tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "tag v${VERSION} already exists, skipping"
+          else
+            git tag -a "v${VERSION}" -m "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes
 
       # No provenance attestation. CUT 2026-08-23 as YAGNI: it is supply-chain
       # ceremony for an artifact with no external consumers yet, and nobody

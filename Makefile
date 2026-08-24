@@ -3,6 +3,12 @@
 # tool this project uses.
 .DEFAULT_GOAL := help
 SHELL := bash
+RELEASE_VERSION_RE := ^[0-9]+\.[0-9]+\.[0-9]+$$
+
+define require_release_version
+	@test -n "$(VERSION)" && printf '%s\n' "$(VERSION)" | grep -Eq '$(RELEASE_VERSION_RE)' \
+		|| { echo "FAIL: VERSION must be MAJOR.MINOR.PATCH (for example, VERSION=1.2.3)." >&2; exit 1; }
+endef
 
 .PHONY: help
 help: ## Show this help
@@ -37,6 +43,32 @@ chart: ## helm lint + render, including the must-refuse-without-a-master-key cas
 .PHONY: verify
 verify: lint test secrets chart ## The full local gate -- run this before pushing
 
+.PHONY: release-bump
+release-bump: ## Update release metadata (VERSION=X.Y.Z)
+	$(require_release_version)
+	sed -i -E 's/^version = "[^"]*"$$/version = "$(VERSION)"/' pyproject.toml
+	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
+	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
+	@grep -qx 'version = "$(VERSION)"' pyproject.toml \
+		&& grep -qx 'version: $(VERSION)' deploy/helm/ach-memory/Chart.yaml \
+		&& grep -qx 'appVersion: "$(VERSION)"' deploy/helm/ach-memory/Chart.yaml \
+		|| { echo "FAIL: release metadata was not updated." >&2; exit 1; }
+
+.PHONY: release-cut
+release-cut: ## Create and push the release marker (VERSION=X.Y.Z)
+	$(require_release_version)
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = "main" \
+		|| { echo "FAIL: release-cut must run on main." >&2; exit 1; }
+	@test -z "$$(git status --porcelain)" \
+		|| { echo "FAIL: release-cut requires a clean tree." >&2; exit 1; }
+	@grep -qx 'version = "$(VERSION)"' pyproject.toml \
+		&& grep -qx 'version: $(VERSION)' deploy/helm/ach-memory/Chart.yaml \
+		&& grep -qx 'appVersion: "$(VERSION)"' deploy/helm/ach-memory/Chart.yaml \
+		|| { echo "FAIL: run make release-bump VERSION=$(VERSION) and commit its changes first." >&2; exit 1; }
+	git commit --allow-empty -m "chore(release): v$(VERSION)"
+	$(MAKE) verify
+	git push origin main
+
 .PHONY: up
 up: ## Start the local stack (migrations run before the api serves)
 	docker compose up -d --build
@@ -45,3 +77,4 @@ up: ## Start the local stack (migrations run before the api serves)
 smoke: ## REST + MCP smoke against a running stack (needs MEMORY_MASTER_KEY)
 	./scripts/smoke.sh
 	uv run python scripts/mcp-smoke.py
+
