@@ -255,7 +255,7 @@ def _marketplace_destination(target: str) -> Path:
     return data_home / "ach-memory" / f"{target}-marketplace"
 
 
-def _render_marketplace(target: str, url: str) -> Path:
+def _render_marketplace(target: str, url: str, bundle: Path | None = None) -> Path:
     destination = _marketplace_destination(target)
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{target}-marketplace-", dir=destination.parent))
@@ -264,7 +264,7 @@ def _render_marketplace(target: str, url: str) -> Path:
 
     try:
         plugin = staging / "plugins" / "ach-memory"
-        shutil.copytree(_bundle_root(), plugin)
+        shutil.copytree(bundle or _native_bundle(), plugin)
         server: dict[str, object] = {"type": "http", "url": url}
         if target == "codex":
             server["bearer_token_env_var"] = "ACH_MEMORY_API_KEY"
@@ -320,7 +320,26 @@ def _render_marketplace(target: str, url: str) -> Path:
     return destination
 
 
-def _native_plan(target: str) -> tuple[Path, dict[str, Path], set[str]]:
+def _native_bundle() -> Path:
+    bundle = _bundle_root()
+    required = (
+        ".codex-plugin/plugin.json",
+        ".claude-plugin/plugin.json",
+        "hooks/activate.js",
+        "hooks/hooks.json",
+        "skills/ach-memory/SKILL.md",
+    )
+    for relative in required:
+        try:
+            with (bundle / relative).open("rb") as file:
+                file.read(1)
+        except OSError as exc:
+            raise CLIError("missing bundled native asset") from exc
+    return bundle
+
+
+def _native_plan(target: str) -> tuple[Path, dict[str, Path], set[str], Path]:
+    bundle = _native_bundle()
     destination = _marketplace_destination(target)
     marketplaces = _marketplace_locations(
         target, _run_json([target, "plugin", "marketplace", "list", "--json"])
@@ -328,18 +347,18 @@ def _native_plan(target: str) -> tuple[Path, dict[str, Path], set[str]]:
     if "ach-memory" in marketplaces and marketplaces["ach-memory"] != destination.resolve():
         raise CLIError("ach-memory marketplace is registered at a different location")
     installed = _installed_plugins(target, _run_json([target, "plugin", "list", "--json"]))
-    return destination, marketplaces, installed
+    return destination, marketplaces, installed, bundle
 
 
 def _install_native(
-    target: str, url: str, plan: tuple[Path, dict[str, Path], set[str]] | None = None
+    target: str, url: str, plan: tuple[Path, dict[str, Path], set[str], Path] | None = None
 ) -> tuple[Path, ...]:
     if target not in {"codex", "claude"}:
         raise CLIError(f"native installation is not available for {target}")
     _require_executable(target)
 
-    destination, marketplaces, installed = plan or _native_plan(target)
-    destination = _render_marketplace(target, url)
+    destination, marketplaces, installed, bundle = plan or _native_plan(target)
+    destination = _render_marketplace(target, url, bundle)
     plugin = "ach-memory@ach-memory"
 
     if "ach-memory" not in marketplaces:

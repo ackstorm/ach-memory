@@ -149,6 +149,76 @@ def test_main_all_leaves_every_target_unchanged_when_later_config_is_invalid(
     assert secret not in captured.err
 
 
+@pytest.mark.parametrize("unreadable", [False, True], ids=["missing", "unreadable"])
+def test_main_all_rejects_missing_or_unreadable_native_bundle_before_mcp_or_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    unreadable: bool,
+) -> None:
+    """Breaks if a malformed native bundle reaches MCP or creates any target state."""
+    secret = "test-user-secret"
+    homes = tmp_path / "homes"
+    config_home = homes / "config"
+    pi_home = homes / "pi"
+    bundle = tmp_path / "bundle"
+    for relative in (
+        "adapters/opencode.js",
+        "adapters/pi.js",
+        "activation.txt",
+        ".claude-plugin/plugin.json",
+        "hooks/activate.js",
+        "hooks/hooks.json",
+        "skills/ach-memory/SKILL.md",
+    ):
+        path = bundle / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("asset")
+    (config_home / "opencode").mkdir(parents=True)
+    (config_home / "opencode" / "opencode.json").write_text('{"mcp": {}}')
+    pi_home.mkdir(parents=True)
+    (pi_home / "mcp.json").write_text('{"mcpServers": {}}')
+    before = _files_under(homes)
+    events: list[str] = []
+
+    async def preflight(_url: str, _api_key: str) -> None:
+        events.append("mcp")
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        payload: object = {"marketplaces": []} if "marketplace" in command else {"installed": []}
+        if command[0] == "claude":
+            payload = []
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", secret)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(homes / "data"))
+    monkeypatch.setattr(cli, "_bundle_root", lambda: bundle)
+    monkeypatch.setattr(cli, "_preflight", preflight)
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+    if unreadable:
+        original_open = Path.open
+
+        def open_file(path: Path, *args: object, **kwargs: object):
+            if path == bundle / ".codex-plugin/plugin.json":
+                raise OSError("permission denied")
+            return original_open(path, *args, **kwargs)
+
+        (bundle / ".codex-plugin").mkdir()
+        (bundle / ".codex-plugin/plugin.json").write_text("asset")
+        monkeypatch.setattr(Path, "open", open_file)
+
+    assert cli.main(["init", "all"]) == 1
+
+    captured = capsys.readouterr()
+    assert events == []
+    assert _files_under(homes) == before
+    assert secret not in captured.out
+    assert secret not in captured.err
+
+
 @pytest.mark.parametrize("failure", ["missing-executable", "mcp"])
 def test_main_all_failure_before_preflight_or_mcp_leaves_every_target_unchanged(
     monkeypatch: pytest.MonkeyPatch,
