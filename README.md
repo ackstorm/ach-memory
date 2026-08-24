@@ -122,8 +122,7 @@ native/non-browser MCP clients only.
 | `MEMORY_WRITE_WINDOW_SECONDS` | `60` |
 
 The three required variables are supplied by Compose for local setup; deployed
-service operators configure them separately. Agent users need only
-`ACH_MEMORY_URL` and `ACH_MEMORY_API_KEY`. See
+service operators configure them separately. See
 [src/memory/config.py](src/memory/config.py) for defaults.
 
 ## Development
