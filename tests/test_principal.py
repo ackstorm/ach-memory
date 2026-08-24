@@ -85,3 +85,63 @@ def test_missing_header_is_unauthorized(session, tenant):
 def test_non_bearer_header_is_unauthorized(session, tenant):
     with pytest.raises(Unauthorized):
         resolve_principal(f"Basic {MASTER_PLAINTEXT}", session)
+
+
+def test_api_key_header_resolves_without_authorization(session, tenant):
+    user, plaintext = _make_user_key(session, tenant)
+
+    principal = resolve_principal(None, session, api_key=plaintext)
+
+    assert principal.is_master is False
+    assert principal.user_id == user.id
+
+
+def test_api_key_header_tolerates_a_bearer_prefix(session, tenant):
+    user, plaintext = _make_user_key(session, tenant)
+
+    principal = resolve_principal(None, session, api_key=f"Bearer {plaintext}")
+
+    assert principal.user_id == user.id
+
+
+def test_api_key_header_wins_over_authorization(session, tenant):
+    """Precedence is the whole point: whatever a proxy leaves in Authorization
+    must not override the credential the caller explicitly nominated."""
+    user, plaintext = _make_user_key(session, tenant)
+
+    principal = resolve_principal(
+        f"Bearer {MASTER_PLAINTEXT}", session, api_key=plaintext
+    )
+
+    # The master key sat in Authorization and was ignored.
+    assert principal.is_master is False
+    assert principal.user_id == user.id
+
+
+def test_blank_api_key_header_does_not_fall_back_to_authorization(session, tenant):
+    """A present-but-empty dedicated header is a caller error, not an absent
+    one. Falling through here would authenticate as whoever Authorization
+    names -- the confused deputy this precedence exists to prevent."""
+    with pytest.raises(Unauthorized):
+        resolve_principal(f"Bearer {MASTER_PLAINTEXT}", session, api_key="   ")
+
+
+def test_unknown_api_key_header_is_unauthorized(session, tenant):
+    with pytest.raises(Unauthorized):
+        resolve_principal(None, session, api_key=keys.generate_key())
+
+
+def test_revoked_key_is_unauthorized_via_api_key_header(session, tenant):
+    _, plaintext = _make_user_key(session, tenant)
+    session.query(ApiKey).update({"status": "revoked"})
+    session.flush()
+
+    with pytest.raises(Unauthorized):
+        resolve_principal(None, session, api_key=plaintext)
+
+
+def test_master_key_still_works_over_the_api_key_header(session, tenant):
+    principal = resolve_principal(None, session, api_key=MASTER_PLAINTEXT)
+
+    assert principal.is_master is True
+    assert principal.user_id is None

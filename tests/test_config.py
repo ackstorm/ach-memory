@@ -98,12 +98,18 @@ def test_the_readme_documents_every_setting():
     from memory.config import Settings
 
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
-    section = re.search(
-        r"## Configuration\n(.*?)\nThe three required variables", readme, re.DOTALL
-    )
+    # Anchored on the next heading, not on a sentence inside the prose. The
+    # previous anchor was the phrase "The three required variables", which the
+    # README stopped containing when it was reworded -- so this guard failed
+    # open-ish (hard AssertionError on every run, unrelated to any setting)
+    # and MEMORY_MAX_CONTENT_BYTES slipped out of the docs undetected.
+    section = re.search(r"## Configuration\n(.*?)\n## Development", readme, re.DOTALL)
     assert section, "README's Configuration section moved -- update this guard"
 
-    documented = set(re.findall(r"\| `(MEMORY_[A-Z_]+)`", section.group(1)))
+    # Bare names in a fenced block (required) or inline code (optional): the
+    # section documents settings in both shapes, so match the identifier
+    # itself rather than one presentation of it.
+    documented = set(re.findall(r"(MEMORY_[A-Z_]+)", section.group(1)))
     actual = {f"MEMORY_{name.upper()}" for name in Settings.model_fields}
     assert documented == actual, (
         f"undocumented: {sorted(actual - documented)}; "

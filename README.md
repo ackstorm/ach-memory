@@ -52,8 +52,13 @@ Configure an MCP-capable agent with:
 
 ```text
 POST http://<host>:8000/mcp/
-Authorization: Bearer <user key>
+x-ach-memory-key: <user key>
 ```
+
+`Authorization: Bearer <user key>` works too and is not deprecated. Prefer the
+dedicated header when anything sits in front of the service — LiteLLM, a
+gateway, ACH all have their own claim on `Authorization`. When both are sent,
+`x-ach-memory-key` wins.
 
 The endpoint exposes 15 tools as one memory surface: retain, sync retain,
 recall, reflect, memory curation, document operations, and async-operation
@@ -87,11 +92,11 @@ MEMORY_MASTER_KEY_HASH
 MEMORY_HINDSIGHT_URL
 ```
 
-Useful optional settings include `MEMORY_HINDSIGHT_API_KEY`,
-`MEMORY_TENANT_ID`, `MEMORY_MCP_ALLOWED_HOSTS`,
+The optional settings are `MEMORY_HINDSIGHT_API_KEY`, `MEMORY_TENANT_ID`,
+`MEMORY_MCP_ALLOWED_HOSTS`, `MEMORY_MAX_CONTENT_BYTES`,
 `MEMORY_HINDSIGHT_TIMEOUT_SECONDS`, `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS`,
 `MEMORY_WRITE_LIMIT`, and `MEMORY_WRITE_WINDOW_SECONDS`. See
-[src/memory/config.py](src/memory/config.py) for defaults and the full list.
+[src/memory/config.py](src/memory/config.py) for defaults.
 
 ## Development
 

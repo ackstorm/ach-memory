@@ -75,6 +75,48 @@ def test_a_bad_key_is_unauthorized(tenant):
         pass
 
 
+def test_the_api_key_header_authenticates_over_mcp(client, master_headers, tenant):
+    """The MCP surface reads `x-ach-memory-key` too, not just Authorization.
+
+    This is the header an agent can set without fighting whatever LiteLLM or a
+    gateway has already put in Authorization.
+    """
+    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
+        "user_id"
+    ]
+    key = client.post(
+        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
+    ).json()["key"]
+
+    with mcp_server.tool_session(_headers({"x-ach-memory-key": key})) as tc:
+        assert tc.principal.user_id == user_id
+        assert tc.principal.is_master is False
+
+
+def test_the_api_key_header_beats_authorization_over_mcp(
+    client, master_headers, tenant
+):
+    """A master key parked in Authorization must not win. Over MCP the master
+    key is refused outright (Invariant 22), so if precedence regressed this
+    would raise Forbidden instead of resolving the user."""
+    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
+        "user_id"
+    ]
+    key = client.post(
+        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
+    ).json()["key"]
+
+    with mcp_server.tool_session(
+        _headers(
+            {
+                "authorization": f"Bearer {MASTER_PLAINTEXT}",
+                "x-ach-memory-key": key,
+            }
+        )
+    ) as tc:
+        assert tc.principal.user_id == user_id
+
+
 def test_a_valid_user_key_yields_its_own_principal(client, master_headers, tenant):
     user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
         "user_id"

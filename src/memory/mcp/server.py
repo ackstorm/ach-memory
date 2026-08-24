@@ -15,7 +15,7 @@ from typing import Protocol
 from mcp.server.mcpserver import MCPServer
 from sqlalchemy.orm import Session
 
-from memory.auth.principal import Principal, resolve_principal
+from memory.auth.principal import API_KEY_HEADER, Principal, resolve_principal
 from memory.db import session_scope
 from memory.errors import Forbidden
 
@@ -43,9 +43,13 @@ def tool_session(ctx: HasHeaders) -> Iterator[ToolContext]:
     """
     headers = ctx.headers or {}
     authorization = headers.get("authorization") or headers.get("Authorization")
+    # Same precedence as the REST surface: when present, this is the only
+    # credential considered. It exists because everything that fronts this
+    # service has its own claim on Authorization (SPEC §5.1).
+    api_key = headers.get(API_KEY_HEADER) or headers.get("X-Ach-Memory-Key")
 
     with session_scope() as db:
-        principal = resolve_principal(authorization, db)
+        principal = resolve_principal(authorization, db, api_key=api_key)
         if principal.is_master:
             # Invariant 22: the master key never resides in an ordinary agent
             # runtime, and an MCP client IS exactly that -- an LLM-driven

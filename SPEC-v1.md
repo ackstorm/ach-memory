@@ -315,8 +315,28 @@ Resolves to `tenant_id` + `user_id`. The client never sends a user ID to
 identify itself.
 
 ```text
+x-ach-memory-key: mem_...
+```
+
+or, equivalently:
+
+```text
 Authorization: Bearer mem_...
 ```
+
+Both headers are accepted on REST and MCP alike. `Authorization` is the
+original form and is not deprecated, but it is contested: anything deployed in
+front of this service — LiteLLM, an API gateway, ACH — has its own claim on
+`Authorization`, and whoever writes it last wins. `x-ach-memory-key` names the
+credential meant for this service and nothing else.
+
+When both are present, `x-ach-memory-key` is the only one considered, and a
+present-but-empty value is rejected rather than falling back. Falling back
+would let a typo'd key silently authenticate as whoever `Authorization`
+happens to name. A `Bearer ` prefix on `x-ach-memory-key` is tolerated and
+stripped, because the neighbouring platform header `x-litellm-api-key`
+requires one and copying that habit across would otherwise fail as an
+indistinguishable "unknown API key".
 
 It grants access to:
 
