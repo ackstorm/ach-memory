@@ -177,55 +177,77 @@ def _read_json_object(path: Path) -> dict[str, object]:
     return value
 
 
-def _install_opencode(url: str) -> None:
-    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "opencode"
-    config_path = root / "opencode.json"
+def _config_root(target: str) -> Path:
+    if target == "opencode":
+        return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "opencode"
+    if target == "pi":
+        return Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent"))
+    raise CLIError(f"config installation is not available for {target}")
+
+
+def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]]:
+    root = _config_root(target)
+    config_path = root / ("opencode.json" if target == "opencode" else "mcp.json")
     config = _read_json_object(config_path)
-    existing = config.get("mcp", {})
+    server_key = "mcp" if target == "opencode" else "mcpServers"
+    existing = config.get(server_key, {})
     if not isinstance(existing, dict):
         raise CLIError(f"invalid JSON in {config_path}")
-    mcp = dict(existing)
-    mcp["ach-memory"] = {
-        "type": "remote",
-        "url": url,
-        "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
-    }
-    config["mcp"] = mcp
+
+    server: dict[str, object]
+    if target == "opencode":
+        server = {
+            "type": "remote",
+            "url": url,
+            "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
+        }
+        paths = (
+            ("adapters/opencode.js", "plugins/ach-memory.js"),
+            ("activation.txt", "plugins/ach-memory/activation.txt"),
+            ("skills/ach-memory/SKILL.md", "skills/ach-memory/SKILL.md"),
+        )
+    else:
+        server = {
+            "url": url,
+            "auth": "bearer",
+            "bearerTokenEnv": "ACH_MEMORY_API_KEY",
+            "lifecycle": "lazy",
+            "directTools": False,
+        }
+        paths = (
+            ("adapters/pi.js", "extensions/ach-memory.js"),
+            ("activation.txt", "extensions/ach-memory/activation.txt"),
+            ("skills/ach-memory/SKILL.md", "skills/ach-memory/SKILL.md"),
+        )
+    config[server_key] = {**existing, "ach-memory": server}
+
     bundle = _bundle_root()
-    for source, destination in (
-        (bundle / "adapters" / "opencode.js", root / "plugins" / "ach-memory.js"),
-        (bundle / "activation.txt", root / "plugins" / "ach-memory" / "activation.txt"),
-        (bundle / "skills" / "ach-memory" / "SKILL.md", root / "skills" / "ach-memory" / "SKILL.md"),
-    ):
+    assets = tuple((bundle / source, root / destination) for source, destination in paths)
+    for source, _destination in assets:
+        if not source.is_file():
+            raise CLIError(f"missing bundled {target} asset")
+    return config_path, config, assets
+
+
+def _install_opencode(
+    url: str, plan: tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]] | None = None
+) -> tuple[Path, ...]:
+    config_path, config, assets = plan or _config_plan("opencode", url)
+    for source, destination in assets:
         _copy_file_atomic(source, destination)
     _write_json_atomic(config_path, config)
+    return (config_path, *(destination for _source, destination in assets))
 
 
-def _install_pi(url: str) -> None:
-    root = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent"))
-    config_path = root / "mcp.json"
-    config = _read_json_object(config_path)
-    existing = config.get("mcpServers", {})
-    if not isinstance(existing, dict):
-        raise CLIError(f"invalid JSON in {config_path}")
-    servers = dict(existing)
-    servers["ach-memory"] = {
-        "url": url,
-        "auth": "bearer",
-        "bearerTokenEnv": "ACH_MEMORY_API_KEY",
-        "lifecycle": "lazy",
-        "directTools": False,
-    }
-    config["mcpServers"] = servers
-    bundle = _bundle_root()
-    for source, destination in (
-        (bundle / "adapters" / "pi.js", root / "extensions" / "ach-memory.js"),
-        (bundle / "activation.txt", root / "extensions" / "ach-memory" / "activation.txt"),
-        (bundle / "skills" / "ach-memory" / "SKILL.md", root / "skills" / "ach-memory" / "SKILL.md"),
-    ):
+def _install_pi(
+    url: str, plan: tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]] | None = None
+) -> tuple[Path, ...]:
+    config_path, config, assets = plan or _config_plan("pi", url)
+    for source, destination in assets:
         _copy_file_atomic(source, destination)
     _write_json_atomic(config_path, config)
     _run(["pi", "install", "npm:pi-mcp-adapter"])
+    return (config_path, *(destination for _source, destination in assets))
 
 
 def _marketplace_destination(target: str) -> Path:
@@ -298,11 +320,7 @@ def _render_marketplace(target: str, url: str) -> Path:
     return destination
 
 
-def _install_native(target: str, url: str) -> None:
-    if target not in {"codex", "claude"}:
-        raise CLIError(f"native installation is not available for {target}")
-    _require_executable(target)
-
+def _native_plan(target: str) -> tuple[Path, dict[str, Path], set[str]]:
     destination = _marketplace_destination(target)
     marketplaces = _marketplace_locations(
         target, _run_json([target, "plugin", "marketplace", "list", "--json"])
@@ -310,6 +328,17 @@ def _install_native(target: str, url: str) -> None:
     if "ach-memory" in marketplaces and marketplaces["ach-memory"] != destination.resolve():
         raise CLIError("ach-memory marketplace is registered at a different location")
     installed = _installed_plugins(target, _run_json([target, "plugin", "list", "--json"]))
+    return destination, marketplaces, installed
+
+
+def _install_native(
+    target: str, url: str, plan: tuple[Path, dict[str, Path], set[str]] | None = None
+) -> tuple[Path, ...]:
+    if target not in {"codex", "claude"}:
+        raise CLIError(f"native installation is not available for {target}")
+    _require_executable(target)
+
+    destination, marketplaces, installed = plan or _native_plan(target)
     destination = _render_marketplace(target, url)
     plugin = "ach-memory@ach-memory"
 
@@ -330,18 +359,11 @@ def _install_native(target: str, url: str) -> None:
         _run([target, "plugin", "update", plugin])
     else:
         _run([target, "plugin", "install", "-y", "--scope", "user", plugin])
+    return (destination,)
 
 
-def _native_targets(target: str) -> tuple[str, ...]:
-    if target == "all":
-        return "codex", "claude"
-    return (target,) if target in {"codex", "claude"} else ()
-
-
-def _config_targets(target: str) -> tuple[str, ...]:
-    if target == "all":
-        return "opencode", "pi"
-    return (target,) if target in {"opencode", "pi"} else ()
+def _targets(target: str) -> tuple[str, ...]:
+    return ("codex", "claude", "opencode", "pi") if target == "all" else (target,)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -360,24 +382,27 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         url = _mcp_url(os.environ.get("ACH_MEMORY_URL", "http://localhost:8000"))
-        native_targets = _native_targets(args.target)
-        config_targets = _config_targets(args.target)
-        for target in native_targets:
+        targets = _targets(args.target)
+        for target in targets:
             _require_executable(target)
-        if "pi" in config_targets:
-            _require_executable("pi")
+        native_plans = {target: _native_plan(target) for target in targets if target in {"codex", "claude"}}
+        config_plans = {target: _config_plan(target, url) for target in targets if target in {"opencode", "pi"}}
         asyncio.run(_preflight(url, os.environ.get("ACH_MEMORY_API_KEY", "")))
-        for target in native_targets:
-            _install_native(target, url)
-        for target in config_targets:
-            if target == "opencode":
-                _install_opencode(url)
+        changed: list[Path] = []
+        for target in targets:
+            if target in native_plans:
+                changed.extend(_install_native(target, url, native_plans[target]))
+            elif target == "opencode":
+                changed.extend(_install_opencode(url, config_plans[target]))
             else:
-                _install_pi(url)
+                changed.extend(_install_pi(url, config_plans[target]))
     except (CLIError, ValueError) as exc:
         print(f"ach-memory: {exc}", file=sys.stderr)
         return 1
 
+    for path in changed:
+        print(path)
+    print("Restart the selected agent(s) to load ach-memory.")
     return 0
 
 

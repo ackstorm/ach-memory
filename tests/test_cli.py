@@ -9,6 +9,14 @@ import pytest
 from memory import cli
 
 
+def _files_under(root: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 @pytest.mark.parametrize(
     ("base", "expected"),
     [
@@ -48,12 +56,174 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     monkeypatch.setattr(cli, "_preflight", preflight, raising=False)
     installed: list[str] = []
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None, raising=False)
-    monkeypatch.setattr(cli, "_install_native", lambda name, _url: installed.append(name), raising=False)
-    monkeypatch.setattr(cli, "_install_opencode", lambda _url: installed.append("opencode"), raising=False)
-    monkeypatch.setattr(cli, "_install_pi", lambda _url: installed.append("pi"), raising=False)
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(
+        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or ()
+    )
+    monkeypatch.setattr(
+        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or ()
+    )
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or ())
 
     assert cli.main(["init", target]) == 0
     assert installed == ([target] if target != "all" else ["codex", "claude", "opencode", "pi"])
+
+
+def test_main_all_checks_every_executable_and_preflight_before_installers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Breaks if any requested installer can run before all targets are ready."""
+    events: list[str] = []
+
+    async def preflight(_url: str, _api_key: str) -> None:
+        events.append("preflight")
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "test-user-secret")
+    monkeypatch.setattr(cli, "_preflight", preflight)
+    monkeypatch.setattr(cli, "_require_executable", lambda target: events.append(target))
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(
+        cli, "_install_native", lambda target, _url, _plan: events.append(f"install:{target}") or ()
+    )
+    monkeypatch.setattr(
+        cli, "_install_opencode", lambda _url, _plan: events.append("install:opencode") or ()
+    )
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: events.append("install:pi") or ())
+
+    assert cli.main(["init", "all"]) == 0
+
+    assert events == [
+        "codex",
+        "claude",
+        "opencode",
+        "pi",
+        "preflight",
+        "install:codex",
+        "install:claude",
+        "install:opencode",
+        "install:pi",
+    ]
+    captured = capsys.readouterr()
+    assert "test-user-secret" not in captured.out
+    assert "test-user-secret" not in captured.err
+
+
+def test_main_all_leaves_every_target_unchanged_when_later_config_is_invalid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Breaks if an earlier target writes before a later target config is validated."""
+    secret = "test-user-secret"
+    config_home = tmp_path / "config"
+    pi_home = tmp_path / "pi"
+    data_home = tmp_path / "data"
+    pi_home.mkdir(parents=True)
+    (pi_home / "mcp.json").write_text("{invalid json")
+    (config_home / "opencode").mkdir(parents=True)
+    (config_home / "opencode" / "opencode.json").write_text('{"mcp": {}}')
+    before = _files_under(tmp_path)
+
+    async def preflight(_url: str, _api_key: str) -> None:
+        return None
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        payload: object = {"marketplaces": []} if "marketplace" in command else {"installed": []}
+        if command[0] == "claude":
+            payload = []
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", secret)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+    monkeypatch.setattr(cli, "_preflight", preflight)
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+
+    assert cli.main(["init", "all"]) == 1
+
+    captured = capsys.readouterr()
+    assert _files_under(tmp_path) == before
+    assert secret not in captured.out
+    assert secret not in captured.err
+
+
+@pytest.mark.parametrize("failure", ["missing-executable", "mcp"])
+def test_main_all_failure_before_preflight_or_mcp_leaves_every_target_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    """Breaks if an all-target prerequisite failure reaches an installer."""
+    secret = "test-user-secret"
+    config_home = tmp_path / "config"
+    pi_home = tmp_path / "pi"
+    (config_home / "opencode").mkdir(parents=True)
+    (config_home / "opencode" / "opencode.json").write_text('{"mcp": {}}')
+    pi_home.mkdir()
+    (pi_home / "mcp.json").write_text('{"mcpServers": {}}')
+    before = _files_under(tmp_path)
+
+    async def preflight(_url: str, _api_key: str) -> None:
+        if failure == "mcp":
+            raise cli.CLIError("MCP preflight failed")
+
+    def require(target: str) -> None:
+        if failure == "missing-executable" and target == "pi":
+            raise cli.CLIError("pi executable was not found")
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", secret)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
+    monkeypatch.setattr(cli, "_preflight", preflight)
+    monkeypatch.setattr(cli, "_require_executable", require)
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
+
+    assert cli.main(["init", "all"]) == 1
+
+    captured = capsys.readouterr()
+    assert _files_under(tmp_path) == before
+    assert secret not in captured.out
+    assert secret not in captured.err
+
+
+@pytest.mark.parametrize("target", ["opencode", "pi"])
+def test_main_single_config_target_fails_before_first_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    target: str,
+) -> None:
+    """Breaks if one malformed host config is replaced before its validation error."""
+    secret = "test-user-secret"
+    root = tmp_path / target
+    config = root / ("opencode.json" if target == "opencode" else "mcp.json")
+    asset = root / ("plugins/ach-memory.js" if target == "opencode" else "extensions/ach-memory.js")
+    root.mkdir(parents=True)
+    config.write_text("{invalid json")
+    asset.parent.mkdir(parents=True)
+    asset.write_text("keep this")
+    before = _files_under(tmp_path)
+
+    async def preflight(_url: str, _api_key: str) -> None:
+        return None
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", secret)
+    if target == "opencode":
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    else:
+        monkeypatch.setenv("PI_CODING_AGENT_DIR", str(root))
+    monkeypatch.setattr(cli, "_preflight", preflight)
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
+
+    assert cli.main(["init", target]) == 1
+
+    captured = capsys.readouterr()
+    assert _files_under(tmp_path) == before
+    assert secret not in captured.out
+    assert secret not in captured.err
 
 
 def test_preflight_lists_required_tools_without_calling_memory_tools(

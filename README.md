@@ -26,49 +26,72 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
 The complete contract is [SPEC-v1.md](SPEC-v1.md). The interactive REST
 reference is available at `/docs` when the service is running.
 
-## Quickstart
+## Agent setup
 
-The Compose stack is for local development. It runs Postgres, Hindsight,
-migrations, and the API; published ports bind to loopback.
+### Local service
 
-Set the OpenAI-compatible gateway used by Hindsight and generate a master key:
+Copy the example, set `MEMORY_MASTER_KEY` and its SHA-256 value in `.env`, then
+start the local stack. The shipped mock settings make no real LLM calls.
 
 ```bash
-export HINDSIGHT_LLM_BASE_URL=https://llm.example.com
-export HINDSIGHT_LLM_API_KEY=...
-export MEMORY_MASTER_KEY="mem_local_$(openssl rand -hex 32)"
-export MEMORY_MASTER_KEY_HASH=$(python3 -c \
-  "import hashlib,os; print(hashlib.sha256(os.environ['MEMORY_MASTER_KEY'].encode()).hexdigest())")
-
+cp .env.example .env
+# Edit .env: MEMORY_MASTER_KEY=... and MEMORY_MASTER_KEY_HASH=<sha256 of that key>
 docker compose up -d --build
 ```
 
-The master key is used to provision a user and mint a user key. The API is at
-`http://localhost:8000`; use its `/docs` page for the REST workflow.
+Mint one user key without placing the master key in a curl command argument:
+
+```bash
+set -a; . ./.env; set +a
+curl_config=$(mktemp)
+chmod 600 "$curl_config"
+trap 'rm -f "$curl_config"' EXIT
+cat >"$curl_config" <<EOF
+header = "Authorization: Bearer $MEMORY_MASTER_KEY"
+header = "Content-Type: application/json"
+EOF
+user_id=$(curl --config "$curl_config" -fsS -X POST http://localhost:8000/v1/users -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_id"])')
+user_key=$(curl --config "$curl_config" -fsS -X POST "http://localhost:8000/v1/users/$user_id/keys" -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')
+export ACH_MEMORY_URL=http://localhost:8000
+export ACH_MEMORY_API_KEY="$user_key"
+```
+
+From this checkout, install every supported agent with:
+
+```bash
+uv run ach-memory init all
+```
+
+For an installed package, run `ach-memory init <agent>` (or `all`). Restart the
+selected agents afterward so they inherit `ACH_MEMORY_API_KEY`.
+
+### Remote service
+
+Get a public base URL and user key from the service operator, then run the same
+installer and restart the selected agent:
+
+```bash
+export ACH_MEMORY_URL=https://memory.example.com
+export ACH_MEMORY_API_KEY=<user-key>
+ach-memory init <agent>
+```
+
+Memory is explicit: installation adds memory tools, but agents do not retain or
+recall anything automatically. Ask an agent to use memory when you want it to.
 
 ## MCP
 
-Configure an MCP-capable agent with:
+Configure another MCP-capable agent with:
 
 ```text
 POST http://<host>:8000/mcp/
 x-ach-memory-key: <user key>
 ```
 
-`Authorization: Bearer <user key>` works too and is not deprecated. Prefer the
-dedicated header when anything sits in front of the service — LiteLLM, a
-gateway, ACH all have their own claim on `Authorization`. When both are sent,
-`x-ach-memory-key` wins.
-
-The endpoint exposes 15 tools as one memory surface: retain, sync retain,
-recall, reflect, memory curation, document operations, and async-operation
-inspection/cancellation. The bearer credential is the same user key used by
-REST; the master key is rejected on MCP. v1 supports native/non-browser MCP
-clients only: requests with a browser `Origin` are not supported.
-
-MCP callers provide a memory scope (`user` or `project`) and, for project
-scope, a project slug. Tenant, user, and Hindsight bank identifiers are
-resolved server-side and are not accepted as caller-controlled bank IDs.
+`Authorization: Bearer <user key>` also works. Prefer the dedicated header when
+a gateway already uses `Authorization`; when both are sent,
+`x-ach-memory-key` wins. The master key is rejected on MCP, and v1 supports
+native/non-browser MCP clients only.
 
 ## Important limits
 
@@ -84,18 +107,23 @@ resolved server-side and are not accepted as caller-controlled bank IDs.
 
 ## Configuration
 
-The required settings are:
+| Setting | Default |
+| --- | --- |
+| `MEMORY_DATABASE_URL` | required |
+| `MEMORY_MASTER_KEY_HASH` | required |
+| `MEMORY_HINDSIGHT_URL` | required |
+| `MEMORY_HINDSIGHT_API_KEY` | empty |
+| `MEMORY_TENANT_ID` | `default` |
+| `MEMORY_MAX_CONTENT_BYTES` | `256000` |
+| `MEMORY_MCP_ALLOWED_HOSTS` | `127.0.0.1,localhost` |
+| `MEMORY_HINDSIGHT_TIMEOUT_SECONDS` | `30` |
+| `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS` | `180` |
+| `MEMORY_WRITE_LIMIT` | `60` |
+| `MEMORY_WRITE_WINDOW_SECONDS` | `60` |
 
-```text
-MEMORY_DATABASE_URL
-MEMORY_MASTER_KEY_HASH
-MEMORY_HINDSIGHT_URL
-```
-
-The optional settings are `MEMORY_HINDSIGHT_API_KEY`, `MEMORY_TENANT_ID`,
-`MEMORY_MCP_ALLOWED_HOSTS`, `MEMORY_MAX_CONTENT_BYTES`,
-`MEMORY_HINDSIGHT_TIMEOUT_SECONDS`, `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS`,
-`MEMORY_WRITE_LIMIT`, and `MEMORY_WRITE_WINDOW_SECONDS`. See
+The three required variables are supplied by Compose for local setup; deployed
+service operators configure them separately. Agent users need only
+`ACH_MEMORY_URL` and `ACH_MEMORY_API_KEY`. See
 [src/memory/config.py](src/memory/config.py) for defaults.
 
 ## Development
