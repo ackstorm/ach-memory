@@ -54,9 +54,16 @@ services:
       # silently picks up whatever OPENAI_BASE_URL happens to be in the ambient
       # environment — which is how a green test on a laptop becomes a red one
       # everywhere else.
+      # The host-side knobs are HINDSIGHT_LLM_*, matching HINDSIGHT_LLM_MODEL
+      # below, and deliberately NOT OPENAI_BASE_URL/OPENAI_API_KEY: those are
+      # read implicitly by the OpenAI SDK, so they are already set on developer
+      # machines. Reusing them satisfies the `:?` guards below with a value
+      # nobody chose for this stack -- measured on one such host, it resolved
+      # to http://localhost:8787/v1/v1, which is the *container's* localhost,
+      # and the stack still reported healthy until the first retain.
       HINDSIGHT_API_LLM_PROVIDER: openai
-      HINDSIGHT_API_LLM_BASE_URL: ${LITELLM_BASE_URL:?set LITELLM_BASE_URL}/v1
-      HINDSIGHT_API_LLM_API_KEY: ${LITELLM_API_KEY:?set LITELLM_API_KEY}
+      HINDSIGHT_API_LLM_BASE_URL: ${HINDSIGHT_LLM_BASE_URL:?set HINDSIGHT_LLM_BASE_URL}/v1
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_LLM_API_KEY:?set HINDSIGHT_LLM_API_KEY}
       # Verified working: bedrock.openai.gpt-oss-20b-1-0 (fast, the default)
       # and bedrock.openai.gpt-oss-120b-1-0.
       # Verified BROKEN: gemini.gemini-flash-latest answers

@@ -285,8 +285,11 @@ external dependency is LiteLLM.
 > published literal (`mem_local_master_change_me`) — rotate it.
 
 ```bash
-export LITELLM_BASE_URL=https://llm.example.com
-export LITELLM_API_KEY=...
+# Your OpenAI-compatible gateway. Named HINDSIGHT_LLM_*, not OPENAI_*, so an
+# OPENAI_BASE_URL already exported for something else cannot silently satisfy
+# compose's required-variable guard (see the comment in docker-compose.yml).
+export HINDSIGHT_LLM_BASE_URL=https://llm.example.com
+export HINDSIGHT_LLM_API_KEY=...
 # Generate one. The old literal in this README was a working credential for
 # every stack anyone set up by following it.
 export MEMORY_MASTER_KEY="mem_local_$(openssl rand -hex 32)"
