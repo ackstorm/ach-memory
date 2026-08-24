@@ -29,6 +29,9 @@ dependencies = [
     "mcp-types>=2.0.0",
 ]
 
+[project.scripts]
+ach-memory = "memory.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
