@@ -83,18 +83,20 @@ echo "project memory is owner-scoped"
 
 # Curation against real Hindsight: retain synchronously, find the memory,
 # invalidate it, confirm it leaves the active set, restore it.
+runbook_fact='The deploy runbook lives in docs/runbooks/deploy.md.'
+runbook_marker='docs/runbooks/deploy.md'
 curl -sf -X POST "${API}/v1/memory/sync_retain" \
   -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
-  -d '{"scope":"user","content":"The deploy runbook lives in docs/runbooks/deploy.md."}' \
+  -d '{"scope":"user","content":"'"${runbook_fact}"'"}' \
   >/dev/null
 
 listed=$(curl -sf -X POST "${API}/v1/memory/list" \
   -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
   -d '{"scope":"user","limit":50}')
-mem_id=$(echo "${listed}" | python3 -c \
-  'import json,sys; m=json.load(sys.stdin)["result"]; print((m.get("memories") or m.get("items") or [{}])[0].get("id",""))')
-[ -n "${mem_id}" ] \
-  || { echo "FAIL: no memory listed after sync_retain" >&2; echo "${listed}" >&2; exit 1; }
+if ! mem_id=$(printf '%s' "${listed}" | python3 "$(dirname "$0")/select_curatable_memory.py" "${runbook_marker}"); then
+  echo "FAIL: no matching curatable runbook memory after sync_retain" >&2
+  exit 1
+fi
 echo "listed a memory: ${mem_id}"
 
 curl -sf -X POST "${API}/v1/memory/forget" \
@@ -111,6 +113,13 @@ echo "forget retired it from the active set"
 curl -sf -X POST "${API}/v1/memory/restore" \
   -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
   -d "{\"scope\":\"user\",\"memory_id\":\"${mem_id}\"}" >/dev/null
+restored=$(curl -sf -X POST "${API}/v1/memory/list" \
+  -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
+  -d '{"scope":"user","limit":50}')
+if ! printf '%s' "${restored}" | python3 "$(dirname "$0")/verify_active_memory.py" "${mem_id}"; then
+  echo "FAIL: restore did not return the memory to the active set" >&2
+  exit 1
+fi
 echo "restore brought it back"
 
 # reflect, which is a different Hindsight endpoint from recall. Bounded
@@ -173,7 +182,7 @@ echo "operations/list saw the retain's operation"
 # regex and e2e.py's disagreed on whether an embedded bank id counts (it does)
 # and on whether prj_ counts (it does).
 for body in "${recalled}" "${cross}" "${proj}" "${listed}" "${after}" \
-            "${reflected}" "${docs_listed}" "${ops_listed}" "${op_got}"; do
+            "${restored}" "${reflected}" "${docs_listed}" "${ops_listed}" "${op_got}"; do
   echo "${body}" | python3 "$(dirname "$0")/leakscan.py" \
     || { echo "FAIL: leak scan rejected a response body" >&2; exit 1; }
 done

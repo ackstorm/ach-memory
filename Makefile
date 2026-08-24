@@ -78,3 +78,6 @@ smoke: ## REST + MCP smoke against a running stack (needs MEMORY_MASTER_KEY)
 	./scripts/smoke.sh
 	uv run python scripts/mcp-smoke.py
 
+.PHONY: e2e
+e2e: ## Full E2E in an isolated stack that is always removed afterwards
+	./scripts/e2e-compose.sh

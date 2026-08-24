@@ -142,17 +142,14 @@ def sc_body(scope: str, **kw: Any) -> dict:
 
 
 def acceptable_race_outcome(status: int, data: Any) -> bool:
-    """For an operation that may have already settled by the time we act on
-    it (cancel_operation racing Hindsight's own processing): success, or any
-    well-formed typed DomainError envelope, is an acceptable outcome. Only an
-    untyped/INTERNAL_ERROR shape (or a leak, scanned separately) is a real
-    failure here -- see the operations.cancel scenario docstring."""
+    """Accept only cancellation success or its typed terminal-operation race."""
     if status == 200:
         return True
     return (
-        isinstance(data, dict)
+        status == 409
+        and isinstance(data, dict)
         and isinstance(data.get("error"), dict)
-        and data["error"].get("code") not in (None, "INTERNAL_ERROR")
+        and data["error"].get("code") == "OPERATION_NOT_CANCELLABLE"
     )
 
 
@@ -590,6 +587,7 @@ async def _() -> None:
         "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
     )
     expect_status("POST", "/v1/memory/sync_retain", body, status, data, 200)
+    S["memory.user_seed_written"] = True
 
     recall_body = sc_body("user", query=USER_FACT_QUERY)
     status, data = await call(
@@ -603,7 +601,9 @@ async def _() -> None:
 
 @scenario("memory.second_user_cannot_see_first_users_memory")
 async def _() -> None:
-    need("key.alice", "key.bob")  # depends on memory.sync_retain_and_recall_user_scope's write
+    need(
+        "key.alice", "key.bob", "memory.user_seed_written"
+    )  # depends on memory.sync_retain_and_recall_user_scope's write
     body = sc_body("user", query=USER_FACT_QUERY)
     status, data = await call("POST", "/v1/memory/recall", S["key.bob"], json_body=body)
     expect_status("POST", "/v1/memory/recall", body, status, data, 200)
@@ -951,22 +951,10 @@ async def _() -> None:
 
 @scenario("operations.cancel")
 async def _() -> None:
-    """Best-effort: Hindsight may already have finished extraction by the
-    time this runs, in which case cancel legitimately reports the operation
-    is no longer cancellable. Only an untyped/INTERNAL_ERROR shape (or a
-    leak, scanned separately) is a real failure here.
-
-    Note: a race loss surfaces as HTTP 502 HINDSIGHT_ERROR (observed live
-    when `details` still carried upstream_status 409; that field was removed
-    because it told an untrusted caller about the backend's auth state, so the
-    409 is now visible only in the service's own logs) -- Hindsight's own
-    409 Conflict for
-    "already completed" gets folded into the same catch-all as a genuine
-    backend fault by memory.hindsight.client._request's blanket
-    `status >= 400 -> HindsightError`, which reads as "our backend is
-    broken" rather than "that operation already finished." Flagged in
-    e2e-report.md; tolerated here so this scenario is deterministic across
-    runs rather than flaking on the race.
+    """Best-effort cancellation with exactly two acceptable race outcomes:
+    HTTP 200 success, or HTTP 409 with the typed
+    OPERATION_NOT_CANCELLABLE error when extraction already finished.
+    Every other status, error code, or malformed response is a failure.
     """
     need("operation.async_retain", "key.alice")
     op_id = S["operation.async_retain"]
@@ -1362,8 +1350,7 @@ async def _() -> None:
         ops = await tool("list_operations", {"scope": "user", "limit": 50})
         op_ids = {o["id"] for o in ops.get("operations", [])}
         assert op_id in op_ids, f"mcp list_operations missing the retain op: {ops}"
-        # 7. cancel_operation (best-effort -- see operations.cancel's docstring
-        # for why an already-settled operation is an acceptable outcome too)
+        # 7. cancel_operation (success or typed OPERATION_NOT_CANCELLABLE)
         cancel_res = await session.call_tool(
             "cancel_operation", {"scope": "user", "operation_id": op_id}
         )
