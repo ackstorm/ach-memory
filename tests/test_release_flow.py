@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -76,6 +77,20 @@ def test_release_bump_requires_a_valid_version_without_changing_files(tmp_path):
     ]
     before = [path.read_bytes() for path in tracked]
 
+    # Scrubbed, not inherited. `make release-cut VERSION=X` runs `$(MAKE)
+    # verify`, and a variable set on make's command line is handed to every
+    # sub-make through MAKEFLAGS and to each recipe's environment -- so this
+    # subprocess saw VERSION=X, `test -n` passed, and the no-argument case
+    # returned 0. The assertion below then failed for a reason that had
+    # nothing to do with the guard it is testing, which made `make
+    # release-cut` unable to pass its own gate. Standalone `make test` never
+    # showed it, because nothing set VERSION there.
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("VERSION", "MAKEFLAGS", "MFLAGS")
+    }
+
     for arguments in ([], ["VERSION=1.2"]):
         result = subprocess.run(
             ["make", "release-bump", *arguments],
@@ -83,6 +98,7 @@ def test_release_bump_requires_a_valid_version_without_changing_files(tmp_path):
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
 
         assert result.returncode != 0
