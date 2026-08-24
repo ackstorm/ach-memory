@@ -111,7 +111,12 @@ def _marketplace_locations(target: str, payload: object) -> dict[str, Path]:
 
 
 def _installed_plugins(target: str, payload: object) -> set[str]:
-    entries = payload.get("installed") if target == "codex" and isinstance(payload, dict) else payload
+    if target == "codex":
+        if not isinstance(payload, dict) or set(payload) != {"installed"}:
+            raise CLIError("codex returned unsupported plugin JSON")
+        entries = payload["installed"]
+    else:
+        entries = payload
     field = "pluginId" if target == "codex" else "id"
     if not isinstance(entries, list):
         raise CLIError(f"{target} returned unsupported plugin JSON")

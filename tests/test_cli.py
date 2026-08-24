@@ -210,6 +210,31 @@ def test_native_install_rejects_bare_list_codex_marketplace_json(
     assert commands == [["codex", "plugin", "marketplace", "list", "--json"]]
 
 
+def test_native_install_rejects_bare_list_codex_plugin_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if Codex's object-shaped plugin response is treated as a bare list."""
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        payload = {"marketplaces": []} if "marketplace" in command else []
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+
+    with pytest.raises(cli.CLIError, match="unsupported plugin JSON"):
+        cli._install_native("codex", "https://host/prefix/mcp/")
+
+    assert commands == [
+        ["codex", "plugin", "marketplace", "list", "--json"],
+        ["codex", "plugin", "list", "--json"],
+    ]
+    assert not (tmp_path / "data" / "ach-memory" / "codex-marketplace").exists()
+
+
 @pytest.mark.parametrize(
     ("target", "expected_mcp", "install_command"),
     [
