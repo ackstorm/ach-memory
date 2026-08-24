@@ -131,19 +131,27 @@ def test_preflight_rejects_empty_key_before_opening_connection(
 
 
 class _NativeRunner:
-    def __init__(self, target: str, *, marketplace_present: bool, installed: bool) -> None:
+    def __init__(
+        self,
+        target: str,
+        *,
+        marketplace_present: bool,
+        installed: bool,
+        marketplace_location: str | None = None,
+    ) -> None:
         self.target = target
         self.marketplace_present = marketplace_present
         self.installed = installed
+        self.marketplace_location = marketplace_location
         self.commands: list[list[str]] = []
 
     def __call__(self, command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
         if command[-3:] == ["marketplace", "list", "--json"]:
             payload: object = (
-                {"marketplaces": [{"name": "ach-memory"}]}
+                {"marketplaces": [{"name": "ach-memory", "root": self.marketplace_location}]}
                 if self.target == "codex"
-                else [{"name": "ach-memory"}]
+                else [{"name": "ach-memory", "installLocation": self.marketplace_location}]
             ) if self.marketplace_present else ({"marketplaces": []} if self.target == "codex" else [])
             return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
         if command[-2:] == ["list", "--json"]:
@@ -155,7 +163,51 @@ class _NativeRunner:
             return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
         if "marketplace" in command and "add" in command:
             self.marketplace_present = True
+            self.marketplace_location = command[-2] if self.target == "codex" else command[-1]
         return subprocess.CompletedProcess(command, 0, "", "")
+
+
+@pytest.mark.parametrize("target", ["codex", "claude"])
+def test_native_install_rejects_an_ach_memory_marketplace_at_a_different_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str
+) -> None:
+    """Breaks if a stale same-named marketplace can receive plugin mutations."""
+    runner = _NativeRunner(
+        target,
+        marketplace_present=True,
+        installed=False,
+        marketplace_location=str(tmp_path / "foreign-marketplace"),
+    )
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+
+    with pytest.raises(cli.CLIError, match="different location"):
+        cli._install_native(target, "https://host/prefix/mcp/")
+
+    assert not (tmp_path / "data" / "ach-memory" / f"{target}-marketplace").exists()
+    assert all(command[-2:] == ["list", "--json"] for command in runner.commands)
+
+
+def test_native_install_rejects_bare_list_codex_marketplace_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if Codex's object-shaped marketplace response is treated as a bare list."""
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        payload = [] if "marketplace" in command else {"installed": []}
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+
+    with pytest.raises(cli.CLIError, match="unsupported marketplace JSON"):
+        cli._install_native("codex", "https://host/prefix/mcp/")
+
+    assert commands == [["codex", "plugin", "marketplace", "list", "--json"]]
 
 
 @pytest.mark.parametrize(
@@ -251,7 +303,7 @@ def test_native_install_refreshes_only_an_existing_ach_memory_plugin(
     expected_command: list[str],
 ) -> None:
     """Breaks if an existing plugin is reinstalled or a different plugin is refreshed."""
-    runner = _NativeRunner(target, marketplace_present=True, installed=True)
+    runner = _NativeRunner(target, marketplace_present=False, installed=True)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)

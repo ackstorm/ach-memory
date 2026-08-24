@@ -87,13 +87,27 @@ def _run_json(command: list[str]) -> object:
         raise CLIError(f"{command[0]} returned unsupported plugin JSON") from exc
 
 
-def _marketplace_names(target: str, payload: object) -> set[str]:
-    entries = payload.get("marketplaces") if target == "codex" and isinstance(payload, dict) else payload
+def _marketplace_locations(target: str, payload: object) -> dict[str, Path]:
+    if target == "codex":
+        if not isinstance(payload, dict) or set(payload) != {"marketplaces"}:
+            raise CLIError("codex returned unsupported marketplace JSON")
+        entries = payload["marketplaces"]
+        location = "root"
+    else:
+        entries = payload
+        location = "installLocation"
     if not isinstance(entries, list):
         raise CLIError(f"{target} returned unsupported marketplace JSON")
-    if any(not isinstance(entry, dict) or not isinstance(entry.get("name"), str) for entry in entries):
-        raise CLIError(f"{target} returned unsupported marketplace JSON")
-    return {entry["name"] for entry in entries}
+    marketplaces: dict[str, Path] = {}
+    for entry in entries:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        path = entry.get(location) if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not isinstance(path, str) or not Path(path).is_absolute():
+            raise CLIError(f"{target} returned unsupported marketplace JSON")
+        if name in marketplaces:
+            raise CLIError(f"{target} returned unsupported marketplace JSON")
+        marketplaces[name] = Path(path).resolve()
+    return marketplaces
 
 
 def _installed_plugins(target: str, payload: object) -> set[str]:
@@ -111,9 +125,13 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def _render_marketplace(target: str, url: str) -> Path:
+def _marketplace_destination(target: str) -> Path:
     data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
-    destination = data_home / "ach-memory" / f"{target}-marketplace"
+    return data_home / "ach-memory" / f"{target}-marketplace"
+
+
+def _render_marketplace(target: str, url: str) -> Path:
+    destination = _marketplace_destination(target)
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{target}-marketplace-", dir=destination.parent))
     shutil.rmtree(staging)
@@ -182,14 +200,17 @@ def _install_native(target: str, url: str) -> None:
         raise CLIError(f"native installation is not available for {target}")
     _require_executable(target)
 
-    marketplace = _marketplace_names(
+    destination = _marketplace_destination(target)
+    marketplaces = _marketplace_locations(
         target, _run_json([target, "plugin", "marketplace", "list", "--json"])
     )
+    if "ach-memory" in marketplaces and marketplaces["ach-memory"] != destination.resolve():
+        raise CLIError("ach-memory marketplace is registered at a different location")
     installed = _installed_plugins(target, _run_json([target, "plugin", "list", "--json"]))
     destination = _render_marketplace(target, url)
     plugin = "ach-memory@ach-memory"
 
-    if "ach-memory" not in marketplace:
+    if "ach-memory" not in marketplaces:
         command = [target, "plugin", "marketplace", "add"]
         if target == "claude":
             command.extend(["--scope", "user"])
