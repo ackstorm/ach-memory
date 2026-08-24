@@ -4,12 +4,12 @@
 Unlike scripts/smoke.sh (REST happy path only) and scripts/mcp-smoke.py (7 of
 15 MCP tools), this exercises every documented surface: identity/access,
 projects, memory in both scopes, curation, documents, operations, directives,
-mental models, admin, all fifteen MCP tools, and rate limiting -- against the
-live docker-compose stack, not mocks.
+mental models, admin, all fifteen MCP tools, and rate limiting -- against an
+isolated docker-compose stack. Hindsight, its worker and both databases are
+real; Hindsight's built-in MockLLM replaces only external model calls.
 
 Usage:
-    set -a && . ./.env && set +a
-    uv run python scripts/e2e.py
+    make e2e
 
 Design
 ------
@@ -153,6 +153,38 @@ def acceptable_race_outcome(status: int, data: Any) -> bool:
     )
 
 
+def validate_mock_reflect_result(result: Any, label: str) -> dict:
+    """Validate Hindsight 0.9.1's ReflectResponse without semantic claims.
+
+    MockLLM deliberately returns generic prose, so knowledge keywords cannot
+    prove anything. The response contract still can: non-empty text and, when
+    present, internally consistent non-negative token usage.
+    """
+    assert isinstance(result, dict), f"{label}: reflect result is not an object: {result!r}"
+    text = result.get("text")
+    assert isinstance(text, str) and text.strip(), (
+        f"{label}: reflect result has no non-empty text: {result!r}"
+    )
+    usage = result.get("usage")
+    if usage is not None:
+        assert isinstance(usage, dict), f"{label}: reflect usage is not an object: {usage!r}"
+        tokens = {}
+        for field in ("input_tokens", "output_tokens", "total_tokens"):
+            value = usage.get(field)
+            assert isinstance(value, int) and not isinstance(value, bool) and value >= 0, (
+                f"{label}: reflect usage has invalid {field}: {usage!r}"
+            )
+            tokens[field] = value
+        assert tokens["total_tokens"] == tokens["input_tokens"] + tokens["output_tokens"], (
+            f"{label}: reflect usage totals are inconsistent: {usage!r}"
+        )
+    return result
+
+
+def _mock_llm_enabled() -> bool:
+    return os.environ.get("HINDSIGHT_LLM_PROVIDER") == "mock"
+
+
 async def reflect_with_retry(
     body: dict, key: str, expect_kw: str, *, attempts: int = 4, delay: float = 3.0
 ) -> dict:
@@ -160,7 +192,18 @@ async def reflect_with_retry(
     Hindsight's post-write consolidation has finished, and answers "I don't
     have information" even though the fact is already searchable via
     `recall`. Bounded retry (fixed attempt count, not a naked poll loop) so a
-    call made right after a write is not a flaky failure."""
+    call made right after a write is not a flaky failure. MockLLM has no
+    semantic knowledge to wait for, so its one response is validated only
+    against Hindsight's structural contract."""
+    if _mock_llm_enabled():
+        status, data = await call(
+            "POST", "/v1/memory/reflect", key, json_body=body, timeout=60.0
+        )
+        expect_status("POST", "/v1/memory/reflect", body, status, data, 200)
+        assert isinstance(data, dict), f"REST reflect response is not an object: {data!r}"
+        validate_mock_reflect_result(data.get("result"), "REST reflect")
+        return data
+
     last: dict = {}
     for _ in range(attempts):
         status, data = await call(
@@ -173,6 +216,31 @@ async def reflect_with_retry(
         await asyncio.sleep(delay)
     raise AssertionError(
         f"reflect never surfaced {expect_kw!r} after {attempts} attempts: {last}"
+    )
+
+
+async def mcp_reflect_with_retry(
+    tool_call: Callable[[str, dict], Awaitable[dict]],
+    args: dict,
+    expect_kw: str,
+    *,
+    attempts: int = 4,
+    delay: float = 3.0,
+) -> dict:
+    """Call MCP reflect once under MockLLM, retaining real-model retries."""
+    if _mock_llm_enabled():
+        result = await tool_call("reflect", args)
+        return validate_mock_reflect_result(result, "MCP reflect")
+
+    last: dict = {}
+    for _ in range(attempts):
+        result = await tool_call("reflect", args)
+        if expect_kw in json.dumps(result).lower():
+            return result
+        last = result
+        await asyncio.sleep(delay)
+    raise AssertionError(
+        f"mcp reflect never surfaced {expect_kw!r} after {attempts} attempts: {last}"
     )
 
 
@@ -1317,20 +1385,6 @@ async def _() -> None:
             res = await session.call_tool(name, args)
             return mcp_unwrap(f"mcp:{name}", res)
 
-        async def reflect_tool(args: dict, expect_kw: str, attempts=4, delay=3.0) -> dict:
-            """Same bounded-retry reasoning as reflect_with_retry: reflect
-            can run ahead of Hindsight's post-write consolidation."""
-            last: dict = {}
-            for _ in range(attempts):
-                out = await tool("reflect", args)
-                if expect_kw in json.dumps(out).lower():
-                    return out
-                last = out
-                await asyncio.sleep(delay)
-            raise AssertionError(
-                f"mcp reflect never surfaced {expect_kw!r} after {attempts} attempts: {last}"
-            )
-
         # 1. sync_retain
         await tool("sync_retain", {"scope": "user", "content": content})
         # 2. recall
@@ -1422,10 +1476,10 @@ async def _() -> None:
         assert del_res.is_error, "get_document still found a document mcp just deleted"
 
         # 3. reflect -- last, so real time has passed since the writes above.
-        await reflect_tool(
+        await mcp_reflect_with_retry(
+            tool,
             {"scope": "user", "query": "what tool manages python dependencies"}, "uv"
         )
-        called.append("reflect")
 
         exercised = set(called) | {"list_memories", "get_memory"}
         missing = EXPECTED_MCP_TOOLS - exercised
@@ -1460,14 +1514,19 @@ async def _() -> None:
     attempts = 0
     for i in range(80):
         attempts += 1
-        body = sc_body("user", content=f"E2E-{RUN} rate limit probe {i}")
-        status, data = await call("POST", "/v1/memory/retain", key, json_body=body)
+        body = sc_body(
+            "user",
+            name=f"e2e-ratelimit-{RUN}-{i}",
+            content="Rate-limit probe without LLM extraction.",
+        )
+        status, data = await call("POST", "/v1/directives", key, json_body=body)
         if status == 429:
+            expect_code("POST", "/v1/directives", body, status, data, "RATE_LIMITED")
             hit = data
             break
+        expect_status("POST", "/v1/directives", body, status, data, 201)
     assert hit is not None, f"never saw RATE_LIMITED after {attempts} rapid writes"
-    assert hit.get("error", {}).get("code") == "RATE_LIMITED", hit
-    print(f"    note: rate-limited after {attempts} writes on one credential")
+    print(f"    note: rate-limited after {attempts} directive writes on one credential")
 
     # A different credential must be unaffected.
     other_body = sc_body("user", content=f"E2E-{RUN}: unaffected credential check.")

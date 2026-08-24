@@ -79,5 +79,5 @@ smoke: ## REST + MCP smoke against a running stack (needs MEMORY_MASTER_KEY)
 	uv run python scripts/mcp-smoke.py
 
 .PHONY: e2e
-e2e: ## Full E2E in an isolated stack that is always removed afterwards
+e2e: ## Isolated full E2E with MockLLM (no external LLM or credentials)
 	./scripts/e2e-compose.sh

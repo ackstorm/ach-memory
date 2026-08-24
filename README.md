@@ -395,12 +395,20 @@ disagree with its server). Read it before changing anything infrastructural.
 
 ```bash
 uv sync --dev
+make e2e                              # isolated stack, automatic teardown
+
 docker compose up -d postgres           # our database only
 uv run pytest -m "not integration"      # 497 passed, 2 deselected, no Hindsight needed
 
 docker compose up -d hindsight          # adds Hindsight + its database
 uv run pytest -m integration            # live round-trip
 ```
+
+`make e2e` needs no LLM URL or API key and makes zero external LLM requests.
+It runs Hindsight 0.9.1, its database and background worker for real, but
+forces Hindsight's built-in `MockLLM` for extraction, consolidation and
+reflection. The uniquely named Compose project and all its volumes are removed
+on success, failure or interruption.
 
 The test suite runs against its own `memory_test` database on the same
 Postgres server (created automatically on first run), never against the

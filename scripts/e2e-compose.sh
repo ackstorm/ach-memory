@@ -4,9 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-: "${HINDSIGHT_LLM_BASE_URL:?set HINDSIGHT_LLM_BASE_URL for the E2E stack}"
-: "${HINDSIGHT_LLM_API_KEY:?set HINDSIGHT_LLM_API_KEY for the E2E stack}"
-
 run_id="$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
 project="ach-memory-e2e-${run_id}"
 compose=(docker compose -f "$ROOT/docker-compose.yml" -p "$project")
@@ -37,6 +34,16 @@ export MEMORY_POSTGRES_PORT=0
 export MEMORY_HINDSIGHT_PORT=0
 export MEMORY_API_PORT=0
 export MEMORY_MCP_ALLOWED_HOSTS="127.0.0.1:*,localhost:*"
+
+# The full E2E exercises the real Hindsight server, worker and persistence,
+# but its built-in MockLLM performs extraction/consolidation/reflect without
+# any external request. Override ambient real-provider settings unconditionally
+# so this gate cannot consume a developer or CI credential by accident. The
+# guarded base/key settings remain local, inert placeholders for Compose.
+export HINDSIGHT_LLM_PROVIDER=mock
+export HINDSIGHT_LLM_MODEL=mock-model
+export HINDSIGHT_LLM_BASE_URL=http://127.0.0.1:9
+export HINDSIGHT_LLM_API_KEY=e2e-mock-not-a-secret
 
 # The stack owns a fresh credential. Only its hash reaches the API container;
 # neither value is printed or passed as a command-line argument.
