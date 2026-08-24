@@ -2350,7 +2350,7 @@ MCP surface are Plans 2 and 3.
 ## Run locally
 
 ```bash
-export LITELLM_BASE_URL=https://api.ackstorm.ai
+export LITELLM_BASE_URL=https://llm.example.com
 export LITELLM_API_KEY=...                       # your key
 export MEMORY_MASTER_KEY="mem_local_master_change_me"
 export MEMORY_MASTER_KEY_HASH=$(python -c \

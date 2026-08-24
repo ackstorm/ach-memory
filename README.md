@@ -285,7 +285,7 @@ external dependency is LiteLLM.
 > published literal (`mem_local_master_change_me`) — rotate it.
 
 ```bash
-export LITELLM_BASE_URL=https://api.ackstorm.ai
+export LITELLM_BASE_URL=https://llm.example.com
 export LITELLM_API_KEY=...
 # Generate one. The old literal in this README was a working credential for
 # every stack anyone set up by following it.
@@ -317,9 +317,9 @@ healthy and then the first retain fails with
 
 **The model matters.** Hindsight extracts facts through function calling and
 rejects any response carrying `tool_calls` with empty message content. Verified
-working: `bedrock.openai.gpt-oss-20b-1-0` (the default, and fast),
-`bedrock.openai.gpt-oss-120b-1-0`, `ackstorm.smart`. Verified broken:
-`ackstorm.fast` and `gemini.gemini-flash-latest` fail that way, and every retain
+working: `bedrock.openai.gpt-oss-20b-1-0` (the default, and fast) and
+`bedrock.openai.gpt-oss-120b-1-0`. Verified broken:
+`gemini.gemini-flash-latest` fails that way, and every retain
 dies after four retries while the service still reports healthy;
 `kubeai.gpt-oss-20b` times out. Change `HINDSIGHT_LLM_MODEL` only with a smoke
 run to back it.

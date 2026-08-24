@@ -58,8 +58,8 @@ services:
       HINDSIGHT_API_LLM_BASE_URL: ${LITELLM_BASE_URL:?set LITELLM_BASE_URL}/v1
       HINDSIGHT_API_LLM_API_KEY: ${LITELLM_API_KEY:?set LITELLM_API_KEY}
       # Verified working: bedrock.openai.gpt-oss-20b-1-0 (fast, the default)
-      # and bedrock.openai.gpt-oss-120b-1-0 and ackstorm.smart.
-      # Verified BROKEN: ackstorm.fast and gemini.gemini-flash-latest answer
+      # and bedrock.openai.gpt-oss-120b-1-0.
+      # Verified BROKEN: gemini.gemini-flash-latest answers
       # with finish_reason=tool_calls and empty message content, which
       # Hindsight's fact extractor rejects — every retain dies after 4 retries
       # while the service still looks healthy. kubeai.gpt-oss-20b times out.

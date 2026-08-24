@@ -199,8 +199,6 @@ extracts facts through function calling and rejects any response carrying
 |---|---|
 | `bedrock.openai.gpt-oss-20b-1-0` | works, whole smoke in ~2s — **the default** |
 | `bedrock.openai.gpt-oss-120b-1-0` | works |
-| `ackstorm.smart` | works, slower |
-| `ackstorm.fast` | **fails** — tool_calls, empty content, 4 retries then error |
 | `gemini.gemini-flash-latest` | **fails**, same way |
 | `kubeai.gpt-oss-20b` | **times out** |
 

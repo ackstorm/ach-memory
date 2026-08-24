@@ -3266,7 +3266,7 @@ git commit -m "fix(auth): 404 for a master key's unknown user, accept lowercase 
 
 ### Task 25: Give the LLM-bound calls their own timeout
 
-**R3-I-3.** One 30 s `httpx` timeout covers both a cheap GET and `sync_retain`, which blocks until Hindsight has run fact extraction through an LLM. `docs/PROJECT-STATE.md` records `ackstorm.smart` as "works, slower" and `kubeai.gpt-oss-20b` as timing out outright, so 30 s is not comfortably above the ceiling. A `ReadTimeout` is caught as an `httpx.HTTPError`, `response` is `None`, and the caller gets `HINDSIGHT_ERROR (502) "memory backend unreachable"` — a code whose entire meaning to an agent is "the backend is unwell, retry". Hindsight's in-process worker completes the original write anyway, the agent retries, and the bank holds the document twice. `retain` has `operation_id` for exactly this; `sync_retain`'s description gives the model no reason to supply one.
+**R3-I-3.** One 30 s `httpx` timeout covers both a cheap GET and `sync_retain`, which blocks until Hindsight has run fact extraction through an LLM. `docs/PROJECT-STATE.md` records `kubeai.gpt-oss-20b` as timing out outright, so 30 s is not comfortably above the ceiling. A `ReadTimeout` is caught as an `httpx.HTTPError`, `response` is `None`, and the caller gets `HINDSIGHT_ERROR (502) "memory backend unreachable"` — a code whose entire meaning to an agent is "the backend is unwell, retry". Hindsight's in-process worker completes the original write anyway, the agent retries, and the bank holds the document twice. `retain` has `operation_id` for exactly this; `sync_retain`'s description gives the model no reason to supply one.
 
 **Files:**
 - Modify: `src/memory/config.py`, `src/memory/hindsight/client.py`

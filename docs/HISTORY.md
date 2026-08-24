@@ -41,7 +41,7 @@ when, and in what sequence.
 - 2026-08-21 docs: use gemini.gemini-flash-latest for Hindsight extraction
 - 2026-08-21 feat: container packaging and full end-to-end compose scenario
 - 2026-08-21 docs: plan records pgvector and the working model
-- 2026-08-21 docs: record that ackstorm.fast and gemini-flash both fail fact extraction
+- 2026-08-21 docs: record that two gateway aliases fail fact extraction
 - 2026-08-21 fix: commit before responding, mute httpx logs, expire the materialization cache
 - 2026-08-21 docs: plan reflects rollback-only session dependency
 - 2026-08-21 feat: default to bedrock gpt-oss-20b, record the model survey
