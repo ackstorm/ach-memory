@@ -99,6 +99,37 @@ def test_cancel_uses_the_bare_delete_path_not_the_delete_suffix(client, juan, te
 
 
 @respx.mock
+def test_cancelling_a_terminal_operation_is_a_conflict(client, juan, tenant):
+    """The terminal-state response is safe and actionable, never an upstream 502."""
+    op_id = "33333333-3333-3333-3333-333333333333"
+    _mock_bank()
+    respx.delete(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{op_id}$"
+    ).mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "detail": f"operation {op_id} in bank user_sensitive_bank is complete",
+                "status": 409,
+            },
+        )
+    )
+
+    response = client.post(
+        "/v1/memory/operations/cancel",
+        json={"scope": "user", "operation_id": op_id},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "OPERATION_NOT_CANCELLABLE"
+    assert "user_sensitive_bank" not in response.text
+    assert op_id not in response.text
+    assert "complete" not in response.text
+    assert '"status":409' not in response.text
+
+
+@respx.mock
 def test_a_missing_operation_is_a_404(client, juan, tenant):
     """Measured against a live server: GET on an absent operation is a 200
     with {"status": "not_found"}, never an upstream 404 -- the mock here

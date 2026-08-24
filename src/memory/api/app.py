@@ -143,7 +143,10 @@ def create_app() -> FastAPI:
         mcp.streamable_http_app(
             streamable_http_path="/",
             transport_security=TransportSecuritySettings(
-                allowed_hosts=allowed, allowed_origins=allowed
+                allowed_hosts=allowed,
+                # v1 supports native/non-browser MCP clients only; browser
+                # Origin support stays off until a tested requirement exists.
+                # Host values are not origins, so leave this SDK default empty.
             ),
         ),
     )

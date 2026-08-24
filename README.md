@@ -237,6 +237,10 @@ exactly this reason: the compose file always publishes the api on
 `localhost:8000`, so the fix belongs in the deployment config once, not in
 every agent's client setup.
 
+v1 supports native/non-browser MCP clients. Requests carrying a browser
+`Origin` are deliberately rejected; browser-origin MCP support will be added
+only when a tested requirement exists.
+
 | Tool | What it does |
 |---|---|
 | `retain` | Store something worth remembering; returns immediately with an operation to follow up with `get_operation`. |

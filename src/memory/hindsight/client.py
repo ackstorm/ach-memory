@@ -14,6 +14,7 @@ from memory.errors import (
     MemoryNotCuratable,
     MemoryNotFound,
     MentalModelNotFound,
+    OperationNotCancellable,
     OperationNotFound,
     UpstreamRejected,
 )
@@ -119,6 +120,7 @@ class HindsightClient:
         params: dict[str, Any] | None = None,
         not_found: type[DomainError] | None = None,
         bad_request: type[DomainError] | None = None,
+        conflict: type[DomainError] | None = None,
         timeout: httpx.Timeout | None = None,
     ) -> dict:
         response = None
@@ -157,6 +159,14 @@ class HindsightClient:
             # body is still never echoed -- it can name the bank.
             logger.warning("hindsight 400 mapped to %s", bad_request.__name__)
             raise bad_request("this memory cannot be curated")
+
+        if response.status_code == 409 and conflict is not None:
+            # A terminal operation cannot be cancelled. This is route-specific:
+            # other upstream conflicts retain their existing HINDSIGHT_ERROR
+            # mapping. The upstream body can name the bank or operation, so it
+            # is neither returned nor attached to the domain error.
+            logger.warning("hindsight 409 mapped to %s", conflict.__name__)
+            raise conflict("the operation is no longer cancellable")
 
         if response.status_code == 422:
             # The upstream is FastAPI: a schema violation is a 422, never a
@@ -339,6 +349,7 @@ class HindsightClient:
             "DELETE",
             paths.operation(self._tenant, bank_id, operation_id),
             not_found=OperationNotFound,
+            conflict=OperationNotCancellable,
         )
 
     def create_directive(

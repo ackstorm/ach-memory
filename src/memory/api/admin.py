@@ -141,7 +141,13 @@ def clear_memories(
     """
     body = _admin_scope(scope, user_id, project_slug)
     bank_id, resolved_from, resolved_slug = _resolve_bank(
-        body, db, principal, on_behalf_of, "admin.memory.clear", create=False
+        body,
+        db,
+        principal,
+        on_behalf_of,
+        "admin.memory.clear",
+        create=False,
+        is_write=True,
     )
     # Commit AFTER the upstream call, unlike every other route in this
     # service. Elsewhere the committed state is "a master key touched this
@@ -183,7 +189,13 @@ def delete_bank(
     """
     body = _admin_scope(scope, user_id, project_slug)
     bank_id, resolved_from, resolved_slug = _resolve_bank(
-        body, db, principal, on_behalf_of, "admin.memory.delete", create=False
+        body,
+        db,
+        principal,
+        on_behalf_of,
+        "admin.memory.delete",
+        create=False,
+        is_write=True,
     )
     # Commit AFTER the upstream call, unlike every other route in this
     # service. Elsewhere the committed state is "a master key touched this

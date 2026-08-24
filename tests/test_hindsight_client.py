@@ -4,6 +4,7 @@ import respx
 
 from memory.errors import (
     DocumentNotFound,
+    DomainError,
     HindsightError,
     MemoryNotFound,
     MentalModelNotFound,
@@ -251,6 +252,25 @@ def test_cancel_operation_does_not_use_the_delete_suffix(client):
     client.cancel_operation(BANK, OP_ID)
 
     assert route.calls.last.request.url.path.endswith(f"/operations/{OP_ID}")
+
+
+@respx.mock
+def test_cancel_operation_409_is_operation_not_cancellable(client):
+    """A terminal operation is a caller-visible conflict, not a backend fault."""
+    respx.delete(f"{BASE}/v1/default/banks/{BANK}/operations/{OP_ID}").mock(
+        return_value=httpx.Response(
+            409, json={"detail": f"operation {OP_ID} in bank {BANK} is complete"}
+        )
+    )
+
+    with pytest.raises(DomainError) as caught:
+        client.cancel_operation(BANK, OP_ID)
+
+    assert caught.value.code == "OPERATION_NOT_CANCELLABLE"
+    rendered = f"{caught.value!r} {caught.value.details} {caught.value.__context__!r}"
+    assert BANK not in rendered
+    assert OP_ID not in rendered
+    assert "complete" not in rendered
 
 
 @respx.mock

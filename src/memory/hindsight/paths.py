@@ -8,6 +8,8 @@ memories" in openapi.json), not the `/memory/retain` path guessed from
 Hindsight's (self-contradictory) published docs -- the discovered value wins.
 """
 
+from urllib.parse import unquote
+
 from memory.errors import DocumentNotFound, DomainError, MentalModelNotFound
 
 
@@ -43,15 +45,37 @@ def _reject_path_traversal(value: str, not_found: type[DomainError]) -> None:
     Raising `not_found` (never a 400) makes the refusal indistinguishable
     from an absent object: it discloses nothing about why the id was
     rejected.
+
+    The invariant is evaluated after each percent-decoding layer, until it
+    reaches a fixed point: no layer may contain a leading slash or backslash,
+    a backslash, `?`/`#`, a dot segment, or a control character.  Literal
+    slashes remain valid document-id syntax, but an encoded slash is refused
+    before it can become a new path delimiter.  A literal `%` (including a
+    malformed or harmless escape) remains valid unless a later decoded layer
+    creates one of those unsafe forms.
     """
-    if not value or value.startswith("/"):
-        raise not_found("no such object in this memory")
-    if "?" in value or "#" in value:
-        raise not_found("no such object in this memory")
-    if any(segment in (".", "..") for segment in value.split("/")):
-        raise not_found("no such object in this memory")
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
-        raise not_found("no such object in this memory")
+    candidate = value
+    while True:
+        if not candidate or candidate.startswith(("/", "\\")):
+            raise not_found("no such object in this memory")
+        if "\\" in candidate or "?" in candidate or "#" in candidate:
+            raise not_found("no such object in this memory")
+        if any(segment in (".", "..") for segment in candidate.split("/")):
+            raise not_found("no such object in this memory")
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in candidate):
+            raise not_found("no such object in this memory")
+
+        decoded = unquote(candidate)
+        if decoded == candidate:
+            return
+
+        # Literal `/` remains supported in caller-managed document ids, but a
+        # percent-decoded slash is newly introduced delimiter syntax.  Reject
+        # it before moving to the next decoding layer; `\\` is rejected above
+        # once decoded for the same reason.
+        if "%2f" in candidate.lower():
+            raise not_found("no such object in this memory")
+        candidate = decoded
 
 
 def reject_document_traversal(document_id: str) -> None:

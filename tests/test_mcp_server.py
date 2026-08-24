@@ -170,9 +170,45 @@ def test_the_mcp_endpoint_answers_the_host_it_is_configured_for(
         allowed = c.post(
             "/mcp/", json=body, headers={**headers, "Host": "memory.example.com"}
         )
+        origin_refused = c.post(
+            "/mcp/",
+            json=body,
+            headers={
+                **headers,
+                "Host": "memory.example.com",
+                "Origin": "https://memory.example.com",
+            },
+        )
         refused = c.post(
             "/mcp/", json=body, headers={**headers, "Host": "evil.example.com"}
         )
 
     assert allowed.status_code == 200
+    assert origin_refused.status_code == 403
     assert refused.status_code == 421
+
+
+def test_mcp_transport_security_does_not_treat_hosts_as_origins(
+    monkeypatch, configured_env
+):
+    """v1 keeps browser-origin MCP unsupported and native clients Origin-free."""
+    from mcp.server.mcpserver import MCPServer
+
+    from memory.api.app import create_app
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_MCP_ALLOWED_HOSTS", "127.0.0.1,memory.example.com")
+    get_settings.cache_clear()
+    captured: dict[str, object] = {}
+    original = MCPServer.streamable_http_app
+
+    def capture_security(self, *args, **kwargs):
+        captured["security"] = kwargs["transport_security"]
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(MCPServer, "streamable_http_app", capture_security)
+    create_app()
+
+    security = captured["security"]
+    assert security.allowed_hosts == ["127.0.0.1", "memory.example.com"]
+    assert security.allowed_origins == []

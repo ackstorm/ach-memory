@@ -815,6 +815,9 @@ Three distinct tools. **Do not collapse them into
 `manage_operations(action=...)`**: `get` and `list` are read-only while `cancel`
 mutates, and separate tools keep MCP annotations and schemas honest.
 
+If Hindsight reports the operation is already terminal or otherwise no longer
+cancellable, `cancel_operation` returns `OPERATION_NOT_CANCELLABLE` (409).
+
 No `delete_operation` or `retry_operation` in v1.
 
 ### 11.6 API-only capabilities
@@ -1339,6 +1342,7 @@ MEMORY_NOT_FOUND
 MEMORY_NOT_CURATABLE
 DOCUMENT_NOT_FOUND
 OPERATION_NOT_FOUND
+OPERATION_NOT_CANCELLABLE
 DIRECTIVE_NOT_FOUND
 MENTAL_MODEL_NOT_FOUND
 RETIRED_SLUG_NOT_FOUND
@@ -1372,6 +1376,11 @@ owner is a group.
 exists. The ACH provisioning path (§16.3) supplies its own ids and retries, so
 this is an ordinary idempotent-retry outcome a client must be able to branch
 on -- not a server fault.
+
+`OPERATION_NOT_CANCELLABLE` (409): `cancel_operation` received Hindsight's
+conflict response because the operation is already terminal or no longer
+cancellable. The wrapper never exposes the upstream body, bank id, or upstream
+status details.
 
 `INTERNAL_ERROR` (500): the catch-all for an exception no `DomainError`
 subclass claims -- `api/app.py`'s unhandled-exception handler and

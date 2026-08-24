@@ -4,6 +4,9 @@ import httpx
 import pytest
 import respx
 
+from memory.errors import MentalModelNotFound
+from memory.hindsight.client import HindsightClient
+
 BASE = "http://hindsight.test"
 
 
@@ -234,7 +237,17 @@ def test_a_missing_mental_model_is_a_404(client, juan, tenant):
 
 
 @respx.mock
-def test_get_mental_model_rejects_dot_segment_traversal_locally(client, juan, tenant):
+@pytest.mark.parametrize(
+    "mental_model_id",
+    [
+        "%2e%2e",
+        "%252e%252e%255Cmemories",
+        "model%2523fragment",
+    ],
+)
+def test_get_mental_model_rejects_dot_segment_traversal_locally(
+    client, juan, tenant, mental_model_id
+):
     """mental_model_id is Hindsight-minted as `mm-<32 hex>`, NOT a UUID
     (measured live) -- this file used to assert the opposite premise here,
     which meant `_require_uuid` silently 404'd every real mental_model_id
@@ -248,13 +261,34 @@ def test_get_mental_model_rejects_dot_segment_traversal_locally(client, juan, te
     registered on purpose, so any outbound call fails via respx's own
     AllMockedAssertionError, not just the assertion below."""
     response = client.get(
-        "/v1/mental-models/%2e%2e",
+        f"/v1/mental-models/{mental_model_id}",
         params={"scope": "user"},
         headers=juan["headers"],
     )
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "MENTAL_MODEL_NOT_FOUND"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "mental_model_id",
+    [
+        "%2e%2e%2fmemories",
+        "%2E%2E%2Fmemories",
+        "%252e%252e%252fmemories",
+        "%252e%252e%255cmemories",
+        "model%253ffilter",
+    ],
+)
+def test_hindsight_client_rejects_encoded_mental_model_syntax_before_request(
+    mental_model_id,
+):
+    """No respx route is registered: an outbound request fails this test."""
+    hindsight = HindsightClient(base_url=BASE, api_key="secret", tenant_id="default")
+
+    with pytest.raises(MentalModelNotFound):
+        hindsight.get_mental_model("bank_1", mental_model_id)
 
 
 @respx.mock

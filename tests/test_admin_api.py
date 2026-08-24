@@ -183,6 +183,71 @@ def test_delete_bank_refuses_a_user_key_even_the_banks_own_owner(client, juan, t
     assert response.status_code == 403
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "upstream_pattern"),
+    [
+        (
+            "POST",
+            "/v1/admin/memory/user/clear",
+            rf"{BASE}/v1/default/banks/[^/]+/memories(\?|$)",
+        ),
+        (
+            "DELETE",
+            "/v1/admin/memory/user",
+            rf"{BASE}/v1/default/banks/[^/]+$",
+        ),
+    ],
+)
+@respx.mock
+def test_master_destructive_routes_are_rate_limited_before_hindsight(
+    client,
+    juan,
+    master_headers,
+    tenant,
+    monkeypatch,
+    method,
+    path,
+    upstream_pattern,
+):
+    from memory import ratelimit
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_WRITE_LIMIT", "1")
+    monkeypatch.setenv("MEMORY_WRITE_WINDOW_SECONDS", "60")
+    get_settings.cache_clear()
+    ratelimit.get_limiter.cache_clear()
+
+    warmup = respx.post(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$"
+    ).mock(return_value=httpx.Response(200, json={"operation_id": "op_1"}))
+    destructive = respx.delete(url__regex=upstream_pattern).mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    response = client.post(
+        "/v1/memory/retain",
+        json={
+            "scope": "user",
+            "user_id": juan["user_id"],
+            "content": "warmup",
+        },
+        headers=master_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert warmup.called
+
+    response = client.request(
+        method,
+        path,
+        params={"user_id": juan["user_id"]},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "RATE_LIMITED"
+    assert not destructive.called
+
+
 def test_release_slug_requires_the_master_key(client, juan, tenant):
     response = client.post("/v1/admin/slugs/whatever/release", headers=juan["headers"])
 

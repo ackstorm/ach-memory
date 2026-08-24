@@ -134,6 +134,11 @@ class OperationNotFound(DomainError):
     status = 404
 
 
+class OperationNotCancellable(DomainError):
+    code = "OPERATION_NOT_CANCELLABLE"
+    status = 409
+
+
 class RateLimited(DomainError):
     code = "RATE_LIMITED"
     status = 429

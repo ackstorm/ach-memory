@@ -305,6 +305,17 @@ def test_bank_id_is_stripped_from_a_document_response(client, juan, tenant):
 TRAVERSAL_DOCUMENT_IDS = [
     "..",
     "../../../../../v1/default/banks/project_VICTIM/memories",
+    # JSON-body ids arrive verbatim, so they can still become routing syntax
+    # if a downstream URL layer percent-decodes them.
+    "..%2fmemories",
+    "%2e%2e%2fmemories",
+    "%2E%2E%2Fmemories",
+    ".%2e%2fmemories",
+    "%252e%252e%252fmemories",
+    "document%2fchild",
+    "document%5Cchild",
+    "document%3Fquery",
+    "document%23fragment",
     "doc 1?x=y",
     "doc#frag",
     "",
@@ -348,6 +359,24 @@ def test_get_document_traversal_never_reaches_hindsight(client, juan, tenant, do
     response = client.post(
         "/v1/memory/documents/get",
         json={"scope": "user", "document_id": document_id},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "DOCUMENT_NOT_FOUND"
+
+
+@respx.mock
+@pytest.mark.parametrize("document_id", TRAVERSAL_DOCUMENT_IDS)
+def test_retain_rejects_unaddressable_document_ids_locally(
+    client, juan, tenant, document_id
+):
+    """The shared guard must refuse a JSON-body id before retain can create
+    a document which get/delete would later refuse.  As above, no respx route
+    is registered: any Hindsight call fails this test."""
+    response = client.post(
+        "/v1/memory/retain",
+        json={"scope": "user", "content": "x", "document_id": document_id},
         headers=juan["headers"],
     )
 
