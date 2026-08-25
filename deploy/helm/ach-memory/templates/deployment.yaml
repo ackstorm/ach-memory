@@ -69,6 +69,38 @@ spec:
             - name: MEMORY_MCP_ALLOWED_HOSTS
               value: {{ join "," $hosts | quote }}
             {{- end }}
+            {{- if .Values.config.auth.jwt.enabled }}
+            - name: MEMORY_AUTH_JWT_ENABLED
+              value: "true"
+            - name: MEMORY_AUTH_JWT_ISSUER
+              value: {{ required "config.auth.jwt.issuer is required when config.auth.jwt.enabled (MEMORY_AUTH_JWT_ISSUER)" .Values.config.auth.jwt.issuer | quote }}
+            {{- with .Values.config.auth.jwt.jwksUri }}
+            - name: MEMORY_AUTH_JWT_JWKS_URI
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.auth.jwt.audience }}
+            - name: MEMORY_AUTH_JWT_AUDIENCE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: MEMORY_AUTH_JWT_VERIFY_AUDIENCE
+              value: {{ .Values.config.auth.jwt.verifyAudience | quote }}
+            - name: MEMORY_AUTH_JWT_GROUPS_CLAIM
+              value: {{ .Values.config.auth.jwt.groupsClaim | quote }}
+            {{- end }}
+            {{- if .Values.config.auth.platform.enabled }}
+            - name: MEMORY_AUTH_PLATFORM_ENABLED
+              value: "true"
+            - name: MEMORY_AUTH_PLATFORM_INCOMING_HEADER
+              value: {{ required "config.auth.platform.incomingHeader is required when config.auth.platform.enabled" .Values.config.auth.platform.incomingHeader | quote }}
+            - name: MEMORY_AUTH_PLATFORM_RESOLVER_HEADER
+              value: {{ required "config.auth.platform.resolverHeader is required when config.auth.platform.enabled" .Values.config.auth.platform.resolverHeader | quote }}
+            - name: MEMORY_AUTH_PLATFORM_RESOLVER_URL
+              value: {{ required "config.auth.platform.resolverUrl is required when config.auth.platform.enabled" .Values.config.auth.platform.resolverUrl | quote }}
+            - name: MEMORY_AUTH_PLATFORM_CACHE_TTL
+              value: {{ .Values.config.auth.platform.cacheTtl | quote }}
+            - name: MEMORY_AUTH_PLATFORM_GROUPS_FIELD
+              value: {{ .Values.config.auth.platform.groupsField | quote }}
+            {{- end }}
           startupProbe:
             httpGet:
               path: {{ .Values.probes.path }}

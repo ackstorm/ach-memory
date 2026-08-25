@@ -338,6 +338,13 @@ stripped, because the neighbouring platform header `x-litellm-api-key`
 requires one and copying that habit across would otherwise fail as an
 indistinguishable "unknown API key".
 
+`Authorization` keeps carrying `mem_` keys even though it now also carries
+externally-issued tokens (§5.3), and that is a host constraint rather than a
+courtesy: codex and pi cannot send a custom header at all, and codex ignores a
+`headers` block silently rather than erroring. Reserving `Authorization` for
+JWTs would leave both hosts unauthenticated with no error anywhere — not in
+the host, not here. The `mem_` prefix is what keeps the two namespaces apart.
+
 It grants access to:
 
 - the authenticated user's `user` memory;
@@ -372,7 +379,76 @@ master credential itself.
 The master key must never be configured in an ordinary coding-agent or other
 untrusted LLM runtime.
 
-### 5.3 Provisioned user keys
+### 5.3 External identity
+
+Two external providers sit behind the local key, each optional and enabled
+independently:
+
+- a JWKS-verified JWT on `Authorization: Bearer <token>` (ACH, Dex);
+- a platform API key on a configurable header, resolved to an identity over
+  HTTP (LiteLLM, which forwards its own key rather than a token this service
+  could verify offline, so identity costs a round trip).
+
+Both may be enabled at once, and the deployed configuration does exactly that:
+the JWT is primary and the platform header is the fallback, which is how one
+service serves ACH and LiteLLM without a mode switch. With both disabled — the
+default — only `mem_` keys and the master key authenticate, exactly as before
+the providers existed.
+
+Resolution is ordered and fail-closed:
+
+```text
+x-ach-memory-key             -> local key
+Authorization: Bearer mem_   -> local key
+Authorization: Bearer <jwt>  -> JWT provider    (when enabled)
+platform header              -> HTTP resolver   (when enabled)
+otherwise                    -> 401
+```
+
+Once a credential names a provider, that provider is the only one consulted. A
+`mem_` key that does not verify is never retried as a JWT, and a JWT with a bad
+signature is never downgraded to a key lookup or handed to the resolver.
+Falling through would mean a rejected credential silently authenticates as
+whoever the *next* header names — a confused deputy that stays invisible until
+it matters.
+
+The `mem_` prefix is what separates the two credential namespaces sharing
+`Authorization`. The discriminator is total, not heuristic: `keys.generate_key()`
+guarantees the prefix, and a JWT — three dot-separated base64url segments —
+cannot produce it. This is why `Authorization` still carries local keys at all
+(§5.1): codex and pi cannot send a custom header, and codex ignores a `headers`
+block silently rather than erroring, so reserving the header for JWTs would
+leave those hosts unauthenticated with no error anywhere.
+
+An external identity is the pair `(issuer, subject)`, mapped onto a local user
+through `external_identities` on first sight and reused forever after. Neither
+half is a user id on its own. Subjects are not comparable across issuers —
+ACH's `sub` is a bare owner email, Dex's is opaque, a provisioned user is
+`usr_<uuid>` — so keying on the subject alone would collapse the same string
+from two issuers into one person. The issuer alone names nobody. For the JWT
+provider the issuer is the configured `iss`; for the platform provider it is
+the resolver URL, so two deployments resolving against different platforms
+cannot merge their users either.
+
+The local user row is not bookkeeping. An identity provider can say who someone
+is, but not where their memory lives: `User.bank_id` is what makes memory exist
+(§19.2), so an externally authenticated caller still needs a row here.
+
+Groups may be asserted by the provider — a token claim, or the resolver's
+`team_id`. An assertion authorizes exactly what it asserts and nothing more: it
+grants access to projects owned by the groups it names, never to anything the
+provider did not name. It never grants master authority. `is_master` is a
+constant on every external path, exactly as it is for a stored key, so no
+issuer can mint tenant-wide authority by adding a claim.
+
+Rate limiting and audit account against a `credential_id`: `key_...` for a
+local key, `ext_<hash>` of `(issuer, subject)` for an external identity, and
+NULL for the master key, which is configuration rather than a row (§5.2) and is
+bucketed by `on_behalf_of` instead. Without a per-identity value every external
+caller shared the master's rate-limit bucket and wrote a NULL actor into every
+audit row — two §20 MUSTs, failing with no error.
+
+### 5.4 Provisioned user keys
 
 User API keys are created and revoked through the API. The service stores only
 a secure hash of each generated key and returns the plaintext secret only at
@@ -431,11 +507,17 @@ user key:
         allow iff authenticated_user.id == project.owner_id
 
     if project.owner_type == "group":
-        allow iff authenticated_user is a member of project.owner_id
+        allow iff the caller is a member of project.owner_id, either
+        recorded in group_members or asserted by their identity provider
 
 master key:
     allow for any resource inside its tenant
 ```
+
+The two sources are checked independently and never merged: an identity
+provider that stops asserting a group revokes access on the next request
+without any row changing, while a local key's membership stays a database fact
+that only a write can revoke.
 
 The same bank-level authorization applies to the data plane and to the API-only
 governance surface. In v1 there is no separate `governor`, `writer` or `admin`
@@ -742,7 +824,7 @@ Every tool replaces Hindsight's explicit `bank_id` with
 
 ```text
 tool(scope, ...args)
-    -> authenticate
+    -> authenticate (local key, then external providers in order -- §5.3)
     -> resolve user/project
     -> authorize
     -> resolve internal bank_id
@@ -754,9 +836,13 @@ tool(scope, ...args)
 The LLM never supplies `bank_id`, `tenant_id`, its authenticated `user_id`,
 ownership, or authorization data.
 
-Authentication, scope resolution, authorization and bank resolution must be
-centralized. The internal Hindsight adapter structure is an implementation
-decision and is not prescribed here.
+Authentication is a chain, not a key lookup: the request is offered to each
+configured identity provider in the fixed order of §5.3 and the first one its
+credential names is the only one to answer. It, scope resolution, authorization
+and bank resolution must be centralized — MCP and REST share one implementation
+of all four, so a provider added for one surface is available to both and can
+never diverge between them. The internal Hindsight adapter structure is an
+implementation decision and is not prescribed here.
 
 ### 11.2 Core memory tools
 

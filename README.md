@@ -141,6 +141,68 @@ native/non-browser MCP clients only.
 - The write limiter is in-process and per replica. It defaults to 60 writes per
   60 seconds per credential; replicas multiply the effective limit.
 
+## Authentication
+
+Three ways in, tried in a fixed order and fail-closed: whichever provider the
+credential names is the only one consulted, so a rejected credential is never
+retried as something else.
+
+1. **This service's own `mem_` keys** — always on, and the only thing enabled
+   by default. Send `x-ach-memory-key: mem_...`, or `Authorization: Bearer
+   mem_...` from a host that cannot set a custom header.
+2. **A JWKS-verified JWT** on `Authorization: Bearer <token>` — off by
+   default. Use it when an identity provider you already run (ACH, Dex) mints
+   tokens for the agent, so nobody has to mint and distribute a memory key.
+3. **A platform API key** on a header you name — off by default. Use it when
+   callers arrive through a platform that forwards its own key rather than a
+   token this service could verify offline (LiteLLM). Identity comes from an
+   HTTP round trip to that platform, cached on success only.
+
+2 and 3 can run together: the JWT is primary, the platform header is the
+fallback. Both can also assert group membership, which authorizes projects
+owned by those groups with no `group_members` row — and which the provider can
+revoke just by no longer asserting it. Neither can ever grant master authority.
+Full rules in [SPEC-v1.md](SPEC-v1.md) §5.3.
+
+**ACH, via JWT:**
+
+```bash
+MEMORY_AUTH_JWT_ENABLED=true
+# Must equal the token's `iss` claim EXACTLY. ACH sets `iss` to its own
+# ACH_BASE_URL verbatim, so this stays the public URL even in-cluster.
+MEMORY_AUTH_JWT_ISSUER=https://ach.example.com
+# Point the key fetch in-cluster HERE instead. Changing the issuer to the
+# in-cluster URL to avoid the egress is the tempting mistake and it rejects
+# every token, because `iss` then no longer matches. Defaults to
+# <issuer>/.well-known/jwks.json when unset; Dex publishes at /keys.
+MEMORY_AUTH_JWT_JWKS_URI=http://ach.ach.svc/.well-known/jwks.json
+# Required unless MEMORY_AUTH_JWT_VERIFY_AUDIENCE=false. Comma-separated.
+MEMORY_AUTH_JWT_AUDIENCE=mcp:ach-memory
+```
+
+The agent then forwards whatever ACH issued it, unchanged:
+
+```text
+Authorization: Bearer eyJhbGci...
+```
+
+**LiteLLM, via platform key:**
+
+```bash
+MEMORY_AUTH_PLATFORM_ENABLED=true
+# The header the caller sends us...
+MEMORY_AUTH_PLATFORM_INCOMING_HEADER=x-litellm-api-key
+# ...and the header we send that key back on to ask who owns it. They are
+# separate because the resolver need not want it under the same name.
+MEMORY_AUTH_PLATFORM_RESOLVER_HEADER=x-litellm-api-key
+MEMORY_AUTH_PLATFORM_RESOLVER_URL=http://litellm.genai.svc/v2/user/info
+```
+
+The resolver's `user_id` becomes the identity and its `team_id` the caller's
+single group. A resolver that is unreachable or failing returns
+`AUTH_BACKEND_UNAVAILABLE` (503), never a 401 — an outage upstream is not a bad
+credential.
+
 ## Configuration
 
 | Setting | Default |

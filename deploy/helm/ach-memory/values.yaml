@@ -67,6 +67,49 @@ config:
   # to the service's own default ("127.0.0.1,localhost") otherwise.
   mcpAllowedHosts: []
 
+  # External identity providers (SPEC §5.3). Both may be enabled at once: the
+  # JWT is primary and the platform header is the fallback. With both off --
+  # the default -- the service accepts only its own `mem_` keys, exactly as it
+  # behaved before they existed.
+  auth:
+    jwt:
+      # MEMORY_AUTH_JWT_ENABLED.
+      enabled: false
+      # MEMORY_AUTH_JWT_ISSUER. Must match the token's `iss` claim EXACTLY, so
+      # it stays the public URL even when jwksUri below is in-cluster -- ACH
+      # sets `iss` to its own ACH_BASE_URL verbatim.
+      issuer: ""
+      # MEMORY_AUTH_JWT_JWKS_URI. Derived from issuer when empty. Override to
+      # fetch keys in-cluster, or for Dex, which publishes at /keys rather
+      # than /.well-known/jwks.json.
+      jwksUri: ""
+      # MEMORY_AUTH_JWT_AUDIENCE. Comma-separated: one token may name this
+      # service reached directly and the same service reached through a vmcp
+      # aggregator under another `aud`.
+      audience: ""
+      # MEMORY_AUTH_JWT_VERIFY_AUDIENCE. Off accepts any token from the
+      # issuer regardless of who it was minted for, which permits
+      # cross-service token replay between services sharing an issuer.
+      verifyAudience: true
+      # MEMORY_AUTH_JWT_GROUPS_CLAIM. Dex emits `groups`; ACH emits none yet,
+      # and an absent claim is simply no groups.
+      groupsClaim: "groups"
+    platform:
+      # MEMORY_AUTH_PLATFORM_ENABLED. Resolves a platform API key to an
+      # identity over HTTP -- LiteLLM forwards its own key rather than a
+      # token we can verify offline, so identity needs a round trip.
+      enabled: false
+      # MEMORY_AUTH_PLATFORM_INCOMING_HEADER / _RESOLVER_HEADER / _RESOLVER_URL.
+      incomingHeader: ""
+      resolverHeader: ""
+      resolverUrl: ""
+      # MEMORY_AUTH_PLATFORM_CACHE_TTL. Successes only -- a rejection is never
+      # cached, or a re-enabled key would stay refused for the whole window.
+      cacheTtl: 300
+      # MEMORY_AUTH_PLATFORM_GROUPS_FIELD. LiteLLM carries one team, not a
+      # list; alitellm-auth's /api/oauth/whoami returns team_id.
+      groupsField: "team_id"
+
 # MEMORY_MASTER_KEY_HASH. Never set this as a plain values.yaml string -- it
 # is the credential that reaches every bank in the tenant. Set exactly one of:
 #   - name:  an existing Secret's name, already containing the hash (recommended)
