@@ -62,10 +62,10 @@ From this checkout, install one agent:
 uv run ach-memory init claude    # codex | claude | opencode | pi | all
 ```
 
-For an installed package, drop the `uv run` prefix. `all` installs every
-supported agent but requires codex, claude, opencode and pi to all be on your
-PATH — it aborts before installing anything if one is missing. Restart the
-selected agents afterward so they inherit `ACH_MEMORY_API_KEY`.
+For an installed package, drop the `uv run` prefix. `all` installs into every
+supported agent found on your PATH and names the ones it skipped; it fails only
+if none are present. A named target that is not installed is an error. Restart
+the selected agents afterward so they inherit `ACH_MEMORY_API_KEY`.
 
 ### Remote service
 

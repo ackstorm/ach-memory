@@ -17,6 +17,8 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
+SUPPORTED = ("codex", "claude", "opencode", "pi")
+
 
 class CLIError(Exception):
     """A concise, user-facing CLI failure."""
@@ -67,8 +69,12 @@ def _bundle_root() -> Path:
     return Path(__file__).resolve().parents[2] / "plugins" / "ach-memory"
 
 
+def _is_installed(target: str) -> bool:
+    return shutil.which(target) is not None
+
+
 def _require_executable(target: str) -> None:
-    if not shutil.which(target):
+    if not _is_installed(target):
         raise CLIError(f"{target} executable was not found")
 
 
@@ -388,14 +394,35 @@ def _install_native(
 
 
 def _targets(target: str) -> tuple[str, ...]:
-    return ("codex", "claude", "opencode", "pi") if target == "all" else (target,)
+    """`all` is every supported agent actually present, not all four.
+
+    Requiring all four meant a machine with only one agent installed got
+    `codex executable was not found` and nothing installed -- the preflight
+    below checks every selected target before any installer runs, so one
+    absent agent aborted the whole run.
+
+    An explicit target still fails loudly when it is missing. You named it,
+    so skipping it would report success for something never installed;
+    only `all` is a request to take what is there.
+    """
+    if target != "all":
+        return (target,)
+    found = tuple(name for name in SUPPORTED if _is_installed(name))
+    if not found:
+        raise CLIError(f"none of {', '.join(SUPPORTED)} were found on PATH")
+    # stderr, not silence: `all` quietly doing less than all is the surprise
+    # this function exists to remove.
+    skipped = [name for name in SUPPORTED if name not in found]
+    if skipped:
+        print(f"ach-memory: not installed, skipped: {', '.join(skipped)}", file=sys.stderr)
+    return found
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ach-memory")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init")
-    init.add_argument("target", choices=("codex", "claude", "opencode", "pi", "all"))
+    init.add_argument("target", choices=(*SUPPORTED, "all"))
     return parser
 
 

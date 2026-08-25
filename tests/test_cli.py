@@ -83,6 +83,7 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     monkeypatch.setattr(cli, "_preflight", preflight, raising=False)
     installed: list[str] = []
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None, raising=False)
+    monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
@@ -109,6 +110,7 @@ def test_main_all_checks_every_executable_and_preflight_before_installers(
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "test-user-secret")
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli, "_require_executable", lambda target: events.append(target))
+    monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
@@ -276,6 +278,7 @@ def test_main_all_failure_before_preflight_or_mcp_leaves_every_target_unchanged(
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli, "_require_executable", require)
+    monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
 
     assert cli.main(["init", "all"]) == 1
@@ -750,3 +753,66 @@ def test_native_install_refreshes_only_an_existing_ach_memory_plugin(
         "ach-memory@ach-memory" in command or "marketplace" in command or command[-2:] == ["list", "--json"]
         for command in runner.commands
     )
+
+
+def _stub_installers(monkeypatch: pytest.MonkeyPatch, installed: list[str]) -> None:
+    async def preflight(_url: str, _api_key: str) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_preflight", preflight)
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(
+        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or ()
+    )
+    monkeypatch.setattr(
+        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or ()
+    )
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or ())
+
+
+def test_main_all_installs_what_is_present_and_names_what_it_skipped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`all` must not be all-or-nothing: one absent agent used to abort the run."""
+    present = {"claude", "pi"}
+    installed: list[str] = []
+    monkeypatch.setattr(cli, "_is_installed", lambda target: target in present)
+    _stub_installers(monkeypatch, installed)
+
+    assert cli.main(["init", "all"]) == 0
+    assert installed == ["claude", "pi"]
+
+    # Named, not silently dropped -- otherwise `all` reports success while
+    # having done less than its name says.
+    captured = capsys.readouterr()
+    assert "codex" in captured.err
+    assert "opencode" in captured.err
+
+
+def test_main_all_fails_when_no_supported_agent_is_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Installing into nothing is a failure, not a quiet success."""
+    installed: list[str] = []
+    monkeypatch.setattr(cli, "_is_installed", lambda _target: False)
+    _stub_installers(monkeypatch, installed)
+
+    assert cli.main(["init", "all"]) == 1
+    assert installed == []
+    assert "PATH" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("target", ["codex", "claude", "opencode", "pi"])
+def test_main_named_target_still_fails_when_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], target: str
+) -> None:
+    """Only `all` takes what is there. A named target that is missing must say so
+    rather than exit 0 having installed nothing."""
+    installed: list[str] = []
+    monkeypatch.setattr(cli, "_is_installed", lambda _target: False)
+    _stub_installers(monkeypatch, installed)
+
+    assert cli.main(["init", target]) == 1
+    assert installed == []
+    assert f"{target} executable was not found" in capsys.readouterr().err
