@@ -31,6 +31,18 @@ Read these before starting. They are short and they explain the constraints that
 
 5. **§18 is a closed list with a two-way conformance test.** `tests/test_errors.py` compares `vars(errors)` against SPEC §18's first fenced block in both directions. Adding `AuthBackendUnavailable` therefore *requires* the SPEC edit in the same commit or the suite fails.
 
+### Testing posture
+
+The test blocks below are a **menu, not a quota**. Each task keeps the smallest
+set that would actually fail if the logic broke — typically the happy path plus
+the one or two failure modes that motivated the design (a fail-closed branch, a
+race, a bound). Drop the rest; exhaustive per-branch coverage is not the goal
+here and slows every task down for little signal.
+
+Per-task verification is likewise light: run the test file you touched, plus
+`ruff`. The full suite, `make verify` and `scripts/smoke.sh` run **once**, at
+Task 11 — not after every task.
+
 ### Conventions in this codebase
 
 - Settings use the `MEMORY_` prefix (`config.py:10`). `MEMORY_AUTH_JWT_ENABLED`, etc.

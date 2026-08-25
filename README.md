@@ -186,19 +186,8 @@ make e2e
 volumes afterward. `make verify` is the local lint, test, secret-scan, and Helm
 gate.
 
-### Releasing
-
-`make release-bump VERSION=X.Y.Z` then `make release-cut VERSION=X.Y.Z`.
-
-**Any change under `plugins/` needs a release, not just a commit.** Agent hosts
-cache an installed plugin by version: with the version unchanged, both
-`claude plugin update` and `claude plugin marketplace update` report success,
-keep the stale copy, and the change never reaches anyone who already installed.
-Recovering without a bump means `claude plugin uninstall`,
-`rm -rf ~/.claude/plugins/cache/ach-memory`, then reinstall — which is not
-something to ask users to do. `release-bump` rewrites the plugin manifests
-alongside pyproject.toml and Chart.yaml, so cutting a release is all it takes;
-a test fails if a manifest carrying a version is not in that list.
+For how to cut a release — and why a change under `plugins/` needs one — see
+[docs/reference/RELEASING.md](docs/reference/RELEASING.md).
 
 For deployment, see the
 [Helm chart guide](deploy/helm/README.md). The chart runs ach-memory only;

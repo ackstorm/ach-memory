@@ -52,7 +52,7 @@ verify: lint test secrets chart ## The full local gate -- run this before pushin
 # cache an installed plugin by version, so with an unchanged version both
 # `claude plugin update` and `claude plugin marketplace update` report success
 # and keep the stale copy. Any change under plugins/ therefore needs a release,
-# not just a commit -- see "Releasing" in README.md.
+# not just a commit -- see docs/reference/RELEASING.md.
 PLUGIN_MANIFESTS = .claude-plugin/marketplace.json \
 	plugins/claude-code/.claude-plugin/plugin.json \
 	plugins/codex/.codex-plugin/plugin.json
