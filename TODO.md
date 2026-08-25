@@ -117,3 +117,46 @@ Both adapters already guard with `includes(activation)`, so they append once
 rather than per message. Neither ever had a per-prompt cost to remove, and
 neither can host the retain nudge without a real client — which is what
 replacing these with their native plugin systems, above, would buy.
+
+## Codex never runs our plugin's SessionStart hook
+
+The activation text has never reached codex. Its skill and MCP server both
+work — `sync_retain` stores facts and `codex mcp list` reports the server
+connected — but `plugins/codex/hooks/hooks.json` does not execute, so nothing
+tells a codex session that ach-memory should displace the host's own store.
+
+Measured against codex-cli 0.149.1 by instrumenting the hook script to append
+to a log file and reading that file, which removes the model's self-report
+from the loop. It never fired under any of:
+
+- a trusted project (`[projects."..."] trust_level = "trusted"` in
+  `$CODEX_HOME/config.toml`, falling back to `~/.codex` when unset) as well as
+  an untrusted one
+- hooks explicitly trusted at the "Hooks need review" prompt, with the new
+  `trusted_hash` written back to `config.toml` and `[plugins."..."] enabled = true`
+- `"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh"`, a relative
+  `./scripts/session-start.sh` matching what the official `replayio` and
+  `figma` plugins use, and a fully absolute path
+- with and without `"matcher": "startup"`, which `$CODEX_HOME/hooks.json` uses
+- interactive `codex` and headless `codex exec`
+- instrumenting both the installed copy under
+  `$CODEX_HOME/plugins/cache/ach-memory/...` and the marketplace snapshot under
+  `$CODEX_HOME/.tmp/marketplaces/ach-memory/plugins/codex/`, which is the path
+  `codex plugin list` reports
+
+So codex parses our hooks, hashes them, prompts to trust them and records the
+result -- and then does not run them. `${CLAUDE_PLUGIN_ROOT}` is worth fixing
+regardless (it appears nowhere in the codex binary, and no other codex plugin
+uses it), but it is not the blocker: the absolute path did not fire either.
+
+`$CODEX_HOME/hooks.json` is the obvious fallback -- it is codex's own
+user-level hook file and already carries a working-looking SessionStart entry
+from codebase-memory. `ach-memory init codex`, which already registers the MCP
+server, could append ours there instead. **Verify that a `$CODEX_HOME/hooks.json`
+SessionStart entry actually fires before building on it**; that assumption is
+untested, and it is the same assumption that made us ship a plugin hook nobody
+ever saw run.
+
+Until then codex has the tools and the skill but not the policy, and
+`test_activation_policy_is_identical_everywhere_and_carries_no_secret` asserts
+four identical copies of a text that only three hosts can receive.
