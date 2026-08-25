@@ -81,3 +81,64 @@ def test_the_route_set_is_exactly_the_documented_surface(configured_env):
     }
 
     assert actual == EXPECTED_ROUTES
+
+
+def _enable_platform(monkeypatch):
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "x-litellm-api-key")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_RESOLVER_HEADER", "x-litellm-api-key")
+    monkeypatch.setenv(
+        "MEMORY_AUTH_PLATFORM_RESOLVER_URL", "https://api.example.com/v2/user/info"
+    )
+    get_settings.cache_clear()
+
+
+def _capture_platform_calls(monkeypatch):
+    """Stop at the provider boundary: this task is about plumbing, not
+    resolution, so the provider records what it was handed and refuses."""
+    from memory.auth.providers import platform
+    from memory.errors import Unauthorized
+
+    seen = {}
+
+    def _fake(token, db):
+        seen["token"] = token
+        raise Unauthorized("stop here")
+
+    monkeypatch.setattr(platform, "authenticate", _fake)
+    return seen
+
+
+def test_the_platform_header_reaches_the_resolver(client, monkeypatch):
+    """The header name comes from configuration, so it cannot be a named
+    parameter -- it has to be read off the Request."""
+    _enable_platform(monkeypatch)
+    seen = _capture_platform_calls(monkeypatch)
+
+    client.get("/v1/projects", headers={"x-litellm-api-key": "sk-abc"})
+
+    assert seen["token"] == "sk-abc"
+
+
+def test_a_bearer_prefixed_platform_token_is_stripped(client, monkeypatch):
+    """LiteLLM's own header requires the "Bearer " prefix; the resolver must
+    receive the bare key."""
+    _enable_platform(monkeypatch)
+    seen = _capture_platform_calls(monkeypatch)
+
+    client.get("/v1/projects", headers={"x-litellm-api-key": "Bearer sk-abc"})
+
+    assert seen["token"] == "sk-abc"
+
+
+def test_the_platform_header_is_ignored_when_the_provider_is_off(client, monkeypatch):
+    """A stray header on a deployment that never enabled the provider is not a
+    credential -- it must not reach the resolver at all."""
+    seen = _capture_platform_calls(monkeypatch)
+
+    response = client.get("/v1/projects", headers={"x-litellm-api-key": "sk-abc"})
+
+    assert seen == {}
+    assert response.status_code == 401

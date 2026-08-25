@@ -16,7 +16,29 @@ from memory.errors import DomainError, Forbidden
 logger = logging.getLogger("memory.api")
 
 
+def _platform_token(request: Request) -> str | None:
+    """The platform credential, read by a name that comes from configuration.
+
+    FastAPI maps a parameter name to a fixed header, so a configurable header
+    has to be read off the Request. Returns None when the provider is off, so
+    a stray header on an unconfigured deployment is simply not a credential.
+    """
+    settings = get_settings()
+    if not settings.auth_platform_enabled:
+        return None
+    raw = request.headers.get(settings.auth_platform_incoming_header)
+    if raw is None:
+        return None
+    value = raw.strip()
+    # LiteLLM's own header carries the prefix; the resolver must receive the
+    # bare key.
+    if value.lower().startswith("bearer "):
+        value = value[len("bearer ") :].strip()
+    return value or None
+
+
 def current_principal(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
     # FastAPI maps this parameter name to the `x-ach-memory-key` header. It
     # takes precedence over Authorization when present -- see
@@ -24,7 +46,12 @@ def current_principal(
     x_ach_memory_key: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_session),
 ) -> Principal:
-    return resolve_principal(authorization, db, api_key=x_ach_memory_key)
+    return resolve_principal(
+        authorization,
+        db,
+        api_key=x_ach_memory_key,
+        platform_token=_platform_token(request),
+    )
 
 
 def require_master(

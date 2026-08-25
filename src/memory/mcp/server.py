@@ -16,6 +16,7 @@ from mcp.server.mcpserver import MCPServer
 from sqlalchemy.orm import Session
 
 from memory.auth.principal import API_KEY_HEADER, Principal, resolve_principal
+from memory.config import get_settings
 from memory.db import session_scope
 from memory.errors import Forbidden
 
@@ -41,15 +42,30 @@ def tool_session(ctx: HasHeaders) -> Iterator[ToolContext]:
     function the REST surface uses, so an MCP caller cannot become anyone a
     REST caller could not.
     """
-    headers = ctx.headers or {}
-    authorization = headers.get("authorization") or headers.get("Authorization")
+    # Lower-cased once: HTTP header names are case-insensitive, and the
+    # previous `headers.get("authorization") or headers.get("Authorization")`
+    # pair covered only two of the spellings a client may send.
+    headers = {k.lower(): v for k, v in (ctx.headers or {}).items()}
+    authorization = headers.get("authorization")
     # Same precedence as the REST surface: when present, this is the only
     # credential considered. It exists because everything that fronts this
     # service has its own claim on Authorization (SPEC §5.1).
-    api_key = headers.get(API_KEY_HEADER) or headers.get("X-Ach-Memory-Key")
+    api_key = headers.get(API_KEY_HEADER)
+
+    settings = get_settings()
+    platform_token = None
+    if settings.auth_platform_enabled and settings.auth_platform_incoming_header:
+        raw = headers.get(settings.auth_platform_incoming_header.lower())
+        if raw:
+            value = raw.strip()
+            if value.lower().startswith("bearer "):
+                value = value[len("bearer ") :].strip()
+            platform_token = value or None
 
     with session_scope() as db:
-        principal = resolve_principal(authorization, db, api_key=api_key)
+        principal = resolve_principal(
+            authorization, db, api_key=api_key, platform_token=platform_token
+        )
         if principal.is_master:
             # Invariant 22: the master key never resides in an ordinary agent
             # runtime, and an MCP client IS exactly that -- an LLM-driven
