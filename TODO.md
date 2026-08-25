@@ -231,3 +231,27 @@ and after. Changing the reranker changes every score, not just cross-language
 ones. Note also that the `cohere` provider defaults to `rerank-english-v3.0` --
 the same monolingual trap one layer out; `rerank-multilingual-v3.0` is the one
 to name.
+
+## opencode: confirm the activation adapter actually injects
+
+`init opencode` now names both surfaces in `opencode.json` -- `skills.paths`
+for the skill and `plugin` for the adapter -- because opencode reads neither
+from the user config dir by default. The skills half is confirmed: opencode
+lists the skill in `<available_skills>` with our description and its real
+location, where before it listed nothing.
+
+The adapter half is not confirmed. It loads and runs -- rewriting it as ESM
+made opencode hang, and restoring the CommonJS form made it work again, so the
+file is definitely being executed -- but no run has ever shown `activation.txt`
+in opencode's context. The only evidence either way is the model saying NONE
+when asked to quote it, and a model's account of its own context has been
+wrong three times in one day. Find a check that does not ask the model:
+`experimental.chat.system.transform` is real (it is in the binary), so log from
+inside the hook, or capture what opencode sends upstream.
+
+Separately, `gemini-flash-latest` reads neither. Told in Spanish to remember a
+fact, it goes straight to `sync_retain` and writes Spanish, with the skill
+listed and its description saying to read it at the start of any conversation.
+For that host the tool description is the only channel that lands, which is an
+argument for keeping the English rule there rather than in the skill -- and for
+deploying the chart, since the cluster still serves the pre-0.2.6 descriptions.
