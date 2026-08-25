@@ -216,3 +216,52 @@ def test_audit_event_created_at_is_a_db_default_not_a_python_default(
     # bound VALUES parameter, `%(created_at)s`, that means the Python-side
     # default won and the DDL default never fired.
     assert "%(created_at)s" not in captured[0], captured[0]
+
+
+def test_external_identity_is_unique_per_issuer_and_subject(session, tenant):
+    from sqlalchemy.exc import IntegrityError
+
+    from memory import ids
+    from memory.models import ExternalIdentity, User
+
+    user = User(id=ids.new_user_id(), tenant_id=tenant, bank_id=ids.new_user_bank_id())
+    session.add(user)
+    session.flush()
+
+    def _row(credential_id):
+        return ExternalIdentity(
+            issuer="https://ach.example.com",
+            subject="alice@example.com",
+            tenant_id=tenant,
+            user_id=user.id,
+            credential_id=credential_id,
+        )
+
+    session.add(_row("ext_aaa"))
+    session.flush()
+    session.add(_row("ext_bbb"))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_the_same_subject_from_two_issuers_stays_two_identities(session, tenant):
+    from memory import ids
+    from memory.models import ExternalIdentity, User
+
+    user = User(id=ids.new_user_id(), tenant_id=tenant, bank_id=ids.new_user_bank_id())
+    session.add(user)
+    session.flush()
+    for issuer, credential in (
+        ("https://ach.example.com", "ext_a"),
+        ("https://auth.example.com", "ext_b"),
+    ):
+        session.add(
+            ExternalIdentity(
+                issuer=issuer,
+                subject="alice@example.com",
+                tenant_id=tenant,
+                user_id=user.id,
+                credential_id=credential,
+            )
+        )
+    session.flush()  # no constraint violation

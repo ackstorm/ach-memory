@@ -50,6 +50,33 @@ class ApiKey(Base):
     )
 
 
+class ExternalIdentity(Base):
+    __tablename__ = "external_identities"
+
+    # (issuer, subject) is the only globally unique name an IdP gives us, and
+    # neither half works alone as a User.id. ACH's `sub` is a bare owner email
+    # (ach/internal/forwarder/jwt/signer.go); Dex's is an opaque identifier;
+    # a master-provisioned user is `usr_<uuid>` from ids.py. Keying on the
+    # subject alone would collapse the same string from two issuers into one
+    # person, and keying on nothing would mint a second User -- and a second
+    # bank_id -- on every request, silently splitting one human's memory in
+    # half with no error anywhere.
+    issuer: Mapped[str] = mapped_column(String(256), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(256), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    # Width matches AuditEvent.actor_key_id, which stores this value for an
+    # external caller: that column now holds either an `key_`-prefixed
+    # api_keys.id or an `ext_`-prefixed credential from here, and this row is
+    # what resolves the latter back to a human. The prefixes are disjoint by
+    # construction (ids.py), so a reader can always tell which namespace it
+    # is looking at.
+    credential_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
 class Group(Base):
     __tablename__ = "groups"
 
