@@ -195,7 +195,7 @@ jobs:
             # bound and the explicit failure path existed; they were simply
             # unreachable.
             code=$(curl -s -o /dev/null -w '%{http_code}' \
-              -H "Authorization: Bearer ci-master-key" \
+              -H "x-ach-memory-key: ci-master-key" \
               http://localhost:8000/v1/projects || true)
             if [ "$code" = "200" ]; then
               echo "answered 200 after ${i} attempt(s)"
@@ -205,6 +205,10 @@ jobs:
           done
           echo "FAIL: the image never answered an authenticated request within 60s" >&2
           exit 1
+
+      - name: Show the container's own output when it never answered
+        if: failure()
+        run: docker logs ach-memory-ci
 
       - name: Container logs (always, for diagnosis)
         if: always()

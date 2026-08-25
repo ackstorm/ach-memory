@@ -155,7 +155,18 @@ def test_release_workflow_is_main_marker_driven_and_creates_release_artifacts():
 
     assert "branches: [main]" in workflow
     assert "tags:" not in workflow
-    assert "startsWith(github.event.head_commit.message, 'chore(release): v')" in workflow
+    # Gated on CI finishing green, not merely on the push. These raced before:
+    # Release did not depend on CI, so v0.2.0 published while the image smoke
+    # test was failing on the very commit it shipped.
+    assert "workflows: [CI]" in workflow
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow
+    assert (
+        "startsWith(github.event.workflow_run.head_commit.message, 'chore(release): v')" in workflow
+    )
+    # workflow_run checks out the default branch's tip unless told otherwise,
+    # which would publish whatever landed after the commit CI verified.
+    assert "ref: ${{ github.event.workflow_run.head_sha }}" in workflow
+    assert "github.event.head_commit" not in workflow
     assert "^chore\\(release\\): v" in workflow
     marker_pattern = next(
         pattern

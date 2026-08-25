@@ -2,8 +2,15 @@ name: Release
 
 # A maintainer explicitly hands a verified marker commit to this workflow;
 # direct tag pushes are forbidden so no tag can publish an unreviewed commit.
+#
+# workflow_run, not push: on push these two workflows raced, and Release does
+# not depend on CI, so a red CI could not stop a publish. v0.2.0 shipped that
+# way -- the image smoke test was failing on the very commit it published.
+# Waiting for CI to COMPLETE and requiring success below closes that.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
 
 permissions:
@@ -11,7 +18,11 @@ permissions:
 
 jobs:
   publish:
-    if: "${{ startsWith(github.event.head_commit.message, 'chore(release): v') }}"
+    # Both halves matter: the marker says this commit was meant to publish, and
+    # the conclusion says the commit is publishable.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success'
+      && startsWith(github.event.workflow_run.head_commit.message, 'chore(release): v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Elevated HERE and nowhere else: the lint/test/image jobs in ci.yml run
@@ -24,6 +35,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0
+          # workflow_run defaults to the default branch's tip, NOT the commit
+          # CI just verified. Without this a push landing between the two would
+          # be what actually gets tagged and published.
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
 
@@ -38,7 +53,7 @@ jobs:
 
       - name: Derive and validate the release version
         env:
-          RELEASE_MARKER: ${{ github.event.head_commit.message }}
+          RELEASE_MARKER: ${{ github.event.workflow_run.head_commit.message }}
         run: |
           if ! printf '%s' "$RELEASE_MARKER" | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "FAIL: marker '${RELEASE_MARKER}' is not an exact release marker." >&2
