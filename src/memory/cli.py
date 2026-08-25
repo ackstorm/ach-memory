@@ -278,6 +278,49 @@ def _install_pi(
     return (config_path, *(destination for _source, destination in assets))
 
 
+def _codex_servers() -> dict[str, dict]:
+    payload = _run_json(["codex", "mcp", "list", "--json"])
+    if not isinstance(payload, list):
+        raise CLIError("codex returned unsupported MCP JSON")
+    servers: dict[str, dict] = {}
+    for entry in payload:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            raise CLIError("codex returned unsupported MCP JSON")
+        servers[entry["name"]] = entry
+    return servers
+
+
+def _register_codex_server(url: str) -> str:
+    """Register the MCP server with Codex, because its plugin cannot.
+
+    Codex does not interpolate ${ACH_MEMORY_URL} in a URL, so the endpoint has
+    to be written literally into its config -- which means install time is the
+    only moment we know it. Printing the command for the user to paste left the
+    install half done by default; running it is the whole point of having their
+    endpoint in hand.
+
+    The credential is NOT baked: bearer_token_env_var stores the variable's
+    name and Codex resolves it per call, so rotating the key needs no reinstall.
+    Only the URL is pinned, and re-running init with a different ACH_MEMORY_URL
+    repoints it -- otherwise a moved deployment would keep resolving to the old
+    host with nothing to say so.
+    """
+    desired_url, desired_env = url, "ACH_MEMORY_API_KEY"
+    existing = _codex_servers().get("ach-memory")
+    if existing is not None:
+        transport = existing.get("transport")
+        transport = transport if isinstance(transport, dict) else {}
+        if (transport.get("url"), transport.get("bearer_token_env_var")) == (desired_url, desired_env):
+            return "server already registered"
+        _run(["codex", "mcp", "remove", "ach-memory"])
+    _run([
+        "codex", "mcp", "add", "ach-memory",
+        "--url", desired_url,
+        "--bearer-token-env-var", desired_env,
+    ])
+    return "server repointed" if existing is not None else "server registered"
+
+
 def _native_plan(target: str) -> tuple[dict[str, Path], set[str]]:
     marketplaces = _marketplace_locations(
         target, _run_json([target, "plugin", "marketplace", "list", "--json"])
@@ -286,7 +329,9 @@ def _native_plan(target: str) -> tuple[dict[str, Path], set[str]]:
     return marketplaces, installed
 
 
-def _install_native(target: str, plan: tuple[dict[str, Path], set[str]] | None = None) -> tuple[Path, ...]:
+def _install_native(
+    target: str, url: str, plan: tuple[dict[str, Path], set[str]] | None = None
+) -> str:
     """Register the repository as a marketplace and let the host install from it.
 
     Nothing is generated here. The plugin is committed at plugins/<host>/ and
@@ -321,7 +366,13 @@ def _install_native(target: str, plan: tuple[dict[str, Path], set[str]] | None =
         _run([target, "plugin", "update", plugin])
     else:
         _run([target, "plugin", "install", "-y", "--scope", "user", plugin])
-    return ()
+
+    summary = f"plugin installed from {MARKETPLACE}"
+    if target == "codex":
+        # The URL is pinned here and cannot follow the environment later, so
+        # say so on the line that reports it.
+        summary += f", {_register_codex_server(url)} (url pinned)"
+    return summary
 
 
 def _version() -> str:
@@ -389,9 +440,9 @@ def _report(
     installed = [name for name, _, _ in results]
     if "codex" in installed:
         print()
-        print("  codex needs the server registered once:")
-        print('    codex mcp add ach-memory --url "$ACH_MEMORY_URL/mcp/" \\')
-        print("      --bearer-token-env-var ACH_MEMORY_API_KEY")
+        print("  codex stores the endpoint literally -- it cannot read")
+        print("  $ACH_MEMORY_URL. Re-run init after changing it. The key is")
+        print("  still read from the environment on every call.")
     if installed:
         print()
         names = installed[0] if len(installed) == 1 else (
@@ -443,14 +494,22 @@ def main(argv: list[str] | None = None) -> int:
         targets = _targets(args.target)
         for target in targets:
             _require_executable(target)
+        # Everyone else resolves the endpoint at call time, so the localhost
+        # fallback is a warning for them. Codex writes it literally into its
+        # config, so installing without ACH_MEMORY_URL would pin localhost
+        # permanently and look successful doing it.
+        if "codex" in targets and base is None:
+            raise CLIError(
+                "ACH_MEMORY_URL must be set to install for codex: it stores the "
+                "endpoint literally and cannot read the variable later"
+            )
         native_plans = {target: _native_plan(target) for target in targets if target in {"codex", "claude"}}
         config_plans = {target: _config_plan(target, url) for target in targets if target in {"opencode", "pi"}}
         asyncio.run(_preflight(url, os.environ.get("ACH_MEMORY_API_KEY", "")))
         results: list[tuple[str, str, tuple[Path, ...]]] = []
         for target in targets:
             if target in native_plans:
-                _install_native(target, native_plans[target])
-                results.append((target, f"plugin installed from {MARKETPLACE}", ()))
+                results.append((target, _install_native(target, url, native_plans[target]), ()))
             else:
                 install = _install_opencode if target == "opencode" else _install_pi
                 paths = install(url, config_plans[target])

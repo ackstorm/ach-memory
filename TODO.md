@@ -30,7 +30,7 @@ all four and why the installer still exists for two of them.
 | host | endpoint | credential |
 | --- | --- | --- |
 | claude | `${VAR}` expands in `url` | `${VAR}` expands inside header values |
-| codex | **no expansion** -- a literal `${VAR}` fails with `relative URL without a base` | `bearer_token_env_var`, an env var *name* |
+| codex | **no expansion** -- a literal `${VAR}` fails with `relative URL without a base`, so `init` writes it via `codex mcp add` and re-running repoints it | `bearer_token_env_var`, an env var *name* |
 | opencode | not documented; installer writes it literally | `{env:VAR}` in header values -- no `$` |
 | pi | not documented; installer writes it literally | `bearerTokenEnv`, an env var *name* |
 

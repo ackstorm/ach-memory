@@ -74,18 +74,19 @@ Claude resolves both values at run time, so nothing is written per install and
 the same commands work against any deployment. With neither variable set it
 falls back to `http://localhost:8000`, which is what `docker compose up` serves.
 
-Codex takes the same plugin for its hooks and skill, but registers the server
-itself — it does not expand `${ACH_MEMORY_URL}` in a URL, so the endpoint has to
-be given literally, once:
+Codex takes the same plugin for its hooks and skill, but cannot expand
+`${ACH_MEMORY_URL}` in a URL, so its server has to be registered separately.
+`ach-memory init codex` does that for you, using the endpoint exported above:
 
 ```bash
-codex plugin marketplace add ackstorm/ach-memory
-codex plugin add ach-memory@ach-memory
-codex mcp add ach-memory --url "$ACH_MEMORY_URL/mcp/" \
-  --bearer-token-env-var ACH_MEMORY_API_KEY
+uv run ach-memory init codex
 ```
 
-The key is still read from the environment at call time; only the URL is fixed.
+Only the URL is fixed at install time; the key is read from the environment on
+every call, so rotating it needs no reinstall. Because the URL is pinned,
+`init codex` refuses to run without `ACH_MEMORY_URL` rather than quietly
+recording `http://localhost:8000`, and re-running it after changing the
+variable repoints the server.
 
 OpenCode and pi have no marketplace, so they still need the installer, which
 writes their config files for them (see [TODO.md](TODO.md)):

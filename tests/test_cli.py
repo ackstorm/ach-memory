@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+MCP_URL = "https://host/prefix/mcp/"
+
 from memory import cli
 
 
@@ -80,6 +82,7 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     async def preflight(_url: str, _api_key: str) -> None:
         return None
 
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://memory.example.com")
     monkeypatch.setattr(cli, "_preflight", preflight, raising=False)
     installed: list[str] = []
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None, raising=False)
@@ -87,7 +90,7 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _plan: installed.append(name) or None
+        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or "plugin installed"
     )
     monkeypatch.setattr(
         cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
@@ -108,13 +111,14 @@ def test_main_all_checks_every_executable_and_preflight_before_installers(
         events.append("preflight")
 
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "test-user-secret")
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://memory.example.com")
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli, "_require_executable", lambda target: events.append(target))
     monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda target, _plan: events.append(f"install:{target}") or None
+        cli, "_install_native", lambda target, _url, _plan: events.append(f"install:{target}") or "plugin installed"
     )
     monkeypatch.setattr(
         cli, "_install_opencode", lambda _url, _plan: events.append("install:opencode") or (Path("/tmp/oc/opencode.json"),)
@@ -510,7 +514,9 @@ class _NativeRunner:
         marketplace_present: bool,
         installed: bool,
         marketplace_location: str | None = None,
+        mcp_url: str | None = None,
     ) -> None:
+        self.mcp_url = mcp_url
         self.target = target
         self.marketplace_present = marketplace_present
         self.installed = installed
@@ -519,6 +525,23 @@ class _NativeRunner:
 
     def __call__(self, command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
+        if command[:3] == ["codex", "mcp", "list"]:
+            servers = (
+                [{"name": "ach-memory", "transport": {
+                    "type": "streamable_http",
+                    "url": self.mcp_url,
+                    "bearer_token_env_var": "ACH_MEMORY_API_KEY",
+                }}]
+                if self.mcp_url is not None
+                else []
+            )
+            return subprocess.CompletedProcess(command, 0, json.dumps(servers), "")
+        if command[:3] == ["codex", "mcp", "remove"]:
+            self.mcp_url = None
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[:3] == ["codex", "mcp", "add"]:
+            self.mcp_url = command[command.index("--url") + 1]
+            return subprocess.CompletedProcess(command, 0, "", "")
         if command[-3:] == ["marketplace", "list", "--json"]:
             payload: object = (
                 {"marketplaces": [{"name": "ach-memory", "root": self.marketplace_location}]}
@@ -561,7 +584,7 @@ def test_native_install_rejects_bare_list_codex_marketplace_json(
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
     with pytest.raises(cli.CLIError, match="unsupported marketplace JSON"):
-        cli._install_native("codex")
+        cli._install_native("codex", MCP_URL)
 
     assert commands == [["codex", "plugin", "marketplace", "list", "--json"]]
 
@@ -582,7 +605,7 @@ def test_native_install_rejects_bare_list_codex_plugin_json(
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
     with pytest.raises(cli.CLIError, match="unsupported plugin JSON"):
-        cli._install_native("codex")
+        cli._install_native("codex", MCP_URL)
 
     assert commands == [
         ["codex", "plugin", "marketplace", "list", "--json"],
@@ -627,8 +650,11 @@ def test_native_install_registers_the_repository_and_writes_nothing_itself(
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
-    assert cli._install_native(target) == ()
+    summary = cli._install_native(target, MCP_URL)
 
+    assert summary.startswith(f"plugin installed from {cli.MARKETPLACE}")
+    # Only codex needs its server registered separately, and only codex says so.
+    assert ("url pinned" in summary) == (target == "codex")
     add = next(c for c in runner.commands if "marketplace" in c and "add" in c)
     assert "ackstorm/ach-memory" in add
     assert not any(part.startswith(str(tmp_path)) for part in add)
@@ -638,7 +664,7 @@ def test_native_install_registers_the_repository_and_writes_nothing_itself(
     # time: it must not reach a command line or a file.
     assert all("user-secret" not in " ".join(command) for command in runner.commands)
 
-    cli._install_native(target)
+    cli._install_native(target, MCP_URL)
 
     assert sum("marketplace" in command and "add" in command for command in runner.commands) == 1
     assert _files_under(home) == {}
@@ -663,11 +689,14 @@ def test_native_install_refreshes_only_an_existing_ach_memory_plugin(
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
-    cli._install_native(target)
+    cli._install_native(target, MCP_URL)
 
     assert expected_command in runner.commands
     assert all(
-        "ach-memory@ach-memory" in command or "marketplace" in command or command[-2:] == ["list", "--json"]
+        "ach-memory@ach-memory" in command
+        or "marketplace" in command
+        or command[:3] == ["codex", "mcp", "add"]
+        or command[-2:] == ["list", "--json"]
         for command in runner.commands
     )
 
@@ -680,7 +709,7 @@ def _stub_installers(monkeypatch: pytest.MonkeyPatch, installed: list[str]) -> N
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _plan: installed.append(name) or None
+        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or "plugin installed"
     )
     monkeypatch.setattr(
         cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
@@ -745,7 +774,7 @@ def _init_stubs(monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
     monkeypatch.setattr(cli, "_is_installed", lambda target: target in present)
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_install_native", lambda _target, _plan: None)
+    monkeypatch.setattr(cli, "_install_native", lambda target, _url, _plan: f"plugin installed from {cli.MARKETPLACE}")
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
         cli, "_install_opencode",
@@ -781,22 +810,53 @@ def test_init_reports_every_agent_including_the_ones_that_write_no_files(
     assert "user-secret" not in out
 
 
-def test_init_surfaces_the_codex_follow_up_only_when_codex_was_installed(
+def test_init_notes_that_codex_pins_the_endpoint_and_others_do_not(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Codex cannot carry the endpoint in its plugin, so the install is only
-    half done until that command runs. Printing it unconditionally would train
-    people to ignore it."""
+    """init registers the Codex server itself now, so the note is about the
+    consequence -- a pinned URL that will not follow the environment -- not a
+    command left for the reader to paste."""
     monkeypatch.setenv("ACH_MEMORY_URL", "https://memory.example.com")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
 
     _init_stubs(monkeypatch, {"codex"})
     assert cli.main(["init", "codex"]) == 0
-    assert "--bearer-token-env-var ACH_MEMORY_API_KEY" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "cannot read" in out and "ACH_MEMORY_URL" in out
+    # The command is run, not printed for the reader to copy.
+    assert "codex mcp add" not in out
 
     _init_stubs(monkeypatch, {"claude"})
     assert cli.main(["init", "claude"]) == 0
-    assert "bearer-token-env-var" not in capsys.readouterr().out
+    assert "cannot read" not in capsys.readouterr().out
+
+
+def test_init_refuses_codex_without_an_explicit_endpoint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex writes the URL into its config, so the localhost fallback that is
+    merely a warning elsewhere would pin localhost permanently here -- and the
+    install would look successful doing it."""
+    monkeypatch.delenv("ACH_MEMORY_URL", raising=False)
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    _init_stubs(monkeypatch, {"codex"})
+
+    assert cli.main(["init", "codex"]) == 1
+
+    err = capsys.readouterr().err
+    assert "ACH_MEMORY_URL must be set to install for codex" in err
+
+
+def test_init_still_allows_the_localhost_fallback_without_codex(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The refusal is scoped to the host that cannot recover from it."""
+    monkeypatch.delenv("ACH_MEMORY_URL", raising=False)
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    _init_stubs(monkeypatch, {"claude"})
+
+    assert cli.main(["init", "claude"]) == 0
+    assert "ACH_MEMORY_URL is not set" in capsys.readouterr().out
 
 
 def test_init_warns_when_the_endpoint_is_the_localhost_fallback(
@@ -907,3 +967,70 @@ def test_config_roots_fall_back_to_each_host_documented_default(
 
     assert cli._config_root("opencode") == Path.home() / ".config" / "opencode"
     assert cli._config_root("pi") == Path.home() / ".pi" / "agent"
+
+
+def _codex_runner(monkeypatch: pytest.MonkeyPatch, mcp_url: str | None) -> "_NativeRunner":
+    runner = _NativeRunner(
+        "codex",
+        marketplace_present=True,
+        installed=True,
+        marketplace_location="/home/tester/.codex/marketplaces/ach-memory",
+        mcp_url=mcp_url,
+    )
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(cli.subprocess, "run", runner)
+    return runner
+
+
+def test_codex_server_registration_is_idempotent() -> None:
+    """A matching server is left alone: re-running init must not churn config."""
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        runner = _codex_runner(monkeypatch, MCP_URL)
+
+        summary = cli._install_native("codex", MCP_URL)
+
+        assert "already registered" in summary
+        assert not any(c[:3] == ["codex", "mcp", "add"] for c in runner.commands)
+        assert not any(c[:3] == ["codex", "mcp", "remove"] for c in runner.commands)
+    finally:
+        monkeypatch.undo()
+
+
+def test_codex_server_is_repointed_when_the_endpoint_changed() -> None:
+    """The reason the URL is read from the environment at install time.
+
+    Codex cannot follow ACH_MEMORY_URL later, so a moved deployment would keep
+    resolving to the old host forever unless re-running init repoints it.
+    Add-without-remove would be rejected or duplicate, hence remove first.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        runner = _codex_runner(monkeypatch, "https://old.example.com/mcp/")
+
+        summary = cli._install_native("codex", MCP_URL)
+
+        assert "repointed" in summary
+        order = [c[:3] for c in runner.commands if c[:2] == ["codex", "mcp"] and c[2] in {"remove", "add"}]
+        assert order == [["codex", "mcp", "remove"], ["codex", "mcp", "add"]]
+        add = next(c for c in runner.commands if c[:3] == ["codex", "mcp", "add"])
+        assert add[add.index("--url") + 1] == MCP_URL
+        # The credential is a variable NAME, never its value: rotating the key
+        # must not require a reinstall, and it must never reach a command line.
+        assert add[add.index("--bearer-token-env-var") + 1] == "ACH_MEMORY_API_KEY"
+    finally:
+        monkeypatch.undo()
+
+
+def test_codex_server_is_registered_when_absent() -> None:
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        runner = _codex_runner(monkeypatch, None)
+
+        summary = cli._install_native("codex", MCP_URL)
+
+        assert "server registered" in summary and "repointed" not in summary
+        assert any(c[:3] == ["codex", "mcp", "add"] for c in runner.commands)
+        assert not any(c[:3] == ["codex", "mcp", "remove"] for c in runner.commands)
+    finally:
+        monkeypatch.undo()
