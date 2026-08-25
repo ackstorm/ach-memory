@@ -311,6 +311,73 @@ def _install_native(target: str, plan: tuple[dict[str, Path], set[str]] | None =
     return ()
 
 
+def _version() -> str:
+    from importlib import metadata
+
+    try:
+        return metadata.version("ach-memory")
+    except metadata.PackageNotFoundError:
+        return "dev"
+
+
+def _tilde(path: Path) -> str:
+    """~/... beats a 60-character absolute path in a status line."""
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
+def _report(
+    results: "list[tuple[str, str, tuple[Path, ...]]]",
+    skipped: "list[str]",
+    url: str,
+    url_from_env: bool,
+    verbose: bool,
+) -> None:
+    """Say what happened to every requested agent, including the ones that got
+    no files.
+
+    claude and codex install through their host's marketplace and write nothing
+    of ours, so a listing of changed paths -- which is all this used to print --
+    showed nothing for them at all. `init all` on a machine with four agents
+    reported two, and the silence was indistinguishable from not being
+    installed.
+    """
+    # The base URL, not the derived /mcp/ endpoint: this is the value the
+    # reader exported and the one they will compare against.
+    print(f"ach-memory {_version()}  \u2192  {url}", end="")
+    print("" if url_from_env else "  (ACH_MEMORY_URL unset)")
+    print()
+    if not url_from_env:
+        print(f"  ! ACH_MEMORY_URL is not set, using {url}")
+        print("    export it in ~/.zshrc for a remote deployment")
+        print()
+
+    width = max((len(name) for name, _, _ in results), default=0)
+    width = max(width, *(len(name) for name in skipped)) if skipped else width
+    for name, summary, paths in results:
+        print(f"  \u2714 {name.ljust(width)}  {summary}")
+        if verbose:
+            for path in paths:
+                print(f"    {' ' * width}  {_tilde(path)}")
+    for name in skipped:
+        print(f"  \u2013 {name.ljust(width)}  skipped, not on PATH")
+
+    installed = [name for name, _, _ in results]
+    if "codex" in installed:
+        print()
+        print("  codex needs the server registered once:")
+        print('    codex mcp add ach-memory --url "$ACH_MEMORY_URL/mcp/" \\')
+        print("      --bearer-token-env-var ACH_MEMORY_API_KEY")
+    if installed:
+        print()
+        names = installed[0] if len(installed) == 1 else (
+            " and ".join([", ".join(installed[:-1]), installed[-1]])
+        )
+        print(f"Restart {names} to load ach-memory.")
+
+
 def _targets(target: str) -> tuple[str, ...]:
     """`all` is every supported agent actually present, not all four.
 
@@ -328,11 +395,6 @@ def _targets(target: str) -> tuple[str, ...]:
     found = tuple(name for name in SUPPORTED if _is_installed(name))
     if not found:
         raise CLIError(f"none of {', '.join(SUPPORTED)} were found on PATH")
-    # stderr, not silence: `all` quietly doing less than all is the surprise
-    # this function exists to remove.
-    skipped = [name for name in SUPPORTED if name not in found]
-    if skipped:
-        print(f"ach-memory: not installed, skipped: {', '.join(skipped)}", file=sys.stderr)
     return found
 
 
@@ -341,6 +403,9 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init")
     init.add_argument("target", choices=(*SUPPORTED, "all"))
+    init.add_argument(
+        "-v", "--verbose", action="store_true", help="list every file written"
+    )
     return parser
 
 
@@ -350,29 +415,48 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code)
 
+    base = os.environ.get("ACH_MEMORY_URL")
     try:
-        url = _mcp_url(os.environ.get("ACH_MEMORY_URL", "http://localhost:8000"))
+        url = _mcp_url(base or "http://localhost:8000")
         targets = _targets(args.target)
         for target in targets:
             _require_executable(target)
         native_plans = {target: _native_plan(target) for target in targets if target in {"codex", "claude"}}
         config_plans = {target: _config_plan(target, url) for target in targets if target in {"opencode", "pi"}}
         asyncio.run(_preflight(url, os.environ.get("ACH_MEMORY_API_KEY", "")))
-        changed: list[Path] = []
+        results: list[tuple[str, str, tuple[Path, ...]]] = []
         for target in targets:
             if target in native_plans:
-                changed.extend(_install_native(target, native_plans[target]))
-            elif target == "opencode":
-                changed.extend(_install_opencode(url, config_plans[target]))
+                _install_native(target, native_plans[target])
+                results.append((target, f"plugin installed from {MARKETPLACE}", ()))
             else:
-                changed.extend(_install_pi(url, config_plans[target]))
+                install = _install_opencode if target == "opencode" else _install_pi
+                paths = install(url, config_plans[target])
+                summary = (
+                    f"{len(paths)} files \u2192 {_tilde(paths[0].parent)}" if paths else "configured"
+                )
+                results.append((target, summary, paths))
     except (CLIError, ValueError) as exc:
         print(f"ach-memory: {exc}", file=sys.stderr)
+        # The failure lands here before the summary that would have said which
+        # endpoint was used, and an unexported ACH_MEMORY_URL silently means
+        # localhost -- so "MCP preflight failed" on its own points at the
+        # service rather than at the missing variable that caused it.
+        if base is None:
+            print(
+                f"ach-memory: ACH_MEMORY_URL is not set, so this tried {url}",
+                file=sys.stderr,
+            )
+            print(
+                "ach-memory: export it in ~/.zshrc for a remote deployment",
+                file=sys.stderr,
+            )
         return 1
 
-    for path in changed:
-        print(path)
-    print("Restart the selected agent(s) to load ach-memory.")
+    # Reported here rather than inside _targets: a skip is part of the summary,
+    # not a warning to shout from stderr while the real output goes to stdout.
+    skipped = [name for name in SUPPORTED if name not in targets] if args.target == "all" else []
+    _report(results, skipped, base or "http://localhost:8000", base is not None, args.verbose)
     return 0
 
 

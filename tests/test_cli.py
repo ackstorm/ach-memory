@@ -87,12 +87,12 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _plan: installed.append(name) or ()
+        cli, "_install_native", lambda name, _plan: installed.append(name) or None
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or ()
+        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or ())
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
 
     assert cli.main(["init", target]) == 0
     assert installed == ([target] if target != "all" else ["codex", "claude", "opencode", "pi"])
@@ -114,12 +114,12 @@ def test_main_all_checks_every_executable_and_preflight_before_installers(
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda target, _plan: events.append(f"install:{target}") or ()
+        cli, "_install_native", lambda target, _plan: events.append(f"install:{target}") or None
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: events.append("install:opencode") or ()
+        cli, "_install_opencode", lambda _url, _plan: events.append("install:opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: events.append("install:pi") or ())
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: events.append("install:pi") or (Path("/tmp/pi/mcp.json"),))
 
     assert cli.main(["init", "all"]) == 0
 
@@ -680,12 +680,12 @@ def _stub_installers(monkeypatch: pytest.MonkeyPatch, installed: list[str]) -> N
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _plan: installed.append(name) or ()
+        cli, "_install_native", lambda name, _plan: installed.append(name) or None
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or ()
+        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or ())
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
 
 
 def test_main_all_installs_what_is_present_and_names_what_it_skipped(
@@ -701,10 +701,12 @@ def test_main_all_installs_what_is_present_and_names_what_it_skipped(
     assert installed == ["claude", "pi"]
 
     # Named, not silently dropped -- otherwise `all` reports success while
-    # having done less than its name says.
+    # having done less than its name says. They belong in the summary on
+    # stdout, beside what did install, rather than shouted from stderr.
     captured = capsys.readouterr()
-    assert "codex" in captured.err
-    assert "opencode" in captured.err
+    skips = [line for line in captured.out.splitlines() if "skipped, not on PATH" in line]
+    assert sorted(line.split()[1] for line in skips) == ["codex", "opencode"]
+    assert captured.err == ""
 
 
 def test_main_all_fails_when_no_supported_agent_is_present(
@@ -733,3 +735,140 @@ def test_main_named_target_still_fails_when_absent(
     assert cli.main(["init", target]) == 1
     assert installed == []
     assert f"{target} executable was not found" in capsys.readouterr().err
+
+
+def _init_stubs(monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
+    async def preflight(_url: str, _api_key: str) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_preflight", preflight)
+    monkeypatch.setattr(cli, "_is_installed", lambda target: target in present)
+    monkeypatch.setattr(cli, "_require_executable", lambda _target: None)
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
+    monkeypatch.setattr(cli, "_install_native", lambda _target, _plan: None)
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(
+        cli, "_install_opencode",
+        lambda _url, _plan: (Path.home() / ".config/opencode/opencode.json",
+                             Path.home() / ".config/opencode/plugins/ach-memory.js"),
+    )
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: (Path.home() / ".pi/agent/mcp.json",))
+
+
+def test_init_reports_every_agent_including_the_ones_that_write_no_files(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The regression this output exists for.
+
+    claude and codex install through their host's marketplace and write nothing
+    of ours, so listing changed paths -- which is all init used to print --
+    reported two agents out of four and made a successful install
+    indistinguishable from a missing one.
+    """
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://memory.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    _init_stubs(monkeypatch, {"claude", "codex", "opencode", "pi"})
+
+    assert cli.main(["init", "all"]) == 0
+
+    out = capsys.readouterr().out
+    for agent in ("claude", "codex", "opencode", "pi"):
+        assert any(agent in line and "\u2714" in line for line in out.splitlines()), agent
+    assert "https://memory.example.com" in out
+    # Files are summarized, not listed, until -v asks for them.
+    assert "2 files" in out
+    assert "ach-memory.js" not in out
+    assert "user-secret" not in out
+
+
+def test_init_surfaces_the_codex_follow_up_only_when_codex_was_installed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex cannot carry the endpoint in its plugin, so the install is only
+    half done until that command runs. Printing it unconditionally would train
+    people to ignore it."""
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://memory.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+
+    _init_stubs(monkeypatch, {"codex"})
+    assert cli.main(["init", "codex"]) == 0
+    assert "--bearer-token-env-var ACH_MEMORY_API_KEY" in capsys.readouterr().out
+
+    _init_stubs(monkeypatch, {"claude"})
+    assert cli.main(["init", "claude"]) == 0
+    assert "bearer-token-env-var" not in capsys.readouterr().out
+
+
+def test_init_warns_when_the_endpoint_is_the_localhost_fallback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unexported ACH_MEMORY_URL installs cleanly against localhost and then
+    fails at every tool call, far from here."""
+    monkeypatch.delenv("ACH_MEMORY_URL", raising=False)
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    _init_stubs(monkeypatch, {"claude"})
+
+    assert cli.main(["init", "claude"]) == 0
+
+    out = capsys.readouterr().out
+    assert "ACH_MEMORY_URL is not set" in out
+    assert "http://localhost:8000" in out
+
+
+def test_verbose_lists_the_files_a_host_config_install_wrote(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://memory.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    _init_stubs(monkeypatch, {"opencode"})
+
+    assert cli.main(["init", "opencode", "-v"]) == 0
+
+    out = capsys.readouterr().out
+    assert "~/.config/opencode/plugins/ach-memory.js" in out
+    assert str(Path.home()) not in out
+
+
+def test_a_failure_without_ach_memory_url_names_the_missing_variable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The failure lands before the summary that would have shown the endpoint.
+
+    Without this, an unexported ACH_MEMORY_URL produces "MCP preflight failed"
+    against a localhost nobody asked for, which reads as the service being down
+    rather than the variable being absent.
+    """
+    async def preflight(_url: str, _api_key: str) -> None:
+        raise cli.CLIError("MCP preflight failed")
+
+    monkeypatch.delenv("ACH_MEMORY_URL", raising=False)
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    _init_stubs(monkeypatch, {"claude"})
+    monkeypatch.setattr(cli, "_preflight", preflight)
+
+    assert cli.main(["init", "claude"]) == 1
+
+    err = capsys.readouterr().err
+    assert "MCP preflight failed" in err
+    assert "ACH_MEMORY_URL is not set" in err
+    assert "http://localhost:8000" in err
+    assert "user-secret" not in err
+
+
+def test_a_failure_with_ach_memory_url_set_does_not_blame_the_variable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A real outage must not be reported as a configuration mistake."""
+    async def preflight(_url: str, _api_key: str) -> None:
+        raise cli.CLIError("MCP preflight failed")
+
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://memory.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
+    _init_stubs(monkeypatch, {"claude"})
+    monkeypatch.setattr(cli, "_preflight", preflight)
+
+    assert cli.main(["init", "claude"]) == 1
+
+    err = capsys.readouterr().err
+    assert "MCP preflight failed" in err
+    assert "ACH_MEMORY_URL" not in err

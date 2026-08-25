@@ -95,8 +95,21 @@ uv run ach-memory init opencode    # opencode | pi | all
 ```
 
 `all` covers every supported agent found on your PATH and names the ones it
-skipped. Restart the selected agents afterward so they inherit
-`ACH_MEMORY_API_KEY`.
+skipped:
+
+```
+ach-memory 0.1.2  →  https://memory.example.com
+
+  ✔ claude    plugin installed from ackstorm/ach-memory
+  ✔ opencode  4 files → ~/.config/opencode
+  – codex     skipped, not on PATH
+  – pi        skipped, not on PATH
+
+Restart claude and opencode to load ach-memory.
+```
+
+Add `-v` to list every file written. Restart the agents afterward so they
+inherit `ACH_MEMORY_API_KEY`.
 
 Memory is explicit: installation adds memory tools, but agents do not retain or
 recall anything automatically. Ask an agent to use memory when you want it to.
