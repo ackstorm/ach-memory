@@ -18,11 +18,11 @@ ROOT = Path(__file__).parents[1]
 NATIVE = ("claude-code", "codex")
 ADAPTED = ("opencode", "pi")
 ACTIVATION = (
-    "ach-memory holds durable user and project context across sessions and is the system of record "
-    "for prior decisions -- prefer it over grepping files or transcripts. Recall before work that "
-    "depends on such context. Retain it once established, including decisions made only in "
-    "conversation, and again before a session ends. Never store secrets. A memory call needs a task "
-    "that depends on it, not merely a session starting."
+    "ach-memory holds durable user and project context across sessions and is the system of record f"
+    "or prior decisions -- prefer it over grepping files or transcripts. Load the ach-memory skill b"
+    "efore your first memory call. Recall before work that depends on such context. Retain it once e"
+    "stablished, including decisions made only in conversation, and again before a session ends. Nev"
+    "er store secrets. A memory call needs a task that depends on it, not merely a session starting."
 )
 SECRETS = re.compile(r"AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|mem_[A-Za-z0-9]{20,}")
 
@@ -299,3 +299,23 @@ def test_adapters_fail_open_without_activation(host: str, tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["empty"]
+
+
+@pytest.mark.parametrize("host", NATIVE + ADAPTED)
+def test_activation_routes_the_agent_to_the_skill(host: str) -> None:
+    """The clause that makes the skill reachable, pinned against a trim.
+
+    The skill's own frontmatter says to read it before the first memory call,
+    but a description is matched for relevance, not executed -- obeying it
+    requires already reading it. Nothing else in the loaded path points there:
+    activation.txt is the only text guaranteed into every session, and without
+    this sentence the sole route to the skill is the agent's own judgement.
+
+    Measured: an agent with this file loaded and the MCP server connected ran
+    recall and list_memories without ever opening the skill, having found the
+    tool names through the host's own tool search instead. It is ~12 tokens per
+    injection and it is the only delivery mechanism there is.
+    """
+    text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
+    assert "skill" in text, "activation must name the skill or nothing loads it"
+    assert "before your first memory call" in text

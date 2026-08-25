@@ -1,6 +1,6 @@
 {
   "hookSpecificOutput": {
     "hookEventName": "SubagentStart",
-    "additionalContext": "ach-memory holds durable user and project context across sessions and is the system of record for prior decisions -- prefer it over grepping files or transcripts. Recall before work that depends on such context. Retain it once established, including decisions made only in conversation, and again before a session ends. Never store secrets. A memory call needs a task that depends on it, not merely a session starting."
+    "additionalContext": "ach-memory holds durable user and project context across sessions and is the system of record for prior decisions -- prefer it over grepping files or transcripts. Load the ach-memory skill before your first memory call. Recall before work that depends on such context. Retain it once established, including decisions made only in conversation, and again before a session ends. Never store secrets. A memory call needs a task that depends on it, not merely a session starting."
   }
 }
