@@ -68,6 +68,12 @@ def test_a_tool_never_returns_a_bank_id(call_tool, session):
     not a placeholder string -- because `_strip_bank_id`'s substring redaction
     only ever matches the bank_id it is handed, exactly as a live Hindsight
     response would.
+
+    Runs with verbose=True as well, and that is the case that carries the
+    weight: the reduced shape drops `chunk_id` outright, so asserting only
+    against it would leave the substring redaction untested while still
+    looking green. Invariant 29 has to hold on the payload where the field
+    actually survives.
     """
     from memory.models import User
 
@@ -81,9 +87,15 @@ def test_a_tool_never_returns_a_bank_id(call_tool, session):
         )
     )
 
-    result = call_tool("recall", key, scope="user", query="deps")
+    for verbose in (False, True):
+        result = call_tool("recall", key, scope="user", query="deps", verbose=verbose)
+        assert bank_id not in str(result.model_dump())
 
-    assert bank_id not in str(result.model_dump())
+    # The verbose payload still HAS the chunk_id -- otherwise the assertion
+    # above would be vacuous in both directions.
+    assert "chunk_id" in str(
+        call_tool("recall", key, scope="user", query="deps", verbose=True).result
+    )
 
 
 @respx.mock
@@ -753,8 +765,11 @@ def test_document_id_with_colons_and_slashes_reaches_hindsight_verbatim(call_too
 @respx.mock
 def test_list_documents_reaches_the_documents_endpoint(call_tool):
     _mock_bank()
+    # The query string is optional in this pattern on purpose: the assertion
+    # is "it reached the documents endpoint", and the reduced shape now sends
+    # a default `?limit=`. test_list_tools_default_to_a_small_page pins that.
     route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents$"
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents(\?.*)?$"
     ).mock(return_value=httpx.Response(200, json={"items": []}))
     key = call_tool.make_user()
 
@@ -854,8 +869,9 @@ def test_get_operation_reaches_the_operation_endpoint(call_tool):
 @respx.mock
 def test_list_operations_reaches_the_operations_endpoint(call_tool):
     _mock_bank()
+    # Query string optional, same reason as the documents case above.
     route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations$"
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations(\?.*)?$"
     ).mock(return_value=httpx.Response(200, json={"items": []}))
     key = call_tool.make_user()
 
@@ -1254,3 +1270,125 @@ def test_invalid_request_names_the_offending_field(call_tool):
 
     assert exc_info.value.code == "INVALID_REQUEST"
     assert "scope" in str(exc_info.value)
+
+
+@respx.mock
+def test_list_tools_default_to_a_small_page(call_tool):
+    """Hindsight's own default is 100 rows. A first look at a bank should not
+    spend an agent's context on two orders of magnitude more than it needs,
+    and `total` in the envelope keeps the rest one paged call away."""
+    _mock_bank()
+    key = call_tool.make_user()
+    for tool, path in (
+        ("list_memories", "memories/list"),
+        ("list_documents", "documents"),
+        ("list_operations", "operations"),
+    ):
+        route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/{path}(\?.*)?$").mock(
+            return_value=httpx.Response(200, json={"items": [], "total": 0})
+        )
+
+        call_tool(tool, key, scope="user")
+
+        assert "limit=20" in str(route.calls.last.request.url), tool
+
+
+@respx.mock
+def test_an_explicit_limit_is_never_overridden(call_tool):
+    """The default replaces "unspecified" only -- it caps nothing the caller
+    asked for, at any size the PageLimit bound allows."""
+    _mock_bank()
+    route = respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?.*)?$"
+    ).mock(return_value=httpx.Response(200, json={"items": [], "total": 0}))
+    key = call_tool.make_user()
+
+    call_tool("list_memories", key, scope="user", limit=500)
+
+    assert "limit=500" in str(route.calls.last.request.url)
+
+
+@respx.mock
+def test_verbose_restores_the_upstream_default_page(call_tool):
+    """verbose is the escape hatch to the old behaviour whole, and the old
+    behaviour was to send no limit at all and let Hindsight decide."""
+    _mock_bank()
+    route = respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?.*)?$"
+    ).mock(return_value=httpx.Response(200, json={"items": [], "total": 0}))
+    key = call_tool.make_user()
+
+    call_tool("list_memories", key, scope="user", verbose=True)
+
+    assert "limit=" not in str(route.calls.last.request.url)
+
+
+@respx.mock
+def test_recall_asks_hindsight_not_to_build_the_entity_map(call_tool):
+    """Disabling include.entities upstream saves assembling the map, not just
+    shipping it -- which dropping the key on the way out would not."""
+    _mock_bank()
+    route = respx.post(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
+    ).mock(return_value=httpx.Response(200, json={"results": []}))
+    key = call_tool.make_user()
+
+    call_tool("recall", key, scope="user", query="deps")
+    assert json.loads(route.calls.last.request.content)["include"] == {"entities": None}
+
+    call_tool("recall", key, scope="user", query="deps", verbose=True)
+    assert "include" not in json.loads(route.calls.last.request.content)
+
+
+@respx.mock
+def test_verbose_returns_the_upstream_payload_untouched(call_tool):
+    _mock_bank()
+    upstream = {
+        "results": [
+            {
+                "id": "m1",
+                "text": "we use uv",
+                "chunk_id": "c1",
+                "tags": [],
+                "entities": ["uv"],
+                "occurred_start": "2026-01-15T10:30:00Z",
+                "occurred_end": "2026-01-15T10:30:00Z",
+                "scores": {"final": 0.8123, "reranker": 0.42},
+            }
+        ],
+        "entities": {"uv": {"canonical_name": "uv"}},
+    }
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
+        return_value=httpx.Response(200, json=upstream)
+    )
+    key = call_tool.make_user()
+
+    assert call_tool("recall", key, scope="user", query="deps", verbose=True).result == upstream
+
+    reduced = call_tool("recall", key, scope="user", query="deps").result
+    assert reduced == {
+        "results": [
+            {
+                "id": "m1",
+                "text": "we use uv",
+                "occurred_start": "2026-01-15T10:30:00Z",
+                "scores": {"final": 0.81},
+            }
+        ]
+    }
+
+
+@respx.mock
+def test_the_envelope_omits_the_slug_fields_when_no_rename_was_followed(call_tool):
+    """Three nulls on nearly every call, serialized twice per response by the
+    SDK (structured output plus the text block mirroring it). They are still
+    emitted when they carry something -- test_a_retired_slug_* covers that."""
+    _mock_bank()
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    key = call_tool.make_user()
+
+    dumped = call_tool("recall", key, scope="user", query="deps").model_dump()
+
+    assert dumped == {"result": {"results": []}}

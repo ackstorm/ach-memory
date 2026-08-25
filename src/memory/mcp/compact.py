@@ -220,9 +220,10 @@ def _drop_nulls(value: Any) -> Any:
 def compact(action: str, payload: Any) -> Any:
     """Reduce one upstream payload for `action`.
 
-    An action with no rule — every write tool — is returned with nothing but
-    its nulls dropped. A payload that is not an object is returned untouched;
-    `_run` rejects that shape immediately afterwards anyway.
+    Only the eight read tools call this; the write tools return their payload
+    untouched. An action with no rule therefore means a read tool was added
+    without one — it falls back to dropping nulls, which is safe for any shape.
+    A payload that is not an object is returned untouched.
 
     Mutates in place, which is safe because `_strip_bank_id` has already
     rebuilt the whole structure by the time this runs.
