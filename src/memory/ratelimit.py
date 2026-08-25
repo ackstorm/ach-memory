@@ -90,9 +90,15 @@ def check(principal: Principal, on_behalf_of: str | None = None) -> None:
     -- but the master key is trusted wholesale by §20.3 anyway, so using it
     for FAIRNESS costs nothing: the worst a forged value can do is give the
     forger their own bucket, which is what an honest value does too.
+
+    An external identity gets its own bucket too, keyed by the `ext_` id that
+    `auth.provisioning.credential_id_for` derives from (issuer, subject).
+    Without it every JWT and platform caller fell through to the master bucket
+    below and the whole fleet shared one ceiling -- SPEC §20's per-credential
+    MUST, failing with no error and no log.
     """
-    if principal.key_id:
-        get_limiter().check(principal.key_id)
+    if principal.credential_id:
+        get_limiter().check(principal.credential_id)
     elif on_behalf_of:
         get_limiter().check(f"{MASTER_KEY_ID}:{on_behalf_of}")
     else:

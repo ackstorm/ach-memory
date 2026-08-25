@@ -23,12 +23,18 @@ def record(
     case §5.2 cares about. For a user key it stays None: the caller acts for
     itself, and actor_key_id already says who that is. It is provenance and
     never authorization evidence.
+
+    `actor_key_id` holds whichever credential acted: a `key_`-prefixed
+    api_keys.id, or an `ext_`-prefixed identity that `external_identities`
+    resolves back to a human. The two namespaces are disjoint by construction
+    (ids.py, provisioning.CREDENTIAL_PREFIX). NULL still means the master key,
+    which is configuration and never a row.
     """
     db.add(
         AuditEvent(
             id=ids.new_audit_id(),
             tenant_id=principal.tenant_id,
-            actor_key_id=principal.key_id,
+            actor_key_id=principal.credential_id,
             on_behalf_of=on_behalf_of,
             action=action,
             resource=resource,

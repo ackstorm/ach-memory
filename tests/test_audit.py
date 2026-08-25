@@ -13,8 +13,12 @@ def _master(tenant: str) -> Principal:
 
 
 def _user(tenant: str) -> Principal:
+    # Both, exactly as `local_key.authenticate` sets them for a real key:
+    # `key_id` is the api_keys row, `credential_id` is what audit and the rate
+    # limiter account against, and for a local key they are the same value.
     return Principal(
-        tenant_id=tenant, user_id="usr_juan", is_master=False, key_id="key_juan"
+        tenant_id=tenant, user_id="usr_juan", is_master=False, key_id="key_juan",
+        credential_id="key_juan",
     )
 
 
@@ -429,3 +433,20 @@ def test_key_revoke_is_audited_with_the_key_id(
     assert response.status_code == 204
     event = session.query(AuditEvent).filter_by(action="key.revoke").one()
     assert event.resource == key_id
+
+
+def test_an_external_actor_is_recorded_in_the_audit_trail(session, tenant):
+    """`ext_`-prefixed so a reader can tell it apart from a `key_` api_keys.id,
+    and `external_identities.credential_id` resolves it back to a human. Before
+    this it was NULL -- indistinguishable from a master-key action."""
+    principal = Principal(
+        tenant_id=tenant, user_id="usr_alice", is_master=False, key_id=None,
+        credential_id="ext_alice",
+    )
+
+    audit.record(session, principal, "project.rename", "a -> b")
+    session.flush()
+
+    event = session.query(AuditEvent).one()
+    assert event.actor_key_id == "ext_alice"
+    assert event.on_behalf_of is None

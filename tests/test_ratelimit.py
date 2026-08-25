@@ -317,3 +317,30 @@ def test_the_limiter_is_keyed_per_credential_through_a_route(
         assert client.post("/v1/memory/retain", json=body, headers=alice).status_code == 429
         # Bob's own bucket must be untouched.
         assert client.post("/v1/memory/retain", json=body, headers=bob).status_code == 200
+
+
+def test_two_external_identities_do_not_share_a_bucket(monkeypatch):
+    """Before credential_id, every external caller had key_id=None and fell
+    through to the master bucket -- one 60-writes-per-minute ceiling for the
+    entire fleet, SPEC §20's per-credential MUST failing with no error and no
+    log."""
+    from memory import ratelimit
+    from memory.auth.principal import Principal
+
+    limiter = ratelimit.Limiter(limit=1, window_seconds=60)
+    monkeypatch.setattr(ratelimit, "get_limiter", lambda: limiter)
+
+    alice = Principal(
+        tenant_id="default", user_id="usr_a", is_master=False, key_id=None,
+        credential_id="ext_alice",
+    )
+    bob = Principal(
+        tenant_id="default", user_id="usr_b", is_master=False, key_id=None,
+        credential_id="ext_bob",
+    )
+
+    ratelimit.check(alice)
+    ratelimit.check(bob)  # a different credential, so a different bucket
+
+    with pytest.raises(RateLimited):
+        ratelimit.check(alice)
