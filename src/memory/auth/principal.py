@@ -26,6 +26,22 @@ class Principal:
     user_id: str | None
     is_master: bool
     key_id: str | None
+    #: Group ids asserted by an external identity provider (SPEC §5.3).
+    #: Empty for a local key, whose membership lives in `group_members` and is
+    #: read from the database instead. Never merged with the database set:
+    #: `projects.authorize` consults both independently, so an IdP that stops
+    #: asserting a group revokes it immediately without touching a row.
+    groups: frozenset[str] = frozenset()
+    #: Stable identity of the *credential*, for rate limiting and audit.
+    #: `key_id` for a local key, `ext_<hash>` for an external identity (see
+    #: `auth.provisioning.credential_id_for`). None only for the master key,
+    #: which `ratelimit.check` buckets by On-Behalf-Of instead.
+    #:
+    #: This exists because `key_id` is None for every external caller, which
+    #: silently dropped them all into the master's shared rate-limit bucket
+    #: and wrote `actor_key_id=NULL` into every audit row -- both SPEC §20
+    #: MUSTs, failing with no error.
+    credential_id: str | None = None
 
 
 def _credential(authorization: str | None, api_key: str | None) -> str:
@@ -94,4 +110,5 @@ def resolve_principal(
         user_id=row.user_id,
         is_master=False,
         key_id=row.id,
+        credential_id=row.id,
     )

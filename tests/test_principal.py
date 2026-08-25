@@ -145,3 +145,22 @@ def test_master_key_still_works_over_the_api_key_header(session, tenant):
 
     assert principal.is_master is True
     assert principal.user_id is None
+
+
+def test_principal_defaults_to_no_groups(session, tenant):
+    _, plaintext = _make_user_key(session, tenant)
+    principal = resolve_principal(f"Bearer {plaintext}", session)
+    assert principal.groups == frozenset()
+
+
+def test_local_key_credential_id_is_its_key_id(session, tenant):
+    _, plaintext = _make_user_key(session, tenant)
+    principal = resolve_principal(f"Bearer {plaintext}", session)
+    assert principal.credential_id == principal.key_id
+    assert principal.credential_id is not None
+
+
+def test_master_has_no_credential_id(session):
+    principal = resolve_principal(f"Bearer {MASTER_PLAINTEXT}", session)
+    assert principal.is_master
+    assert principal.credential_id is None
