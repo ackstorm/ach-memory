@@ -1380,6 +1380,7 @@ GROUP_ALREADY_EXISTS
 USER_ALREADY_EXISTS
 CONTENT_TOO_LARGE
 HINDSIGHT_ERROR
+AUTH_BACKEND_UNAVAILABLE
 UPSTREAM_REJECTED
 RATE_LIMITED
 INVALID_REQUEST
@@ -1421,6 +1422,12 @@ request shape that can never succeed. Distinct from `MEMORY_NOT_CURATABLE`:
 that code is a fact about the memory the caller named (an `observation` upstream
 refuses to curate); this one is a fact about the request shape itself,
 independent of which route sent it.
+
+`AUTH_BACKEND_UNAVAILABLE` (503): the external identity resolver could not be
+reached or returned a server error, so the caller's credential was never
+checked. Distinct from `UNAUTHORIZED`, which asserts the credential was
+checked and rejected -- an agent told 401 stops retrying and a human starts
+rotating a key that was never the problem.
 
 `RATE_LIMITED`: the credential exceeded its per-credential write-rate quota
 (§20); the response `details` carries `retry_after_seconds`.

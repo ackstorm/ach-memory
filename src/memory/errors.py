@@ -35,6 +35,19 @@ class HindsightError(DomainError):
     status = 502
 
 
+class AuthBackendUnavailable(DomainError):
+    """The credential could not be checked, which is not the same as bad.
+
+    Reporting a resolver outage as UNAUTHORIZED tells an agent its key is
+    wrong -- so it stops retrying and a human starts rotating credentials --
+    when the truth is that the check never ran. 503 says "ask again later",
+    which is the only accurate thing we know.
+    """
+
+    code = "AUTH_BACKEND_UNAVAILABLE"
+    status = 503
+
+
 class ProjectInvalidSlug(DomainError):
     code = "PROJECT_INVALID_SLUG"
     status = 400
