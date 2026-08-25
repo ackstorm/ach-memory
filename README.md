@@ -56,13 +56,15 @@ export ACH_MEMORY_URL=http://localhost:8000
 export ACH_MEMORY_API_KEY="$user_key"
 ```
 
-From this checkout, install every supported agent with:
+From this checkout, install one agent:
 
 ```bash
-uv run ach-memory init all
+uv run ach-memory init claude    # codex | claude | opencode | pi | all
 ```
 
-For an installed package, run `ach-memory init <agent>` (or `all`). Restart the
+For an installed package, drop the `uv run` prefix. `all` installs every
+supported agent but requires codex, claude, opencode and pi to all be on your
+PATH — it aborts before installing anything if one is missing. Restart the
 selected agents afterward so they inherit `ACH_MEMORY_API_KEY`.
 
 ### Remote service
