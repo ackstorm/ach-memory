@@ -193,6 +193,19 @@ def _read_json_object(path: Path) -> dict[str, object]:
 
 
 def _config_root(target: str) -> Path:
+    """Where each host keeps the config we are allowed to edit.
+
+    opencode deliberately reads XDG_CONFIG_HOME and not OPENCODE_CONFIG.
+    It has no private config-dir variable: its root is computed as
+    `(XDG_CONFIG_HOME || ~/.config)/opencode` and nothing else feeds into it.
+    OPENCODE_CONFIG, OPENCODE_CONFIG_DIR and OPENCODE_CONFIG_CONTENT only
+    *append* to its search path, so writing to one of those would not put our
+    server where opencode looks first, and honouring them here would move our
+    entry out of the file the user edits by hand. Measured in
+    github.com/ackstorm/agent-profile, which had to shim XDG_CONFIG_HOME for
+    exactly this reason -- do not "fix" this to OPENCODE_CONFIG without new
+    measurements.
+    """
     if target == "opencode":
         return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "opencode"
     if target == "pi":
@@ -359,8 +372,17 @@ def _report(
     for name, summary, paths in results:
         print(f"  \u2714 {name.ljust(width)}  {summary}")
         if verbose:
+            # Relative to the root the summary line just named. Repeating an
+            # absolute path on every line buries the part that differs, and a
+            # relocated root (XDG_CONFIG_HOME, PI_CODING_AGENT_DIR) can be long
+            # enough to push the filename off the terminal entirely.
+            root = paths[0].parent if paths else None
             for path in paths:
-                print(f"    {' ' * width}  {_tilde(path)}")
+                try:
+                    shown = path.relative_to(root) if root else path
+                except ValueError:
+                    shown = path
+                print(f"    {' ' * width}  {shown}")
     for name in skipped:
         print(f"  \u2013 {name.ljust(width)}  skipped, not on PATH")
 

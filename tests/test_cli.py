@@ -825,7 +825,11 @@ def test_verbose_lists_the_files_a_host_config_install_wrote(
     assert cli.main(["init", "opencode", "-v"]) == 0
 
     out = capsys.readouterr().out
-    assert "~/.config/opencode/plugins/ach-memory.js" in out
+    # The root is named once on the summary line; the listing shows only what
+    # differs, so a long relocated root cannot push filenames off the terminal.
+    assert "~/.config/opencode" in out
+    assert "plugins/ach-memory.js" in out
+    assert "~/.config/opencode/plugins/ach-memory.js" not in out
     assert str(Path.home()) not in out
 
 
@@ -872,3 +876,34 @@ def test_a_failure_with_ach_memory_url_set_does_not_blame_the_variable(
     err = capsys.readouterr().err
     assert "MCP preflight failed" in err
     assert "ACH_MEMORY_URL" not in err
+
+
+def test_config_roots_follow_each_host_own_relocation_variable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pins which variable relocates each host, and which ones must not.
+
+    opencode's config root is `(XDG_CONFIG_HOME || ~/.config)/opencode` and
+    nothing else feeds into it. OPENCODE_CONFIG, OPENCODE_CONFIG_DIR and
+    OPENCODE_CONFIG_CONTENT only append to its search path, so an install that
+    followed them would write somewhere opencode does not treat as its config
+    root -- and somewhere the user is not editing by hand. Setting all three to
+    decoys here is the guard against that being "fixed" later.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pihome"))
+    for decoy in ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT"):
+        monkeypatch.setenv(decoy, str(tmp_path / "decoy"))
+
+    assert cli._config_root("opencode") == tmp_path / "xdg" / "opencode"
+    assert cli._config_root("pi") == tmp_path / "pihome"
+
+
+def test_config_roots_fall_back_to_each_host_documented_default(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert cli._config_root("opencode") == Path.home() / ".config" / "opencode"
+    assert cli._config_root("pi") == Path.home() / ".pi" / "agent"
