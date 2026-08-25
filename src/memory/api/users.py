@@ -63,7 +63,7 @@ class ListUsersResponse(BaseModel):
 
 class KeySummary(BaseModel):
     # No secret, no secret_hash: the plaintext exists once, in the mint
-    # response (SPEC §5.3), and the hash is what protects it.
+    # response (SPEC §5.4), and the hash is what protects it.
     key_id: str
     status: str
     created_at: str
@@ -140,7 +140,7 @@ def create_key(
     # key id is not sensitive (the secret hash is what's protected).
     audit.record(db, principal, "key.create", row.id, on_behalf_of=on_behalf_of)
     db.commit()
-    # The only time the plaintext exists outside the caller's hands (§5.3).
+    # The only time the plaintext exists outside the caller's hands (§5.4).
     return CreateKeyResponse(key_id=row.id, key=plaintext)
 
 
@@ -195,7 +195,7 @@ def revoke_key(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> None:
-    """SPEC §5.3, §16.3.
+    """SPEC §5.4, §16.3.
 
     Status flip, not a DELETE: the audit trail must keep showing the key
     existed and when it stopped working. `principal` resolution already

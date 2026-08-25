@@ -214,7 +214,7 @@ def test_revoking_a_key_stops_it_authenticating(client, master_headers, tenant):
 
     Before Plan 6 the only way was `UPDATE api_keys SET status='revoked'` in
     Postgres -- the status column was read on every auth and written by
-    nothing (review Critical C2, SPEC §5.3).
+    nothing (review Critical C2, SPEC §5.4).
     """
     user_id = client.post(
         "/v1/users", json={}, headers=master_headers
@@ -244,7 +244,7 @@ def test_revoking_a_key_stops_it_authenticating(client, master_headers, tenant):
 def test_listing_keys_never_returns_the_secret(client, master_headers, tenant):
     """A list route that leaks the plaintext would be worse than no route.
 
-    The plaintext exists exactly once, in the mint response (SPEC §5.3), and
+    The plaintext exists exactly once, in the mint response (SPEC §5.4), and
     only the hash is stored -- so this pins that nothing added a secret or
     secret_hash field to the summary.
     """
