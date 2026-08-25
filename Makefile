@@ -19,8 +19,30 @@ help: ## Show this help
 lint: ## ruff
 	uv run ruff check .
 
+TESTDB_NAME = ach-memory-testdb
+TESTDB_PORT ?= 5434
+
+.PHONY: testdb
+testdb: ## Start the test Postgres (idempotent, its own port, survives restarts)
+	@docker start $(TESTDB_NAME) >/dev/null 2>&1 || \
+	  docker run -d --name $(TESTDB_NAME) \
+	    -e POSTGRES_USER=memory -e POSTGRES_PASSWORD=memory -e POSTGRES_DB=memory \
+	    -p 127.0.0.1:$(TESTDB_PORT):5432 postgres:16-alpine >/dev/null
+	@for i in $$(seq 1 30); do \
+	  docker exec $(TESTDB_NAME) pg_isready -U memory >/dev/null 2>&1 && exit 0; \
+	  sleep 1; \
+	done; \
+	echo "FAIL: $(TESTDB_NAME) was not ready within 30s." >&2; exit 1
+
+.PHONY: testdb-rm
+testdb-rm: ## Remove the test Postgres and its data
+	@docker rm -f $(TESTDB_NAME) >/dev/null 2>&1 || true
+
+# Deliberately NOT --rm and deliberately not the compose stack: a throwaway
+# container on a shared port is what let the database change identity under a
+# running suite. CI overrides MEMORY_TEST_DATABASE_URL and skips this entirely.
 .PHONY: test
-test: ## Unit and API tests (needs Postgres; `make up` provides it)
+test: testdb ## Unit and API tests
 	uv run pytest -m "not integration" -q
 
 .PHONY: secrets
@@ -64,6 +86,11 @@ release-bump: ## Update release metadata (VERSION=X.Y.Z)
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^([[:space:]]*)"version": "[^"]*"/\1"version": "$(VERSION)"/' $(PLUGIN_MANIFESTS)
+	# uv.lock names the root package too. Left out, v0.2.0 was tagged with a
+	# lockfile still saying 0.1.2, and `uv run --frozen` reports that stale
+	# version through importlib.metadata -- which is what `ach-memory init`
+	# prints back to the user.
+	uv lock
 	@grep -qx 'version = "$(VERSION)"' pyproject.toml \
 		&& grep -qx 'version: $(VERSION)' deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx 'appVersion: "$(VERSION)"' deploy/helm/ach-memory/Chart.yaml \
@@ -72,6 +99,8 @@ release-bump: ## Update release metadata (VERSION=X.Y.Z)
 		grep -qE '^[[:space:]]*"version": "$(VERSION)"' "$$manifest" \
 			|| { echo "FAIL: $$manifest was not updated." >&2; exit 1; }; \
 	done
+	@grep -qx 'version = "$(VERSION)"' uv.lock \
+		|| { echo "FAIL: uv.lock was not updated." >&2; exit 1; }
 
 .PHONY: release-cut
 release-cut: ## Create and push the release marker (VERSION=X.Y.Z)

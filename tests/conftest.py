@@ -5,6 +5,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
+# A different SERVER than docker-compose's, on its own port -- not merely a
+# different database name on the same one. Both defaulted to 5433, so whichever
+# container held the port served the suite, and restarting the compose stack
+# mid-run swapped the database out from under it: every table vanished and the
+# suite reported `relation "tenants" does not exist` against a `memory_test`
+# that had been created inside the other server. `make testdb` starts this one.
+#
 # A DIFFERENT database than docker-compose gives the `api` container
 # (postgresql://.../memory) -- on purpose. This suite's Base.metadata.drop_all
 # below previously ran against that same `memory` database: `docker compose up
@@ -15,7 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 # can never collide, whether or not the compose stack happens to be up.
 TEST_DATABASE_URL = os.environ.get(
     "MEMORY_TEST_DATABASE_URL",
-    "postgresql+psycopg://memory:memory@localhost:5433/memory_test",
+    "postgresql+psycopg://memory:memory@localhost:5434/memory_test",
 )
 
 MASTER_PLAINTEXT = "mem_master_secret_for_tests"

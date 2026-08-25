@@ -243,10 +243,15 @@ make verify
 make e2e
 ```
 
+`make verify` is the local lint, test, secret-scan and Helm gate. It starts its
+own Postgres on port 5434 (`make testdb`, idempotent; `make testdb-rm` to drop
+it) — deliberately a different server from the compose stack rather than
+another database inside it, since both defaulted to 5433 and whichever
+container held the port served the suite.
+
 `make e2e` runs Hindsight and its databases for real but uses Hindsight's
 `MockLLM`, makes zero external LLM calls, and tears down its isolated stack and
-volumes afterward. `make verify` is the local lint, test, secret-scan, and Helm
-gate.
+volumes afterward.
 
 For how to cut a release — and why a change under `plugins/` needs one — see
 [docs/reference/RELEASING.md](docs/reference/RELEASING.md).
