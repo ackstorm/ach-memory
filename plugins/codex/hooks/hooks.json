@@ -1,16 +1,17 @@
 {
-  "description": "ach-memory activation - announces the memory tools, never calls them",
+  "description": "ach-memory activation - announces the memory tools, never calls them. Codex expands ${PLUGIN_ROOT}, not ${CLAUDE_PLUGIN_ROOT}: the Agent Plugins spec name, and what engram's codex plugin uses.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh\"",
+            "command": "\"${PLUGIN_ROOT}/scripts/session-start.sh\"",
             "timeout": 5,
             "statusMessage": "Loading ach-memory..."
           }
-        ]
+        ],
+        "matcher": "startup|resume|clear|compact"
       }
     ],
     "SubagentStart": [
@@ -18,11 +19,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/subagent-start.sh\"",
+            "command": "\"${PLUGIN_ROOT}/scripts/subagent-start.sh\"",
             "timeout": 5,
             "statusMessage": "Loading ach-memory..."
           }
-        ]
+        ],
+        "matcher": "startup"
       }
     ]
   }

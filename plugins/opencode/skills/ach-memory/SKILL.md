@@ -1,9 +1,11 @@
 ---
 name: ach-memory
-description: How and when to recall and retain durable user and project context with ach-memory. Read before the first memory call in a session — the tools are lazy-loaded and this names them.
+description: Durable user and project context that outlives the session. Read at the start of any conversation, before the first memory call and before searching files or transcripts for a prior decision — the tools are lazy-loaded and this names them.
 ---
 
 Memory survives sessions and compaction. Its value is the decision that never reached a file.
+
+ach-memory is the system of record for that context: use it instead of the host's own file-based memory directory and MEMORY.md, and prefer it over grepping files or transcripts. Never store secrets.
 
 ## Tools
 

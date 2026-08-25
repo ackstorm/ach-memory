@@ -109,7 +109,13 @@ def test_hooks_register_only_the_two_activation_events(host: str) -> None:
         hook = registrations[0]["hooks"][0]
         assert hook["type"] == "command"
         name = {"SessionStart": "session-start.sh", "SubagentStart": "subagent-start.sh"}[event]
-        assert hook["command"] == f'"${{CLAUDE_PLUGIN_ROOT}}/scripts/{name}"'
+        # Each host expands its OWN variable. `${PLUGIN_ROOT}` is the Agent
+        # Plugins spec name -- it is what the codex binary carries, and what
+        # engram's codex plugin uses, while engram ships `${CLAUDE_PLUGIN_ROOT}`
+        # in its claude-code copy of the same file. Claude's spelling under
+        # codex leaves the path unexpanded and codex reports nothing at all.
+        root = "CLAUDE_PLUGIN_ROOT" if host == "claude-code" else "PLUGIN_ROOT"
+        assert hook["command"] == f'"${{{root}}}/scripts/{name}"'
 
 
 @pytest.mark.parametrize("host", NATIVE)
@@ -340,3 +346,26 @@ def test_activation_displaces_the_hosts_own_memory_store(host: str) -> None:
     text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
     assert "memory.md" in text, "activation must name the host store it replaces"
     assert "instead of" in text
+
+
+@pytest.mark.parametrize("host", NATIVE + ADAPTED)
+def test_the_skill_carries_the_policy_for_hosts_whose_hooks_never_run(host: str) -> None:
+    """The activation policy has a second home, because codex has no first one.
+
+    Measured against codex-cli 0.149.1: the plugin's SessionStart hook does not
+    execute under any configuration tried -- trusted and untrusted projects,
+    hooks explicitly trusted, three path spellings including absolute,
+    with and without matchers, interactive and headless, both the installed
+    copy and the marketplace snapshot. See TODO.md.
+
+    What codex does load is skills, including in untrusted projects, where its
+    own message is "hooks and exec policies are disabled ... but skills still
+    load". superpowers relies on exactly that: its codex plugin declares
+    `"hooks": {}` and drives everything from one skill description. So the
+    displacement policy lives in the skill body too, and the description says
+    to read it early -- otherwise codex gets the tools and never the policy,
+    which is how it ended up writing to the host's own store instead.
+    """
+    text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
+    assert "instead of the host's own file-based memory directory and memory.md" in text
+    assert "read at the start of any conversation" in text
