@@ -44,19 +44,32 @@ def _script(host: str, name: str) -> subprocess.CompletedProcess[str]:
 
 
 @pytest.mark.parametrize("host", NATIVE)
-def test_the_mcp_config_is_static_and_resolves_both_values_from_the_environment(host: str) -> None:
+def test_the_mcp_config_is_static_and_takes_both_values_from_the_environment(host: str) -> None:
     """The one test that protects the architecture.
 
-    A literal URL here means someone reintroduced per-install rendering, and a
-    literal credential means the bundle stopped being safe to commit. Both
-    values must come from the environment, and the URL must carry a localhost
-    default so a fresh checkout works with nothing exported.
+    A literal URL means someone reintroduced per-install rendering; a literal
+    credential means the bundle stopped being safe to commit. Neither may
+    appear, and the URL carries a localhost default so a fresh checkout works
+    against docker compose with nothing exported.
+
+    The credential is spelled differently per host and that is not cosmetic.
+    Claude Code interpolates ${VAR} inside header values; Codex does not
+    interpolate at all and instead takes the NAME of an env var it resolves
+    itself. Handing Codex a `headers` block is not an error there -- it is
+    dropped in silence, `codex mcp get` reports http_headers as empty, and
+    every tool call goes out unauthenticated. Measured, after this test was
+    briefly parameterized as if one shape fit both.
     """
     server = _json(ROOT / "plugins" / host / ".mcp.json")["mcpServers"]["ach-memory"]
 
     assert server["type"] == "http"
     assert server["url"] == "${ACH_MEMORY_URL:-http://localhost:8000}/mcp/"
-    assert server["headers"] == {"Authorization": "Bearer ${ACH_MEMORY_API_KEY}"}
+    if host == "codex":
+        assert server["bearer_token_env_var"] == "ACH_MEMORY_API_KEY"
+        assert "headers" not in server
+    else:
+        assert server["headers"] == {"Authorization": "Bearer ${ACH_MEMORY_API_KEY}"}
+        assert "bearer_token_env_var" not in server
 
 
 def test_the_repository_root_is_the_marketplace_for_both_hosts() -> None:
