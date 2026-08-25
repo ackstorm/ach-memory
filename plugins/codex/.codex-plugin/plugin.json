@@ -1,6 +1,6 @@
 {
   "name": "ach-memory",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Durable memory for Codex through the ach-memory service.",
   "author": {
     "name": "ackstorm"
