@@ -47,6 +47,12 @@ verify: lint test secrets chart ## The full local gate -- run this before pushin
 # and silently drifted to 0.1.0 while the package reached 0.1.2 -- a user
 # reading `claude plugin list` was told a version that had not existed for two
 # releases.
+#
+# The version is also the ONLY thing that propagates a plugin change. Hosts
+# cache an installed plugin by version, so with an unchanged version both
+# `claude plugin update` and `claude plugin marketplace update` report success
+# and keep the stale copy. Any change under plugins/ therefore needs a release,
+# not just a commit -- see "Releasing" in README.md.
 PLUGIN_MANIFESTS = .claude-plugin/marketplace.json \
 	plugins/claude-code/.claude-plugin/plugin.json \
 	plugins/codex/.codex-plugin/plugin.json

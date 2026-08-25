@@ -27,6 +27,13 @@ dependencies = [
     # crash-looping container, and the CI import guard only catches it once
     # CI actually runs (see .github/workflows/ci.yml's push trigger).
     "mcp-types>=2.0.0",
+    # Verifies externally-issued identity tokens
+    # (memory/auth/providers/jwt_provider.py, added in a later task).
+    # [crypto] is not optional for us: ACH signs EdDSA and Dex signs RS256,
+    # and PyJWT without the extra supports neither -- it raises
+    # "Algorithm 'EdDSA' could not be found" at the first request, not at
+    # import, so a missing extra ships as a runtime auth outage.
+    "pyjwt[crypto]>=2.10",
 ]
 
 [project.scripts]

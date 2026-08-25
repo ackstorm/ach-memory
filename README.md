@@ -156,6 +156,18 @@ native/non-browser MCP clients only.
 | `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS` | `180` |
 | `MEMORY_WRITE_LIMIT` | `60` |
 | `MEMORY_WRITE_WINDOW_SECONDS` | `60` |
+| `MEMORY_AUTH_JWT_ENABLED` | `false` |
+| `MEMORY_AUTH_JWT_ISSUER` | empty (required when JWT is enabled) |
+| `MEMORY_AUTH_JWT_JWKS_URI` | empty (derived from the issuer) |
+| `MEMORY_AUTH_JWT_AUDIENCE` | empty (required unless verification is off) |
+| `MEMORY_AUTH_JWT_VERIFY_AUDIENCE` | `true` |
+| `MEMORY_AUTH_JWT_GROUPS_CLAIM` | `groups` |
+| `MEMORY_AUTH_PLATFORM_ENABLED` | `false` |
+| `MEMORY_AUTH_PLATFORM_INCOMING_HEADER` | empty (required when platform auth is enabled) |
+| `MEMORY_AUTH_PLATFORM_RESOLVER_HEADER` | empty (required when platform auth is enabled) |
+| `MEMORY_AUTH_PLATFORM_RESOLVER_URL` | empty (required when platform auth is enabled) |
+| `MEMORY_AUTH_PLATFORM_CACHE_TTL` | `300` |
+| `MEMORY_AUTH_PLATFORM_GROUPS_FIELD` | `team_id` |
 
 The three required variables are supplied by Compose for local setup; deployed
 service operators configure them separately. See
@@ -173,6 +185,20 @@ make e2e
 `MockLLM`, makes zero external LLM calls, and tears down its isolated stack and
 volumes afterward. `make verify` is the local lint, test, secret-scan, and Helm
 gate.
+
+### Releasing
+
+`make release-bump VERSION=X.Y.Z` then `make release-cut VERSION=X.Y.Z`.
+
+**Any change under `plugins/` needs a release, not just a commit.** Agent hosts
+cache an installed plugin by version: with the version unchanged, both
+`claude plugin update` and `claude plugin marketplace update` report success,
+keep the stale copy, and the change never reaches anyone who already installed.
+Recovering without a bump means `claude plugin uninstall`,
+`rm -rf ~/.claude/plugins/cache/ach-memory`, then reinstall — which is not
+something to ask users to do. `release-bump` rewrites the plugin manifests
+alongside pyproject.toml and Chart.yaml, so cutting a release is all it takes;
+a test fails if a manifest carrying a version is not in that list.
 
 For deployment, see the
 [Helm chart guide](deploy/helm/README.md). The chart runs ach-memory only;
