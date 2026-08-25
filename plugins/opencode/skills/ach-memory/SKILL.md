@@ -29,6 +29,8 @@ Retain once a fact is durable:
 
 Skip anything routine, already stored, or secret.
 
+Write every memory in English, whatever language the conversation is in. Retrieval reranks with an English-only cross-encoder, so a fact stored in another language keeps a good embedding score and still loses: measured, the same fact scored 0.99 against its own language and 0.0001 against the English translation of the same question.
+
 ## Scope
 
 Use `scope="project"` with the repository slug for facts about this codebase, `scope="user"` otherwise. An unseen slug mints a project permanently and slugs are never reusable, so pass the one already in use.

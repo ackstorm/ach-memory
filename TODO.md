@@ -188,3 +188,46 @@ ever saw run.
 Until then codex has the tools and the skill but not the policy, and
 `test_activation_policy_is_identical_everywhere_and_carries_no_secret` asserts
 four identical copies of a text that only three hosts can receive.
+
+## Swap the reranker for a multilingual one
+
+Retrieval reranks with an English-only cross-encoder, so a memory stored in
+any other language is effectively unfindable by an English question. Storing
+in English is the mitigation in place today -- on the `retain` and
+`sync_retain` tool descriptions and in the skill -- but it only helps facts
+written from now on, and it makes the service quietly monolingual.
+
+Measured against the deployed hindsight-api 0.9.1, one Spanish fact, two
+spellings of one question:
+
+| query | semantic | keyword | reranker | final |
+| --- | --- | --- | --- | --- |
+| `cuál es mi color favorito` | 0.825 | 0.30 | 0.988 | 1.087 |
+| `what is my favourite colour` | 0.647 | absent | 0.000098 | 0.00011 |
+
+The embedding is multilingual and degrades gracefully -- it still ranked that
+Spanish fact above every English memory in the bank. `final` tracks the
+reranker, which collapses 10,000x. Hindsight's default is
+`HINDSIGHT_API_RERANKER_LOCAL_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2`,
+trained on English MS MARCO, and we set no reranker env at all
+(`apps/hindsight/base/api.yaml` in the gitops repo configures only DB and LLM).
+
+Options, in ascending order of effort:
+
+- `HINDSIGHT_API_RERANKER_LOCAL_MODEL=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`
+  -- the multilingual sibling of the current default, no external dependency
+  and no `trust_remote_code`. Unverified: that it loads in 0.9.1, and what L12
+  costs on the pod's 2-CPU / 4Gi limit.
+- `HINDSIGHT_API_RERANKER_PROVIDER=litellm` against
+  `http://litellm.litellm.svc:4000`, which would bring metering and budgets --
+  but no rerank model is registered in that proxy today.
+- `HINDSIGHT_API_RERANKER_PROVIDER=rrf` turns reranking off. It would fix the
+  collapse by deleting the thing that collapses, and lose real quality: on a
+  same-language query the reranker separates the right answers (0.99) from
+  everything else (~1e-5) cleanly.
+
+Whichever is chosen, the check is the two queries in the table above, before
+and after. Changing the reranker changes every score, not just cross-language
+ones. Note also that the `cohere` provider defaults to `rerank-english-v3.0` --
+the same monolingual trap one layer out; `rerank-multilingual-v3.0` is the one
+to name.

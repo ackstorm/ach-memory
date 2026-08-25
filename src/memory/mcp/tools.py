@@ -282,9 +282,12 @@ def _run(
 def register(mcp: MCPServer) -> None:
     @mcp.tool(
         description=(
-            "Store something worth remembering. Returns immediately with an "
-            "operation you can follow with get_operation; use sync_retain when "
-            "you need to read it back straight away."
+            "Store something worth remembering. Write the content in English "
+            "whatever language the conversation is in: retrieval reranks in "
+            "English only, so a fact stored in another language is not found "
+            "by an English query. Returns immediately with an operation you "
+            "can follow with get_operation; use sync_retain when you need to "
+            "read it back straight away."
         ),
     )
     def retain(
@@ -304,7 +307,11 @@ def register(mcp: MCPServer) -> None:
         )
 
     @mcp.tool(
-        description="Store something and wait until it is searchable.",
+        description=(
+            "Store something and wait until it is searchable. Write the "
+            "content in English whatever language the conversation is in: "
+            "retrieval reranks in English only."
+        ),
     )
     def sync_retain(
         scope: Scope,
