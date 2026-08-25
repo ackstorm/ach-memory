@@ -98,9 +98,48 @@ sixteenth tool is added. The rate limiter is a single per-credential
 `Limiter` shared by both surfaces (`is_write` on `_resolve_bank`), so neither
 can be used to dodge the other's count.
 
+Plan 8 decoupled authentication into providers (SPEC §5.3). `resolve_principal`
+is now an ordered, fail-closed chain over three of them — the local `mem_` key,
+a JWKS-verified JWT (ACH, Dex), and a platform API key resolved over HTTP
+(LiteLLM) — with the external two off by default, so a deployment that
+configures neither behaves exactly as it did before they existed. Once a
+credential names a provider that provider is the only one consulted; nothing
+falls through. External identities are `(issuer, subject)` pairs mapped onto
+local users through `external_identities`, because `User.bank_id` is what makes
+memory exist and no IdP subject is usable as a user id directly. Groups may be
+asserted by the provider and are checked independently of `group_members`, so
+an IdP that stops asserting a group revokes access on the next request with no
+row changing — while `is_master` stays a constant on every external path, so no
+claim can mint tenant-wide authority. Rate limiting and audit account against a
+`credential_id` (`key_...`, `ext_<hash>`, or NULL for the master key).
+
 ## Traps that cost real time
 
 Each of these looked healthy right up until it didn't.
+
+**SQLAlchemy ordered two INSERTs alphabetically and broke every first login.**
+`auth/provisioning.link_identity` adds a `User` and then an `ExternalIdentity`
+that points at it, inside one savepoint. Neither mapper declares a
+`relationship()` — the FK lives on the column alone — so the unit of work had
+no dependency edge to sort on and fell back to the mapper sort key, which is
+alphabetical: `ExternalIdentity` before `User`. Every first sight of a new
+external identity died on `external_identities_user_id_fkey`. This was not a
+fixture artifact and would have failed identically in production. The fix is a
+`db.flush()` between the two `add()` calls, still inside the savepoint so a
+lost race still rolls back the orphan user. Worth remembering the general
+shape: **an FK without a `relationship()` gives the ORM nothing to order on**,
+and the failure only appears when the parent is new in the same flush.
+
+**`Authorization` cannot be reserved for JWTs, because two of the four agent
+hosts cannot send anything else.** The clean design — dedicated header for the
+local key, `Authorization` for the token — was written and then abandoned
+against `TODO.md`'s host matrix: codex and pi expose only a bearer-token env
+var, and codex *ignores a `headers` block silently rather than erroring*, so
+the split would have left both hosts issuing unauthenticated calls with no
+error anywhere. The `mem_` prefix discriminates the two namespaces on the one
+header instead, which works because `keys.generate_key()` guarantees it and a
+JWT cannot produce it. Check the host matrix before designing anything that
+assumes a custom header.
 
 **Review this codebase by mutation, not by reading. Reading is how the gaps
 got in.** Plan 6's reviews changed method partway through and it changed the

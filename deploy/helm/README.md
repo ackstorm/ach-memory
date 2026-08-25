@@ -123,3 +123,36 @@ helm template ach-memory deploy/helm/ach-memory \
 Rendering with neither `masterKeySecret.name` nor `masterKeySecret.value` set
 must fail, not silently produce a Deployment referencing a Secret that does
 not exist.
+
+## MEMORY_AUTH_JWT_ISSUER — read this before pointing JWKS in-cluster
+
+`config.auth.jwt.issuer` and `config.auth.jwt.jwksUri` look interchangeable
+and are not. The issuer is **compared to the token's `iss` claim**; the JWKS
+URI is only **where the signing keys are fetched from**.
+
+ACH sets `iss` to its own `ACH_BASE_URL` verbatim, which is the public URL. So
+the tempting optimization — repointing `issuer` at `http://ach.ach.svc` to keep
+key fetches inside the cluster — rejects **every** token, because `iss` no
+longer matches what the issuer actually stamped. The symptom is a uniform 401
+with `token rejected` and nothing in the JWKS logs to explain it, since the
+fetch succeeded.
+
+Keep `issuer` public and set `jwksUri` separately:
+
+```yaml
+config:
+  auth:
+    jwt:
+      enabled: true
+      issuer: https://ach.example.com                              # matches `iss`
+      jwksUri: http://ach.ach.svc/.well-known/jwks.json            # where keys come from
+      audience: mcp:ach-memory
+```
+
+Leave `jwksUri` empty and it derives as `<issuer>/.well-known/jwks.json`, which
+is right for ACH but not for Dex — Dex publishes its keys at `/keys`.
+
+Neither URL has to be HTTPS. In-cluster service URLs are the expected shape and
+nothing refuses them; the service logs one startup warning per plaintext URL so
+a *public* hostname reached over `http` by mistake is visible rather than
+silent.
