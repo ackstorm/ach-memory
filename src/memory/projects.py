@@ -62,7 +62,7 @@ def _slug_taken(db: Session, tenant_id: str, slug: str) -> bool:
 
 
 def _validate_owner(
-    db: Session, tenant_id: str, owner_type: str, owner_id: str
+    db: Session, principal: Principal, owner_type: str, owner_id: str
 ) -> None:
     """The owner must exist in this tenant. An unchecked id silently orphans
     the project: authorize() then denies everyone and only a master key can
@@ -70,12 +70,28 @@ def _validate_owner(
     if owner_type == "user":
         reject_control_characters(owner_id, UserNotFound)
         owner = db.get(User, owner_id)
-        if owner is None or owner.tenant_id != tenant_id:
+        if owner is None or owner.tenant_id != principal.tenant_id:
             raise UserNotFound(user_id=owner_id)
     elif owner_type == "group":
         reject_control_characters(owner_id, GroupNotFound)
         owner = db.get(Group, owner_id)
-        if owner is None or owner.tenant_id != tenant_id:
+        if owner is None:
+            # A group asserted by the caller's identity provider is real, it
+            # just has no row yet -- nothing provisions one, because groups
+            # arrive in a token rather than through POST /v1/groups. Created
+            # here and only here: `authorize` needs no row, so this is the one
+            # path that actually requires the group to exist, and creating it
+            # on every authenticated request instead would write rows for
+            # groups nobody ever uses.
+            if owner_id not in principal.groups:
+                raise GroupNotFound(group_id=owner_id)
+            try:
+                with db.begin_nested():
+                    db.add(Group(id=owner_id, tenant_id=principal.tenant_id))
+            except IntegrityError:
+                # Lost the race; the row exists, which is all we needed.
+                pass
+        elif owner.tenant_id != principal.tenant_id:
             raise GroupNotFound(group_id=owner_id)
     else:
         # Guarded here and not only at the API edge: a bad owner_type would
@@ -104,8 +120,13 @@ def authorize(
         return
     if project.owner_type == "user" and project.owner_id == principal.user_id:
         return
-    if project.owner_type == "group" and db.get(
-        GroupMember, (project.owner_id, principal.user_id)
+    if project.owner_type == "group" and (
+        # Asserted by the caller's identity provider, or recorded locally.
+        # Checked independently and never merged: an IdP that stops asserting
+        # a group revokes access on the next request without any row changing,
+        # while a local key's membership stays a database fact.
+        project.owner_id in principal.groups
+        or db.get(GroupMember, (project.owner_id, principal.user_id))
     ):
         return
     raise ProjectAccessDenied(
@@ -187,7 +208,7 @@ def create(
         git_locator = canonical_locator(git_locator)
     if _slug_taken(db, principal.tenant_id, slug):
         raise ProjectSlugConflict("that slug is taken", project_slug=slug)
-    _validate_owner(db, principal.tenant_id, owner_type, owner_id)
+    _validate_owner(db, principal, owner_type, owner_id)
 
     project = Project(
         internal_id=ids.new_project_internal_id(),
@@ -304,7 +325,7 @@ def transfer(
     audit event is the mitigation.
     """
     authorize(db, principal, project)
-    _validate_owner(db, principal.tenant_id, owner_type, owner_id)
+    _validate_owner(db, principal, owner_type, owner_id)
 
     previous = f"{project.owner_type}:{project.owner_id}"
     project.owner_type = owner_type

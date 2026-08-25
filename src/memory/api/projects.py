@@ -108,9 +108,14 @@ def create_project(
             raise Forbidden("a master-key create must name an owner")
         owner = Owner(type="user", id=principal.user_id)
     elif not principal.is_master and not (
-        owner.type == "user" and owner.id == principal.user_id
+        (owner.type == "user" and owner.id == principal.user_id)
+        or (owner.type == "group" and owner.id in principal.groups)
     ):
         # A user key may only create a project owned by itself (SPEC §16.2).
+        # An external caller may also name a group its identity provider
+        # asserts: it already owns that group's existing projects through
+        # `authorize`, so refusing creation would let it reach a group project
+        # by transfer but never make one.
         raise Forbidden("a user key may only create a project it owns")
 
     # No ensure_tenant() here, unlike create_group: every reachable create

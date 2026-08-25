@@ -662,3 +662,36 @@ def test_master_key_create_writes_an_audit_event(
 
     actions = [e.action for e in session.query(AuditEvent).all()]
     assert "project.create" in actions
+
+
+def test_an_external_caller_may_create_a_project_owned_by_an_asserted_group(
+    app, client, session, tenant
+):
+    """A user key may only create a project it owns itself. An external caller
+    that the IdP places in a group owns that group's projects too -- otherwise
+    a JWT user could reach a group project by transfer but never create one."""
+    from memory import ids
+    from memory.api.app import current_principal
+    from memory.auth.principal import Principal
+    from memory.models import User
+
+    user = User(id=ids.new_user_id(), tenant_id=tenant, bank_id=ids.new_user_bank_id())
+    session.add(user)
+    session.flush()
+
+    app.dependency_overrides[current_principal] = lambda: Principal(
+        tenant_id=tenant,
+        user_id=user.id,
+        is_master=False,
+        key_id=None,
+        groups=frozenset({"grp_platform"}),
+        credential_id="ext_test",
+    )
+
+    response = client.post(
+        "/v1/projects",
+        json={"project_slug": "acme-api", "owner": {"type": "group", "id": "grp_platform"}},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["owner"]["id"] == "grp_platform"

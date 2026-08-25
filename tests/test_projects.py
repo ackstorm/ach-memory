@@ -3,6 +3,7 @@ import pytest
 from memory import ids, projects
 from memory.auth.principal import Principal
 from memory.errors import (
+    GroupNotFound,
     InvalidOwnerType,
     ProjectAccessDenied,
     ProjectInvalidSlug,
@@ -572,3 +573,78 @@ def test_a_lost_race_on_the_tombstone_is_also_a_conflict(session, tenant):
 
     with pytest.raises(ProjectSlugConflict):
         projects.rename(session, principal, project, "beta")
+
+
+def _external(tenant, user_id, groups):
+    """A principal as an identity provider produces it: a real user id, no
+    api-key row, and group membership asserted by the token rather than
+    stored in group_members."""
+    return Principal(
+        tenant_id=tenant,
+        user_id=user_id,
+        is_master=False,
+        key_id=None,
+        groups=frozenset(groups),
+        credential_id="ext_test",
+    )
+
+
+def _group_owned(session, tenant, group_id="grp_payments"):
+    """A group-owned project, reached the way the existing tests reach one:
+    lazily created by its first toucher, then transferred to the group."""
+    _user(session, tenant, "usr_juan")
+    session.add(Group(id=group_id, tenant_id=tenant))
+    session.flush()
+    result = projects.resolve(session, _principal(tenant, "usr_juan"), "payments-api")
+    projects.transfer(
+        session, _principal(tenant, "usr_juan"), result.project, "group", group_id
+    )
+    return result.project
+
+
+def test_an_asserted_group_authorizes_without_a_membership_row(session, tenant):
+    """The whole point of the external path: the IdP asserts membership, so no
+    group_members row has to exist for the caller to reach the project."""
+    project = _group_owned(session, tenant)
+    alice = _user(session, tenant, "usr_alice")
+
+    reached = projects.resolve(
+        session, _external(tenant, alice.id, {"grp_payments"}), "payments-api"
+    )
+
+    assert reached.project.bank_id == project.bank_id
+    assert session.get(GroupMember, ("grp_payments", alice.id)) is None
+
+
+def test_a_group_the_token_does_not_assert_is_denied(session, tenant):
+    _group_owned(session, tenant)
+    alice = _user(session, tenant, "usr_alice")
+
+    with pytest.raises(ProjectAccessDenied):
+        projects.resolve(
+            session, _external(tenant, alice.id, {"grp_something-else"}), "payments-api"
+        )
+
+
+def test_owning_a_project_materializes_the_asserted_group(session, tenant):
+    """authorize() needs no row, but _validate_owner does -- and the group only
+    has to exist at the moment someone hands it a project."""
+    alice = _user(session, tenant, "usr_alice")
+    principal = _external(tenant, alice.id, {"grp_platform"})
+
+    project = projects.create(session, principal, "acme-api", "group", "grp_platform")
+
+    assert session.get(Group, "grp_platform") is not None
+    assert project.owner_id == "grp_platform"
+
+
+def test_a_group_the_token_does_not_assert_is_not_materialized(session, tenant):
+    """Lazy creation is bounded by the assertion: it must not become a way to
+    conjure an arbitrary group id."""
+    alice = _user(session, tenant, "usr_alice")
+    principal = _external(tenant, alice.id, {"grp_platform"})
+
+    with pytest.raises(GroupNotFound):
+        projects.create(session, principal, "acme-api", "group", "grp_other")
+
+    assert session.get(Group, "grp_other") is None
