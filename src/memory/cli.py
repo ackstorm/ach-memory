@@ -278,47 +278,30 @@ def _install_pi(
     return (config_path, *(destination for _source, destination in assets))
 
 
-def _codex_servers() -> dict[str, dict]:
-    payload = _run_json(["codex", "mcp", "list", "--json"])
-    if not isinstance(payload, list):
-        raise CLIError("codex returned unsupported MCP JSON")
-    servers: dict[str, dict] = {}
-    for entry in payload:
-        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
-            raise CLIError("codex returned unsupported MCP JSON")
-        servers[entry["name"]] = entry
-    return servers
-
-
-def _register_codex_server(url: str) -> str:
+def _register_codex_server(url: str) -> None:
     """Register the MCP server with Codex, because its plugin cannot.
 
     Codex does not interpolate ${ACH_MEMORY_URL} in a URL, so the endpoint has
-    to be written literally into its config -- which means install time is the
-    only moment we know it. Printing the command for the user to paste left the
-    install half done by default; running it is the whole point of having their
-    endpoint in hand.
+    to be written literally into its config -- which makes install time the only
+    moment we know it. Printing the command for the user to paste left the
+    install half done by default: plugin present, server absent, every tool call
+    failing while everything looked correct.
 
-    The credential is NOT baked: bearer_token_env_var stores the variable's
-    name and Codex resolves it per call, so rotating the key needs no reinstall.
-    Only the URL is pinned, and re-running init with a different ACH_MEMORY_URL
-    repoints it -- otherwise a moved deployment would keep resolving to the old
-    host with nothing to say so.
+    Unconditional remove-then-add, with no read of the current state: whatever
+    Codex held before, it ends up matching the environment this ran with, so
+    re-running init is also the update path. `codex mcp remove` exits 0 when the
+    server is absent, so the remove needs no guard.
+
+    Only the URL is pinned. bearer_token_env_var stores the variable's NAME and
+    Codex resolves it per call, so rotating the key needs no reinstall and the
+    value never reaches a command line.
     """
-    desired_url, desired_env = url, "ACH_MEMORY_API_KEY"
-    existing = _codex_servers().get("ach-memory")
-    if existing is not None:
-        transport = existing.get("transport")
-        transport = transport if isinstance(transport, dict) else {}
-        if (transport.get("url"), transport.get("bearer_token_env_var")) == (desired_url, desired_env):
-            return "server already registered"
-        _run(["codex", "mcp", "remove", "ach-memory"])
+    _run(["codex", "mcp", "remove", "ach-memory"])
     _run([
         "codex", "mcp", "add", "ach-memory",
-        "--url", desired_url,
-        "--bearer-token-env-var", desired_env,
+        "--url", url,
+        "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
     ])
-    return "server repointed" if existing is not None else "server registered"
 
 
 def _native_plan(target: str) -> tuple[dict[str, Path], set[str]]:
@@ -367,12 +350,9 @@ def _install_native(
     else:
         _run([target, "plugin", "install", "-y", "--scope", "user", plugin])
 
-    summary = f"plugin installed from {MARKETPLACE}"
     if target == "codex":
-        # The URL is pinned here and cannot follow the environment later, so
-        # say so on the line that reports it.
-        summary += f", {_register_codex_server(url)} (url pinned)"
-    return summary
+        _register_codex_server(url)
+    return f"plugin installed from {MARKETPLACE}"
 
 
 def _version() -> str:
@@ -440,9 +420,7 @@ def _report(
     installed = [name for name, _, _ in results]
     if "codex" in installed:
         print()
-        print("  codex stores the endpoint literally -- it cannot read")
-        print("  $ACH_MEMORY_URL. Re-run init after changing it. The key is")
-        print("  still read from the environment on every call.")
+        print("  codex stores the endpoint, not $ACH_MEMORY_URL: re-run init after changing it")
     if installed:
         print()
         names = installed[0] if len(installed) == 1 else (

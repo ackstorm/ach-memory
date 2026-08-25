@@ -514,9 +514,7 @@ class _NativeRunner:
         marketplace_present: bool,
         installed: bool,
         marketplace_location: str | None = None,
-        mcp_url: str | None = None,
     ) -> None:
-        self.mcp_url = mcp_url
         self.target = target
         self.marketplace_present = marketplace_present
         self.installed = installed
@@ -525,23 +523,6 @@ class _NativeRunner:
 
     def __call__(self, command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
-        if command[:3] == ["codex", "mcp", "list"]:
-            servers = (
-                [{"name": "ach-memory", "transport": {
-                    "type": "streamable_http",
-                    "url": self.mcp_url,
-                    "bearer_token_env_var": "ACH_MEMORY_API_KEY",
-                }}]
-                if self.mcp_url is not None
-                else []
-            )
-            return subprocess.CompletedProcess(command, 0, json.dumps(servers), "")
-        if command[:3] == ["codex", "mcp", "remove"]:
-            self.mcp_url = None
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[:3] == ["codex", "mcp", "add"]:
-            self.mcp_url = command[command.index("--url") + 1]
-            return subprocess.CompletedProcess(command, 0, "", "")
         if command[-3:] == ["marketplace", "list", "--json"]:
             payload: object = (
                 {"marketplaces": [{"name": "ach-memory", "root": self.marketplace_location}]}
@@ -650,11 +631,8 @@ def test_native_install_registers_the_repository_and_writes_nothing_itself(
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
-    summary = cli._install_native(target, MCP_URL)
+    assert cli._install_native(target, MCP_URL) == f"plugin installed from {cli.MARKETPLACE}"
 
-    assert summary.startswith(f"plugin installed from {cli.MARKETPLACE}")
-    # Only codex needs its server registered separately, and only codex says so.
-    assert ("url pinned" in summary) == (target == "codex")
     add = next(c for c in runner.commands if "marketplace" in c and "add" in c)
     assert "ackstorm/ach-memory" in add
     assert not any(part.startswith(str(tmp_path)) for part in add)
@@ -695,7 +673,7 @@ def test_native_install_refreshes_only_an_existing_ach_memory_plugin(
     assert all(
         "ach-memory@ach-memory" in command
         or "marketplace" in command
-        or command[:3] == ["codex", "mcp", "add"]
+        or command[:2] == ["codex", "mcp"]
         or command[-2:] == ["list", "--json"]
         for command in runner.commands
     )
@@ -822,13 +800,13 @@ def test_init_notes_that_codex_pins_the_endpoint_and_others_do_not(
     _init_stubs(monkeypatch, {"codex"})
     assert cli.main(["init", "codex"]) == 0
     out = capsys.readouterr().out
-    assert "cannot read" in out and "ACH_MEMORY_URL" in out
+    assert "re-run init after changing it" in out
     # The command is run, not printed for the reader to copy.
     assert "codex mcp add" not in out
 
     _init_stubs(monkeypatch, {"claude"})
     assert cli.main(["init", "claude"]) == 0
-    assert "cannot read" not in capsys.readouterr().out
+    assert "re-run init" not in capsys.readouterr().out
 
 
 def test_init_refuses_codex_without_an_explicit_endpoint(
@@ -969,68 +947,31 @@ def test_config_roots_fall_back_to_each_host_documented_default(
     assert cli._config_root("pi") == Path.home() / ".pi" / "agent"
 
 
-def _codex_runner(monkeypatch: pytest.MonkeyPatch, mcp_url: str | None) -> "_NativeRunner":
+def test_codex_install_registers_the_server_from_the_current_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex ends up matching the environment init ran with, whatever it held.
+
+    Remove-then-add unconditionally, with no read of the current config: that
+    makes re-running init the update path, and `codex mcp remove` exits 0 when
+    the server is absent so the remove needs no guard.
+    """
     runner = _NativeRunner(
         "codex",
         marketplace_present=True,
         installed=True,
         marketplace_location="/home/tester/.codex/marketplaces/ach-memory",
-        mcp_url=mcp_url,
     )
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
-    return runner
 
+    cli._install_native("codex", MCP_URL)
 
-def test_codex_server_registration_is_idempotent() -> None:
-    """A matching server is left alone: re-running init must not churn config."""
-    monkeypatch = pytest.MonkeyPatch()
-    try:
-        runner = _codex_runner(monkeypatch, MCP_URL)
-
-        summary = cli._install_native("codex", MCP_URL)
-
-        assert "already registered" in summary
-        assert not any(c[:3] == ["codex", "mcp", "add"] for c in runner.commands)
-        assert not any(c[:3] == ["codex", "mcp", "remove"] for c in runner.commands)
-    finally:
-        monkeypatch.undo()
-
-
-def test_codex_server_is_repointed_when_the_endpoint_changed() -> None:
-    """The reason the URL is read from the environment at install time.
-
-    Codex cannot follow ACH_MEMORY_URL later, so a moved deployment would keep
-    resolving to the old host forever unless re-running init repoints it.
-    Add-without-remove would be rejected or duplicate, hence remove first.
-    """
-    monkeypatch = pytest.MonkeyPatch()
-    try:
-        runner = _codex_runner(monkeypatch, "https://old.example.com/mcp/")
-
-        summary = cli._install_native("codex", MCP_URL)
-
-        assert "repointed" in summary
-        order = [c[:3] for c in runner.commands if c[:2] == ["codex", "mcp"] and c[2] in {"remove", "add"}]
-        assert order == [["codex", "mcp", "remove"], ["codex", "mcp", "add"]]
-        add = next(c for c in runner.commands if c[:3] == ["codex", "mcp", "add"])
-        assert add[add.index("--url") + 1] == MCP_URL
-        # The credential is a variable NAME, never its value: rotating the key
-        # must not require a reinstall, and it must never reach a command line.
-        assert add[add.index("--bearer-token-env-var") + 1] == "ACH_MEMORY_API_KEY"
-    finally:
-        monkeypatch.undo()
-
-
-def test_codex_server_is_registered_when_absent() -> None:
-    monkeypatch = pytest.MonkeyPatch()
-    try:
-        runner = _codex_runner(monkeypatch, None)
-
-        summary = cli._install_native("codex", MCP_URL)
-
-        assert "server registered" in summary and "repointed" not in summary
-        assert any(c[:3] == ["codex", "mcp", "add"] for c in runner.commands)
-        assert not any(c[:3] == ["codex", "mcp", "remove"] for c in runner.commands)
-    finally:
-        monkeypatch.undo()
+    mcp = [c for c in runner.commands if c[:2] == ["codex", "mcp"]]
+    assert [c[2] for c in mcp] == ["remove", "add"]
+    add = mcp[1]
+    assert add[add.index("--url") + 1] == MCP_URL
+    # A variable NAME, never its value: rotating the key must not need a
+    # reinstall, and the secret must never reach a command line.
+    assert add[add.index("--bearer-token-env-var") + 1] == "ACH_MEMORY_API_KEY"
+    assert not any("mcp" in c and "list" in c for c in runner.commands)
