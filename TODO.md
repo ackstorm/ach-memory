@@ -55,8 +55,20 @@ Until then `init` keeps working for these two, and `plugins/opencode/` and
 ## Keyword-gated UserPromptSubmit
 
 Dropped 2026-08-25: it was paid on every message for a reminder actionable on
-few of them. `SessionStart` announces the tools once, `Stop` asks about
-retaining at the one moment a durable fact from the turn exists.
+few of them. `SessionStart` announces the tools once, and the retain guidance
+lives in `activation.txt` alongside it.
+
+`Stop` was tried as the replacement and reverted the same day. **Claude Code
+treats any output from a Stop hook as feedback that blocks the turn from
+ending**, so the nudge re-fired until the block cap: measured at nine extra
+model turns for a single response, the agent replying "nothing to retain" each
+time, ending with *"A hook blocked the turn from ending 9 consecutive times --
+overriding"*. Checking `stop_hook_active` in the hook input and returning
+success while it is true bounds this to one extra turn per response (and
+`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` raises the cap), but a whole model turn to
+say "nothing to retain" is worse than what it replaced. Note that no unit test
+could have caught this: the script emitted exactly the documented envelope and
+exited 0. Only a live run showed it.
 
 The version worth trying later fires only when the prompt looks like it turns
 on stored context — `remember`, `recall`, `note`, `last time`, `we decided`,

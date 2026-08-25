@@ -25,10 +25,6 @@ ACTIVATION = (
     "because a session, subagent, or greeting started; a memory call needs a task that depends "
     "on it."
 )
-RETAIN_HINT = (
-    "If this session established a durable decision, preference, or project fact, retain it "
-    "with ach-memory now. Nothing routine, nothing already stored, never a secret."
-)
 SECRETS = re.compile(r"AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|mem_[A-Za-z0-9]{20,}")
 
 
@@ -92,25 +88,27 @@ def test_the_repository_root_is_the_marketplace_for_both_hosts() -> None:
 
 
 @pytest.mark.parametrize("host", NATIVE)
-def test_hooks_register_the_three_activation_events_against_their_own_script(host: str) -> None:
-    """Pinned deliberately, and UserPromptSubmit is deliberately absent.
+def test_hooks_register_only_the_two_activation_events(host: str) -> None:
+    """Pinned, and both absentees are deliberate.
 
-    It was paid on every single message for a reminder that is only actionable
-    on a few of them. SessionStart announces the tools once; Stop asks about
-    retaining, at the one moment a durable fact from the turn exists.
+    UserPromptSubmit was paid on every message for a reminder actionable on
+    few of them. Stop was tried in its place and is worse: Claude Code treats
+    ANY output from a Stop hook as feedback that blocks the turn from ending,
+    so the nudge re-fired until the block cap -- measured at nine extra model
+    turns for one response, with the agent answering "nothing to retain" each
+    time. `stop_hook_active` would bound that to one extra turn per response,
+    which is still a whole turn to say nothing.
+
+    The retain guidance lives in activation.txt, where it costs one injection
+    per session.
     """
     hooks = _json(ROOT / "plugins" / host / "hooks" / "hooks.json")["hooks"]
 
-    assert set(hooks) == {"SessionStart", "SubagentStart", "Stop"}
-    assert "UserPromptSubmit" not in hooks
+    assert set(hooks) == {"SessionStart", "SubagentStart"}
     for event, registrations in hooks.items():
         hook = registrations[0]["hooks"][0]
         assert hook["type"] == "command"
-        name = {
-            "SessionStart": "session-start.sh",
-            "SubagentStart": "subagent-start.sh",
-            "Stop": "stop.sh",
-        }[event]
+        name = {"SessionStart": "session-start.sh", "SubagentStart": "subagent-start.sh"}[event]
         assert hook["command"] == f'"${{CLAUDE_PLUGIN_ROOT}}/scripts/{name}"'
 
 
@@ -147,24 +145,6 @@ def test_session_start_emits_its_text_as_plain_stdout(host: str) -> None:
 
 
 @pytest.mark.parametrize("host", NATIVE)
-def test_stop_hook_emits_an_envelope_and_never_blocks_the_stop(host: str) -> None:
-    """Stop discards plain stdout -- it reaches the debug log, not the model --
-    so the retain nudge only lands as JSON.
-
-    Exit status matters more than usual here: exit code 2 on Stop means "do not
-    stop", so a script that failed loudly would trap the agent in a loop it
-    cannot leave. Every path exits 0.
-    """
-    result = _script(host, "stop.sh")
-
-    assert result.returncode == 0
-    assert json.loads(result.stdout)["hookSpecificOutput"] == {
-        "hookEventName": "Stop",
-        "additionalContext": RETAIN_HINT,
-    }
-
-
-@pytest.mark.parametrize("host", NATIVE)
 def test_subagent_hook_emits_the_envelope_that_event_requires(host: str) -> None:
     """SubagentStart is the only event that takes JSON rather than raw stdout.
 
@@ -184,16 +164,16 @@ def test_subagent_hook_emits_the_envelope_that_event_requires(host: str) -> None
 
 @pytest.mark.parametrize("host", NATIVE)
 def test_hook_scripts_survive_a_missing_text_file(host: str, tmp_path: Path) -> None:
-    """A non-zero Stop hook means "do not stop", so every failure mode here has
-    to degrade to silence rather than to an error."""
+    """A hook that errors can block or derail a turn, so every failure mode here
+    has to degrade to silence rather than to an error."""
     import shutil
 
     staged = tmp_path / host
     shutil.copytree(ROOT / "plugins" / host, staged)
-    for text in ("activation.txt", "retain-hint.json", "activation.subagent.json"):
+    for text in ("activation.txt", "activation.subagent.json"):
         (staged / text).unlink()
 
-    for name in ("session-start.sh", "stop.sh", "subagent-start.sh"):
+    for name in ("session-start.sh", "subagent-start.sh"):
         result = subprocess.run(
             [str(staged / "scripts" / name)], input="", capture_output=True, text=True, check=False
         )
@@ -214,14 +194,6 @@ def test_activation_policy_is_identical_everywhere_and_carries_no_secret(host: s
     for path in sorted(root.rglob("*")):
         if path.is_file():
             assert not SECRETS.search(path.read_text(errors="ignore")), path
-
-
-def test_the_retain_hint_stays_a_pointer_not_a_second_policy() -> None:
-    """Stop fires once per assistant response, so its length is a budget."""
-    for host in NATIVE:
-        payload = _json(ROOT / "plugins" / host / "retain-hint.json")
-        assert payload["hookSpecificOutput"]["additionalContext"] == RETAIN_HINT
-    assert len(RETAIN_HINT) < len(ACTIVATION) / 2
 
 
 @pytest.mark.parametrize("host", ADAPTED)
