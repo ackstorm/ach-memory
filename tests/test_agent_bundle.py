@@ -21,7 +21,8 @@ ACTIVATION = (
     "ach-memory is available for durable context. Recall when prior decisions, preferences, or "
     "project facts may affect the task, and prefer it over grepping local files or transcripts "
     "for that kind of question -- it is the system of record for them. Retain only durable, "
-    "useful context after it is established. Never store secrets. Do not recall or retain merely "
+    "useful context after it is established, and before ending a session in which such context "
+    "was established, retain it then. Never store secrets. Do not recall or retain merely "
     "because a session, subagent, or greeting started; a memory call needs a task that depends "
     "on it."
 )
@@ -184,7 +185,14 @@ def test_hook_scripts_survive_a_missing_text_file(host: str, tmp_path: Path) -> 
 
 @pytest.mark.parametrize("host", NATIVE + ADAPTED)
 def test_activation_policy_is_identical_everywhere_and_carries_no_secret(host: str) -> None:
-    """Four hosts each hold a copy; they must not drift into four policies."""
+    """Four hosts each hold a copy; they must not drift into four policies.
+
+    This one file is the whole delivery mechanism, which is why the end-of-
+    session retain instruction lives in it rather than in a Stop hook. engram
+    does the same: one text reaching claude and codex through SessionStart,
+    opencode through its system transform and pi through before_agent_start --
+    four injection points, one policy, no hook that can block a turn.
+    """
     root = ROOT / "plugins" / host
     skill = (root / "skills" / "ach-memory" / "SKILL.md").read_text()
 

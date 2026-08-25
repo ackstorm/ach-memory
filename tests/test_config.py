@@ -115,3 +115,148 @@ def test_the_readme_documents_every_setting():
         f"undocumented: {sorted(actual - documented)}; "
         f"documented but not real: {sorted(documented - actual)}"
     )
+
+
+def _base_env(monkeypatch):
+    monkeypatch.setenv("MEMORY_DATABASE_URL", "postgresql+psycopg://x/y")
+    monkeypatch.setenv("MEMORY_MASTER_KEY_HASH", "abc")
+    monkeypatch.setenv("MEMORY_HINDSIGHT_URL", "http://localhost:8888")
+
+
+def test_jwt_disabled_by_default(monkeypatch):
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    assert Settings().auth_jwt_enabled is False
+
+
+def test_jwt_jwks_uri_derived_from_issuer(monkeypatch):
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://ach.example.com")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_VERIFY_AUDIENCE", "false")
+    assert Settings().auth_jwt_jwks_uri == (
+        "https://ach.example.com/.well-known/jwks.json"
+    )
+
+
+def test_jwt_requires_issuer(monkeypatch):
+    import pytest
+
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    with pytest.raises(ValueError, match="MEMORY_AUTH_JWT_ISSUER"):
+        Settings()
+
+
+def test_jwt_requires_audience_unless_verification_is_off(monkeypatch):
+    import pytest
+
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://ach.example.com")
+    with pytest.raises(ValueError, match="MEMORY_AUTH_JWT_AUDIENCE"):
+        Settings()
+
+
+def test_audience_of_separators_only_is_rejected(monkeypatch):
+    import pytest
+
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://ach.example.com")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_AUDIENCE", " , ")
+    with pytest.raises(ValueError, match="no audience"):
+        Settings()
+
+
+def test_an_in_cluster_plaintext_issuer_is_accepted(monkeypatch, caplog):
+    """Kubernetes service URLs are the normal deployment shape: most of these
+    services are reached at http://name.ns.svc and never leave the cluster
+    network. Accepted, but logged -- see the WARNING below."""
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "http://dex.auth.svc")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_VERIFY_AUDIENCE", "false")
+    settings = Settings()
+    assert settings.auth_jwt_jwks_uri == "http://dex.auth.svc/.well-known/jwks.json"
+
+
+def test_a_plaintext_jwks_uri_is_logged(monkeypatch, caplog):
+    import logging
+
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "http://dex.auth.svc")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_VERIFY_AUDIENCE", "false")
+    with caplog.at_level(logging.WARNING, logger="memory.config"):
+        Settings()
+    assert "not HTTPS" in caplog.text
+
+
+def test_an_https_jwks_uri_is_not_logged(monkeypatch, caplog):
+    import logging
+
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://ach.example.com")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_VERIFY_AUDIENCE", "false")
+    with caplog.at_level(logging.WARNING, logger="memory.config"):
+        Settings()
+    assert caplog.text == ""
+
+
+def test_a_plaintext_resolver_url_is_accepted(monkeypatch):
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "x-litellm-api-key")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_RESOLVER_HEADER", "x-litellm-api-key")
+    monkeypatch.setenv(
+        "MEMORY_AUTH_PLATFORM_RESOLVER_URL", "http://litellm.genai.svc/v2/user/info"
+    )
+    assert Settings().auth_platform_enabled is True
+
+
+def test_platform_requires_all_three_vars(monkeypatch):
+    import pytest
+
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "x-litellm-api-key")
+    with pytest.raises(ValueError, match="RESOLVER_HEADER.*RESOLVER_URL"):
+        Settings()
+
+
+def test_both_providers_may_be_enabled_together(monkeypatch):
+    from memory.config import Settings
+
+    _base_env(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://ach.example.com")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_AUDIENCE", "mcp:memory")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "x-litellm-api-key")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_RESOLVER_HEADER", "x-litellm-api-key")
+    monkeypatch.setenv(
+        "MEMORY_AUTH_PLATFORM_RESOLVER_URL", "https://api.example.com/v2/user/info"
+    )
+    settings = Settings()
+    assert settings.auth_jwt_enabled and settings.auth_platform_enabled

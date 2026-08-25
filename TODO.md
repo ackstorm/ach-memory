@@ -70,6 +70,18 @@ say "nothing to retain" is worse than what it replaced. Note that no unit test
 could have caught this: the script emitted exactly the documented envelope and
 exited 0. Only a live run showed it.
 
+engram, which does have a `Stop` hook, is the counter-example that explains the
+rule. Its hook is `"async": true` and writes nothing at all -- every curl in
+`session-stop.sh` is `> /dev/null 2>&1` -- because its only job is a side effect:
+telling its local daemon the session ended. **Stop is for side effects, not for
+talking to the model.** Its end-of-session recap comes from somewhere else
+entirely: a line of instruction text injected at session start, telling the
+model to summarize before it finishes. That text reaches every host through the
+same four injection points we already use -- `session-start.sh` for claude and
+codex, `experimental.chat.system.transform` for opencode, `before_agent_start`
+for pi -- which is why our equivalent lives in `activation.txt` and needs no
+hook at all.
+
 The version worth trying later fires only when the prompt looks like it turns
 on stored context — `remember`, `recall`, `note`, `last time`, `we decided`,
 `previously`, and the Spanish equivalents `recuerda`, `acuérdate`, `apunta`,
