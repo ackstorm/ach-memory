@@ -145,9 +145,37 @@ from the loop. It never fired under any of:
   `codex plugin list` reports
 
 So codex parses our hooks, hashes them, prompts to trust them and records the
-result -- and then does not run them. `${CLAUDE_PLUGIN_ROOT}` is worth fixing
-regardless (it appears nowhere in the codex binary, and no other codex plugin
-uses it), but it is not the blocker: the absolute path did not fire either.
+result -- and then does not run them.
+
+Our variable IS wrong and should be fixed regardless. engram ships a plugin per
+host and uses a different variable in each: `${CLAUDE_PLUGIN_ROOT}` for
+claude-code, plain `${PLUGIN_ROOT}` for codex. `${PLUGIN_ROOT}` is the Agent
+Plugins spec name -- the codex binary carries `${PLUGIN_ROOT}${PLUGIN_DATA}`
+and the message "Agent Plugins stdio `cwd` must be a contained `./`,
+`${PLUGIN_ROOT}`, or `${PLUGIN_DATA}` path". (An earlier note here claimed
+`CLAUDE_PLUGIN_ROOT` appears nowhere in the codex binary. That was wrong: it is
+there, next to `hooks.json` and `config.toml`.) But it is not the blocker
+either -- `${PLUGIN_ROOT}` plus engram's `startup|resume|clear` matchers, with
+the hooks freshly trusted, did not fire.
+
+## The pattern that demonstrably works on codex: no hook at all
+
+superpowers' codex plugin declares `"hooks": {}` and `"skills": "./skills/"`.
+It has no hooks directory. Its always-on behaviour comes entirely from the
+description of one skill, `using-superpowers`: "Use when starting any
+conversation - establishes how to find and use skills, requiring skill
+invocation before ANY response including clarifying questions."
+
+That works here, and we have already measured it working: in the very first
+codex run, codex read `superpowers/6.3.0/skills/using-superpowers/SKILL.md`
+unprompted, and then read ours next to it. Codex loads skills in untrusted
+projects too -- "hooks and exec policies are disabled ... but skills still
+load".
+
+So the codex activation channel should be the skill description, not a hook.
+That means the activation policy is no longer one text delivered four ways, and
+`test_activation_policy_is_identical_everywhere_and_carries_no_secret` has to
+change with it.
 
 `$CODEX_HOME/hooks.json` is the obvious fallback -- it is codex's own
 user-level hook file and already carries a working-looking SessionStart entry
