@@ -1,12 +1,10 @@
 from dataclasses import dataclass
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from memory.auth import keys
 from memory.config import get_settings
 from memory.errors import Unauthorized
-from memory.models import ApiKey
 
 BEARER = "bearer "
 
@@ -44,71 +42,86 @@ class Principal:
     credential_id: str | None = None
 
 
-def _credential(authorization: str | None, api_key: str | None) -> str:
-    """The plaintext key, from the dedicated header or from `Authorization`.
+def resolve_principal(
+    authorization: str | None,
+    db: Session,
+    *,
+    api_key: str | None = None,
+    platform_token: str | None = None,
+) -> Principal:
+    """Authenticate the caller against every configured provider, in order.
 
-    `x-ach-memory-key` is checked first and, once present, is the ONLY source
-    considered — a malformed value raises rather than falling through. Falling
-    through would mean a typo'd key silently authenticates as whoever
-    `Authorization` happens to name, which is a confused deputy that stays
-    invisible until it matters.
+    Fail-closed at each step: once a credential names a provider, that provider
+    is the ONLY one consulted. A `mem_` key that does not verify is never
+    retried as a JWT, and a JWT whose signature is bad is never downgraded to a
+    key lookup or to the platform resolver. Falling through would mean a bad
+    credential silently authenticates as whoever the *next* header names, which
+    is a confused deputy that stays invisible until it matters.
     """
-    if api_key is not None:
-        value = api_key.strip()
-        # Tolerated, not documented. The neighbouring platform header
-        # (`x-litellm-api-key`) *requires* a "Bearer " prefix, so pasting the
-        # habit across is the likely mistake, and it would otherwise fail as
-        # "unknown API key" — indistinguishable from a wrong key. Same
-        # reasoning as the master_key_hash normaliser in config.py.
-        if value.lower().startswith(BEARER):
-            value = value[len(BEARER) :].strip()
-        if not value:
-            raise Unauthorized(f"malformed {API_KEY_HEADER} header")
-        return value
+    from memory.auth.providers import local_key
 
+    # 1. The dedicated header names the local credential unambiguously and is
+    #    the only source considered once present (SPEC §5.1).
+    if api_key is not None:
+        return local_key.authenticate(_strip_bearer(api_key, API_KEY_HEADER), db)
+
+    token = _bearer_token(authorization)
+
+    # 2. A `mem_` prefix is a total discriminator: keys.generate_key()
+    #    guarantees it, and a JWT -- three dot-separated base64url segments --
+    #    can never produce it. So `Authorization` still carries local keys,
+    #    which is not a convenience: codex and pi cannot send a custom header
+    #    at all, and codex ignores a `headers` block silently rather than
+    #    erroring (TODO.md, "What each host actually supports"). Reserving
+    #    this header for JWTs would leave those two hosts unauthenticated with
+    #    no error anywhere.
+    if token is not None and token.startswith(keys.KEY_PREFIX):
+        return local_key.authenticate(token, db)
+
+    settings = get_settings()
+
+    # 3. Anything else on Authorization is an externally-issued token.
+    if token is not None and settings.auth_jwt_enabled:
+        from memory.auth.providers import jwt_provider
+
+        return jwt_provider.authenticate(token, db)
+
+    # 4. The platform header is the documented fallback, reached only when
+    #    Authorization carried nothing we could use.
+    if platform_token and settings.auth_platform_enabled:
+        from memory.auth.providers import platform
+
+        return platform.authenticate(platform_token, db)
+
+    if token is not None:
+        raise Unauthorized(
+            "no identity provider accepts this credential: it is not a "
+            f"{keys.KEY_PREFIX} key and no external provider is enabled"
+        )
+    raise Unauthorized(
+        f"missing or malformed credential: send {API_KEY_HEADER} "
+        "or Authorization: Bearer"
+    )
+
+
+def _strip_bearer(value: str, header: str) -> str:
+    """Tolerated, not documented. The neighbouring platform header
+    (`x-litellm-api-key`) *requires* a "Bearer " prefix, so pasting the habit
+    across is the likely mistake, and it would otherwise fail as "unknown API
+    key" -- indistinguishable from a wrong key."""
+    value = value.strip()
+    if value.lower().startswith(BEARER):
+        value = value[len(BEARER) :].strip()
+    if not value:
+        raise Unauthorized(f"malformed {header} header")
+    return value
+
+
+def _bearer_token(authorization: str | None) -> str | None:
     # RFC 7235 makes the auth scheme case-insensitive. `bearer <key>` used to
     # answer "missing or malformed Authorization header", indistinguishable
     # from a bad key.
     if not authorization or not authorization.lower().startswith(BEARER):
-        raise Unauthorized(
-            f"missing or malformed credential: send {API_KEY_HEADER} "
-            "or Authorization: Bearer"
-        )
-
-    return authorization[len(BEARER) :].strip()
-
-
-def resolve_principal(
-    authorization: str | None, db: Session, *, api_key: str | None = None
-) -> Principal:
-    """Verify the caller's credential.
-
-    `db` stays the second positional argument so every existing call site is
-    unaffected; the new header arrives keyword-only.
-    """
-    plaintext = _credential(authorization, api_key)
-    settings = get_settings()
-
-    # The bootstrap master key is configuration, never a database row (§5.2).
-    if keys.verify_key(plaintext, settings.master_key_hash):
-        return Principal(
-            tenant_id=settings.tenant_id, user_id=None, is_master=True, key_id=None
-        )
-
-    row = db.execute(
-        select(ApiKey).where(ApiKey.secret_hash == keys.hash_key(plaintext))
-    ).scalar_one_or_none()
-
-    if row is None or row.status != "active":
-        raise Unauthorized("unknown or revoked API key")
-
-    # A stored key is always a user key: is_master is a constant here, never
-    # derived from a column. Deriving it would mean a single bad row could
-    # mint tenant-wide authority.
-    return Principal(
-        tenant_id=row.tenant_id,
-        user_id=row.user_id,
-        is_master=False,
-        key_id=row.id,
-        credential_id=row.id,
-    )
+        return None
+    token = authorization[len(BEARER) :].strip()
+    return token or None

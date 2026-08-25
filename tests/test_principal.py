@@ -164,3 +164,23 @@ def test_master_has_no_credential_id(session):
     principal = resolve_principal(f"Bearer {MASTER_PLAINTEXT}", session)
     assert principal.is_master
     assert principal.credential_id is None
+
+
+def test_a_non_mem_bearer_is_not_tried_as_a_local_key(session, tenant):
+    """With no external provider configured, a JWT-shaped token is a 401 that
+    says so -- never a database lookup that reports 'unknown API key'."""
+    with pytest.raises(Unauthorized, match="no identity provider"):
+        resolve_principal("Bearer eyJhbGciOiJFZERTQSJ9.e30.sig", session)
+
+
+def test_mem_prefixed_bearer_still_resolves(session, tenant):
+    user, plaintext = _make_user_key(session, tenant)
+    assert plaintext.startswith("mem_")
+    principal = resolve_principal(f"Bearer {plaintext}", session)
+    assert principal.user_id == user.id
+
+
+def test_dedicated_header_still_wins_over_authorization(session, tenant):
+    user, plaintext = _make_user_key(session, tenant)
+    principal = resolve_principal("Bearer mem_wrong", session, api_key=plaintext)
+    assert principal.user_id == user.id
