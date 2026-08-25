@@ -19,10 +19,11 @@ NATIVE = ("claude-code", "codex")
 ADAPTED = ("opencode", "pi")
 ACTIVATION = (
     "ach-memory holds durable user and project context across sessions and is the system of record f"
-    "or prior decisions -- prefer it over grepping files or transcripts. Load the ach-memory skill b"
-    "efore your first memory call. Recall before work that depends on such context. Retain it once e"
-    "stablished, including decisions made only in conversation, and again before a session ends. Nev"
-    "er store secrets. A memory call needs a task that depends on it, not merely a session starting."
+    "or prior decisions -- use it instead of the file-based memory directory and MEMORY.md, and pref"
+    "er it over grepping files or transcripts. Load the ach-memory skill before your first memory ca"
+    "ll. Recall before work that depends on such context. Retain it once established, including deci"
+    "sions made only in conversation, and again before a session ends. Never store secrets. A memory"
+    " call needs a task that depends on it, not merely a session starting."
 )
 SECRETS = re.compile(r"AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|mem_[A-Za-z0-9]{20,}")
 
@@ -319,3 +320,23 @@ def test_activation_routes_the_agent_to_the_skill(host: str) -> None:
     text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
     assert "skill" in text, "activation must name the skill or nothing loads it"
     assert "before your first memory call" in text
+
+
+@pytest.mark.parametrize("host", NATIVE + ADAPTED)
+def test_activation_displaces_the_hosts_own_memory_store(host: str) -> None:
+    """Names the competitor, because the contrast that was there was the wrong one.
+
+    Claude Code ships its own file-based memory: a per-project directory plus a
+    MEMORY.md index, documented in the system prompt with a schema and
+    when-to-write rules, and it owns the word "memory". It is a built-in, not a
+    user setting, so every host session has it.
+
+    Measured: a fresh session with the MCP server connected, the skill
+    available and this activation delivered was told to remember something and
+    wrote it to that directory instead, never calling an ach-memory tool. The
+    text said only "prefer it over grepping files or transcripts" -- the agent
+    did not grep, so nothing in it applied.
+    """
+    text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
+    assert "memory.md" in text, "activation must name the host store it replaces"
+    assert "instead of" in text
