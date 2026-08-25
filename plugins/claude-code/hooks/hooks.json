@@ -1,11 +1,13 @@
 {
+  "description": "ach-memory activation - announces the memory tools, never calls them",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/activate.js\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh\"",
+            "timeout": 5,
             "statusMessage": "Loading ach-memory..."
           }
         ]
@@ -16,7 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/activate.js\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/subagent-start.sh\"",
+            "timeout": 5,
             "statusMessage": "Loading ach-memory..."
           }
         ]
@@ -27,7 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/activate.js\""
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit.sh\"",
+            "timeout": 2
           }
         ]
       }

@@ -28,8 +28,6 @@ reference is available at `/docs` when the service is running.
 
 ## Agent setup
 
-### Local service
-
 Copy the example, set `MEMORY_MASTER_KEY` and its SHA-256 value in `.env`, then
 start the local stack. The shipped mock settings make no real LLM calls.
 
@@ -56,27 +54,39 @@ export ACH_MEMORY_URL=http://localhost:8000
 export ACH_MEMORY_API_KEY="$user_key"
 ```
 
-From this checkout, install one agent:
+Put the endpoint and your key in your shell profile, so every agent inherits
+them however it is launched:
 
 ```bash
-uv run ach-memory init claude    # codex | claude | opencode | pi | all
-```
-
-For an installed package, drop the `uv run` prefix. `all` installs into every
-supported agent found on your PATH and names the ones it skipped; it fails only
-if none are present. A named target that is not installed is an error. Restart
-the selected agents afterward so they inherit `ACH_MEMORY_API_KEY`.
-
-### Remote service
-
-Get a public base URL and user key from the service operator, then run the same
-installer and restart the selected agent:
-
-```bash
+# ~/.zshrc or ~/.bashrc
 export ACH_MEMORY_URL=https://memory.example.com
 export ACH_MEMORY_API_KEY=<user-key>
-ach-memory init <agent>
 ```
+
+Claude Code and Codex install from this repository's own marketplace:
+
+```bash
+claude plugin marketplace add ackstorm/ach-memory
+claude plugin install ach-memory@ach-memory
+
+codex plugin marketplace add ackstorm/ach-memory
+codex plugin add ach-memory@ach-memory
+```
+
+The plugin resolves both values at run time, so nothing is written per install
+and the same commands work against any deployment. With neither variable set it
+falls back to `http://localhost:8000`, which is what `docker compose up` serves.
+
+OpenCode and pi have no marketplace, so they still need the installer, which
+writes their config files for them (see [TODO.md](TODO.md)):
+
+```bash
+uv run ach-memory init opencode    # opencode | pi | all
+```
+
+`all` covers every supported agent found on your PATH and names the ones it
+skipped. Restart the selected agents afterward so they inherit
+`ACH_MEMORY_API_KEY`.
 
 Memory is explicit: installation adds memory tools, but agents do not retain or
 recall anything automatically. Ask an agent to use memory when you want it to.

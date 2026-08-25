@@ -11,13 +11,13 @@ import tempfile
 from importlib import resources
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
-from uuid import uuid4
 
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 SUPPORTED = ("codex", "claude", "opencode", "pi")
+MARKETPLACE = "ackstorm/ach-memory"
 
 
 class CLIError(Exception):
@@ -61,12 +61,16 @@ async def _preflight(url: str, api_key: str) -> None:
         raise CLIError("MCP preflight failed: server is missing required public tools")
 
 
-def _bundle_root() -> Path:
-    """Return the installed bundle, or the source-checkout copy for ``uv run``."""
-    packaged = resources.files("memory").joinpath("integrations/plugin")
+def _bundle_root(host: str) -> Path:
+    """Return the installed assets for one host, or the source-checkout copy.
+
+    Only opencode and pi read this. claude and codex install from the
+    repository marketplace and never touch the packaged copy.
+    """
+    packaged = resources.files("memory").joinpath(f"integrations/{host}")
     if packaged.is_dir():
         return Path(packaged)
-    return Path(__file__).resolve().parents[2] / "plugins" / "ach-memory"
+    return Path(__file__).resolve().parents[2] / "plugins" / host
 
 
 def _is_installed(target: str) -> bool:
@@ -213,7 +217,7 @@ def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[
             "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
         }
         paths = (
-            ("adapters/opencode.js", "plugins/ach-memory.js"),
+            ("opencode.js", "plugins/ach-memory.js"),
             ("activation.txt", "plugins/ach-memory/activation.txt"),
             ("skills/ach-memory/SKILL.md", "skills/ach-memory/SKILL.md"),
         )
@@ -226,13 +230,13 @@ def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[
             "directTools": False,
         }
         paths = (
-            ("adapters/pi.js", "extensions/ach-memory.js"),
+            ("pi.js", "extensions/ach-memory.js"),
             ("activation.txt", "extensions/ach-memory/activation.txt"),
             ("skills/ach-memory/SKILL.md", "skills/ach-memory/SKILL.md"),
         )
     config[server_key] = {**existing, "ach-memory": server}
 
-    bundle = _bundle_root()
+    bundle = _bundle_root(target)
     assets = tuple((bundle / source, root / destination) for source, destination in paths)
     for source, _destination in assets:
         if not source.is_file():
@@ -261,128 +265,37 @@ def _install_pi(
     return (config_path, *(destination for _source, destination in assets))
 
 
-def _marketplace_destination(target: str) -> Path:
-    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
-    return data_home / "ach-memory" / f"{target}-marketplace"
-
-
-def _render_marketplace(target: str, url: str, bundle: Path | None = None) -> Path:
-    destination = _marketplace_destination(target)
-    staging: Path | None = None
-    backup: Path | None = None
-
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix=f".{target}-marketplace-", dir=destination.parent))
-        shutil.rmtree(staging)
-        plugin = staging / "plugins" / "ach-memory"
-        shutil.copytree(bundle or _native_bundle(), plugin)
-        server: dict[str, object] = {"type": "http", "url": url}
-        if target == "codex":
-            server["bearer_token_env_var"] = "ACH_MEMORY_API_KEY"
-            marketplace: object = {
-                "name": "ach-memory",
-                "interface": {"displayName": "ach-memory"},
-                "plugins": [
-                    {
-                        "name": "ach-memory",
-                        "source": {"source": "local", "path": "./plugins/ach-memory"},
-                        "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
-                        "category": "Productivity",
-                    }
-                ],
-            }
-            _write_json(staging / ".agents" / "plugins" / "marketplace.json", marketplace)
-        else:
-            server["headers"] = {"Authorization": "Bearer ${ACH_MEMORY_API_KEY}"}
-            marketplace = {
-                "name": "ach-memory",
-                "description": "Durable memory for coding agents.",
-                "owner": {"name": "ackstorm"},
-                "plugins": [
-                    {
-                        "name": "ach-memory",
-                        "version": "0.1.0",
-                        "description": "Durable memory for Claude.",
-                        "source": "./plugins/ach-memory",
-                        "category": "productivity",
-                    }
-                ],
-            }
-            _write_json(staging / ".claude-plugin" / "marketplace.json", marketplace)
-        _write_json(plugin / ".mcp.json", {"mcpServers": {"ach-memory": server}})
-
-        if destination.exists():
-            backup = destination.with_name(f".{destination.name}.backup-{uuid4().hex}")
-            os.replace(destination, backup)
-        try:
-            os.replace(staging, destination)
-        except OSError:
-            if backup is not None:
-                os.replace(backup, destination)
-            raise
-        if backup is not None:
-            shutil.rmtree(backup)
-    except OSError as exc:
-        raise CLIError(f"could not write {target} marketplace") from exc
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-
-    return destination
-
-
-def _native_bundle() -> Path:
-    bundle = _bundle_root()
-    required = (
-        ".codex-plugin/plugin.json",
-        ".claude-plugin/plugin.json",
-        "hooks/activate.js",
-        "hooks/hooks.json",
-        # Read by activate.js at run time, which fails open on a missing file.
-        # Unchecked, an incomplete bundle installs cleanly and then injects
-        # nothing at all -- the feature dead with no error anywhere.
-        "activation.txt",
-        "prompt-hint.txt",
-        "skills/ach-memory/SKILL.md",
-    )
-    for relative in required:
-        try:
-            with (bundle / relative).open("rb") as file:
-                file.read(1)
-        except OSError as exc:
-            raise CLIError("missing bundled native asset") from exc
-    return bundle
-
-
-def _native_plan(target: str) -> tuple[Path, dict[str, Path], set[str], Path]:
-    bundle = _native_bundle()
-    destination = _marketplace_destination(target)
+def _native_plan(target: str) -> tuple[dict[str, Path], set[str]]:
     marketplaces = _marketplace_locations(
         target, _run_json([target, "plugin", "marketplace", "list", "--json"])
     )
-    if "ach-memory" in marketplaces and marketplaces["ach-memory"] != destination.resolve():
-        raise CLIError("ach-memory marketplace is registered at a different location")
     installed = _installed_plugins(target, _run_json([target, "plugin", "list", "--json"]))
-    return destination, marketplaces, installed, bundle
+    return marketplaces, installed
 
 
-def _install_native(
-    target: str, url: str, plan: tuple[Path, dict[str, Path], set[str], Path] | None = None
-) -> tuple[Path, ...]:
+def _install_native(target: str, plan: tuple[dict[str, Path], set[str]] | None = None) -> tuple[Path, ...]:
+    """Register the repository as a marketplace and let the host install from it.
+
+    Nothing is generated here. The plugin is committed at plugins/<host>/ and
+    its .mcp.json resolves both the endpoint and the credential from the
+    environment, so one static tree serves every deployment -- which is what
+    lets the repository itself be the marketplace, the way engram and codemem
+    do it. The previous version rendered a private marketplace into
+    ~/.local/share at install time purely to bake a per-install URL into that
+    file; with ${ACH_MEMORY_URL} there is nothing left to bake.
+    """
     if target not in {"codex", "claude"}:
         raise CLIError(f"native installation is not available for {target}")
     _require_executable(target)
 
-    destination, marketplaces, installed, bundle = plan or _native_plan(target)
-    destination = _render_marketplace(target, url, bundle)
+    marketplaces, installed = plan if plan is not None else _native_plan(target)
     plugin = "ach-memory@ach-memory"
 
     if "ach-memory" not in marketplaces:
         command = [target, "plugin", "marketplace", "add"]
         if target == "claude":
             command.extend(["--scope", "user"])
-        command.append(str(destination))
+        command.append(MARKETPLACE)
         if target == "codex":
             command.append("--json")
         _run(command)
@@ -395,7 +308,7 @@ def _install_native(
         _run([target, "plugin", "update", plugin])
     else:
         _run([target, "plugin", "install", "-y", "--scope", "user", plugin])
-    return (destination,)
+    return ()
 
 
 def _targets(target: str) -> tuple[str, ...]:
@@ -448,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         changed: list[Path] = []
         for target in targets:
             if target in native_plans:
-                changed.extend(_install_native(target, url, native_plans[target]))
+                changed.extend(_install_native(target, native_plans[target]))
             elif target == "opencode":
                 changed.extend(_install_opencode(url, config_plans[target]))
             else:

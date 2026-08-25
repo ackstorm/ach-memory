@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "ach-memory": {
-      "type": "http",
-      "url": "http://localhost:8000/mcp/",
-      "bearer_token_env_var": "ACH_MEMORY_API_KEY"
-    }
-  }
-}

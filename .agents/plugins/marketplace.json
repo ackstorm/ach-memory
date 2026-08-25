@@ -8,7 +8,7 @@
       "name": "ach-memory",
       "source": {
         "source": "local",
-        "path": "./plugins/ach-memory"
+        "path": "./plugins/codex"
       },
       "policy": {
         "installation": "AVAILABLE",

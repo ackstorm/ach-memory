@@ -84,10 +84,10 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     installed: list[str] = []
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None, raising=False)
     monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
-    monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or ()
+        cli, "_install_native", lambda name, _plan: installed.append(name) or ()
     )
     monkeypatch.setattr(
         cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or ()
@@ -111,10 +111,10 @@ def test_main_all_checks_every_executable_and_preflight_before_installers(
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli, "_require_executable", lambda target: events.append(target))
     monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
-    monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda target, _url, _plan: events.append(f"install:{target}") or ()
+        cli, "_install_native", lambda target, _plan: events.append(f"install:{target}") or ()
     )
     monkeypatch.setattr(
         cli, "_install_opencode", lambda _url, _plan: events.append("install:opencode") or ()
@@ -178,28 +178,24 @@ def test_main_all_leaves_every_target_unchanged_when_later_config_is_invalid(
     assert secret not in captured.err
 
 
-@pytest.mark.parametrize("unreadable", [False, True], ids=["missing", "unreadable"])
-def test_main_all_rejects_missing_or_unreadable_native_bundle_before_mcp_or_writes(
+def test_main_all_rejects_an_incomplete_adapter_bundle_before_mcp_or_writes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    unreadable: bool,
 ) -> None:
-    """Breaks if a malformed native bundle reaches MCP or creates any target state."""
+    """Breaks if a missing opencode/pi asset reaches MCP or creates target state.
+
+    Only these two hosts still read a packaged bundle. claude and codex install
+    from the repository marketplace, so there is no longer a native bundle that
+    can be malformed -- the old unreadable-file case went with it.
+    """
     secret = "test-user-secret"
     homes = tmp_path / "homes"
     config_home = homes / "config"
     pi_home = homes / "pi"
     bundle = tmp_path / "bundle"
-    for relative in (
-        "adapters/opencode.js",
-        "adapters/pi.js",
-        "activation.txt",
-        ".claude-plugin/plugin.json",
-        "hooks/activate.js",
-        "hooks/hooks.json",
-        "skills/ach-memory/SKILL.md",
-    ):
+    # pi.js is deliberately absent: the pi plan must fail on it.
+    for relative in ("opencode.js", "activation.txt", "skills/ach-memory/SKILL.md"):
         path = bundle / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("asset")
@@ -223,22 +219,10 @@ def test_main_all_rejects_missing_or_unreadable_native_bundle_before_mcp_or_writ
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
     monkeypatch.setenv("XDG_DATA_HOME", str(homes / "data"))
-    monkeypatch.setattr(cli, "_bundle_root", lambda: bundle)
+    monkeypatch.setattr(cli, "_bundle_root", lambda _host: bundle)
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
-    if unreadable:
-        original_open = Path.open
-
-        def open_file(path: Path, *args: object, **kwargs: object):
-            if path == bundle / ".codex-plugin/plugin.json":
-                raise OSError("permission denied")
-            return original_open(path, *args, **kwargs)
-
-        (bundle / ".codex-plugin").mkdir()
-        (bundle / ".codex-plugin/plugin.json").write_text("asset")
-        monkeypatch.setattr(Path, "open", open_file)
-
     assert cli.main(["init", "all"]) == 1
 
     captured = capsys.readouterr()
@@ -279,7 +263,7 @@ def test_main_all_failure_before_preflight_or_mcp_leaves_every_target_unchanged(
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli, "_require_executable", require)
     monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
-    monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
 
     assert cli.main(["init", "all"]) == 1
 
@@ -551,30 +535,14 @@ class _NativeRunner:
             return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
         if "marketplace" in command and "add" in command:
             self.marketplace_present = True
-            self.marketplace_location = command[-2] if self.target == "codex" else command[-1]
+            # `add` now receives a repository slug, not a path. Both hosts clone
+            # it and report the clone's absolute location on the next `list`,
+            # which is what this stands in for -- echoing the slug back would
+            # make the fake claim a relative path a real host never returns.
+            self.marketplace_location = f"/home/tester/.{self.target}/marketplaces/ach-memory"
         return subprocess.CompletedProcess(command, 0, "", "")
 
 
-@pytest.mark.parametrize("target", ["codex", "claude"])
-def test_native_install_rejects_an_ach_memory_marketplace_at_a_different_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str
-) -> None:
-    """Breaks if a stale same-named marketplace can receive plugin mutations."""
-    runner = _NativeRunner(
-        target,
-        marketplace_present=True,
-        installed=False,
-        marketplace_location=str(tmp_path / "foreign-marketplace"),
-    )
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
-    monkeypatch.setattr(cli.subprocess, "run", runner)
-
-    with pytest.raises(cli.CLIError, match="different location"):
-        cli._install_native(target, "https://host/prefix/mcp/")
-
-    assert not (tmp_path / "data" / "ach-memory" / f"{target}-marketplace").exists()
-    assert all(command[-2:] == ["list", "--json"] for command in runner.commands)
 
 
 def test_native_install_rejects_bare_list_codex_marketplace_json(
@@ -593,7 +561,7 @@ def test_native_install_rejects_bare_list_codex_marketplace_json(
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
     with pytest.raises(cli.CLIError, match="unsupported marketplace JSON"):
-        cli._install_native("codex", "https://host/prefix/mcp/")
+        cli._install_native("codex")
 
     assert commands == [["codex", "plugin", "marketplace", "list", "--json"]]
 
@@ -614,7 +582,7 @@ def test_native_install_rejects_bare_list_codex_plugin_json(
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
     with pytest.raises(cli.CLIError, match="unsupported plugin JSON"):
-        cli._install_native("codex", "https://host/prefix/mcp/")
+        cli._install_native("codex")
 
     assert commands == [
         ["codex", "plugin", "marketplace", "list", "--json"],
@@ -634,97 +602,46 @@ def test_installed_plugins_accepts_codex_available_catalog() -> None:
     ) == {"ach-memory@ach-memory"}
 
 
-def test_render_marketplace_wraps_staging_creation_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Breaks if staging setup reaches users as an OSError traceback."""
-    def fail_staging(**_kwargs: object) -> str:
-        raise OSError("permission denied")
-
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setattr(cli.tempfile, "mkdtemp", fail_staging)
-
-    with pytest.raises(cli.CLIError, match="could not write codex marketplace"):
-        cli._render_marketplace("codex", "https://host/prefix/mcp/")
-
-
 @pytest.mark.parametrize(
-    ("target", "expected_mcp", "install_command"),
+    ("target", "install_command"),
     [
-        (
-            "codex",
-            {
-                "mcpServers": {
-                    "ach-memory": {
-                        "type": "http",
-                        "url": "https://host/prefix/mcp/",
-                        "bearer_token_env_var": "ACH_MEMORY_API_KEY",
-                    }
-                }
-            },
-            ["codex", "plugin", "add", "ach-memory@ach-memory", "--json"],
-        ),
-        (
-            "claude",
-            {
-                "mcpServers": {
-                    "ach-memory": {
-                        "type": "http",
-                        "url": "https://host/prefix/mcp/",
-                        "headers": {"Authorization": "Bearer ${ACH_MEMORY_API_KEY}"},
-                    }
-                }
-            },
-            ["claude", "plugin", "install", "-y", "--scope", "user", "ach-memory@ach-memory"],
-        ),
+        ("codex", ["codex", "plugin", "add", "ach-memory@ach-memory", "--json"]),
+        ("claude", ["claude", "plugin", "install", "-y", "--scope", "user", "ach-memory@ach-memory"]),
     ],
 )
-def test_native_install_renders_an_idempotent_secret_free_marketplace(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    target: str,
-    expected_mcp: dict[str, object],
-    install_command: list[str],
+def test_native_install_registers_the_repository_and_writes_nothing_itself(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str, install_command: list[str]
 ) -> None:
-    """Breaks if a native install writes a key, wrong MCP payload, or skips its first install."""
-    events: list[str] = []
+    """The architectural guard, from the installer's side.
+
+    This used to assert that a marketplace was rendered under XDG_DATA_HOME
+    with the endpoint baked into its .mcp.json. It now asserts the opposite:
+    the installer hands the host a repository slug and creates no files at all.
+    A native install that touches the filesystem has reintroduced rendering.
+    """
     runner = _NativeRunner(target, marketplace_present=False, installed=False)
-    real_copytree = cli.shutil.copytree
-
-    def which(command: str) -> str:
-        events.append(f"which:{command}")
-        return f"/bin/{command}"
-
-    def copytree(source: Path, destination: Path, *_args: object, **_kwargs: object) -> Path:
-        events.append("copytree")
-        return real_copytree(source, destination, *_args, **_kwargs)
-
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    home = tmp_path / "data"
+    home.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(home))
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
-    monkeypatch.setattr(cli.shutil, "which", which)
-    monkeypatch.setattr(cli.shutil, "copytree", copytree)
+    monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
-    cli._install_native(target, "https://host/prefix/mcp/")
+    assert cli._install_native(target) == ()
 
-    marketplace = tmp_path / "data" / "ach-memory" / f"{target}-marketplace"
-    mcp = marketplace / "plugins" / "ach-memory" / ".mcp.json"
-    first = {path.relative_to(marketplace): path.read_bytes() for path in marketplace.rglob("*") if path.is_file()}
-    contents = b"".join(first.values())
-
-    assert events[0] == f"which:{target}"
-    assert events.index("copytree") > 0
-    assert json.loads(mcp.read_text()) == expected_mcp
+    add = next(c for c in runner.commands if "marketplace" in c and "add" in c)
+    assert "ackstorm/ach-memory" in add
+    assert not any(part.startswith(str(tmp_path)) for part in add)
     assert install_command in runner.commands
-    assert sum("marketplace" in command and "add" in command for command in runner.commands) == 1
-    assert b"user-secret" not in contents
+    assert _files_under(home) == {}
+    # The credential is the host's problem at run time, never ours at install
+    # time: it must not reach a command line or a file.
     assert all("user-secret" not in " ".join(command) for command in runner.commands)
 
-    cli._install_native(target, "https://host/prefix/mcp/")
+    cli._install_native(target)
 
-    second = {path.relative_to(marketplace): path.read_bytes() for path in marketplace.rglob("*") if path.is_file()}
-    assert second == first
     assert sum("marketplace" in command and "add" in command for command in runner.commands) == 1
+    assert _files_under(home) == {}
 
 
 @pytest.mark.parametrize(
@@ -746,7 +663,7 @@ def test_native_install_refreshes_only_an_existing_ach_memory_plugin(
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
 
-    cli._install_native(target, "https://host/prefix/mcp/")
+    cli._install_native(target)
 
     assert expected_command in runner.commands
     assert all(
@@ -760,10 +677,10 @@ def _stub_installers(monkeypatch: pytest.MonkeyPatch, installed: list[str]) -> N
         return None
 
     monkeypatch.setattr(cli, "_preflight", preflight)
-    monkeypatch.setattr(cli, "_native_plan", lambda _target: (Path("native"), {}, set()))
+    monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or ()
+        cli, "_install_native", lambda name, _plan: installed.append(name) or ()
     )
     monkeypatch.setattr(
         cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or ()

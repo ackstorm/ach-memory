@@ -1,11 +1,15 @@
 {
   "name": "ach-memory",
   "version": "0.1.0",
-  "description": "Durable memory for Codex through a local ach-memory service.",
+  "description": "Durable memory for Codex through the ach-memory service.",
   "author": {
     "name": "ackstorm"
   },
+  "homepage": "https://github.com/ackstorm/ach-memory",
+  "repository": "https://github.com/ackstorm/ach-memory",
+  "license": "MIT",
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "ach-memory",
     "shortDescription": "Durable memory for Codex.",
@@ -16,6 +20,5 @@
     "defaultPrompt": [
       "Recall relevant context for this project."
     ]
-  },
-  "mcpServers": "./.mcp.json"
+  }
 }
