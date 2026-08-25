@@ -339,6 +339,11 @@ def _native_bundle() -> Path:
         ".claude-plugin/plugin.json",
         "hooks/activate.js",
         "hooks/hooks.json",
+        # Read by activate.js at run time, which fails open on a missing file.
+        # Unchecked, an incomplete bundle installs cleanly and then injects
+        # nothing at all -- the feature dead with no error anywhere.
+        "activation.txt",
+        "prompt-hint.txt",
         "skills/ach-memory/SKILL.md",
     )
     for relative in required:

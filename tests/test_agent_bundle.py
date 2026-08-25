@@ -12,9 +12,15 @@ ROOT = Path(__file__).parents[1]
 PLUGIN = ROOT / "plugins" / "ach-memory"
 ACTIVATION = (
     "ach-memory is available for durable context. Recall when prior decisions, preferences, or "
-    "project facts may affect the task. Retain only durable, useful context after it is "
-    "established. Never store secrets. Memory calls are explicit: do not recall or retain merely "
-    "because a session, subagent, or greeting started."
+    "project facts may affect the task, and prefer it over grepping local files or transcripts "
+    "for that kind of question -- it is the system of record for them. Retain only durable, "
+    "useful context after it is established. Never store secrets. Do not recall or retain merely "
+    "because a session, subagent, or greeting started; a memory call needs a task that depends "
+    "on it."
+)
+PROMPT_HINT = (
+    "ach-memory holds durable user and project context. If this task depends on prior decisions, "
+    "preferences, or established facts, call recall before searching local files or transcripts."
 )
 
 
@@ -64,15 +70,22 @@ def test_manifests_and_marketplaces_reference_the_canonical_bundle() -> None:
     assert claude_marketplace["plugins"][0]["source"] == "./plugins/ach-memory"
 
 
-def test_hooks_register_only_the_two_activation_events() -> None:
+def test_hooks_register_only_the_three_activation_events() -> None:
+    """The prompt event was added deliberately, so pin the set: anything else
+    appearing here means the plugin grew a hook nobody argued for."""
     hooks = _json(PLUGIN / "hooks" / "hooks.json")["hooks"]
 
-    assert set(hooks) == {"SessionStart", "SubagentStart"}
-    for registrations in hooks.values():
+    assert set(hooks) == {"SessionStart", "SubagentStart", "UserPromptSubmit"}
+    for event, registrations in hooks.items():
         hook = registrations[0]["hooks"][0]
         assert hook["type"] == "command"
         assert hook["command"] == 'node "${CLAUDE_PLUGIN_ROOT}/hooks/activate.js"'
-        assert hook["statusMessage"] == "Loading ach-memory..."
+        # No spinner label on the per-prompt hook: it fires on every message,
+        # and "Loading ach-memory..." flashing before each one is noise.
+        if event == "UserPromptSubmit":
+            assert "statusMessage" not in hook
+        else:
+            assert hook["statusMessage"] == "Loading ach-memory..."
 
 
 def test_activation_policy_is_the_single_conservative_source() -> None:
@@ -80,6 +93,10 @@ def test_activation_policy_is_the_single_conservative_source() -> None:
     text = f"{ACTIVATION}\n{skill}"
 
     assert (PLUGIN / "activation.txt").read_text().strip() == ACTIVATION
+    assert (PLUGIN / "prompt-hint.txt").read_text().strip() == PROMPT_HINT
+    # The per-prompt text is a pointer, not a second copy of the policy. It is
+    # paid on every message, so its length is a budget, not a detail.
+    assert len(PROMPT_HINT) < len(ACTIVATION) / 2
     assert "automatic recall" not in skill.lower()
     assert "automatic retain" not in skill.lower()
     assert not re.search(r"(?:AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,})", text)
@@ -109,7 +126,9 @@ def test_claude_uses_each_events_native_context_shape() -> None:
 
 
 def test_hook_is_silent_for_empty_malformed_or_unrecognized_input() -> None:
-    for payload in ("", "not json", json.dumps({"hook_event_name": "UserPromptSubmit"})):
+    # "Stop" stands in for the unrecognized event that UserPromptSubmit used to
+    # be; it is registered now, so it no longer proves silence.
+    for payload in ("", "not json", json.dumps({"hook_event_name": "Stop"})):
         result = _hook("SessionStart", stdin=payload)
 
         assert result.returncode == 0
@@ -211,3 +230,17 @@ extension({ on(name, handler) { events.set(name, handler); } });
     result = _adapter(installed / "ach-memory.js", source)
 
     assert result == ({"hooks": {}, "output": {"system": []}} if adapter == "opencode" else {"events": [], "result": None})
+
+
+def test_prompt_hook_injects_the_short_hint_for_both_hosts() -> None:
+    """Breaks if the per-prompt event goes silent, or starts repeating the full
+    session policy on every message."""
+    for codex in (False, True):
+        result = _hook("UserPromptSubmit", codex=codex)
+
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["hookSpecificOutput"] == {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": PROMPT_HINT,
+        }
+        assert ACTIVATION not in result.stdout
