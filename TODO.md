@@ -50,3 +50,46 @@ needing to know the endpoint.
 
 Until then `init` keeps working for these two, and `plugins/opencode/` and
 `plugins/pi/` stay in the wheel.
+
+
+## Keyword-gated UserPromptSubmit
+
+Dropped 2026-08-25: it was paid on every message for a reminder actionable on
+few of them. `SessionStart` announces the tools once, `Stop` asks about
+retaining at the one moment a durable fact from the turn exists.
+
+The version worth trying later fires only when the prompt looks like it turns
+on stored context — `remember`, `recall`, `note`, `last time`, `we decided`,
+`previously`, and the Spanish equivalents `recuerda`, `acuérdate`, `apunta`,
+`habíamos`, `quedamos`, `la última vez`. Two things to settle first:
+
+- A regex gate would not have caught the case that motivated the hook at all.
+  "What is the canary phrase?" contains none of those words, and the agent
+  still went to the filesystem for it. A gate narrow enough to be cheap may be
+  too narrow to be useful.
+- Measure before rebuilding. `Stop` fires roughly once per assistant response,
+  which is close to the same cadence `UserPromptSubmit` had, so the current
+  layout is not obviously cheaper — it is better *placed*. If the token cost is
+  what matters, the lever is debouncing `Stop` to once per session (its stdin
+  carries `session_id`, readable with bash builtins the way engram does it in
+  `_helpers.sh`), not adding a fourth event.
+
+## opencode and pi have no Stop equivalent
+
+Checked when `UserPromptSubmit` was dropped, so nobody re-derives it:
+
+- **pi** exposes `session_start`, `session_shutdown`, `before_agent_start`,
+  `tool_execution_end`, `session_compact`. Our adapter uses
+  `before_agent_start`, which is the SessionStart equivalent.
+  `session_shutdown` cannot carry a nudge — nothing reads a system prompt once
+  the session is ending.
+- **opencode** exposes an `event` listener (`session.created`,
+  `session.deleted`), `chat.message`, `tool.execute.after`,
+  `experimental.chat.system.transform`, `experimental.session.compacting`.
+  Our adapter uses the system transform, again the SessionStart equivalent.
+  There is no post-response injection point.
+
+Both adapters already guard with `includes(activation)`, so they append once
+rather than per message. Neither ever had a per-prompt cost to remove, and
+neither can host the retain nudge without a real client — which is what
+replacing these with their native plugin systems, above, would buy.

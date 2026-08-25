@@ -1,0 +1,6 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "Stop",
+    "additionalContext": "If this session established a durable decision, preference, or project fact, retain it with ach-memory now. Nothing routine, nothing already stored, never a secret."
+  }
+}
