@@ -1,7 +1,7 @@
+import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-import jwt as pyjwt
 from memory.auth.providers import jwt_provider
 from memory.errors import Unauthorized
 
