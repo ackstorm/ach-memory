@@ -249,9 +249,42 @@ wrong three times in one day. Find a check that does not ask the model:
 `experimental.chat.system.transform` is real (it is in the binary), so log from
 inside the hook, or capture what opencode sends upstream.
 
-Separately, `gemini-flash-latest` reads neither. Told in Spanish to remember a
-fact, it goes straight to `sync_retain` and writes Spanish, with the skill
-listed and its description saying to read it at the start of any conversation.
-For that host the tool description is the only channel that lands, which is an
-argument for keeping the English rule there rather than in the skill -- and for
-deploying the chart, since the cluster still serves the pre-0.2.6 descriptions.
+Correction to an earlier draft of this entry, which said `gemini-flash-latest`
+ignores the skill: it does not. Interactively it loads the skill and writes
+English. What ignores the skill is `opencode run`, the non-interactive path --
+and every measurement behind that earlier claim was taken through it.
+
+## Headless runs are not evidence about interactive behaviour
+
+Both directions of this were measured on 2026-08-25, one prompt in Spanish
+asking to remember a colour, per host:
+
+| host | headless | interactive (herdr) |
+| --- | --- | --- |
+| claude | ach-memory, English | **built-in file store**, never called retain |
+| codex | ach-memory, English | ach-memory, English |
+| pi | ach-memory, English | ach-memory, English |
+| opencode | file/Spanish, no skill | ach-memory, English, skill loaded |
+
+opencode is better interactively; claude is worse. So a headless pass is not
+evidence of an interactive pass, and a headless failure is not evidence of a
+real one. Every host claim in this repo taken from `-p`/`run`/`exec` alone
+needs re-checking against a real session.
+
+The claude case is the serious one. It had the tools -- asked explicitly, the
+same session called `plugin:ach-memory:ach-memory` without complaint -- and the
+activation policy names the competitor outright ("use it instead of the
+file-based memory directory and MEMORY.md"). It wrote
+`memory/title-color-indigo.md` and indexed it in `MEMORY.md` anyway. The
+displacement clause is proven only for `claude -p`.
+
+Next: confirm whether the SessionStart hook actually delivers in an interactive
+session, using something that is not the model's own account of its context --
+instrument the installed hook script to append to a file, as was done for
+codex. If it does deliver, the clause loses to the host's built-in `# Memory`
+section and needs to be sharper or moved.
+
+For `opencode run` the tool description remains the only channel that lands,
+which is an argument for keeping the English rule there rather than in the
+skill -- and for deploying the chart, since the cluster still serves the
+pre-0.2.6 descriptions.
