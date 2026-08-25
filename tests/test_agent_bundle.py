@@ -18,13 +18,11 @@ ROOT = Path(__file__).parents[1]
 NATIVE = ("claude-code", "codex")
 ADAPTED = ("opencode", "pi")
 ACTIVATION = (
-    "ach-memory is available for durable context. Recall when prior decisions, preferences, or "
-    "project facts may affect the task, and prefer it over grepping local files or transcripts "
-    "for that kind of question -- it is the system of record for them. Retain only durable, "
-    "useful context after it is established, and before ending a session in which such context "
-    "was established, retain it then. Never store secrets. Do not recall or retain merely "
-    "because a session, subagent, or greeting started; a memory call needs a task that depends "
-    "on it."
+    "ach-memory holds durable user and project context across sessions and is the system of record "
+    "for prior decisions -- prefer it over grepping files or transcripts. Recall before work that "
+    "depends on such context. Retain it once established, including decisions made only in "
+    "conversation, and again before a session ends. Never store secrets. A memory call needs a task "
+    "that depends on it, not merely a session starting."
 )
 SECRETS = re.compile(r"AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|mem_[A-Za-z0-9]{20,}")
 
@@ -199,6 +197,16 @@ def test_activation_policy_is_identical_everywhere_and_carries_no_secret(host: s
     assert (root / "activation.txt").read_text().strip() == ACTIVATION
     assert "automatic recall" not in skill.lower()
     assert "automatic retain" not in skill.lower()
+    # The skill is the only always-advertised surface that can name lazy-loaded
+    # tools, so an agent that never loads them still learns they exist. Two of
+    # fifteen used to be named.
+    for tool in ("retain", "sync_retain", "recall", "reflect", "list_memories", "get_memory",
+                 "correct", "forget", "restore", "delete_document", "list_documents",
+                 "get_document", "get_operation", "list_operations", "cancel_operation"):
+        assert f"`{tool}`" in skill, f"{host}: {tool} unlisted"
+    # Paid on every invocation, so it must not restate what each tool's own
+    # description and annotations already make unmissable at the point of use.
+    assert "irreversible" not in skill.lower()
     for path in sorted(root.rglob("*")):
         if path.is_file():
             assert not SECRETS.search(path.read_text(errors="ignore")), path
