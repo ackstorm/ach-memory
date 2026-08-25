@@ -106,8 +106,13 @@ def test_release_bump_requires_a_valid_version_without_changing_files(tmp_path):
     assert [path.read_bytes() for path in tracked] == before
 
 
-def test_release_cut_gates_marker_commit_then_verifies_then_pushes():
-    """Release-cut must refuse unsafe state before its only three release actions."""
+def test_release_cut_gates_then_verifies_then_marks_and_pushes():
+    """Release-cut must refuse unsafe state before its only three release actions.
+
+    Order is load-bearing, not incidental: verify runs BEFORE the marker
+    commit so a failed gate leaves nothing behind to clean up. The marker is
+    empty, so both orders verify the same tree -- see the Makefile comment.
+    """
     recipe = _make_recipe("release-cut")
     body = "\n".join(recipe)
 
@@ -120,8 +125,8 @@ def test_release_cut_gates_marker_commit_then_verifies_then_pushes():
     assert 'appVersion: "$(VERSION)"' in body
 
     actions = [
-        'git commit --allow-empty -m "chore(release): v$(VERSION)"',
         "$(MAKE) verify",
+        'git commit --allow-empty -m "chore(release): v$(VERSION)"',
         "git push origin main",
     ]
     positions = [recipe.index(action) for action in actions]

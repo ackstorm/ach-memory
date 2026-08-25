@@ -65,8 +65,13 @@ release-cut: ## Create and push the release marker (VERSION=X.Y.Z)
 		&& grep -qx 'version: $(VERSION)' deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx 'appVersion: "$(VERSION)"' deploy/helm/ach-memory/Chart.yaml \
 		|| { echo "FAIL: run make release-bump VERSION=$(VERSION) and commit its changes first." >&2; exit 1; }
-	git commit --allow-empty -m "chore(release): v$(VERSION)"
+	# verify BEFORE the marker commit. The marker is empty, so the tree verify
+	# inspects is identical either way -- but committing first left a stray
+	# `chore(release): vX` on local main every time verify failed, which then
+	# tripped the clean-tree and metadata gates on the next attempt. Nothing
+	# was ever pushed (push is last), so this only ever cost manual cleanup.
 	$(MAKE) verify
+	git commit --allow-empty -m "chore(release): v$(VERSION)"
 	git push origin main
 
 .PHONY: up
