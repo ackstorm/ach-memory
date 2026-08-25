@@ -10,6 +10,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# Files stating the version in a JSON "version" field. The two plugin manifests
+# and the marketplace entry were absent from release-bump and drifted to 0.1.0
+# while the package shipped 0.1.2 -- `claude plugin list` reported a version
+# that had not existed for two releases, and nothing anywhere failed.
+VERSIONED_MANIFESTS = (
+    ".claude-plugin/marketplace.json",
+    "plugins/claude-code/.claude-plugin/plugin.json",
+    "plugins/codex/.codex-plugin/plugin.json",
+)
+
 
 def _release_fixture(tmp_path: Path) -> Path:
     """Create the smallest safe tree on which release-bump may operate."""
@@ -18,6 +28,7 @@ def _release_fixture(tmp_path: Path) -> Path:
         "pyproject.toml",
         "deploy/helm/ach-memory/Chart.yaml",
         "deploy/helm/ach-memory/values.yaml",
+        *VERSIONED_MANIFESTS,
     ):
         source = REPO_ROOT / relative_path
         destination = tmp_path / relative_path
@@ -65,6 +76,10 @@ def test_release_bump_synchronizes_bare_versions_without_pinning_values_tag(tmp_
         root / "deploy/helm/ach-memory/Chart.yaml", r'^appVersion: "([^"]+)"'
     ) == "1.2.3"
     assert "  tag: \"\"" in (root / "deploy/helm/ach-memory/values.yaml").read_text()
+    for relative_path in VERSIONED_MANIFESTS:
+        assert (
+            _read_version(root / relative_path, r'"version": "([^"]+)"') == "1.2.3"
+        ), relative_path
 
 
 def test_release_bump_requires_a_valid_version_without_changing_files(tmp_path):
@@ -158,3 +173,47 @@ def test_release_workflow_is_main_marker_driven_and_creates_release_artifacts():
     assert 'git tag -a "v${VERSION}" -m "v${VERSION}"' in workflow
     assert 'git push origin "v${VERSION}"' in workflow
     assert 'gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes' in workflow
+
+
+def test_every_manifest_states_the_version_in_pyproject():
+    """One version, stated in six places, with nothing to keep them equal.
+
+    release-bump rewrites all of them now, but a bump is a step someone runs;
+    this is the step nobody can forget. A new manifest added without being
+    registered in VERSIONED_MANIFESTS and the Makefile will fail here on its
+    first release rather than shipping a stale number to users.
+    """
+    expected = _read_version(REPO_ROOT / "pyproject.toml", r'^version = "([^"]+)"')
+    chart = REPO_ROOT / "deploy/helm/ach-memory/Chart.yaml"
+
+    assert _read_version(chart, r"^version: (.+)$") == expected
+    assert _read_version(chart, r'^appVersion: "([^"]+)"') == expected
+    for relative_path in VERSIONED_MANIFESTS:
+        assert (
+            _read_version(REPO_ROOT / relative_path, r'"version": "([^"]+)"') == expected
+        ), relative_path
+
+
+def test_release_bump_updates_every_versioned_manifest_the_repo_has():
+    """Breaks when a manifest gains a version field but not a bump rule.
+
+    Scanning the tree, rather than trusting the tuple above to be complete: the
+    drift this guards against started exactly by someone adding a file with a
+    version in it and no way to move it.
+    """
+    import json
+
+    tracked = set(VERSIONED_MANIFESTS)
+    found = set()
+    for path in [*REPO_ROOT.glob(".claude-plugin/*.json"), *REPO_ROOT.glob(".agents/plugins/*.json"),
+                 *REPO_ROOT.glob("plugins/*/.claude-plugin/*.json"),
+                 *REPO_ROOT.glob("plugins/*/.codex-plugin/*.json")]:
+        payload = json.loads(path.read_text())
+        entries = [payload, *payload.get("plugins", [])]
+        if any(isinstance(entry, dict) and "version" in entry for entry in entries):
+            found.add(str(path.relative_to(REPO_ROOT)))
+
+    assert found == tracked, f"unregistered: {sorted(found - tracked)}; stale: {sorted(tracked - found)}"
+
+    recipe = "\n".join(_make_recipe("release-bump"))
+    assert "$(PLUGIN_MANIFESTS)" in recipe

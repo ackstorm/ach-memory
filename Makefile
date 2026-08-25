@@ -43,16 +43,29 @@ chart: ## helm lint + render, including the must-refuse-without-a-master-key cas
 .PHONY: verify
 verify: lint test secrets chart ## The full local gate -- run this before pushing
 
+# Every file that states the version. The plugin manifests were missing here
+# and silently drifted to 0.1.0 while the package reached 0.1.2 -- a user
+# reading `claude plugin list` was told a version that had not existed for two
+# releases.
+PLUGIN_MANIFESTS = .claude-plugin/marketplace.json \
+	plugins/claude-code/.claude-plugin/plugin.json \
+	plugins/codex/.codex-plugin/plugin.json
+
 .PHONY: release-bump
 release-bump: ## Update release metadata (VERSION=X.Y.Z)
 	$(require_release_version)
 	sed -i -E 's/^version = "[^"]*"$$/version = "$(VERSION)"/' pyproject.toml
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
+	sed -i -E 's/^([[:space:]]*)"version": "[^"]*"/\1"version": "$(VERSION)"/' $(PLUGIN_MANIFESTS)
 	@grep -qx 'version = "$(VERSION)"' pyproject.toml \
 		&& grep -qx 'version: $(VERSION)' deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx 'appVersion: "$(VERSION)"' deploy/helm/ach-memory/Chart.yaml \
 		|| { echo "FAIL: release metadata was not updated." >&2; exit 1; }
+	@for manifest in $(PLUGIN_MANIFESTS); do \
+		grep -qE '^[[:space:]]*"version": "$(VERSION)"' "$$manifest" \
+			|| { echo "FAIL: $$manifest was not updated." >&2; exit 1; }; \
+	done
 
 .PHONY: release-cut
 release-cut: ## Create and push the release marker (VERSION=X.Y.Z)
@@ -65,6 +78,10 @@ release-cut: ## Create and push the release marker (VERSION=X.Y.Z)
 		&& grep -qx 'version: $(VERSION)' deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx 'appVersion: "$(VERSION)"' deploy/helm/ach-memory/Chart.yaml \
 		|| { echo "FAIL: run make release-bump VERSION=$(VERSION) and commit its changes first." >&2; exit 1; }
+	@for manifest in $(PLUGIN_MANIFESTS); do \
+		grep -qE '^[[:space:]]*"version": "$(VERSION)"' "$$manifest" \
+			|| { echo "FAIL: run make release-bump VERSION=$(VERSION) and commit its changes first." >&2; exit 1; }; \
+	done
 	# verify BEFORE the marker commit. The marker is empty, so the tree verify
 	# inspects is identical either way -- but committing first left a stray
 	# `chore(release): vX` on local main every time verify failed, which then
