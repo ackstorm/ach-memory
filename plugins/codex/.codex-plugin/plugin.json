@@ -9,7 +9,6 @@
   "repository": "https://github.com/ackstorm/ach-memory",
   "license": "MIT",
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "ach-memory",
     "shortDescription": "Durable memory for Codex.",

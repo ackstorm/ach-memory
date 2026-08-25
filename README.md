@@ -63,19 +63,29 @@ export ACH_MEMORY_URL=https://memory.example.com
 export ACH_MEMORY_API_KEY=<user-key>
 ```
 
-Claude Code and Codex install from this repository's own marketplace:
+Claude Code installs from this repository's own marketplace:
 
 ```bash
 claude plugin marketplace add ackstorm/ach-memory
 claude plugin install ach-memory@ach-memory
-
-codex plugin marketplace add ackstorm/ach-memory
-codex plugin add ach-memory@ach-memory
 ```
 
-The plugin resolves both values at run time, so nothing is written per install
-and the same commands work against any deployment. With neither variable set it
+Claude resolves both values at run time, so nothing is written per install and
+the same commands work against any deployment. With neither variable set it
 falls back to `http://localhost:8000`, which is what `docker compose up` serves.
+
+Codex takes the same plugin for its hooks and skill, but registers the server
+itself — it does not expand `${ACH_MEMORY_URL}` in a URL, so the endpoint has to
+be given literally, once:
+
+```bash
+codex plugin marketplace add ackstorm/ach-memory
+codex plugin add ach-memory@ach-memory
+codex mcp add ach-memory --url "$ACH_MEMORY_URL/mcp/" \
+  --bearer-token-env-var ACH_MEMORY_API_KEY
+```
+
+The key is still read from the environment at call time; only the URL is fixed.
 
 OpenCode and pi have no marketplace, so they still need the installer, which
 writes their config files for them (see [TODO.md](TODO.md)):
