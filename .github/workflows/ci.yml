@@ -217,3 +217,110 @@ jobs:
       - name: Stop the container
         if: always()
         run: docker rm -f ach-memory-ci || true
+
+  # Publishing lives HERE, not in a separate workflow, and the reason is the
+  # `needs:` line below. It used to be release.yml on a `workflow_run` trigger,
+  # which had to re-derive "was CI green?" from
+  # `github.event.workflow_run.conclusion` -- a string that is reset to null
+  # when a run is re-run, so on 2026-08-26 a green marker commit produced a
+  # Release run that skipped itself and published nothing. Worse, the event was
+  # not delivered at all for three consecutive pushes. A `needs:` dependency is
+  # not a claim about the gates, it IS the gates: this job cannot start unless
+  # every one of them succeeded on THIS commit, and there is no cross-workflow
+  # event to go missing.
+  #
+  # The original reason release.yml avoided `push` still holds and is still
+  # honoured: on push the two workflows RACED, so a red CI could not stop a
+  # publish (v0.2.0 shipped with a failing image smoke test). Being a job with
+  # `needs:` removes the race entirely rather than papering over it.
+  publish:
+    needs: [lint, chart, test, image]
+    # The marker says this commit was MEANT to publish; `needs:` says it is
+    # publishable. Direct tag pushes stay forbidden, so no tag can publish an
+    # unreviewed commit.
+    # Quoted, and not optional: the marker contains ": ", which YAML reads as a
+    # mapping separator in a bare scalar -- unquoted, this line fails to parse
+    # and takes the whole workflow with it.
+    if: "${{ startsWith(github.event.head_commit.message, 'chore(release): v') }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Elevated HERE and nowhere else: lint/test/image/chart run
+    # repository-controlled code (ruff, pytest, docker build) under the
+    # workflow-level `contents: read` and must never hold a token that can
+    # write packages.
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0
+          # No `ref:` needed, unlike the old workflow_run version: a push-event
+          # job checks out github.sha, which IS the commit the gates above ran
+          # on. There is no window for another push to be published instead.
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # Helm's OCI client keeps its own credential store (~/.config/helm/registry),
+          # separate from docker's -- `docker login` above does not cover `helm push`.
+          printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Derive and validate the release version
+        env:
+          RELEASE_MARKER: ${{ github.event.head_commit.message }}
+        run: |
+          if ! printf '%s' "$RELEASE_MARKER" | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "FAIL: marker '${RELEASE_MARKER}' is not an exact release marker." >&2
+            echo "Expected exactly chore(release): vMAJOR.MINOR.PATCH[-prerelease]." >&2
+            exit 1
+          fi
+          version="${RELEASE_MARKER#chore(release): v}"
+          # SemVer, optionally with a pre-release, but NOT build metadata:
+          # `+` is valid in SemVer and ILLEGAL in an OCI tag, so a v1.0.0+build.5
+          # tag would die inside `docker build` with a bare "invalid reference
+          # format" that names neither the tag nor the cause. Helm does not
+          # enforce SemVer at package time either -- `--version 1` succeeds --
+          # so without this a tag like `v1` publishes silently as version "1".
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "FAIL: marker '${RELEASE_MARKER}' does not yield a publishable version." >&2
+            echo "Expected exactly chore(release): vMAJOR.MINOR.PATCH[-prerelease]." >&2
+            echo "Build metadata (+...) is not supported: it is illegal in an OCI tag." >&2
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "publishing version ${version}"
+
+      - name: Build and push the service image
+        run: |
+          image="ghcr.io/ackstorm/ach-memory"
+          docker build --build-arg GIT_SHA="${GITHUB_SHA}" -t "${image}:${VERSION}" .
+          docker push "${image}:${VERSION}"
+
+      - name: Push the Helm chart as an OCI artifact
+        run: |
+          helm package deploy/helm/ach-memory --version "${VERSION}" --app-version "${VERSION}"
+          helm push "ach-memory-${VERSION}.tgz" \
+            "oci://ghcr.io/ackstorm/charts"
+
+      # A pre-existing tag makes a re-run safe; another tag failure still
+      # fails the release rather than hiding a publication problem.
+      - name: Create and push the release tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "tag v${VERSION} already exists, skipping"
+          else
+            git tag -a "v${VERSION}" -m "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes
