@@ -165,7 +165,15 @@ def summary(
         .group_by(*group)
     ).all()
 
-    bucket = func.date_trunc("hour", ActivityEvent.created_at).label("bucket")
+    # Explicit third argument, not the 2-arg form: date_trunc's hour boundary
+    # is otherwise the CONNECTION's session TimeZone, which nothing in db.py
+    # pins to UTC. `slots` below is built from datetime.now(UTC) -- if the
+    # session zone ever drifts from UTC by a fractional-hour offset (e.g.
+    # Asia/Kolkata, UTC+5:30), the SQL and Python hour boundaries disagree,
+    # every lookup below misses, and this silently returns 24 zeros: the
+    # operator console's primary "which agent went quiet" signal, dark with
+    # no error anywhere. Looks redundant -- is not; do not simplify away.
+    bucket = func.date_trunc("hour", ActivityEvent.created_at, "UTC").label("bucket")
     hourly: dict[tuple, dict] = {}
     for row in db.execute(
         select(*group, bucket, func.count().label("calls")).where(*where).group_by(*group, bucket)

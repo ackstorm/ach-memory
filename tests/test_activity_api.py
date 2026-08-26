@@ -123,6 +123,9 @@ def test_activity_lists_newest_first_and_filters_by_project(
 ):
     body = client.get("/v1/admin/activity", headers=master_headers).json()
 
+    # Exactly these two rows, not >=2: `seeded_activity` also inserts a row
+    # for a second tenant, so this also pins tenant isolation -- relaxing it
+    # to a >= or a subset check would let a missing tenant filter through.
     assert [r["action"] for r in body] == ["memory.recall", "memory.retain"]
     assert "bank_id" not in body[0]
 
@@ -144,8 +147,19 @@ def test_an_unstorable_filter_is_an_empty_result_not_a_500(client, master_header
 def test_summary_rolls_up_per_bank(client, master_headers, seeded_activity):
     body = client.get("/v1/admin/activity/summary", headers=master_headers).json()
 
+    # Only the caller's tenant surfaces: `seeded_activity` also inserts a row
+    # for a second tenant (project "beta"), and FleetRow's group key does not
+    # include tenant_id, so a missing tenant filter on either of summary()'s
+    # queries would leak it in here as an extra row rather than corrupt
+    # `alpha`'s own counts.
+    assert {r["project_slug"] for r in body} == {"alpha"}
+
     row = next(r for r in body if r["project_slug"] == "alpha")
     assert row["retains"] == 1
     assert row["calls"] == 2
     assert len(row["hours"]) == 24
     assert row["last_seen"]
+    # Both seeded rows land in the current UTC hour -- the last slot. Fails
+    # if the SQL bucket and the Python-side `slots` disagree on where an hour
+    # starts (see activity.py's `bucket` comment).
+    assert row["hours"][-1] >= 1
