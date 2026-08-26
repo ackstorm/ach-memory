@@ -1,6 +1,7 @@
 import httpx
 import pytest
 import respx
+from sqlalchemy import text
 
 from memory.models import ActivityEvent
 from tests.test_mcp_tools import _mock_bank, call_tool  # noqa: F401 -- reused as a fixture
@@ -144,7 +145,16 @@ def test_an_unstorable_filter_is_an_empty_result_not_a_500(client, master_header
     assert response.json() == []
 
 
-def test_summary_rolls_up_per_bank(client, master_headers, seeded_activity):
+def test_summary_rolls_up_per_bank(client, master_headers, seeded_activity, session):
+    # SET LOCAL, not SET: its effect is scoped to the current transaction
+    # (the one this test's connection is already in), so it cannot leak
+    # into another test sharing that connection. A fractional-hour offset
+    # (not a whole-hour one -- those agree with UTC at hour granularity)
+    # is what actually makes the SQL bucket and Python's UTC `slots`
+    # diverge under the old 2-arg date_trunc -- this is the proof for
+    # activity.py's 3-arg fix, not decoration.
+    session.execute(text("SET LOCAL TIME ZONE 'Asia/Kolkata'"))
+
     body = client.get("/v1/admin/activity/summary", headers=master_headers).json()
 
     # Only the caller's tenant surfaces: `seeded_activity` also inserts a row
