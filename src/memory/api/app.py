@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 # register with the default REGISTRY and instrumentation runs regardless of
 # whether the /metrics scrape endpoint is exposed; metrics_enabled only
 # controls the endpoint below.
-from memory import metrics  # noqa: F401
+from memory import metrics
+from memory.api.observability import ObservabilityMiddleware
 from memory.auth.principal import Principal, resolve_principal
 from memory.config import get_settings
 from memory.db import get_session
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
             yield
 
     app = FastAPI(title="ach-memory", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(ObservabilityMiddleware)
 
     # httpx logs the full request URL at INFO, and our Hindsight URLs carry the
     # bank ID. Silent today only because nothing configures the root logger —
@@ -125,6 +127,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(DomainError)
     def _domain_error(_: Request, exc: DomainError) -> JSONResponse:
+        metrics.ERRORS.labels(code=exc.code).inc()
         return JSONResponse(
             status_code=exc.status,
             content={
@@ -153,6 +156,7 @@ def create_app() -> FastAPI:
         a traceback -- the one line meant to survive everything else logging
         nothing. Passing `exc` explicitly bypasses `sys.exc_info()` entirely.
         """
+        metrics.ERRORS.labels(code="INTERNAL_ERROR").inc()
         logger.error("unhandled error", exc_info=exc)
         return JSONResponse(
             status_code=500,

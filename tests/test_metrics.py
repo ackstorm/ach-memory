@@ -43,3 +43,36 @@ def test_metrics_can_be_turned_off(configured_env, monkeypatch):
     get_settings.cache_clear()
 
     assert TestClient(create_app()).get("/metrics").status_code == 404
+
+
+from prometheus_client import REGISTRY
+
+
+def _sample(name: str, **labels) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
+
+def test_http_requests_are_counted_by_route_template(client):
+    before = _sample("memory_http_requests_total", route="/metrics", method="GET", status="200")
+
+    client.get("/metrics")
+
+    after = _sample("memory_http_requests_total", route="/metrics", method="GET", status="200")
+    assert after == before + 1
+
+
+def test_an_unmatched_path_cannot_mint_a_label(client):
+    """A 404 has no route object, so it must collapse to one fixed label --
+    otherwise every invented URL is a new time series."""
+    client.get("/nope-a")
+    client.get("/nope-b")
+
+    assert _sample("memory_http_requests_total", route="unmatched", method="GET", status="404") >= 2
+
+
+def test_a_domain_error_increments_its_code(client):
+    before = _sample("memory_errors_total", code="UNAUTHORIZED")
+
+    client.post("/v1/memory/recall", json={"scope": "user", "query": "x"})
+
+    assert _sample("memory_errors_total", code="UNAUTHORIZED") == before + 1
