@@ -169,6 +169,25 @@ error anywhere. `tests/test_activity_api.py` sets `SET LOCAL TIME ZONE
 
 Each of these looked healthy right up until it didn't.
 
+**The test database is NOT the compose database.** `tests/conftest.py` points at
+port 5434; `docker compose up -d` publishes 5433. Run the suite with `make test`,
+which starts the dedicated `ach-memory-testdb` container first. A bare
+`uv run pytest` against a machine that only has the compose stack up produces
+600+ connection-refused errors that look like catastrophic breakage and are
+nothing of the kind.
+
+**`make lint` is `ruff check .`, not `ruff check src tests`.** Alembic's script
+template emits `Union[str, Sequence[str], None]`, which trips UP007. Lint the
+narrow path all through a feature and the generated migration only fails at
+`make release-cut` -- after the version bump, on the release gate.
+
+**A respx mock registered without `@respx.mock` leaks into every later test
+file.** `respx.put(...)` on the global router with no teardown made every
+subsequent bank PUT return 200, which silently disabled three `ensure_bank`
+tests in `tests/test_hindsight_client.py`. Invisible file by file; visible only
+in a whole-suite run. Both this and the lint trap above share one shape: green
+the way the change was tested, red the way the project runs its gate.
+
 **SQLAlchemy ordered two INSERTs alphabetically and broke every first login.**
 `auth/provisioning.link_identity` adds a `User` and then an `ExternalIdentity`
 that points at it, inside one savepoint. Neither mapper declares a
