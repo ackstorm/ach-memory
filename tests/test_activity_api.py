@@ -187,8 +187,12 @@ def test_an_unhandled_500_is_recorded_as_an_error(client, session, user_key, ten
     def _boom(*_args, **_kwargs):
         raise RuntimeError("something internal broke")
 
+    # No respx mock, and none needed: `build` raises inside the retain
+    # handler before any upstream call. Calling _mock_hindsight() here without
+    # @respx.mock registered a PUT on the GLOBAL respx router and leaked a 200
+    # into every later test file -- which made ensure_bank's 500 unreachable
+    # and broke three tests in test_hindsight_client.py.
     monkeypatch.setattr(memory_routes.provenance, "build", _boom)
-    _mock_hindsight()
 
     response = client.post(
         "/v1/memory/retain",
