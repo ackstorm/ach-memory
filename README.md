@@ -178,6 +178,23 @@ Disable with `MEMORY_ADMIN_UI_ENABLED=false`.
 Both `/metrics` and `/admin/ui` sit behind the same ingress as everything else.
 If that ingress is public, so are they.
 
+`/metrics` is served by the same app on the same port as the API — there is no
+second port to publish. The chart ships a `ServiceMonitor` for the Prometheus
+Operator, off by default because rendering it without the operator's CRDs fails
+the install:
+
+```yaml
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack   # if your Prometheus selects on one
+```
+
+`metrics.enabled: false` removes the route and the ServiceMonitor together, so a
+monitor can never point at an endpoint that is switched off.
+
 ## Authentication
 
 Three ways in, tried in a fixed order and fail-closed: whichever provider the

@@ -62,7 +62,7 @@ spec:
             - name: MEMORY_WRITE_WINDOW_SECONDS
               value: {{ .Values.config.writeWindowSeconds | quote }}
             - name: MEMORY_METRICS_ENABLED
-              value: {{ .Values.config.metricsEnabled | quote }}
+              value: {{ .Values.metrics.enabled | quote }}
             - name: MEMORY_ADMIN_UI_ENABLED
               value: {{ .Values.config.adminUiEnabled | quote }}
             - name: MEMORY_ACTIVITY_RETENTION_DAYS
