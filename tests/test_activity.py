@@ -1,6 +1,7 @@
 """The recorder, tested directly. Its wiring into the two surfaces is
 covered by tests/test_activity_api.py."""
 
+from contextvars import copy_context
 from datetime import UTC, datetime, timedelta
 
 from memory import activity, ids
@@ -99,3 +100,26 @@ def test_prune_drops_rows_past_the_horizon(app, session, tenant, monkeypatch):
     remaining = session.query(ActivityEvent).all()
     assert len(remaining) == 1
     assert remaining[0].bank_fingerprint == "e" * 12
+
+
+def test_describe_survives_a_copied_context(app, session, tenant):
+    """Starlette's threadpool and AnyIO's worker pool each hand the route a
+    COPY of the calling context -- a `describe()` that rebinds the ContextVar
+    instead of mutating the dict would be invisible back here where
+    `finish()` runs. Every other test in this file runs in a single context
+    and would not catch that regression; this one crosses a real boundary via
+    contextvars.copy_context(), the same mechanism those pools use."""
+    activity.new_call()
+
+    copy_context().run(
+        activity.describe,
+        action="memory.retain",
+        scope="user",
+        tenant_id=tenant,
+        bank_fingerprint="f" * 12,
+    )
+
+    activity.finish("rest")
+
+    row = session.query(ActivityEvent).one()
+    assert row.bank_fingerprint == "f" * 12

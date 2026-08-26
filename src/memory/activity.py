@@ -78,8 +78,12 @@ def finish(surface: str) -> None:
     # credential, a /metrics scrape, a 404. There is no bank to report -- and
     # on a public ingress, recording anonymous traffic would be an unbounded
     # INSERT vector. Rejections are still visible as
-    # memory_errors_total{code="UNAUTHORIZED"}.
-    if call is None or "action" not in call:
+    # memory_errors_total{code="UNAUTHORIZED"}. Missing scope is treated the
+    # same way: it is only ever absent alongside a missing action, but
+    # checking it here (rather than indexing call["scope"] below) is what
+    # keeps this guard -- not the try/except -- responsible for guaranteeing
+    # finish() never raises.
+    if call is None or "action" not in call or "scope" not in call:
         return
 
     duration = time.monotonic() - call["t0"]
@@ -121,7 +125,13 @@ def finish(surface: str) -> None:
                 )
             )
             db.commit()
-            _prune(db)
+            # Its own try/except: the row above is already committed, so a
+            # prune failure here must not be logged as "activity not
+            # recorded" -- that would misreport a row that in fact landed.
+            try:
+                _prune(db)
+            except Exception as exc:  # noqa: BLE001 -- must never propagate
+                logger.warning("activity prune failed: %s", type(exc).__name__)
     except Exception as exc:  # noqa: BLE001 -- must never propagate, see docstring
         # Telemetry is never worth an error the caller can see. Type only --
         # the exception text can carry SQL or a bank id, which is why
