@@ -106,9 +106,25 @@ config:
       # MEMORY_AUTH_PLATFORM_CACHE_TTL. Successes only -- a rejection is never
       # cached, or a re-enabled key would stay refused for the whole window.
       cacheTtl: 300
-      # MEMORY_AUTH_PLATFORM_GROUPS_FIELD. LiteLLM carries one team, not a
-      # list; alitellm-auth's /api/oauth/whoami returns team_id.
-      groupsField: "team_id"
+      # MEMORY_AUTH_PLATFORM_USER_FIELD / _GROUPS_FIELD. Where the identity and
+      # the groups sit in the resolver's JSON. Dotted paths, so a wrapped answer
+      # is addressable -- `info.user_id` reads {"info": {"user_id": ...}}. For
+      # groups a bare string and a list of strings are both accepted.
+      #
+      # Both are REQUIRED when platform auth is on, and neither has a default,
+      # because there is no standard to default to:
+      #
+      #   LiteLLM /v2/user/info        user_id        teams      (list)
+      #   LiteLLM /key/info            info.user_id   info.team_id
+      #   alitellm-auth whoami         user_id        team_id
+      #
+      # A default would be right for one and silently wrong for the others --
+      # and wrong the dangerous way, since a groups path matching nothing still
+      # authenticates the caller and merely leaves them with no membership, so
+      # every group-owned project stops authorizing with no error anywhere.
+      # Demanding both makes that a refusal to start instead.
+      userField: ""
+      groupsField: ""
 
 # MEMORY_MASTER_KEY_HASH. Never set this as a plain values.yaml string -- it
 # is the credential that reaches every bank in the tenant. Set exactly one of:

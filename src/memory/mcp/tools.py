@@ -26,7 +26,7 @@ from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_serializer
 
 from memory import activity, metrics, provenance
 from memory.api.curation import CorrectRequest, ListMemoriesRequest
@@ -42,6 +42,7 @@ from memory.api.memory import (
 from memory.api.operations import ListOperationsRequest
 from memory.errors import DomainError
 from memory.hindsight.client import get_client
+from memory.mcp.compact import compact as compact_payload
 from memory.mcp.server import tool_session
 
 logger = logging.getLogger("memory.mcp")
@@ -60,6 +61,31 @@ FactType = Literal["world", "experience", "observation"]
 PageLimit = Annotated[int | None, Field(ge=1, le=MAX_PAGE_SIZE)]
 PageOffset = Annotated[int | None, Field(ge=0)]
 
+# The eight read tools carry this. Kept to one short sentence on purpose: a
+# parameter's description ships in the tool listing of every context, so a
+# verbose explanation here is a permanent cost paid to save an occasional one.
+Verbose = Annotated[
+    bool,
+    Field(description="Return the full upstream payload instead of the reduced one."),
+]
+
+# What a list tool asks for when the caller named no limit. Hindsight's own
+# default is 100 (`hindsight_api/api/http.py`), which spends an agent's context
+# on two orders of magnitude more rows than a first look needs. The response
+# carries `total`, `limit` and `offset`, so the rest stays one paged call away.
+DEFAULT_PAGE_SIZE = 20
+
+
+def _default_limit(limit: int | None, verbose: bool) -> int | None:
+    """The page size a list tool actually asks Hindsight for.
+
+    An explicit limit always wins, at any size the bound allows — this caps
+    nothing the caller asked for, it only replaces "unspecified".
+    """
+    if limit is not None or verbose:
+        return limit
+    return DEFAULT_PAGE_SIZE
+
 # Populated by register(). The tests call through it, so an unregistered tool
 # fails there exactly as it would over the wire.
 REGISTRY: dict[str, Any] = {}
@@ -73,6 +99,27 @@ class ToolResult(BaseModel):
     project_slug: str | None = None
     resolved_from: str | None = None
     notice: str | None = None
+
+    @model_serializer(mode="plain")
+    def _serialize(self) -> dict[str, Any]:
+        """Emit only the fields that carry something.
+
+        The three slug fields are null on every call that did not follow a
+        rename, which is nearly all of them, and the SDK serializes this model
+        twice per response — once as structured output and once as the text
+        block that mirrors it (`func_metadata.convert_result`). Dropping nulls
+        is lossless and applies to all fifteen tools, `verbose` included.
+
+        Safe against the advertised contract: the SDK builds outputSchema with
+        `model_json_schema()` in validation mode, which a serializer does not
+        touch, and every field it omits is optional there.
+        """
+        emitted: dict[str, Any] = {"result": self.result}
+        for name in ("project_slug", "resolved_from", "notice"):
+            value = getattr(self, name)
+            if value is not None:
+                emitted[name] = value
+        return emitted
 
 
 class MCPToolError(Exception):
@@ -121,6 +168,7 @@ def _run(
     *,
     create: bool,
     is_write: bool = False,
+    verbose: bool = True,
 ) -> ToolResult:
     """The shared pipeline. `body_factory` takes no arguments and returns the
     validated `ScopedRequest` (or subclass) for this call — built inside
@@ -142,6 +190,11 @@ def _run(
     is always None on REST too. There is no MCP equivalent of REST's
     `current_on_behalf_of` header dependency to wire, and none is needed
     unless a future task adds master-key delegation over MCP on purpose.
+
+    `verbose` defaults to True — no reduction — because that is what the seven
+    write tools want: their responses are small envelopes with nothing to
+    strip. The eight read tools forward the caller's own flag, and only they
+    have a rule in `compact`.
 
     `is_write` forwards to `_resolve_bank`'s rate-limit gate (SPEC §20) — a
     caller cannot dodge the REST limit by switching to the MCP twin, since
@@ -183,8 +236,17 @@ def _run(
             # an exception no DomainError subclass claims", which is what this
             # is.
             try:
+                # Compaction runs AFTER the redaction, never instead of it:
+                # invariant 29 must not come to depend on which keys the rules
+                # in `compact` happen to drop today (`chunk_id` is both the
+                # first thing recall discards and the field a bank id hides
+                # inside). `_strip_bank_id` has already rebuilt the structure,
+                # so `compact` is free to mutate it.
+                payload = _strip_bank_id(result, bank_id)
+                if not verbose:
+                    payload = compact_payload(action, payload)
                 return ToolResult(
-                    result=_strip_bank_id(result, bank_id),
+                    result=payload,
                     project_slug=slug,
                     resolved_from=resolved_from,
                     notice="PROJECT_RENAMED" if resolved_from else None,
@@ -230,9 +292,12 @@ def _run(
 def register(mcp: MCPServer) -> None:
     @mcp.tool(
         description=(
-            "Store something worth remembering. Returns immediately with an "
-            "operation you can follow with get_operation; use sync_retain when "
-            "you need to read it back straight away."
+            "Store something worth remembering. Write the content in English "
+            "whatever language the conversation is in: retrieval reranks in "
+            "English only, so a fact stored in another language is not found "
+            "by an English query. Returns immediately with an operation you "
+            "can follow with get_operation; use sync_retain when you need to "
+            "read it back straight away."
         ),
     )
     def retain(
@@ -252,7 +317,11 @@ def register(mcp: MCPServer) -> None:
         )
 
     @mcp.tool(
-        description="Store something and wait until it is searchable.",
+        description=(
+            "Store something and wait until it is searchable. Write the "
+            "content in English whatever language the conversation is in: "
+            "retrieval reranks in English only."
+        ),
     )
     def sync_retain(
         scope: Scope,
@@ -290,6 +359,7 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         project_slug: str | None = None,
         git_locator: str | None = None,
+        verbose: Verbose = False,
     ) -> ToolResult:
         # is_write=True: with create=True (the default), an unmetered loop of
         # recall(scope="project", project_slug=<random>) mints one Project row
@@ -315,9 +385,12 @@ def register(mcp: MCPServer) -> None:
             ctx,
             body_factory,
             "memory.recall",
-            lambda bank, db, p, slug: get_client().recall(bank, query),
+            lambda bank, db, p, slug: get_client().recall(
+                bank, query, with_entities=verbose
+            ),
             create=True,
             is_write=True,
+            verbose=verbose,
         )
 
     @mcp.tool(
@@ -334,6 +407,7 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         project_slug: str | None = None,
         git_locator: str | None = None,
+        verbose: Verbose = False,
     ) -> ToolResult:
         def body_factory() -> ScopedRequest:
             body = ScopedRequest(
@@ -352,6 +426,7 @@ def register(mcp: MCPServer) -> None:
             lambda bank, db, p, slug: get_client().reflect(bank, query),
             create=True,
             is_write=True,
+            verbose=verbose,
         )
 
     @mcp.tool(
@@ -369,7 +444,13 @@ def register(mcp: MCPServer) -> None:
         document_id: str | None = None,
         limit: PageLimit = None,
         offset: PageOffset = None,
+        verbose: Verbose = False,
     ) -> ToolResult:
+        # A caller that named no limit gets DEFAULT_PAGE_SIZE instead of
+        # Hindsight's 100. Only in the reduced shape: `verbose` keeps the old
+        # behaviour whole, upstream default included.
+        page = _default_limit(limit, verbose)
+
         def body_factory() -> ListMemoriesRequest:
             # Reuses ListMemoriesRequest itself (the REST model) rather than a
             # bare ScopedRequest -- the same fix _retain already got for
@@ -381,7 +462,7 @@ def register(mcp: MCPServer) -> None:
             body = ListMemoriesRequest(
                 scope=scope, project_slug=project_slug, git_locator=git_locator,
                 q=q, type=type, state=state, document_id=document_id,
-                limit=limit, offset=offset,
+                limit=page, offset=offset,
             )
             # q is a caller-authored search query, same embedding-spend risk
             # class as recall's query; optional, so guarded.
@@ -395,9 +476,10 @@ def register(mcp: MCPServer) -> None:
             "memory.list",
             lambda bank, db, p, slug: get_client().list_memories(
                 bank, q=q, type=type, state=state, document_id=document_id,
-                limit=limit, offset=offset,
+                limit=page, offset=offset,
             ),
             create=False,
+            verbose=verbose,
         )
 
     @mcp.tool(
@@ -410,6 +492,7 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         project_slug: str | None = None,
         git_locator: str | None = None,
+        verbose: Verbose = False,
     ) -> ToolResult:
         return _run(
             ctx,
@@ -419,6 +502,7 @@ def register(mcp: MCPServer) -> None:
             "memory.get",
             lambda bank, db, p, slug: get_client().get_memory(bank, memory_id),
             create=False,
+            verbose=verbose,
         )
 
     @mcp.tool(
@@ -543,9 +627,10 @@ def register(mcp: MCPServer) -> None:
         q: str | None = None,
         limit: PageLimit = None,
         offset: PageOffset = None,
+        verbose: Verbose = False,
     ) -> ToolResult:
         return _list_documents(
-            ctx, scope, project_slug, git_locator, q, limit, offset
+            ctx, scope, project_slug, git_locator, q, limit, offset, verbose
         )
 
     @mcp.tool(
@@ -558,6 +643,7 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         project_slug: str | None = None,
         git_locator: str | None = None,
+        verbose: Verbose = False,
     ) -> ToolResult:
         return _run(
             ctx,
@@ -567,6 +653,7 @@ def register(mcp: MCPServer) -> None:
             "memory.documents.get",
             lambda bank, db, p, slug: get_client().get_document(bank, document_id),
             create=False,
+            verbose=verbose,
         )
 
     @mcp.tool(
@@ -607,6 +694,7 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         project_slug: str | None = None,
         git_locator: str | None = None,
+        verbose: Verbose = False,
     ) -> ToolResult:
         return _run(
             ctx,
@@ -618,6 +706,7 @@ def register(mcp: MCPServer) -> None:
                 bank, operation_id
             ),
             create=False,
+            verbose=verbose,
         )
 
     @mcp.tool(
@@ -633,9 +722,11 @@ def register(mcp: MCPServer) -> None:
         type: str | None = None,
         limit: PageLimit = None,
         offset: PageOffset = None,
+        verbose: Verbose = False,
     ) -> ToolResult:
         return _list_operations(
-            ctx, scope, project_slug, git_locator, status, type, limit, offset
+            ctx, scope, project_slug, git_locator, status, type, limit, offset,
+            verbose,
         )
 
     @mcp.tool(
@@ -740,23 +831,27 @@ def _retain(ctx, scope, content, project_slug, git_locator, document_id,
     return _run(ctx, body_factory, "memory.retain", call, create=True, is_write=True)
 
 
-def _list_documents(ctx, scope, project_slug, git_locator, q, limit, offset) -> ToolResult:
+def _list_documents(
+    ctx, scope, project_slug, git_locator, q, limit, offset, verbose=False
+) -> ToolResult:
+    page = _default_limit(limit, verbose)
+
     def body_factory() -> ListDocumentsRequest:
         # Reuses ListDocumentsRequest itself for its Field(ge=0) bound on
         # limit/offset -- the same fix _retain already got for RetainRequest.
         # A bare ScopedRequest here let a negative value reach Hindsight as a
         # 502 blaming the backend instead of a typed rejection at the
         # boundary. Unset fields are OMITTED, not passed as None: the model's
-        # own concrete defaults (100/0) are for validation only here, so a
-        # caller who leaves limit/offset unset keeps today's behavior of
-        # sending nothing and letting Hindsight's own default apply -- this
-        # is a validation fix, not a wire-behavior change.
+        # own concrete defaults (100/0) are for validation only here. In the
+        # reduced shape `page` supplies DEFAULT_PAGE_SIZE, so what goes on the
+        # wire is 20 rather than Hindsight's 100; under `verbose` it stays
+        # None and the old behavior of sending nothing is preserved whole.
         kwargs: dict[str, Any] = {
             "scope": scope, "project_slug": project_slug,
             "git_locator": git_locator, "q": q,
         }
-        if limit is not None:
-            kwargs["limit"] = limit
+        if page is not None:
+            kwargs["limit"] = page
         if offset is not None:
             kwargs["offset"] = offset
         body = ListDocumentsRequest(**kwargs)
@@ -767,29 +862,37 @@ def _list_documents(ctx, scope, project_slug, git_locator, q, limit, offset) -> 
         return body
 
     def call(bank_id, db, principal, slug):
-        return get_client().list_documents(bank_id, q=q, limit=limit, offset=offset)
+        return get_client().list_documents(bank_id, q=q, limit=page, offset=offset)
 
-    return _run(ctx, body_factory, "memory.documents.list", call, create=False)
+    return _run(
+        ctx, body_factory, "memory.documents.list", call,
+        create=False, verbose=verbose,
+    )
 
 
 def _list_operations(
-    ctx, scope, project_slug, git_locator, status, type, limit, offset
+    ctx, scope, project_slug, git_locator, status, type, limit, offset, verbose=False
 ) -> ToolResult:
+    page = _default_limit(limit, verbose)
+
     def body_factory() -> ListOperationsRequest:
         # Same reasoning as _list_documents above, against ListOperationsRequest.
         kwargs: dict[str, Any] = {
             "scope": scope, "project_slug": project_slug,
             "git_locator": git_locator, "status": status, "type": type,
         }
-        if limit is not None:
-            kwargs["limit"] = limit
+        if page is not None:
+            kwargs["limit"] = page
         if offset is not None:
             kwargs["offset"] = offset
         return ListOperationsRequest(**kwargs)
 
     def call(bank_id, db, principal, slug):
         return get_client().list_operations(
-            bank_id, status=status, type=type, limit=limit, offset=offset
+            bank_id, status=status, type=type, limit=page, offset=offset
         )
 
-    return _run(ctx, body_factory, "memory.operations.list", call, create=False)
+    return _run(
+        ctx, body_factory, "memory.operations.list", call,
+        create=False, verbose=verbose,
+    )

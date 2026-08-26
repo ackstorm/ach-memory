@@ -117,3 +117,174 @@ Both adapters already guard with `includes(activation)`, so they append once
 rather than per message. Neither ever had a per-prompt cost to remove, and
 neither can host the retain nudge without a real client — which is what
 replacing these with their native plugin systems, above, would buy.
+
+## Codex never runs our plugin's SessionStart hook
+
+The activation text has never reached codex. Its skill and MCP server both
+work — `sync_retain` stores facts and `codex mcp list` reports the server
+connected — but `plugins/codex/hooks/hooks.json` does not execute, so nothing
+tells a codex session that ach-memory should displace the host's own store.
+
+Measured against codex-cli 0.149.1 by instrumenting the hook script to append
+to a log file and reading that file, which removes the model's self-report
+from the loop. It never fired under any of:
+
+- a trusted project (`[projects."..."] trust_level = "trusted"` in
+  `$CODEX_HOME/config.toml`, falling back to `~/.codex` when unset) as well as
+  an untrusted one
+- hooks explicitly trusted at the "Hooks need review" prompt, with the new
+  `trusted_hash` written back to `config.toml` and `[plugins."..."] enabled = true`
+- `"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh"`, a relative
+  `./scripts/session-start.sh` matching what the official `replayio` and
+  `figma` plugins use, and a fully absolute path
+- with and without `"matcher": "startup"`, which `$CODEX_HOME/hooks.json` uses
+- interactive `codex` and headless `codex exec`
+- instrumenting both the installed copy under
+  `$CODEX_HOME/plugins/cache/ach-memory/...` and the marketplace snapshot under
+  `$CODEX_HOME/.tmp/marketplaces/ach-memory/plugins/codex/`, which is the path
+  `codex plugin list` reports
+
+So codex parses our hooks, hashes them, prompts to trust them and records the
+result -- and then does not run them.
+
+Our variable IS wrong and should be fixed regardless. engram ships a plugin per
+host and uses a different variable in each: `${CLAUDE_PLUGIN_ROOT}` for
+claude-code, plain `${PLUGIN_ROOT}` for codex. `${PLUGIN_ROOT}` is the Agent
+Plugins spec name -- the codex binary carries `${PLUGIN_ROOT}${PLUGIN_DATA}`
+and the message "Agent Plugins stdio `cwd` must be a contained `./`,
+`${PLUGIN_ROOT}`, or `${PLUGIN_DATA}` path". (An earlier note here claimed
+`CLAUDE_PLUGIN_ROOT` appears nowhere in the codex binary. That was wrong: it is
+there, next to `hooks.json` and `config.toml`.) But it is not the blocker
+either -- `${PLUGIN_ROOT}` plus engram's `startup|resume|clear` matchers, with
+the hooks freshly trusted, did not fire.
+
+## The pattern that demonstrably works on codex: no hook at all
+
+superpowers' codex plugin declares `"hooks": {}` and `"skills": "./skills/"`.
+It has no hooks directory. Its always-on behaviour comes entirely from the
+description of one skill, `using-superpowers`: "Use when starting any
+conversation - establishes how to find and use skills, requiring skill
+invocation before ANY response including clarifying questions."
+
+That works here, and we have already measured it working: in the very first
+codex run, codex read `superpowers/6.3.0/skills/using-superpowers/SKILL.md`
+unprompted, and then read ours next to it. Codex loads skills in untrusted
+projects too -- "hooks and exec policies are disabled ... but skills still
+load".
+
+So the codex activation channel should be the skill description, not a hook.
+That means the activation policy is no longer one text delivered four ways, and
+`test_activation_policy_is_identical_everywhere_and_carries_no_secret` has to
+change with it.
+
+`$CODEX_HOME/hooks.json` is the obvious fallback -- it is codex's own
+user-level hook file and already carries a working-looking SessionStart entry
+from codebase-memory. `ach-memory init codex`, which already registers the MCP
+server, could append ours there instead. **Verify that a `$CODEX_HOME/hooks.json`
+SessionStart entry actually fires before building on it**; that assumption is
+untested, and it is the same assumption that made us ship a plugin hook nobody
+ever saw run.
+
+Until then codex has the tools and the skill but not the policy, and
+`test_activation_policy_is_identical_everywhere_and_carries_no_secret` asserts
+four identical copies of a text that only three hosts can receive.
+
+## Swap the reranker for a multilingual one
+
+Retrieval reranks with an English-only cross-encoder, so a memory stored in
+any other language is effectively unfindable by an English question. Storing
+in English is the mitigation in place today -- on the `retain` and
+`sync_retain` tool descriptions and in the skill -- but it only helps facts
+written from now on, and it makes the service quietly monolingual.
+
+Measured against the deployed hindsight-api 0.9.1, one Spanish fact, two
+spellings of one question:
+
+| query | semantic | keyword | reranker | final |
+| --- | --- | --- | --- | --- |
+| `cuál es mi color favorito` | 0.825 | 0.30 | 0.988 | 1.087 |
+| `what is my favourite colour` | 0.647 | absent | 0.000098 | 0.00011 |
+
+The embedding is multilingual and degrades gracefully -- it still ranked that
+Spanish fact above every English memory in the bank. `final` tracks the
+reranker, which collapses 10,000x. Hindsight's default is
+`HINDSIGHT_API_RERANKER_LOCAL_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2`,
+trained on English MS MARCO, and we set no reranker env at all
+(`apps/hindsight/base/api.yaml` in the gitops repo configures only DB and LLM).
+
+Options, in ascending order of effort:
+
+- `HINDSIGHT_API_RERANKER_LOCAL_MODEL=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`
+  -- the multilingual sibling of the current default, no external dependency
+  and no `trust_remote_code`. Unverified: that it loads in 0.9.1, and what L12
+  costs on the pod's 2-CPU / 4Gi limit.
+- `HINDSIGHT_API_RERANKER_PROVIDER=litellm` against
+  `http://litellm.litellm.svc:4000`, which would bring metering and budgets --
+  but no rerank model is registered in that proxy today.
+- `HINDSIGHT_API_RERANKER_PROVIDER=rrf` turns reranking off. It would fix the
+  collapse by deleting the thing that collapses, and lose real quality: on a
+  same-language query the reranker separates the right answers (0.99) from
+  everything else (~1e-5) cleanly.
+
+Whichever is chosen, the check is the two queries in the table above, before
+and after. Changing the reranker changes every score, not just cross-language
+ones. Note also that the `cohere` provider defaults to `rerank-english-v3.0` --
+the same monolingual trap one layer out; `rerank-multilingual-v3.0` is the one
+to name.
+
+## opencode: confirm the activation adapter actually injects
+
+`init opencode` now names both surfaces in `opencode.json` -- `skills.paths`
+for the skill and `plugin` for the adapter -- because opencode reads neither
+from the user config dir by default. The skills half is confirmed: opencode
+lists the skill in `<available_skills>` with our description and its real
+location, where before it listed nothing.
+
+The adapter half is not confirmed. It loads and runs -- rewriting it as ESM
+made opencode hang, and restoring the CommonJS form made it work again, so the
+file is definitely being executed -- but no run has ever shown `activation.txt`
+in opencode's context. The only evidence either way is the model saying NONE
+when asked to quote it, and a model's account of its own context has been
+wrong three times in one day. Find a check that does not ask the model:
+`experimental.chat.system.transform` is real (it is in the binary), so log from
+inside the hook, or capture what opencode sends upstream.
+
+Correction to an earlier draft of this entry, which said `gemini-flash-latest`
+ignores the skill: it does not. Interactively it loads the skill and writes
+English. What ignores the skill is `opencode run`, the non-interactive path --
+and every measurement behind that earlier claim was taken through it.
+
+## Headless runs are not evidence about interactive behaviour
+
+Both directions of this were measured on 2026-08-25, one prompt in Spanish
+asking to remember a colour, per host:
+
+| host | headless | interactive (herdr) |
+| --- | --- | --- |
+| claude | ach-memory, English | **built-in file store**, never called retain |
+| codex | ach-memory, English | ach-memory, English |
+| pi | ach-memory, English | ach-memory, English |
+| opencode | file/Spanish, no skill | ach-memory, English, skill loaded |
+
+opencode is better interactively; claude is worse. So a headless pass is not
+evidence of an interactive pass, and a headless failure is not evidence of a
+real one. Every host claim in this repo taken from `-p`/`run`/`exec` alone
+needs re-checking against a real session.
+
+The claude case is the serious one. It had the tools -- asked explicitly, the
+same session called `plugin:ach-memory:ach-memory` without complaint -- and the
+activation policy names the competitor outright ("use it instead of the
+file-based memory directory and MEMORY.md"). It wrote
+`memory/title-color-indigo.md` and indexed it in `MEMORY.md` anyway. The
+displacement clause is proven only for `claude -p`.
+
+Next: confirm whether the SessionStart hook actually delivers in an interactive
+session, using something that is not the model's own account of its context --
+instrument the installed hook script to append to a file, as was done for
+codex. If it does deliver, the clause loses to the host's built-in `# Memory`
+section and needs to be sharper or moved.
+
+For `opencode run` the tool description remains the only channel that lands,
+which is an argument for keeping the English rule there rather than in the
+skill -- and for deploying the chart, since the cluster still serves the
+pre-0.2.6 descriptions.

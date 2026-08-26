@@ -230,10 +230,12 @@ def test_a_plaintext_resolver_url_is_accepted(monkeypatch):
     monkeypatch.setenv(
         "MEMORY_AUTH_PLATFORM_RESOLVER_URL", "http://litellm.genai.svc/v2/user/info"
     )
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_USER_FIELD", "user_id")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_GROUPS_FIELD", "teams")
     assert Settings().auth_platform_enabled is True
 
 
-def test_platform_requires_all_three_vars(monkeypatch):
+def test_platform_requires_every_var(monkeypatch):
     import pytest
 
     from memory.config import Settings
@@ -241,7 +243,10 @@ def test_platform_requires_all_three_vars(monkeypatch):
     _base_env(monkeypatch)
     monkeypatch.setenv("MEMORY_AUTH_PLATFORM_ENABLED", "true")
     monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "x-litellm-api-key")
-    with pytest.raises(ValueError, match="RESOLVER_HEADER.*RESOLVER_URL"):
+    with pytest.raises(
+        ValueError,
+        match="RESOLVER_HEADER.*RESOLVER_URL.*USER_FIELD.*GROUPS_FIELD",
+    ):
         Settings()
 
 
@@ -258,5 +263,7 @@ def test_both_providers_may_be_enabled_together(monkeypatch):
     monkeypatch.setenv(
         "MEMORY_AUTH_PLATFORM_RESOLVER_URL", "https://api.example.com/v2/user/info"
     )
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_USER_FIELD", "user_id")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_GROUPS_FIELD", "teams")
     settings = Settings()
     assert settings.auth_jwt_enabled and settings.auth_platform_enabled

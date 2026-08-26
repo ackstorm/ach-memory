@@ -195,13 +195,59 @@ MEMORY_AUTH_PLATFORM_INCOMING_HEADER=x-litellm-api-key
 # ...and the header we send that key back on to ask who owns it. They are
 # separate because the resolver need not want it under the same name.
 MEMORY_AUTH_PLATFORM_RESOLVER_HEADER=x-litellm-api-key
-MEMORY_AUTH_PLATFORM_RESOLVER_URL=http://litellm.genai.svc/v2/user/info
+MEMORY_AUTH_PLATFORM_RESOLVER_URL=http://litellm.<ns>.svc:4000/v2/user/info
+# Where the identity and the groups sit in that resolver's JSON. Both required,
+# neither defaulted -- see below.
+MEMORY_AUTH_PLATFORM_USER_FIELD=user_id
+MEMORY_AUTH_PLATFORM_GROUPS_FIELD=teams
 ```
 
-The resolver's `user_id` becomes the identity and its `team_id` the caller's
-single group. A resolver that is unreachable or failing returns
-`AUTH_BACKEND_UNAVAILABLE` (503), never a 401 — an outage upstream is not a bad
-credential.
+`/v2/user/info` defaults to a self-lookup when `user_id` is omitted, so the
+caller's own key identifies the caller and no master key is involved. A key not
+bound to a user answers 400 and is refused.
+
+Point it instead at `alitellm-auth` if you run it. That reads the key from
+`x-alitellm-auth-api-key` and holds the LiteLLM master key itself, at the cost
+of a second hop.
+
+```bash
+MEMORY_AUTH_PLATFORM_RESOLVER_HEADER=x-alitellm-auth-api-key
+MEMORY_AUTH_PLATFORM_RESOLVER_URL=http://alitellm-auth.<ns>.svc/api/oauth/whoami
+MEMORY_AUTH_PLATFORM_USER_FIELD=user_id
+MEMORY_AUTH_PLATFORM_GROUPS_FIELD=team_id
+```
+
+### Naming the two fields
+
+`_USER_FIELD` and `_GROUPS_FIELD` are dotted paths into the resolver's JSON, so
+a wrapped answer is addressable: `info.user_id` reads
+`{"info": {"user_id": ...}}`. A key containing a literal dot cannot be named —
+the path splits on it. For groups, a bare string and a list of strings are both
+accepted.
+
+Both are required whenever platform auth is on, and neither has a default,
+because there is no standard to default to:
+
+| Resolver | `_USER_FIELD` | `_GROUPS_FIELD` |
+| --- | --- | --- |
+| LiteLLM `/v2/user/info` | `user_id` | `teams` (list) |
+| LiteLLM `/key/info` | `info.user_id` | `info.team_id` |
+| alitellm-auth `/api/oauth/whoami` | `user_id` | `team_id` |
+
+A default would be right for one of these and silently wrong for the rest —
+wrong in the dangerous direction, since a groups path that matches nothing
+still authenticates the caller and merely leaves them with no membership, so
+every group-owned project quietly stops authorizing. Demanding both turns that
+into a refusal to start.
+
+The resolver's value at `_USER_FIELD` becomes the identity. Nothing at that
+path is a 401, not a 500 — including when the path itself is misconfigured.
+A resolver that is unreachable or failing returns `AUTH_BACKEND_UNAVAILABLE`
+(503), never a 401 — an outage upstream is not a bad credential.
+
+Behind a gateway that forwards headers selectively, the incoming header has to
+be on its allow-list. LiteLLM's MCP gateway forwards only the headers named in
+its server registration's `extra_headers`.
 
 ## Configuration
 
@@ -232,7 +278,8 @@ credential.
 | `MEMORY_AUTH_PLATFORM_RESOLVER_HEADER` | empty (required when platform auth is enabled) |
 | `MEMORY_AUTH_PLATFORM_RESOLVER_URL` | empty (required when platform auth is enabled) |
 | `MEMORY_AUTH_PLATFORM_CACHE_TTL` | `300` |
-| `MEMORY_AUTH_PLATFORM_GROUPS_FIELD` | `team_id` |
+| `MEMORY_AUTH_PLATFORM_USER_FIELD` | empty (required when platform auth is enabled) |
+| `MEMORY_AUTH_PLATFORM_GROUPS_FIELD` | empty (required when platform auth is enabled) |
 
 The three required variables are supplied by Compose for local setup; deployed
 service operators configure them separately. See
@@ -246,10 +293,15 @@ make verify
 make e2e
 ```
 
+`make verify` is the local lint, test, secret-scan and Helm gate. It starts its
+own Postgres on port 5434 (`make testdb`, idempotent; `make testdb-rm` to drop
+it) — deliberately a different server from the compose stack rather than
+another database inside it, since both defaulted to 5433 and whichever
+container held the port served the suite.
+
 `make e2e` runs Hindsight and its databases for real but uses Hindsight's
 `MockLLM`, makes zero external LLM calls, and tears down its isolated stack and
-volumes afterward. `make verify` is the local lint, test, secret-scan, and Helm
-gate.
+volumes afterward.
 
 For how to cut a release — and why a change under `plugins/` needs one — see
 [docs/reference/RELEASING.md](docs/reference/RELEASING.md).

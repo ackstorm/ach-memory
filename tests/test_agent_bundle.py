@@ -19,10 +19,13 @@ NATIVE = ("claude-code", "codex")
 ADAPTED = ("opencode", "pi")
 ACTIVATION = (
     "ach-memory holds durable user and project context across sessions and is the system of record "
-    "for prior decisions -- prefer it over grepping files or transcripts. Recall before work that "
-    "depends on such context. Retain it once established, including decisions made only in "
-    "conversation, and again before a session ends. Never store secrets. A memory call needs a task "
-    "that depends on it, not merely a session starting."
+    "for prior decisions -- use it instead of the file-based memory directory and MEMORY.md, and "
+    "prefer it over grepping files or transcripts. Anything worth remembering goes through `retain`,"
+    " never into that directory or index, which ach-memory cannot see. Load the ach-memory skill "
+    "before your first memory call. Recall before work that depends on such context. Retain it once "
+    "established, including decisions made only in conversation, and again before a session ends. "
+    "Never store secrets. A memory call needs a task that depends on it, not merely a session "
+    "starting."
 )
 SECRETS = re.compile(r"AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|mem_[A-Za-z0-9]{20,}")
 
@@ -108,7 +111,13 @@ def test_hooks_register_only_the_two_activation_events(host: str) -> None:
         hook = registrations[0]["hooks"][0]
         assert hook["type"] == "command"
         name = {"SessionStart": "session-start.sh", "SubagentStart": "subagent-start.sh"}[event]
-        assert hook["command"] == f'"${{CLAUDE_PLUGIN_ROOT}}/scripts/{name}"'
+        # Each host expands its OWN variable. `${PLUGIN_ROOT}` is the Agent
+        # Plugins spec name -- it is what the codex binary carries, and what
+        # engram's codex plugin uses, while engram ships `${CLAUDE_PLUGIN_ROOT}`
+        # in its claude-code copy of the same file. Claude's spelling under
+        # codex leaves the path unexpanded and codex reports nothing at all.
+        root = "CLAUDE_PLUGIN_ROOT" if host == "claude-code" else "PLUGIN_ROOT"
+        assert hook["command"] == f'"${{{root}}}/scripts/{name}"'
 
 
 @pytest.mark.parametrize("host", NATIVE)
@@ -299,3 +308,102 @@ def test_adapters_fail_open_without_activation(host: str, tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["empty"]
+
+
+@pytest.mark.parametrize("host", NATIVE + ADAPTED)
+def test_activation_routes_the_agent_to_the_skill(host: str) -> None:
+    """The clause that makes the skill reachable, pinned against a trim.
+
+    The skill's own frontmatter says to read it before the first memory call,
+    but a description is matched for relevance, not executed -- obeying it
+    requires already reading it. Nothing else in the loaded path points there:
+    activation.txt is the only text guaranteed into every session, and without
+    this sentence the sole route to the skill is the agent's own judgement.
+
+    Measured: an agent with this file loaded and the MCP server connected ran
+    recall and list_memories without ever opening the skill, having found the
+    tool names through the host's own tool search instead. It is ~12 tokens per
+    injection and it is the only delivery mechanism there is.
+    """
+    text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
+    assert "skill" in text, "activation must name the skill or nothing loads it"
+    assert "before your first memory call" in text
+
+
+@pytest.mark.parametrize("host", NATIVE + ADAPTED)
+def test_activation_displaces_the_hosts_own_memory_store(host: str) -> None:
+    """Names the competitor, because the contrast that was there was the wrong one.
+
+    Claude Code ships its own file-based memory: a per-project directory plus a
+    MEMORY.md index, documented in the system prompt with a schema and
+    when-to-write rules, and it owns the word "memory". It is a built-in, not a
+    user setting, so every host session has it.
+
+    Measured: a fresh session with the MCP server connected, the skill
+    available and this activation delivered was told to remember something and
+    wrote it to that directory instead, never calling an ach-memory tool. The
+    text said only "prefer it over grepping files or transcripts" -- the agent
+    did not grep, so nothing in it applied.
+
+    Measured again 2026-08-26 with the naming clause in place, this time in a
+    long interactive session doing real work: given process feedback worth
+    keeping, the agent announced it was saving it, wrote a file under the
+    host's memory directory and added a pointer line to MEMORY.md. No
+    ach-memory call. Naming the competitor was not enough because every clause
+    was still about reading -- "system of record", "use it instead of",
+    "prefer it over grepping" -- while the host's own instruction owns the
+    write moment with a procedure attached. So the write side gets its own
+    sentence, naming the trigger, the tool, and what happens if it goes to the
+    file store instead.
+    """
+    text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
+    assert "memory.md" in text, "activation must name the host store it replaces"
+    assert "instead of" in text
+    assert "worth remembering" in text, "activation must name the write moment, not just the read"
+    assert "`retain`" in text, "the write moment must name the tool that replaces the file write"
+
+
+@pytest.mark.parametrize("host", NATIVE + ADAPTED)
+def test_the_skill_carries_the_policy_for_hosts_whose_hooks_never_run(host: str) -> None:
+    """The activation policy has a second home, because codex has no first one.
+
+    Measured against codex-cli 0.149.1: the plugin's SessionStart hook does not
+    execute under any configuration tried -- trusted and untrusted projects,
+    hooks explicitly trusted, three path spellings including absolute,
+    with and without matchers, interactive and headless, both the installed
+    copy and the marketplace snapshot. See TODO.md.
+
+    What codex does load is skills, including in untrusted projects, where its
+    own message is "hooks and exec policies are disabled ... but skills still
+    load". superpowers relies on exactly that: its codex plugin declares
+    `"hooks": {}` and drives everything from one skill description. So the
+    displacement policy lives in the skill body too, and the description says
+    to read it early -- otherwise codex gets the tools and never the policy,
+    which is how it ended up writing to the host's own store instead.
+    """
+    text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
+    assert "instead of the host's own file-based memory directory and memory.md" in text
+    assert "read at the start of any conversation" in text
+    assert "worth remembering" in text, "the skill copy must carry the write moment too"
+    assert "`retain`" in text
+
+
+@pytest.mark.parametrize("host", NATIVE + ADAPTED)
+def test_the_skill_requires_english_at_write_time(host: str) -> None:
+    """Retrieval reranks with an English-only cross-encoder.
+
+    Hindsight's default is `cross-encoder/ms-marco-MiniLM-L-6-v2`, trained on
+    English MS MARCO. Measured against the deployed 0.9.1: one Spanish fact
+    scored reranker 0.988 for the Spanish question and 0.000098 for the English
+    translation of that same question -- a 10,000x collapse -- while its
+    embedding score barely moved (0.825 -> 0.647) and still ranked it first.
+    So the embedding is multilingual and the thing that decides the answer is
+    not.
+
+    Storing in English is the mitigation until the reranker is swapped for a
+    multilingual one (TODO.md). The rule also lives on the `retain` and
+    `sync_retain` tool descriptions, which is the channel an agent cannot skip
+    on its way to writing; this is the one that explains why.
+    """
+    text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
+    assert "write every memory in english" in text

@@ -54,8 +54,25 @@ def _prune(now: float) -> None:
         del _cache[token]
 
 
+def _dig(payload: dict, path: str):
+    """Read a dotted path out of the resolver's JSON.
+
+    Resolvers disagree on envelopes and there is no standard to assume:
+    LiteLLM's /v2/user/info answers at the top level, its /key/info wraps the
+    same fields under `info`. Anything that is not a dict on the way down ends
+    the walk at None rather than raising -- a resolver returning a shape we did
+    not expect must fail closed as "no identity", not as a 500.
+    """
+    value = payload
+    for part in path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
 def _groups(payload: dict, field: str) -> frozenset[str]:
-    raw = payload.get(field)
+    raw = _dig(payload, field)
     values = raw if isinstance(raw, list) else [raw]
     return frozenset(
         v
@@ -96,10 +113,13 @@ def _resolve(token: str) -> tuple[str, frozenset[str]]:
     if not isinstance(payload, dict):
         raise AuthBackendUnavailable("the identity resolver returned no object")
 
-    subject = payload.get("user_id")
+    subject = _dig(payload, settings.auth_platform_user_field)
     if not isinstance(subject, str) or not subject:
-        # A 200 with no user_id is the platform telling us the key is valid but
-        # anonymous. There is no identity to act as, so it cannot authenticate.
+        # A 200 with nothing at the configured path is the platform telling us
+        # the key is valid but anonymous. There is no identity to act as, so it
+        # cannot authenticate. A misconfigured USER_FIELD lands here too, and
+        # deliberately: refusing every caller is the safe way to be wrong about
+        # which field carries the identity.
         raise Unauthorized("the identity resolver named no user")
 
     groups = _groups(payload, settings.auth_platform_groups_field)

@@ -1,9 +1,11 @@
 ---
 name: ach-memory
-description: How and when to recall and retain durable user and project context with ach-memory. Read before the first memory call in a session — the tools are lazy-loaded and this names them.
+description: Durable user and project context that outlives the session. Read at the start of any conversation, before the first memory call and before searching files or transcripts for a prior decision — the tools are lazy-loaded and this names them.
 ---
 
 Memory survives sessions and compaction. Its value is the decision that never reached a file.
+
+ach-memory is the system of record for that context: use it instead of the host's own file-based memory directory and MEMORY.md, and prefer it over grepping files or transcripts. Anything worth remembering goes through `retain`, never into that directory or index, which ach-memory cannot see. Never store secrets.
 
 ## Tools
 
@@ -26,6 +28,8 @@ Retain once a fact is durable:
 - after compaction, whatever the summary establishes
 
 Skip anything routine, already stored, or secret.
+
+Write every memory in English, whatever language the conversation is in. Retrieval reranks with an English-only cross-encoder, so a fact stored in another language keeps a good embedding score and still loses: measured, the same fact scored 0.99 against its own language and 0.0001 against the English translation of the same question.
 
 ## Scope
 

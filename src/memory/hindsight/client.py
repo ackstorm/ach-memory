@@ -261,10 +261,21 @@ class HindsightClient:
             timeout=None if is_async else self._llm_timeout,
         )
 
-    def recall(self, bank_id: str, query: str) -> dict:
-        return self._request(
-            "POST", paths.recall(self._tenant, bank_id), {"query": query}
-        )
+    def recall(self, bank_id: str, query: str, with_entities: bool = True) -> dict:
+        """`with_entities=False` turns off a map we would only throw away.
+
+        Hindsight's `include.entities` defaults to ENABLED (`IncludeOptions` in
+        hindsight-api 0.9.1), so every recall built and returned an
+        entity-observation map on top of the facts. Sending an explicit null
+        disables it upstream, which saves the payload AND the work of
+        assembling it -- unlike dropping the key on the way out, which only
+        saves the payload. The default stays True so a caller asking for the
+        verbose shape gets exactly what it got before.
+        """
+        body: dict[str, Any] = {"query": query}
+        if not with_entities:
+            body["include"] = {"entities": None}
+        return self._request("POST", paths.recall(self._tenant, bank_id), body)
 
     def reflect(self, bank_id: str, query: str) -> dict:
         return self._request(

@@ -28,6 +28,7 @@ def _release_fixture(tmp_path: Path) -> Path:
         "pyproject.toml",
         "deploy/helm/ach-memory/Chart.yaml",
         "deploy/helm/ach-memory/values.yaml",
+        "uv.lock",
         *VERSIONED_MANIFESTS,
     ):
         source = REPO_ROOT / relative_path
@@ -228,3 +229,4 @@ def test_release_bump_updates_every_versioned_manifest_the_repo_has():
 
     recipe = "\n".join(_make_recipe("release-bump"))
     assert "$(PLUGIN_MANIFESTS)" in recipe
+    assert "uv lock" in recipe

@@ -98,8 +98,10 @@ spec:
               value: {{ required "config.auth.platform.resolverUrl is required when config.auth.platform.enabled" .Values.config.auth.platform.resolverUrl | quote }}
             - name: MEMORY_AUTH_PLATFORM_CACHE_TTL
               value: {{ .Values.config.auth.platform.cacheTtl | quote }}
+            - name: MEMORY_AUTH_PLATFORM_USER_FIELD
+              value: {{ required "config.auth.platform.userField is required when config.auth.platform.enabled -- there is no cross-platform default (LiteLLM /v2/user/info: user_id; /key/info: info.user_id)" .Values.config.auth.platform.userField | quote }}
             - name: MEMORY_AUTH_PLATFORM_GROUPS_FIELD
-              value: {{ .Values.config.auth.platform.groupsField | quote }}
+              value: {{ required "config.auth.platform.groupsField is required when config.auth.platform.enabled -- there is no cross-platform default (LiteLLM /v2/user/info: teams; alitellm-auth whoami: team_id)" .Values.config.auth.platform.groupsField | quote }}
             {{- end }}
           startupProbe:
             httpGet:

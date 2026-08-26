@@ -249,6 +249,43 @@ def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[
         )
     config[server_key] = {**existing, "ach-memory": server}
 
+    if target == "opencode":
+        # opencode finds skills only in the directories it is told about, and
+        # the default is the project-local `.opencode/skills`. We install ours
+        # under the user config dir, which is outside that -- so the skill sat
+        # on disk, invisible, and opencode was the one host that never read it.
+        # Measured: told in Spanish to remember a fact, it stored the fact in
+        # Spanish, while the three hosts that did read the skill stored English.
+        #
+        # `.opencode/skills` is re-stated when we create the key, because
+        # writing `paths` at all replaces the default rather than adding to it,
+        # and silently switching a user's project-local skills off is a far
+        # worse bug than the one being fixed here.
+        skills = config.get("skills", {})
+        if not isinstance(skills, dict):
+            raise CLIError(f"invalid JSON in {config_path}")
+        configured = skills.get("paths", [".opencode/skills"])
+        if not isinstance(configured, list):
+            raise CLIError(f"invalid JSON in {config_path}")
+        ours = str(root / "skills")
+        if ours not in configured:
+            configured = [*configured, ours]
+        config["skills"] = {**skills, "paths": configured}
+
+        # Same story for the adapter that injects activation.txt. opencode
+        # auto-loads `.opencode/plugin/` and `.opencode/plugins/` -- both
+        # project-local -- and otherwise takes an explicit `plugin` array.
+        # Ours sat in the user config dir with nothing pointing at it, so
+        # opencode never ran it: asked to quote its ach-memory instructions it
+        # produced the MCP server blurb and the skill entry, and no activation
+        # text at all. A relative entry resolves against the declaring config,
+        # which is this file.
+        declared = config.get("plugin", [])
+        if not isinstance(declared, list):
+            raise CLIError(f"invalid JSON in {config_path}")
+        if "./plugins/ach-memory.js" not in declared:
+            config["plugin"] = [*declared, "./plugins/ach-memory.js"]
+
     bundle = _bundle_root(target)
     assets = tuple((bundle / source, root / destination) for source, destination in paths)
     for source, _destination in assets:

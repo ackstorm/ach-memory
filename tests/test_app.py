@@ -92,6 +92,8 @@ def _enable_platform(monkeypatch):
     monkeypatch.setenv(
         "MEMORY_AUTH_PLATFORM_RESOLVER_URL", "https://api.example.com/v2/user/info"
     )
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_USER_FIELD", "user_id")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_GROUPS_FIELD", "teams")
     get_settings.cache_clear()
 
 

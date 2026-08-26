@@ -975,3 +975,43 @@ def test_codex_install_registers_the_server_from_the_current_environment(
     # reinstall, and the secret must never reach a command line.
     assert add[add.index("--bearer-token-env-var") + 1] == "ACH_MEMORY_API_KEY"
     assert not any("mcp" in c and "list" in c for c in runner.commands)
+
+
+def test_opencode_install_registers_the_skills_directory(tmp_path, monkeypatch):
+    """opencode reads skills only from the paths it is configured with.
+
+    The default is the project-local `.opencode/skills`; we install under the
+    user config dir, which is not in it. Measured before this: opencode was the
+    only host of four that never read the skill, and the only one that stored a
+    fact in Spanish when asked in Spanish -- the other three read the skill and
+    stored English.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from memory.cli import _config_plan
+
+    _config_path, config, _assets = _config_plan("opencode", "https://memory.example.com/mcp/")
+    paths = config["skills"]["paths"]
+
+    assert str(tmp_path / "opencode" / "skills") in paths
+    # Naming `paths` at all replaces opencode's default instead of adding to
+    # it, so the project-local directory has to survive the write.
+    assert ".opencode/skills" in paths
+
+
+def test_opencode_install_keeps_skill_paths_the_user_already_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    import json
+
+    from memory.cli import _config_plan
+
+    config_dir = tmp_path / "opencode"
+    config_dir.mkdir(parents=True)
+    (config_dir / "opencode.json").write_text(
+        json.dumps({"skills": {"paths": ["/srv/team-skills"], "urls": ["https://x/"]}})
+    )
+
+    _config_path, config, _assets = _config_plan("opencode", "https://memory.example.com/mcp/")
+
+    assert "/srv/team-skills" in config["skills"]["paths"]
+    assert str(config_dir / "skills") in config["skills"]["paths"]
+    assert config["skills"]["urls"] == ["https://x/"]

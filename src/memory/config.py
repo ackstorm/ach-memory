@@ -77,10 +77,21 @@ class Settings(BaseSettings):
     auth_platform_resolver_header: str = ""
     auth_platform_resolver_url: str = ""
     auth_platform_cache_ttl: int = Field(default=300, ge=0)
-    # LiteLLM's key metadata carries one team, not a list -- `alitellm-auth`'s
-    # /api/oauth/whoami returns `team_id` alongside `user_id`. A scalar here
-    # becomes a one-element group set.
-    auth_platform_groups_field: str = "team_id"
+    # Where the identity and the groups live in the resolver's JSON. Both are
+    # dotted paths, so a resolver that wraps its answer is addressable:
+    # `data.user_id` reads {"data": {"user_id": ...}}. A key containing a
+    # literal dot cannot be named -- the path splits on it.
+    #
+    # Neither has a default ON PURPOSE. There is no cross-platform standard
+    # here: `alitellm-auth`'s /api/oauth/whoami answers a flat `team_id`,
+    # LiteLLM's /v2/user/info answers `teams` as a list and no `team_id` at
+    # all, and its /key/info wraps both under `info`. A default would be right
+    # for one of them and silently wrong for the rest -- and wrong in the worst
+    # direction, since a groups path that matches nothing authenticates the
+    # caller anyway and just grants them no membership, reporting no error.
+    # Requiring both turns that into a refusal to boot.
+    auth_platform_user_field: str = ""
+    auth_platform_groups_field: str = ""
 
     # SPEC §20 MUST: rate-limit memory writes per credential (memory.ratelimit).
     # 60 writes per 60-second window -- generous enough that an ordinary
@@ -180,6 +191,8 @@ class Settings(BaseSettings):
                     ("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", self.auth_platform_incoming_header),
                     ("MEMORY_AUTH_PLATFORM_RESOLVER_HEADER", self.auth_platform_resolver_header),
                     ("MEMORY_AUTH_PLATFORM_RESOLVER_URL", self.auth_platform_resolver_url),
+                    ("MEMORY_AUTH_PLATFORM_USER_FIELD", self.auth_platform_user_field),
+                    ("MEMORY_AUTH_PLATFORM_GROUPS_FIELD", self.auth_platform_groups_field),
                 )
                 if not value
             ]

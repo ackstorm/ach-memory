@@ -831,6 +831,7 @@ tool(scope, ...args)
     -> attach provenance metadata
     -> invoke Hindsight
     -> normalize response/errors
+    -> reduce the response (§11.8)
 ```
 
 The LLM never supplies `bank_id`, `tenant_id`, its authenticated `user_id`,
@@ -961,6 +962,67 @@ Exclusion is enforced by our MCP not advertising these tools. Hindsight's
 per-bank `mcp_enabled_tools` allowlist could enforce the same set a second time,
 but it is deliberately not used in v1: our MCP is the only client, so it would
 be a config surface guarding nothing.
+
+### 11.8 Response reduction
+
+The eight read tools return a **reduced** payload by default. Every one of them
+takes an optional `verbose: bool = false`; `verbose=true` returns Hindsight's
+response exactly as §11.1's earlier steps produced it, so nothing below is
+load-bearing for correctness and no information is unreachable.
+
+```text
+recall  reflect  list_memories  get_memory
+list_documents  get_document  list_operations  get_operation
+```
+
+The seven write tools are unaffected: their responses are small envelopes with
+nothing to strip.
+
+Reduction is defined as an **exclude** list, never an allowlist. A field a
+future Hindsight adds reaches the caller untouched rather than disappearing
+silently — the failure mode points at "too much", which is visible and
+fixable, instead of at "too little", which is not. Removing a field that is
+already absent is a no-op, never an error.
+
+| Removed | Where | Why |
+|---|---|---|
+| `chunk_id` | facts, memory units | no tool of §11 accepts one, so it can only be read and discarded |
+| `tags` | everywhere | v1 writes no retrieval tags (§13.6), so it is always empty |
+| `source_fact_ids` | recall facts | resolvable only through a `source_facts` map this surface never requests |
+| `entities` | facts, memory units, and recall's top-level map | names already present verbatim in `text`; the map is also disabled on the request, which saves building it |
+| `proof_count`, `consolidated_at`, `consolidation_failed_at` | memory units | Hindsight's extraction-pipeline bookkeeping; nothing on this surface reacts to it |
+| `content_hash` | documents | internal dedup hash; callers choose document IDs themselves (§11.4) |
+| `retry_count`, `next_retry_at`, `progress`, `filename`, `items_count` | operations | worker internals behind a `status` the caller is already polling |
+| `usage` | reflect | token accounting for the service, not for the agent reading the answer |
+| null values | everywhere, including the seven write tools | a null field and an absent field say the same thing; both surfaces type every optional field as nullable |
+
+Two reductions are lossy in form but not in content. A timestamp equal to its
+record's anchor (`occurred_start` for a recall fact, `date` for a memory unit)
+is dropped, because a single-instant memory repeats one value across
+`occurred_start`, `occurred_end` and `mentioned_at`; **absent means "same as
+the anchor"**, and a fact that genuinely spans time keeps every distinct value.
+Recall `scores` keep `final`, rounded to two decimals, and drop the arms
+feeding it — Hindsight documents those as uncalibrated across queries, so they
+cannot be compared to anything.
+
+`state`, `invalidation_reason`, `invalidated_at`, `edited_at` and `document_id`
+are deliberately **kept**: the first four are what the curation flow of §12
+reads back, and `document_id` is the only handle `get_document`,
+`delete_document` and an appending `retain` have — a recall hit is where a
+caller learns one.
+
+The three list tools request **20** rows when the caller names no limit, rather
+than Hindsight's own default of 100. An explicit `limit` is never overridden at
+any size the page-size ceiling allows, the `total`/`limit`/`offset` envelope is
+preserved so the rest stays one paged call away, and `verbose=true` restores
+the upstream default.
+
+Reduction runs **after** the bank-ID redaction of §11.1, never in place of it:
+invariant 29 must not come to depend on which fields this section happens to
+remove, given `chunk_id` is both the first thing recall drops and a field a
+bank ID can hide inside.
+
+This section governs MCP only. REST returns Hindsight's payload unreduced.
 
 ---
 
