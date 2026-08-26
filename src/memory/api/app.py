@@ -185,6 +185,20 @@ def create_app() -> FastAPI:
         def prometheus_metrics() -> Response:  # Name does not shadow memory.metrics module (line 15)
             return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+    if get_settings().admin_ui_enabled:
+        from pathlib import Path
+
+        from fastapi.responses import FileResponse
+
+        dashboard = Path(__file__).resolve().parent.parent / "static" / "dashboard.html"
+
+        @app.get("/admin/ui", include_in_schema=False)
+        def admin_ui() -> FileResponse:
+            # One file, read from the package. No StaticFiles mount: a mount
+            # serves a whole directory, and this directory should never gain
+            # a second servable file by accident.
+            return FileResponse(dashboard, media_type="text/html")
+
     # DNS-rebinding protection is on by default in the SDK and allows only
     # 127.0.0.1, so a deployed service behind an ingress would answer 421 to
     # every MCP call. Configured rather than disabled: the check is worth
