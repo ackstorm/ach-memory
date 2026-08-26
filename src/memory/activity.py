@@ -40,7 +40,13 @@ _call: ContextVar[dict | None] = ContextVar("memory_activity_call", default=None
 # one per call. N replicas run the same idempotent DELETE N times, which is
 # cheaper than any coordination would be.
 _PRUNE_INTERVAL_SECONDS = 3600.0
-_last_prune = 0.0
+# -inf, not 0.0: `time.monotonic()` is time since BOOT on Linux, so with a 0.0
+# start the first prune is skipped on any host whose uptime is under the
+# interval -- the whole first hour after a reboot, and every fresh CI runner
+# (measured: CI failed test_prune_drops_rows_past_the_horizon while a dev box
+# with days of uptime passed it). -inf makes the first call always prune,
+# independent of how long the machine has been up.
+_last_prune = float("-inf")
 
 _AGENT_MAX = 64
 

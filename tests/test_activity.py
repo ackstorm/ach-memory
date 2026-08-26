@@ -88,7 +88,9 @@ def test_prune_drops_rows_past_the_horizon(app, session, tenant, monkeypatch):
     )
     session.add(old)
     session.flush()
-    monkeypatch.setattr(activity, "_last_prune", 0.0)
+    # -inf, not 0.0: with 0.0 this assertion passes or fails according to the
+    # machine's uptime, because the guard compares against time.monotonic().
+    monkeypatch.setattr(activity, "_last_prune", float("-inf"))
 
     activity.new_call()
     activity.describe(
