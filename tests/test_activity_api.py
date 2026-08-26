@@ -3,6 +3,7 @@ import pytest
 import respx
 
 from memory.models import ActivityEvent
+from tests.test_mcp_tools import _mock_bank, call_tool  # noqa: F401 -- reused as a fixture
 
 BASE = "http://hindsight.test"
 
@@ -77,3 +78,35 @@ def test_a_rejected_credential_records_no_row(client, session, tenant):
     )
 
     assert session.query(ActivityEvent).count() == 0
+
+
+@respx.mock
+def test_an_mcp_tool_call_records_a_row(call_tool, session, tenant):  # noqa: F811
+    _mock_bank()
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+    )
+    key = call_tool.make_user()
+
+    call_tool("retain", key, scope="user", content="hello")
+
+    row = session.query(ActivityEvent).one()
+    assert (row.surface, row.action, row.outcome) == ("mcp", "memory.retain", "ok")
+
+
+@respx.mock
+def test_an_mcp_tool_error_is_recorded_with_its_code(call_tool, session, tenant):  # noqa: F811
+    from memory.mcp.tools import MCPToolError
+
+    _mock_bank()
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
+        return_value=httpx.Response(500, json={"error": "boom"})
+    )
+    key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError):
+        call_tool("recall", key, scope="user", query="x")
+
+    row = session.query(ActivityEvent).one()
+    assert row.outcome == "error"
+    assert row.error_code
