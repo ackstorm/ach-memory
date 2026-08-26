@@ -93,6 +93,7 @@ def current_on_behalf_of(
 
 
 def create_app() -> FastAPI:
+    from memory.api import activity as activity_routes
     from memory.api import admin as admin_routes
     from memory.api import curation as curation_routes
     from memory.api import directives as directive_routes
@@ -166,6 +167,7 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(user_routes.router)
+    app.include_router(activity_routes.router)
     app.include_router(memory_routes.router)
     app.include_router(curation_routes.router)
     app.include_router(document_routes.router)

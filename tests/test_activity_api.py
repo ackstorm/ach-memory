@@ -110,3 +110,42 @@ def test_an_mcp_tool_error_is_recorded_with_its_code(call_tool, session, tenant)
     row = session.query(ActivityEvent).one()
     assert row.outcome == "error"
     assert row.error_code
+
+
+def test_activity_requires_the_master_key(client, user_key):
+    _, key = user_key
+
+    assert client.get("/v1/admin/activity", headers=_headers(key)).status_code == 403
+
+
+def test_activity_lists_newest_first_and_filters_by_project(
+    client, master_headers, seeded_activity
+):
+    body = client.get("/v1/admin/activity", headers=master_headers).json()
+
+    assert [r["action"] for r in body] == ["memory.recall", "memory.retain"]
+    assert "bank_id" not in body[0]
+
+    filtered = client.get(
+        "/v1/admin/activity", params={"project_slug": "alpha"}, headers=master_headers
+    ).json()
+    assert {r["project_slug"] for r in filtered} == {"alpha"}
+
+
+def test_an_unstorable_filter_is_an_empty_result_not_a_500(client, master_headers):
+    response = client.get(
+        "/v1/admin/activity", params={"action": "a\x00b"}, headers=master_headers
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_summary_rolls_up_per_bank(client, master_headers, seeded_activity):
+    body = client.get("/v1/admin/activity/summary", headers=master_headers).json()
+
+    row = next(r for r in body if r["project_slug"] == "alpha")
+    assert row["retains"] == 1
+    assert row["calls"] == 2
+    assert len(row["hours"]) == 24
+    assert row["last_seen"]
