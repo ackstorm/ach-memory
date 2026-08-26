@@ -174,7 +174,7 @@ def create_app() -> FastAPI:
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
         @app.get("/metrics", include_in_schema=False)
-        def metrics() -> Response:
+        def prometheus_metrics() -> Response:  # Name does not shadow memory.metrics module (line 15)
             return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     # DNS-rebinding protection is on by default in the SDK and allows only
