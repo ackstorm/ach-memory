@@ -11,10 +11,18 @@ failed gate leaves nothing behind to clean up. It refuses to run off `main`,
 with a dirty tree, or with release metadata that does not already match
 `VERSION`.
 
-The marker commit is the trigger: `.github/workflows/release.yml` fires on a
-push to `main` whose head commit message starts with `chore(release): v`.
-Nothing is tagged locally — the workflow creates the tag, the GitHub release,
-the image and the chart.
+The marker commit is the trigger: the `publish` job in
+`.github/workflows/ci.yml` fires on a push to `main` whose head commit message
+starts with `chore(release): v`. Nothing is tagged locally — the job creates the
+tag, the GitHub release, the image and the chart.
+
+`publish` carries `needs: [lint, chart, test, image]`, so it cannot start unless
+every gate passed on that exact commit. It used to be a separate `release.yml`
+on a `workflow_run` trigger, which had to re-derive "was CI green?" from
+`github.event.workflow_run.conclusion` — a string that is reset when a run is
+re-run. On 2026-08-26 that produced a green marker whose Release run skipped
+itself, and three pushes for which the event was never delivered at all. A
+`needs:` dependency cannot go missing.
 
 ## A change under `plugins/` needs a release, not just a commit
 

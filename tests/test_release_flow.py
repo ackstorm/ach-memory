@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Files stating the version in a JSON "version" field. The two plugin manifests
@@ -151,23 +153,57 @@ def test_release_cut_gates_then_verifies_then_marks_and_pushes():
 
 
 def test_release_workflow_is_main_marker_driven_and_creates_release_artifacts():
-    """Only a canonical marker on main can publish, tag, and create a release."""
-    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text()
+    """Only a canonical marker on main can publish, tag, and create a release.
 
-    assert "branches: [main]" in workflow
-    assert "tags:" not in workflow
-    # Gated on CI finishing green, not merely on the push. These raced before:
-    # Release did not depend on CI, so v0.2.0 published while the image smoke
-    # test was failing on the very commit it shipped.
-    assert "workflows: [CI]" in workflow
-    assert "github.event.workflow_run.conclusion == 'success'" in workflow
-    assert (
-        "startsWith(github.event.workflow_run.head_commit.message, 'chore(release): v')" in workflow
+    Publishing lives in ci.yml as a `publish` job, not in a separate
+    release.yml. The old workflow_run trigger had to re-derive "was CI green?"
+    from `github.event.workflow_run.conclusion` -- a string that is reset when a
+    run is re-run, so on 2026-08-26 a green marker produced a Release run that
+    skipped itself, and for three consecutive pushes the event was never
+    delivered at all. `needs:` is not a claim about the gates, it IS the gates.
+    """
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+    spec = yaml.safe_load(workflow)
+    publish = spec["jobs"]["publish"]
+
+    # The race this replaced: Release did not depend on CI, so v0.2.0 published
+    # while the image smoke test was failing on the very commit it shipped.
+    # Every gate in the workflow must be a prerequisite, not just the ones that
+    # existed when this was written.
+    gates = [name for name in spec["jobs"] if name != "publish"]
+    assert sorted(publish["needs"]) == sorted(gates), (
+        f"publish must depend on every gate; missing {set(gates) - set(publish['needs'])}"
     )
-    # workflow_run checks out the default branch's tip unless told otherwise,
-    # which would publish whatever landed after the commit CI verified.
-    assert "ref: ${{ github.event.workflow_run.head_sha }}" in workflow
-    assert "github.event.head_commit" not in workflow
+
+    # Push-triggered on main only, and never on a tag: a direct tag push must
+    # not be able to publish an unreviewed commit.
+    assert list(spec[True]) == ["push", "pull_request"]
+    assert spec[True]["push"]["branches"] == ["main"]
+    assert "tags" not in spec[True]["push"]
+
+    # The marker gate. Quoted in the YAML because it contains ": ", which a
+    # bare scalar reads as a mapping separator.
+    assert (
+        "startsWith(github.event.head_commit.message, 'chore(release): v')" in publish["if"]
+    )
+    # No leftover of the workflow_run design: those expressions are null on a
+    # push event, so a stale one silently disables the gate it looks like it
+    # enforces.
+    # Comment-stripped: the job's comments quote the old expression on purpose,
+    # to record why it was replaced. It is the live expression that must be
+    # gone.
+    live = "\n".join(
+        line for line in workflow.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "github.event.workflow_run" not in live
+
+    # Elevated tokens on the publishing job ONLY: every other job runs
+    # repository-controlled code (ruff, pytest, docker build).
+    assert publish["permissions"] == {"contents": "write", "packages": "write"}
+    assert spec["permissions"] == {"contents": "read"}
+    for name in gates:
+        assert "permissions" not in spec["jobs"][name], name
+
     assert "^chore\\(release\\): v" in workflow
     marker_pattern = next(
         pattern
