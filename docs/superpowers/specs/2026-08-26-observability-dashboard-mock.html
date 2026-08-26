@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ach-memory · console</title>
+<style>
+/* ── tokens ────────────────────────────────────────────────────────────────
+   Ground is ink, not black: this is a ledger, not a terminal.
+   Two signal colours with strict meaning, because the domain's central fact
+   is the read/write asymmetry — a write is append-only, costs extraction,
+   and cannot be undone; a read is free and leaves nothing.
+     sodium  = write   (retain, the thing that lasts)
+     frost   = read    (recall, ephemeral)
+     rust    = failed  (never fire-engine red; this is a log, not an alarm)
+*/
+:root{
+  --ink:#0d1219;
+  --ink-2:#131a24;
+  --ink-3:#1a2330;
+  --rule:#22303f;
+  --rule-soft:#1a242f;
+  --text:#dce5ef;
+  --text-2:#8296ab;
+  --text-3:#546578;
+  --sodium:#e8a33d;
+  --sodium-dim:#5c4520;
+  --frost:#6fc3d9;
+  --frost-dim:#254b57;
+  --rust:#d1685f;
+  --rust-dim:#4a2a28;
+  --quiet:#2a3746;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--ink);
+  color:var(--text);
+  font:14px/1.45 var(--mono);
+  font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased;
+}
+:focus-visible{outline:2px solid var(--frost);outline-offset:2px}
+
+/* ── header ─────────────────────────────────────────────────────────────── */
+.top{
+  position:sticky;top:0;z-index:10;
+  display:flex;align-items:center;gap:28px;
+  padding:14px 24px;
+  background:rgba(13,18,25,.92);
+  backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--rule);
+}
+.brand{
+  font-family:var(--sans);font-weight:650;font-size:15px;
+  letter-spacing:-.02em;white-space:nowrap;
+}
+.brand span{color:var(--text-3);font-weight:400}
+.tabs{display:flex;gap:2px}
+.tab{
+  font:inherit;font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-3);background:none;border:0;border-bottom:2px solid transparent;
+  padding:6px 12px 5px;cursor:pointer;
+}
+.tab:hover{color:var(--text-2)}
+.tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--sodium)}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:16px;font-size:12px;color:var(--text-3)}
+.key-state{display:flex;align-items:center;gap:7px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--frost);box-shadow:0 0 0 3px var(--frost-dim)}
+.ghost{
+  font:inherit;font-size:12px;color:var(--text-2);
+  background:var(--ink-3);border:1px solid var(--rule);border-radius:3px;
+  padding:5px 10px;cursor:pointer;
+}
+.ghost:hover{border-color:var(--text-3);color:var(--text)}
+
+/* ── stat strip ─────────────────────────────────────────────────────────── */
+.strip{
+  display:flex;flex-wrap:wrap;gap:0;
+  border-bottom:1px solid var(--rule);
+  background:var(--ink-2);
+}
+.stat{padding:13px 24px;border-right:1px solid var(--rule-soft);min-width:132px}
+.stat b{display:block;font-family:var(--sans);font-size:21px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
+.stat i{
+  display:block;font-style:normal;margin-top:3px;
+  font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);
+}
+.stat.warn b{color:var(--sodium)}
+.stat.bad b{color:var(--rust)}
+
+main{padding:0 24px 64px}
+.panel[hidden]{display:none}
+
+/* ── section headers ────────────────────────────────────────────────────── */
+.sec{
+  display:flex;align-items:baseline;gap:14px;
+  padding:26px 0 12px;
+}
+.sec h2{
+  font-family:var(--sans);font-size:13px;font-weight:600;
+  letter-spacing:.14em;text-transform:uppercase;margin:0;
+}
+.sec p{margin:0;color:var(--text-3);font-size:12px}
+
+/* ── fleet table ────────────────────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse}
+thead th{
+  font:inherit;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--text-3);font-weight:400;text-align:right;
+  padding:0 10px 8px;border-bottom:1px solid var(--rule);
+}
+thead th:first-child,thead th.l{text-align:left}
+tbody tr{border-bottom:1px solid var(--rule-soft)}
+tbody tr:hover{background:var(--ink-2)}
+tbody td{padding:11px 10px;text-align:right;vertical-align:middle}
+tbody td:first-child,tbody td.l{text-align:left}
+
+.target{display:flex;align-items:center;gap:10px}
+.scope{
+  font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  padding:2px 6px;border-radius:2px;border:1px solid var(--rule);color:var(--text-3);
+}
+.scope.project{border-color:var(--frost-dim);color:var(--frost)}
+.name{font-family:var(--sans);font-size:14px;font-weight:550;letter-spacing:-.01em}
+.fp{color:var(--text-3);font-size:11px}
+.agent{color:var(--text-3);font-size:11px}
+.agent::before{content:"↳ ";color:var(--quiet)}
+
+/* the signature: 24 hourly cells. silence is a hole you see, not a
+   timestamp you parse. */
+.ribbon{display:flex;gap:2px;align-items:flex-end;height:26px}
+.cell{
+  width:7px;border-radius:1px;background:var(--quiet);
+  transform-origin:bottom;
+}
+.cell.w{background:var(--sodium)}
+.cell.r{background:var(--frost)}
+.cell.e{background:var(--rust)}
+.cell.z{height:2px!important;background:var(--quiet)}
+@media (prefers-reduced-motion:no-preference){
+  .cell{animation:rise .34s cubic-bezier(.2,.7,.3,1) both}
+}
+@keyframes rise{from{transform:scaleY(0);opacity:0}to{transform:scaleY(1);opacity:1}}
+
+tr.silent .name,tr.silent .num{color:var(--text-3)}
+tr.silent .ribbon{opacity:.55}
+.tag{
+  font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  border:1px solid var(--rust-dim);color:var(--rust);border-radius:2px;padding:2px 6px;
+}
+.num{font-size:13px}
+.num.w{color:var(--sodium)}
+.num.r{color:var(--frost)}
+.num.e{color:var(--rust)}
+.num.zero{color:var(--text-3)}
+.seen{font-size:12px;color:var(--text-2)}
+
+/* ── activity log ───────────────────────────────────────────────────────── */
+.filters{display:flex;flex-wrap:wrap;gap:8px;padding-bottom:14px}
+.filters input,.filters select{
+  font:inherit;font-size:12px;color:var(--text);
+  background:var(--ink-2);border:1px solid var(--rule);border-radius:3px;padding:6px 9px;
+}
+.filters input::placeholder{color:var(--text-3)}
+.log{border-top:1px solid var(--rule)}
+.row{
+  display:grid;
+  grid-template-columns:80px 3px 190px 1fr 78px 62px 54px;
+  gap:14px;align-items:center;
+  padding:9px 10px 9px 0;
+  border-bottom:1px solid var(--rule-soft);
+  font-size:12.5px;
+}
+.row:hover{background:var(--ink-2)}
+.rail{align-self:stretch;border-radius:2px;background:var(--quiet)}
+.row.write .rail{background:var(--sodium)}
+.row.read .rail{background:var(--frost-dim)}
+.row.err .rail{background:var(--rust)}
+.ts{color:var(--text-3)}
+.act{color:var(--text)}
+.row.write .act{color:var(--sodium)}
+.row.err .act{color:var(--rust)}
+.dest{color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dest em{font-style:normal;color:var(--text-3)}
+.meta{text-align:right;color:var(--text-3)}
+.surface{
+  font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-3);border:1px solid var(--rule);border-radius:2px;padding:1px 5px;
+}
+.code{color:var(--rust);font-size:11px}
+
+/* ── peek ───────────────────────────────────────────────────────────────── */
+.peek-bar{display:flex;gap:10px;align-items:center;padding-bottom:16px}
+.notice{
+  border-left:2px solid var(--frost);background:var(--ink-2);
+  padding:10px 14px;color:var(--text-2);font-size:12px;margin-bottom:20px;
+}
+.mem{
+  border:1px solid var(--rule);border-left:2px solid var(--sodium);
+  background:var(--ink-2);border-radius:2px;
+  padding:14px 16px;margin-bottom:10px;
+}
+.mem-head{display:flex;gap:14px;align-items:baseline;margin-bottom:8px;font-size:11px;color:var(--text-3)}
+.mem-head b{color:var(--text-2);font-weight:400}
+.mem p{margin:0;font-family:var(--sans);font-size:14px;line-height:1.55;color:var(--text)}
+.empty{color:var(--text-3);padding:40px 0;text-align:center;font-size:13px}
+
+.legend{display:flex;gap:18px;padding:16px 0 0;font-size:11px;color:var(--text-3)}
+.legend b{display:inline-block;width:8px;height:8px;border-radius:1px;margin-right:6px;vertical-align:middle}
+
+@media (max-width:900px){
+  .ribbon{display:none}
+  .row{grid-template-columns:70px 3px 1fr 70px;}
+  .row .dest,.row .meta.bytes,.row .surface{display:none}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">ach-memory <span>/ console</span></div>
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true"  data-panel="fleet">Fleet</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="activity">Activity</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="peek">Peek</button>
+  </nav>
+  <div class="top-right">
+    <span class="key-state"><span class="dot"></span>master key held for this tab</span>
+    <button class="ghost" id="refresh">Refresh</button>
+  </div>
+</header>
+
+<div class="strip">
+  <div class="stat"><b>4</b><i>writing now</i></div>
+  <div class="stat warn"><b>2</b><i>gone quiet</i></div>
+  <div class="stat"><b>12,417</b><i>calls · 24h</i></div>
+  <div class="stat"><b>1,043</b><i>retains · 24h</i></div>
+  <div class="stat"><b>3.2 MB</b><i>written · 24h</i></div>
+  <div class="stat bad"><b>7</b><i>failed · 24h</i></div>
+  <div class="stat bad"><b>41</b><i>rejected keys · 1h</i></div>
+</div>
+
+<main>
+
+<!-- ── FLEET ─────────────────────────────────────────────────────────── -->
+<section class="panel" id="fleet">
+  <div class="sec">
+    <h2>Fleet</h2>
+    <p>One row per bank your credentials touched. Last 24 hours, one cell per hour.</p>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th class="l">Bank</th>
+        <th class="l">Last 24h</th>
+        <th>Retains</th>
+        <th>Recalls</th>
+        <th>Written</th>
+        <th>Failed</th>
+        <th>Last seen</th>
+      </tr>
+    </thead>
+    <tbody id="fleet-rows"></tbody>
+  </table>
+  <div class="legend">
+    <span><b style="background:var(--sodium)"></b>retain — written, permanent</span>
+    <span><b style="background:var(--frost)"></b>recall — read, free</span>
+    <span><b style="background:var(--rust)"></b>failed</span>
+    <span><b style="background:var(--quiet)"></b>nothing that hour</span>
+  </div>
+</section>
+
+<!-- ── ACTIVITY ──────────────────────────────────────────────────────── -->
+<section class="panel" id="activity" hidden>
+  <div class="sec">
+    <h2>Activity</h2>
+    <p>Every call that reached a bank. Kept 30 days, then dropped.</p>
+  </div>
+  <div class="filters">
+    <input id="f-text" placeholder="user, project or document…" size="26">
+    <select id="f-action">
+      <option value="">every action</option>
+      <option>memory.retain</option>
+      <option>memory.recall</option>
+      <option>memory.list</option>
+      <option>memory.forget</option>
+      <option>admin.memory.clear</option>
+    </select>
+    <select id="f-outcome">
+      <option value="">any outcome</option>
+      <option value="ok">succeeded</option>
+      <option value="error">failed</option>
+    </select>
+    <select id="f-since">
+      <option>last hour</option>
+      <option selected>last 24 hours</option>
+      <option>last 7 days</option>
+    </select>
+  </div>
+  <div class="log" id="log-rows"></div>
+</section>
+
+<!-- ── PEEK ──────────────────────────────────────────────────────────── -->
+<section class="panel" id="peek" hidden>
+  <div class="sec">
+    <h2>Peek</h2>
+    <p>Read what is actually stored in one bank.</p>
+  </div>
+  <div class="peek-bar">
+    <select id="peek-target">
+      <option value="">Pick a bank…</option>
+      <option value="p:ach-memory">project · ach-memory</option>
+      <option value="p:ponytail">project · ponytail</option>
+      <option value="u:usr_9f3c">user · usr_9f3c1e…</option>
+    </select>
+    <button class="ghost" id="peek-go">Read it</button>
+  </div>
+  <div class="notice">
+    Content is read live from Hindsight — this console stores none of it. Reading
+    another user's bank is recorded in the audit trail under your master key.
+  </div>
+  <div id="peek-out"><div class="empty">Pick a bank to see what your agents have actually written.</div></div>
+</section>
+
+</main>
+
+<script>
+/* Mock data. In the real page each of these is one fetch():
+     fleet    → GET /v1/admin/activity/summary?since=24h
+     log      → GET /v1/admin/activity?limit=100
+     peek     → POST /v1/memory/list  {scope, user_id|project_slug}
+   Nothing else about this file changes. */
+
+const FLEET = [
+  { scope:"project", name:"ach-memory", fp:"a91f4c2e8b07", agent:"claude-code",
+    retains:412, recalls:1284, bytes:"1.9 MB", failed:0, seen:"12s ago", silent:false,
+    hours:[3,5,8,12,9,14,11,7,4,2,1,0,2,6,9,13,17,21,18,12,8,5,3,4], mix:"w" },
+  { scope:"project", name:"herdr", fp:"77c0b1d4a3e9", agent:"codex",
+    retains:96, recalls:640, bytes:"310 KB", failed:2, seen:"4m ago", silent:false,
+    hours:[0,0,1,2,4,6,5,3,2,0,0,0,1,3,5,8,7,6,4,2,1,0,1,2], mix:"r" },
+  { scope:"user", name:"usr_9f3c1e…", fp:"1d5e90aa77bc", agent:"claude-code · opencode",
+    retains:288, recalls:903, bytes:"820 KB", failed:1, seen:"1m ago", silent:false,
+    hours:[2,4,3,5,7,6,9,11,8,5,3,2,4,7,10,12,9,8,6,4,3,2,3,5], mix:"w" },
+  { scope:"project", name:"ackstorm-litellm", fp:"e2b8047fc319", agent:"pi",
+    retains:41, recalls:118, bytes:"96 KB", failed:4, seen:"22m ago", silent:false,
+    hours:[0,0,0,0,1,2,3,2,1,0,0,0,0,1,2,4,3,2,1,0,0,0,1,1], mix:"e" },
+  { scope:"project", name:"ponytail", fp:"b0447ac1e5d2", agent:"claude-code",
+    retains:0, recalls:0, bytes:"0", failed:0, seen:"6h ago", silent:true,
+    hours:[4,6,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], mix:"w" },
+  { scope:"user", name:"usr_44b7ce…", fp:"39fd1c6b8a04", agent:"—",
+    retains:0, recalls:0, bytes:"0", failed:0, seen:"3d ago", silent:true,
+    hours:new Array(24).fill(0), mix:"w" },
+];
+
+const LOG = [
+  ["09:41:07","memory.retain","mcp","project · ach-memory","doc: session-2026-08-26","4.1 KB","ok","118ms","write"],
+  ["09:41:02","memory.recall","mcp","project · ach-memory","query: \"jwks issuer trap\"","","ok","61ms","read"],
+  ["09:40:55","memory.retain","mcp","user · usr_9f3c1e…","doc: preferences","900 B","ok","142ms","write"],
+  ["09:40:31","memory.list","rest","project · herdr","limit: 50","","ok","38ms","read"],
+  ["09:39:58","memory.retain","mcp","project · ackstorm-litellm","doc: deploy-notes","12.6 KB","error","30.0s","err","HINDSIGHT_ERROR"],
+  ["09:39:12","memory.recall","mcp","project · herdr","query: \"pane split\"","","ok","54ms","read"],
+  ["09:38:44","memory.retain","mcp","project · ach-memory","doc: session-2026-08-26","2.2 KB","ok","131ms","write"],
+  ["09:37:20","memory.forget","rest","user · usr_9f3c1e…","mem: 7c1e…","","ok","44ms","read"],
+  ["09:36:03","memory.retain","mcp","project · ackstorm-litellm","doc: deploy-notes","12.6 KB","error","—","err","RATE_LIMITED"],
+  ["09:35:47","admin.memory.clear","rest","project · scratch","type: observation","","ok","221ms","write"],
+  ["09:34:11","memory.recall","mcp","user · usr_9f3c1e…","query: \"how do I run tests\"","","ok","72ms","read"],
+  ["09:33:26","memory.retain","mcp","project · herdr","doc: arch","6.0 KB","ok","155ms","write"],
+];
+
+const MEMORIES = {
+  "p:ach-memory":[
+    ["world","2026-08-26 09:41","claude-code","feature/observability",
+     "bank_id must never appear in a response — _strip_bank_id redacts it even as a substring inside chunk_id, and tests/test_leakscan.py fails the build if it does."],
+    ["experience","2026-08-25 17:02","claude-code","main",
+     "SQLAlchemy ordered two INSERTs alphabetically and broke every first login. Provisioning has to flush the user before the external identity."],
+    ["observation","2026-08-25 11:20","codex","main",
+     "The JWKS issuer must match the token's iss exactly, trailing slash included. Dex publishes /keys, not /.well-known/jwks.json."],
+  ],
+  "p:ponytail":[
+    ["world","2026-08-20 08:14","claude-code","main",
+     "Ladder stops at the first rung that holds. Two rungs work → take the higher one and move on."],
+  ],
+  "u:usr_9f3c":[
+    ["world","2026-08-26 09:40","claude-code","—",
+     "Juan Carlos prefers English for all output, Spanish input is fine. Never run pip outside a venv."],
+    ["world","2026-08-24 19:30","opencode","—",
+     "Dockerfiles: multi-stage, explicit COPY paths, never COPY . ."],
+  ],
+};
+
+/* fleet rows */
+const peak = Math.max(...FLEET.flatMap(f => f.hours), 1);
+document.getElementById("fleet-rows").innerHTML = FLEET.map((f,ri) => `
+  <tr class="${f.silent ? "silent" : ""}">
+    <td>
+      <div class="target">
+        <span class="scope ${f.scope}">${f.scope}</span>
+        <span>
+          <span class="name">${f.name}</span>
+          ${f.silent ? `<span class="tag">silent</span>` : ""}
+          <br><span class="agent">${f.agent}</span> <span class="fp">bank ${f.fp}</span>
+        </span>
+      </div>
+    </td>
+    <td class="l">
+      <div class="ribbon">${f.hours.map((h,i) => {
+        const cls = h === 0 ? "z" : f.mix;
+        const px = h === 0 ? 2 : Math.max(4, Math.round(h / peak * 26));
+        const delay = (ri * 24 + i) * 6;
+        return `<span class="cell ${cls}" style="height:${px}px;animation-delay:${delay}ms"></span>`;
+      }).join("")}</div>
+    </td>
+    <td><span class="num w ${f.retains ? "" : "zero"}">${f.retains.toLocaleString()}</span></td>
+    <td><span class="num r ${f.recalls ? "" : "zero"}">${f.recalls.toLocaleString()}</span></td>
+    <td><span class="num">${f.bytes}</span></td>
+    <td><span class="num ${f.failed ? "e" : "zero"}">${f.failed}</span></td>
+    <td><span class="seen">${f.seen}</span></td>
+  </tr>`).join("");
+
+/* activity rows */
+function renderLog(rows){
+  const el = document.getElementById("log-rows");
+  if(!rows.length){ el.innerHTML = `<div class="empty">No calls match that. Widen the window or clear a filter.</div>`; return; }
+  el.innerHTML = rows.map(r => {
+    const [ts,act,surf,dest,detail,bytes,outcome,ms,kind,code] = r;
+    return `<div class="row ${kind}">
+      <span class="ts">${ts}</span>
+      <span class="rail"></span>
+      <span class="act">${act}</span>
+      <span class="dest">${dest} <em>${detail}</em>${code ? ` <span class="code">${code}</span>` : ""}</span>
+      <span class="meta bytes">${bytes || ""}</span>
+      <span class="meta">${ms}</span>
+      <span class="surface">${surf}</span>
+    </div>`;
+  }).join("");
+}
+renderLog(LOG);
+
+const applyFilters = () => {
+  const q = document.getElementById("f-text").value.toLowerCase();
+  const a = document.getElementById("f-action").value;
+  const o = document.getElementById("f-outcome").value;
+  renderLog(LOG.filter(r =>
+    (!q || (r[3]+r[4]).toLowerCase().includes(q)) &&
+    (!a || r[1] === a) &&
+    (!o || r[6] === o)));
+};
+["f-text","f-action","f-outcome"].forEach(id =>
+  document.getElementById(id).addEventListener("input", applyFilters));
+
+/* peek */
+document.getElementById("peek-go").addEventListener("click", () => {
+  const key = document.getElementById("peek-target").value;
+  const out = document.getElementById("peek-out");
+  if(!key){ out.innerHTML = `<div class="empty">Pick a bank first.</div>`; return; }
+  const items = MEMORIES[key] || [];
+  out.innerHTML = items.length ? items.map(([type,when,agent,branch,text]) => `
+    <article class="mem">
+      <div class="mem-head"><b>${type}</b><span>${when}</span><span>${agent}</span><span>${branch}</span></div>
+      <p>${text}</p>
+    </article>`).join("")
+    : `<div class="empty">This bank is empty. Nothing has been retained into it yet.</div>`;
+});
+
+/* tabs */
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", String(x === t)));
+  document.querySelectorAll(".panel").forEach(p => p.hidden = p.id !== t.dataset.panel);
+}));
+</script>
+</body>
+</html>
