@@ -76,3 +76,37 @@ def test_a_domain_error_increments_its_code(client):
     client.post("/v1/memory/recall", json={"scope": "user", "query": "x"})
 
     assert _sample("memory_errors_total", code="UNAUTHORIZED") == before + 1
+
+
+def test_an_mcp_request_gets_its_own_route_label_not_unmatched(client):
+    """The /mcp mount is a plain starlette.routing.Mount, which never sets
+    scope["route"] (only FastAPI's APIRoute does) -- without the mount-prefix
+    fallback in _route_label, every real MCP call would collapse into
+    "unmatched" next to genuine 404 probing, and MCP is the surface where all
+    fifteen tools are the same POST /mcp."""
+    before = _sample("memory_http_requests_total", route="/mcp", method="POST", status="200")
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "0"},
+        },
+    }
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "Host": "127.0.0.1",
+    }
+    # The MCP session manager's task group only exists once the app's
+    # lifespan has run -- entering the client as a context manager triggers
+    # startup, same as test_the_mcp_endpoint_answers_the_host_it_is_configured_for.
+    with client as c:
+        response = c.post("/mcp/", json=body, headers=headers)
+
+    assert response.status_code == 200
+    after = _sample("memory_http_requests_total", route="/mcp", method="POST", status="200")
+    assert after == before + 1

@@ -11,6 +11,24 @@ and mutating it is what survives both boundaries.
 
 from memory import metrics
 
+# ponytail: our own mount prefixes, not caller input -- still a closed set.
+# Plain `starlette.routing.Mount` (used for the /mcp sub-app) never sets
+# scope["route"]; that's only set by FastAPI's APIRoute. Without this
+# fallback every real MCP call -- all fifteen tools are POST /mcp -- would
+# collapse into "unmatched" next to genuine 404 probing.
+_MOUNT_PREFIXES = ("/mcp",)
+
+
+def _route_label(scope) -> str:
+    route = scope.get("route")
+    if route is not None:
+        return route.path
+    path = scope.get("path", "")
+    for prefix in _MOUNT_PREFIXES:
+        if path == prefix or path.startswith(prefix + "/"):
+            return prefix
+    return "unmatched"
+
 
 class ObservabilityMiddleware:
     def __init__(self, app) -> None:
@@ -34,12 +52,13 @@ class ObservabilityMiddleware:
         try:
             await self.app(scope, receive, _send)
         finally:
-            # Set by Starlette's router once a path matches. "unmatched" for
-            # everything else: without the fallback, every 404 on an invented
-            # URL would be its own label value.
-            route = scope.get("route")
+            # scope["route"] is set by Starlette's router once a path
+            # matches -- but only FastAPI's APIRoute does that; a plain
+            # Mount (the /mcp sub-app) never does. "unmatched" is the final
+            # fallback for everything else: without it, every 404 on an
+            # invented URL would be its own label value.
             metrics.HTTP.labels(
-                route=getattr(route, "path", "unmatched"),
+                route=_route_label(scope),
                 method=scope.get("method", "-"),
                 status=str(status),
             ).inc()
