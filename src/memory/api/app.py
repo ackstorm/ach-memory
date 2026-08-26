@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.orm import Session
 
@@ -164,6 +164,21 @@ def create_app() -> FastAPI:
     app.include_router(admin_routes.router)
     app.include_router(directive_routes.router)
     app.include_router(mental_model_routes.router)
+
+    if get_settings().metrics_enabled:
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        # Imported for the module-level side effect: constructing CALLS,
+        # CALL_DURATION etc. registers them with the default REGISTRY that
+        # generate_latest() reads below. No request handler records to them
+        # yet -- that starts in a later task -- so without this import the
+        # scrape would show only the prometheus_client process defaults.
+        from memory import metrics as _metrics  # noqa: F401
+
+        @app.get("/metrics", include_in_schema=False)
+        def metrics() -> Response:
+            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
     # DNS-rebinding protection is on by default in the SDK and allows only
     # 127.0.0.1, so a deployed service behind an ingress would answer 421 to
     # every MCP call. Configured rather than disabled: the check is worth

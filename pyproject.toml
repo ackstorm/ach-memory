@@ -34,6 +34,11 @@ dependencies = [
     # "Algorithm 'EdDSA' could not be found" at the first request, not at
     # import, so a missing extra ships as a runtime auth outage.
     "pyjwt[crypto]>=2.10",
+    # Exposition format and histogram bucketing for GET /metrics. Production
+    # code (src/memory/metrics.py), so it belongs here and not in the dev
+    # group -- the same mistake `mcp` and `mcp-types` each shipped once,
+    # which crash-looped the image because `uv export --no-dev` dropped them.
+    "prometheus-client>=0.21",
 ]
 
 [project.scripts]

@@ -110,6 +110,17 @@ class Settings(BaseSettings):
     # bypassed with no error and no log -- a silently disabled quota.
     write_window_seconds: float = Field(default=60.0, gt=0)
 
+    # Observability. Metrics carry no identities, no project names and no
+    # content -- only counts by action, scope, surface, outcome and error
+    # code -- so the endpoint is unauthenticated, which is what a Prometheus
+    # scrape config expects. The flag exists so a deployment can withdraw it
+    # without a code change.
+    metrics_enabled: bool = True
+    admin_ui_enabled: bool = True
+    # Activity rows are operational telemetry, not the audit trail: they age
+    # out. 0 disables pruning entirely.
+    activity_retention_days: int = Field(default=30, ge=0)
+
     @field_validator("master_key_hash")
     @classmethod
     def _normalize_hash(cls, value: str) -> str:

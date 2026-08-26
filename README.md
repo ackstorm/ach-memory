@@ -218,6 +218,9 @@ credential.
 | `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS` | `180` |
 | `MEMORY_WRITE_LIMIT` | `60` |
 | `MEMORY_WRITE_WINDOW_SECONDS` | `60` |
+| `MEMORY_METRICS_ENABLED` | `true` |
+| `MEMORY_ADMIN_UI_ENABLED` | `true` |
+| `MEMORY_ACTIVITY_RETENTION_DAYS` | `30` |
 | `MEMORY_AUTH_JWT_ENABLED` | `false` |
 | `MEMORY_AUTH_JWT_ISSUER` | empty (required when JWT is enabled) |
 | `MEMORY_AUTH_JWT_JWKS_URI` | empty (derived from the issuer) |
