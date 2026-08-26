@@ -1,10 +1,12 @@
 import logging
+import time
 import uuid
 from functools import lru_cache
 from typing import Any
 
 import httpx
 
+from memory import metrics
 from memory.config import get_settings
 from memory.errors import (
     DirectiveNotFound,
@@ -124,15 +126,24 @@ class HindsightClient:
         timeout: httpx.Timeout | None = None,
     ) -> dict:
         response = None
+        started = time.monotonic()
+        # "error" until proven otherwise: a transport failure never yields a
+        # status code, and it is the case an operator most needs to see.
+        upstream_status = "error"
         try:
             response = self._http.request(
                 method, path, json=payload, params=params,
                 timeout=timeout or self._default_timeout,
             )
+            upstream_status = str(response.status_code)
         except httpx.HTTPError as exc:
             # Logged here and never attached to the raised error: the httpx
             # exception holds .request.url, which contains the bank ID.
             logger.warning("hindsight transport failure: %s", type(exc).__name__)
+        finally:
+            metrics.HINDSIGHT.labels(method=method, status=upstream_status).observe(
+                time.monotonic() - started
+            )
 
         if response is None:
             # Raised OUTSIDE the except block on purpose. Inside it, Python sets

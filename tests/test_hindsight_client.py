@@ -761,3 +761,46 @@ def test_an_upstream_auth_failure_does_not_report_its_status(configured_env):
             get_client().retain("user_x", "c")
 
     assert "401" not in str(excinfo.value.details), excinfo.value.details
+
+
+@respx.mock
+def test_upstream_calls_are_timed(client):
+    """`method` and `status` only. The path carries the bank id and must
+    never become a label."""
+    from prometheus_client import REGISTRY
+
+    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories").mock(
+        return_value=httpx.Response(200, json={"success": True, "operation_id": "op-1"})
+    )
+    before = REGISTRY.get_sample_value(
+        "memory_hindsight_request_seconds_count", {"method": "POST", "status": "200"}
+    ) or 0.0
+
+    client.retain(BANK, "hello")
+
+    after = REGISTRY.get_sample_value(
+        "memory_hindsight_request_seconds_count", {"method": "POST", "status": "200"}
+    )
+    assert after == before + 1
+
+
+@respx.mock
+def test_transport_failure_is_timed_as_error(client):
+    """A transport failure never yields a status code -- it is recorded as
+    status="error", and the original DomainError still propagates unchanged."""
+    from prometheus_client import REGISTRY
+
+    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories").mock(
+        side_effect=httpx.ConnectError("boom")
+    )
+    before = REGISTRY.get_sample_value(
+        "memory_hindsight_request_seconds_count", {"method": "POST", "status": "error"}
+    ) or 0.0
+
+    with pytest.raises(HindsightError):
+        client.retain(BANK, "hello")
+
+    after = REGISTRY.get_sample_value(
+        "memory_hindsight_request_seconds_count", {"method": "POST", "status": "error"}
+    )
+    assert after == before + 1
