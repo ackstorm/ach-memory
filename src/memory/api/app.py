@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 # register with the default REGISTRY and instrumentation runs regardless of
 # whether the /metrics scrape endpoint is exposed; metrics_enabled only
 # controls the endpoint below.
-from memory import metrics
+from memory import activity, metrics
 from memory.api.observability import ObservabilityMiddleware
 from memory.auth.principal import Principal, resolve_principal
 from memory.config import get_settings
@@ -128,6 +128,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(DomainError)
     def _domain_error(_: Request, exc: DomainError) -> JSONResponse:
         metrics.ERRORS.labels(code=exc.code).inc()
+        activity.set_error(exc.code)
         return JSONResponse(
             status_code=exc.status,
             content={
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
         nothing. Passing `exc` explicitly bypasses `sys.exc_info()` entirely.
         """
         metrics.ERRORS.labels(code="INTERNAL_ERROR").inc()
+        activity.set_error("INTERNAL_ERROR")
         logger.error("unhandled error", exc_info=exc)
         return JSONResponse(
             status_code=500,

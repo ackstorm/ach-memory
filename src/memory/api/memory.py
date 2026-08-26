@@ -12,7 +12,7 @@ from pydantic import (
 )
 from sqlalchemy.orm import Session
 
-from memory import audit, provenance, ratelimit
+from memory import activity, audit, provenance, ratelimit
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.common import RenameForwarding
 from memory.auth.principal import Principal
@@ -172,6 +172,45 @@ def _check_content_size(content: str) -> None:
         raise ContentTooLarge(f"content exceeds {limit} bytes")
 
 
+def _describe(
+    action: str,
+    scope: str,
+    principal: Principal,
+    bank_id: str,
+    *,
+    body: ScopedRequest,
+    user_id: str | None = None,
+    project_slug: str | None = None,
+) -> None:
+    """Fill in the activity record for this call (memory/activity.py).
+
+    Here, not at each route, for exactly the reason the rate-limit check
+    lives here: every REST handler and every MCP tool already funnels
+    through `_resolve_bank`, so one call site covers both surfaces and
+    neither can drift.
+
+    `getattr` rather than isinstance: only RetainRequest carries content,
+    document_id and metadata, and a type check would have to be repeated for
+    every future subclass that adds one.
+    """
+    content = getattr(body, "content", None)
+    metadata = getattr(body, "metadata", None) or {}
+    activity.describe(
+        action=action,
+        scope=scope,
+        tenant_id=principal.tenant_id,
+        credential_id=principal.credential_id,
+        user_id=user_id,
+        # The RESOLVED slug, never body.project_slug: a caller that followed
+        # a rename tombstone would otherwise show up as a second project.
+        project_slug=project_slug,
+        bank_fingerprint=activity.fingerprint(bank_id),
+        document_id=getattr(body, "document_id", None),
+        content_bytes=len(content.encode("utf-8")) if content else None,
+        agent=metadata.get("agent"),
+    )
+
+
 def _resolve_bank(
     body: ScopedRequest,
     db: Session,
@@ -225,6 +264,10 @@ def _resolve_bank(
             # not the caller's own — so it is the one that must not be
             # traceless.
             audit.record(db, principal, action, body.user_id, on_behalf_of=on_behalf_of)
+        _describe(
+            action, "user", principal, bank_id,
+            user_id=body.user_id or principal.user_id, body=body,
+        )
         return bank_id, None, None
 
     bank_id, resolved_from, project_slug = resolve_project_bank(
@@ -236,6 +279,7 @@ def _resolve_bank(
         # usually the larger blast radius (a team's shared memory, not one
         # person's). Same choke point, so no data-plane route can bypass it.
         audit.record(db, principal, action, project_slug, on_behalf_of=on_behalf_of)
+    _describe(action, "project", principal, bank_id, project_slug=project_slug, body=body)
     return bank_id, resolved_from, project_slug
 
 

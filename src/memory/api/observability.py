@@ -9,7 +9,7 @@ threadpool -- in both cases the child gets a COPY of the context, so a
 and mutating it is what survives both boundaries.
 """
 
-from memory import metrics
+from memory import activity, metrics
 
 # ponytail: our own mount prefixes, not caller input -- still a closed set.
 # Plain `starlette.routing.Mount` (used for the /mcp sub-app) never sets
@@ -49,9 +49,11 @@ class ObservabilityMiddleware:
                 status = message["status"]
             await send(message)
 
+        activity.new_call()
         try:
             await self.app(scope, receive, _send)
         finally:
+            activity.finish("rest")
             # scope["route"] is set by Starlette's router once a path
             # matches -- but only FastAPI's APIRoute does that; a plain
             # Mount (the /mcp sub-app) never does. "unmatched" is the final
