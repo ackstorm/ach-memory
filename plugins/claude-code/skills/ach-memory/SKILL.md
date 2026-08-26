@@ -5,7 +5,7 @@ description: Durable user and project context that outlives the session. Read at
 
 Memory survives sessions and compaction. Its value is the decision that never reached a file.
 
-ach-memory is the system of record for that context: use it instead of the host's own file-based memory directory and MEMORY.md, and prefer it over grepping files or transcripts. Never store secrets.
+ach-memory is the system of record for that context: use it instead of the host's own file-based memory directory and MEMORY.md, and prefer it over grepping files or transcripts. Anything worth remembering goes through `retain`, never into that directory or index, which ach-memory cannot see. Never store secrets.
 
 ## Tools
 

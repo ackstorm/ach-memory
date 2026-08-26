@@ -18,12 +18,14 @@ ROOT = Path(__file__).parents[1]
 NATIVE = ("claude-code", "codex")
 ADAPTED = ("opencode", "pi")
 ACTIVATION = (
-    "ach-memory holds durable user and project context across sessions and is the system of record f"
-    "or prior decisions -- use it instead of the file-based memory directory and MEMORY.md, and pref"
-    "er it over grepping files or transcripts. Load the ach-memory skill before your first memory ca"
-    "ll. Recall before work that depends on such context. Retain it once established, including deci"
-    "sions made only in conversation, and again before a session ends. Never store secrets. A memory"
-    " call needs a task that depends on it, not merely a session starting."
+    "ach-memory holds durable user and project context across sessions and is the system of record "
+    "for prior decisions -- use it instead of the file-based memory directory and MEMORY.md, and "
+    "prefer it over grepping files or transcripts. Anything worth remembering goes through `retain`,"
+    " never into that directory or index, which ach-memory cannot see. Load the ach-memory skill "
+    "before your first memory call. Recall before work that depends on such context. Retain it once "
+    "established, including decisions made only in conversation, and again before a session ends. "
+    "Never store secrets. A memory call needs a task that depends on it, not merely a session "
+    "starting."
 )
 SECRETS = re.compile(r"AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|mem_[A-Za-z0-9]{20,}")
 
@@ -342,10 +344,23 @@ def test_activation_displaces_the_hosts_own_memory_store(host: str) -> None:
     wrote it to that directory instead, never calling an ach-memory tool. The
     text said only "prefer it over grepping files or transcripts" -- the agent
     did not grep, so nothing in it applied.
+
+    Measured again 2026-08-26 with the naming clause in place, this time in a
+    long interactive session doing real work: given process feedback worth
+    keeping, the agent announced it was saving it, wrote a file under the
+    host's memory directory and added a pointer line to MEMORY.md. No
+    ach-memory call. Naming the competitor was not enough because every clause
+    was still about reading -- "system of record", "use it instead of",
+    "prefer it over grepping" -- while the host's own instruction owns the
+    write moment with a procedure attached. So the write side gets its own
+    sentence, naming the trigger, the tool, and what happens if it goes to the
+    file store instead.
     """
     text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
     assert "memory.md" in text, "activation must name the host store it replaces"
     assert "instead of" in text
+    assert "worth remembering" in text, "activation must name the write moment, not just the read"
+    assert "`retain`" in text, "the write moment must name the tool that replaces the file write"
 
 
 @pytest.mark.parametrize("host", NATIVE + ADAPTED)
@@ -369,6 +384,8 @@ def test_the_skill_carries_the_policy_for_hosts_whose_hooks_never_run(host: str)
     text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
     assert "instead of the host's own file-based memory directory and memory.md" in text
     assert "read at the start of any conversation" in text
+    assert "worth remembering" in text, "the skill copy must carry the write moment too"
+    assert "`retain`" in text
 
 
 @pytest.mark.parametrize("host", NATIVE + ADAPTED)
