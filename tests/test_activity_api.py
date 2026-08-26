@@ -173,3 +173,29 @@ def test_summary_rolls_up_per_bank(client, master_headers, seeded_activity, sess
     # if the SQL bucket and the Python-side `slots` disagree on where an hour
     # starts (see activity.py's `bucket` comment).
     assert row["hours"][-1] >= 1
+
+
+def test_an_unhandled_500_is_recorded_as_an_error(client, session, user_key, tenant, monkeypatch):
+    """Starlette puts ServerErrorMiddleware -- which owns the catch-all
+    `@app.exception_handler(Exception)` -- OUTSIDE user middleware, so that
+    handler runs AFTER ObservabilityMiddleware's `finally`. Its set_error()
+    therefore landed on a record already written and cleared, and every
+    unhandled 500 was recorded as outcome="ok" with a NULL error_code: the one
+    outcome an operator most needs to see, reported as success."""
+    from memory.api import memory as memory_routes
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("something internal broke")
+
+    monkeypatch.setattr(memory_routes.provenance, "build", _boom)
+    _mock_hindsight()
+
+    response = client.post(
+        "/v1/memory/retain",
+        json={"scope": "user", "content": "hello"},
+        headers=_headers(user_key[1]),
+    )
+
+    assert response.status_code == 500
+    row = session.query(ActivityEvent).one()
+    assert (row.outcome, row.error_code) == ("error", "INTERNAL_ERROR")

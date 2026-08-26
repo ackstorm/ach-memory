@@ -52,6 +52,23 @@ class ObservabilityMiddleware:
         activity.new_call()
         try:
             await self.app(scope, receive, _send)
+        except Exception:
+            # Starlette puts ServerErrorMiddleware -- which owns app.py's
+            # `@app.exception_handler(Exception)` catch-all -- OUTSIDE user
+            # middleware, so that handler runs AFTER the `finally` below.
+            # Its `activity.set_error("INTERNAL_ERROR")` therefore lands on a
+            # record that has already been written and cleared, and every
+            # unhandled 500 was recorded as outcome="ok" with a NULL
+            # error_code -- the one outcome an operator most needs to see,
+            # reported as success. Measured: "middleware-finally" fires
+            # before "exception-handler".
+            #
+            # DomainErrors are unaffected: ExceptionMiddleware sits INSIDE
+            # user middleware, so `_domain_error` still mutates this record
+            # before we finish it. The counter stays in the handler so this
+            # branch cannot double-count it.
+            activity.set_error("INTERNAL_ERROR")
+            raise
         finally:
             activity.finish("rest")
             # scope["route"] is set by Starlette's router once a path
