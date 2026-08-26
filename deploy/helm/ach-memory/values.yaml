@@ -38,6 +38,19 @@ config:
   writeLimit: 60
   writeWindowSeconds: 60
 
+  # MEMORY_METRICS_ENABLED / MEMORY_ADMIN_UI_ENABLED / MEMORY_ACTIVITY_RETENTION_DAYS.
+  # Both routes ride the SAME ingress as the API: if ingress.enabled is true
+  # and the host is public, so are /metrics and /admin/ui. /metrics carries
+  # counts only -- no identities, no project names, no content, no bank ids --
+  # and /admin/ui is inert without the master key, but decide that deliberately
+  # rather than by default. Prometheus scrapes pod IPs, so turning metrics off
+  # here does not "hide" them from a scrape, it removes the endpoint.
+  metricsEnabled: true
+  adminUiEnabled: true
+  # Activity rows are telemetry and age out; 0 keeps them forever. They hold no
+  # memory content, so this is a volume knob, not a retention-of-content one.
+  activityRetentionDays: 30
+
   # MEMORY_HINDSIGHT_TIMEOUT_SECONDS / MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS.
   # The LLM one covers `sync_retain` and `reflect`, which block on the model
   # Hindsight is configured with -- the deployment-specific knob. Too low and

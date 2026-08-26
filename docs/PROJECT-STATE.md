@@ -113,6 +113,58 @@ row changing — while `is_master` stays a constant on every external path, so n
 claim can mint tenant-wide authority. Rate limiting and audit account against a
 `credential_id` (`key_...`, `ext_<hash>`, or NULL for the master key).
 
+## Observability (2026-08-26)
+
+The service used to record nothing for ordinary traffic: `audit.record()` fires
+only for master-key delegation and identity mutations, so a user key retaining
+over MCP all day left no trace. An operator could not distinguish a busy fleet
+from a dead one. Three surfaces now answer that -- `GET /metrics`,
+`GET /v1/admin/activity[/summary]`, and a static console at `GET /admin/ui`.
+See `docs/superpowers/specs/2026-08-26-observability-design.md` for the design
+and the approved dashboard mockup next to it.
+
+What is worth knowing before touching any of it:
+
+**Two hooks, not twenty.** The edge (`ObservabilityMiddleware`, and `_run` in
+`mcp/tools.py`) puts a per-call record in a ContextVar; `_resolve_bank` fills
+it in; the edge writes one row at the end. That works because `_resolve_bank`
+is already the single choke point both surfaces funnel through.
+
+**The record is a mutable dict and is MUTATED, never rebound.** Sync FastAPI
+routes run in Starlette's threadpool and MCP tools in AnyIO's worker pool, so
+both get a *copy* of the context: a `ContextVar.set()` performed inside a route
+is invisible back at the edge. Rebind it and the table stays empty while every
+unit test still passes. `tests/test_activity.py` has a `copy_context()` test
+that fails on exactly that regression -- it exists because nothing else catches
+it.
+
+**One INSERT, written after the outcome is known**, never insert-then-update:
+a row can never claim a retain succeeded when Hindsight answered 502.
+`activity.finish()` must never raise -- it runs in a `finally` on every served
+request -- which is why it guards on both `action` and `scope` before touching
+the record and wraps everything else.
+
+**No content column, ever.** A copy of memory content here would survive
+`DELETE /v1/admin/memory/{scope}` and silently stop SPEC §12.3's only complete
+erasure path from being complete. `content_bytes` and `document_id` only; the
+content is read live from Hindsight by whoever is authorized.
+
+**`bank_fingerprint` is `sha256(bank_id)[:12]`.** The bank id may not leave the
+service (inv. 29) and `tests/test_leakscan.py` now gates the two new read
+surfaces plus `/metrics`.
+
+**Prometheus labels come from closed sets only.** No `user_id`, no
+`project_slug` -- per-identity detail is the table's job. `route` is the
+FastAPI route *template*; a Starlette `Mount` never sets `scope["route"]`, so
+`/mcp` needs the explicit prefix fallback in `api/observability.py` or all MCP
+traffic collapses into `route="unmatched"`.
+
+**`date_trunc` takes an explicit `"UTC"` third argument** in the summary query.
+Without it the SQL buckets by the Postgres session timezone while the Python
+slots are UTC, and every bank's 24-hour histogram comes back all zeros with no
+error anywhere. `tests/test_activity_api.py` sets `SET LOCAL TIME ZONE
+'Asia/Kolkata'` so a regression fails instead of going quiet.
+
 ## Traps that cost real time
 
 Each of these looked healthy right up until it didn't.

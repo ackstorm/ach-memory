@@ -61,6 +61,12 @@ spec:
               value: {{ .Values.config.writeLimit | quote }}
             - name: MEMORY_WRITE_WINDOW_SECONDS
               value: {{ .Values.config.writeWindowSeconds | quote }}
+            - name: MEMORY_METRICS_ENABLED
+              value: {{ .Values.config.metricsEnabled | quote }}
+            - name: MEMORY_ADMIN_UI_ENABLED
+              value: {{ .Values.config.adminUiEnabled | quote }}
+            - name: MEMORY_ACTIVITY_RETENTION_DAYS
+              value: {{ .Values.config.activityRetentionDays | quote }}
             {{- $hosts := .Values.config.mcpAllowedHosts }}
             {{- if and (not $hosts) .Values.ingress.enabled .Values.ingress.host }}
             {{- $hosts = list .Values.ingress.host }}

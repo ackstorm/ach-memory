@@ -45,3 +45,22 @@ def test_the_exposed_ids_are_not_flagged():
     successful provisioning response a false positive."""
     for exposed in ("usr_00c0f7", "grp_deadbeef", "key_cafebabe"):
         assert leakscan.find(f'{{"id": "{exposed}"}}') is None
+
+
+def test_a_bank_fingerprint_is_not_a_bank_id():
+    """sha256(bank_id)[:12] is what the activity trail stores in place of the
+    bank id (SPEC inv. 29). It must not itself match the scanner -- if it did,
+    every activity response would be a false positive and the gate would be
+    switched off in frustration rather than fixed."""
+    from memory.activity import fingerprint
+
+    assert leakscan.find(fingerprint(BANK)) is None
+    assert leakscan.find(fingerprint(USER_BANK)) is None
+
+
+def test_the_activity_read_surfaces_leak_no_bank_id(client, master_headers, seeded_activity):
+    """The two routes that expose per-call telemetry, held to the same gate as
+    every other response in this service. /metrics is checked too: it is
+    unauthenticated, so anything that reached its labels would be public."""
+    for path in ("/metrics", "/v1/admin/activity", "/v1/admin/activity/summary"):
+        assert leakscan.find(client.get(path, headers=master_headers).text) is None

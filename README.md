@@ -141,6 +141,43 @@ native/non-browser MCP clients only.
 - The write limiter is in-process and per replica. It defaults to 60 writes per
   60 seconds per credential; replicas multiply the effective limit.
 
+## Seeing what is happening
+
+Three surfaces, because "how much" and "who, where, what" are different
+questions and neither store answers the other.
+
+`GET /metrics` — Prometheus exposition, unauthenticated. Counts by action,
+scope, surface and outcome, error codes by SPEC §18 code, upstream Hindsight
+latency, and request counts by route template. Deliberately aggregate: no
+identities, no project names, no content, no bank ids, and never a `user_id`
+or `project_slug` label — an unbounded label value kills the Prometheus that
+scrapes it, not this service. Disable with `MEMORY_METRICS_ENABLED=false`.
+
+`GET /v1/admin/activity` and `GET /v1/admin/activity/summary` — master key
+only, tenant-filtered. One record per data-plane call: which credential, which
+action, which bank (as `scope` + `user_id`/`project_slug`, plus a
+non-reversible `bank_fingerprint`), how many bytes, how long it took, and
+whether it actually landed. The summary rolls this up per bank with 24 hourly
+buckets, which is how you see that an agent went quiet.
+
+Rows carry no memory content, ever — a copy here would survive
+`DELETE /v1/admin/memory/{scope}` and quietly stop that from being a complete
+erasure. To read what was actually written, read the bank itself through
+`POST /v1/memory/list`; that path is authorized and audited. Rows age out
+after `MEMORY_ACTIVITY_RETENTION_DAYS` (default 30).
+
+Authentication failures are counted in `memory_errors_total`, not recorded as
+rows — on a public ingress a row per rejected credential is an unbounded
+insert. A wedged agent still reads clearly: a silent fleet row plus a 401 spike.
+
+`GET /admin/ui` — a single static page over those two routes, plus a tab that
+reads a bank live. No build step, no CDN, no third-party JavaScript: it holds
+the master key for the tab only (`sessionStorage`, never `localStorage`).
+Disable with `MEMORY_ADMIN_UI_ENABLED=false`.
+
+Both `/metrics` and `/admin/ui` sit behind the same ingress as everything else.
+If that ingress is public, so are they.
+
 ## Authentication
 
 Three ways in, tried in a fixed order and fail-closed: whichever provider the
