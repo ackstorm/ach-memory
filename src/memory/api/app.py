@@ -8,6 +8,11 @@ from fastapi.responses import JSONResponse, Response
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.orm import Session
 
+# Imported unconditionally (not gated on metrics_enabled) so the collectors
+# register with the default REGISTRY and instrumentation runs regardless of
+# whether the /metrics scrape endpoint is exposed; metrics_enabled only
+# controls the endpoint below.
+from memory import metrics  # noqa: F401
 from memory.auth.principal import Principal, resolve_principal
 from memory.config import get_settings
 from memory.db import get_session
@@ -167,13 +172,6 @@ def create_app() -> FastAPI:
 
     if get_settings().metrics_enabled:
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-
-        # Imported for the module-level side effect: constructing CALLS,
-        # CALL_DURATION etc. registers them with the default REGISTRY that
-        # generate_latest() reads below. No request handler records to them
-        # yet -- that starts in a later task -- so without this import the
-        # scrape would show only the prometheus_client process defaults.
-        from memory import metrics as _metrics  # noqa: F401
 
         @app.get("/metrics", include_in_schema=False)
         def metrics() -> Response:
