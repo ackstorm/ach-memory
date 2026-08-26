@@ -265,3 +265,28 @@ def test_the_same_subject_from_two_issuers_stays_two_identities(session, tenant)
             )
         )
     session.flush()  # no constraint violation
+
+
+def test_activity_event_stamps_created_at_from_the_database(session, tenant):
+    """server_default only, no Python-side default -- the same reasoning
+    AuditEvent.created_at records: one clock, the database's, or ordering
+    across replicas means nothing."""
+    from memory import ids
+    from memory.models import ActivityEvent
+
+    row = ActivityEvent(
+        id=ids.new_activity_id(),
+        tenant_id="default",
+        action="memory.retain",
+        surface="mcp",
+        scope="user",
+        user_id="usr_1",
+        bank_fingerprint="a" * 12,
+        outcome="ok",
+        duration_ms=12,
+    )
+    session.add(row)
+    session.flush()
+
+    assert row.created_at is not None
+    assert row.id.startswith("act_")
