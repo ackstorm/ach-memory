@@ -710,7 +710,10 @@ def test_main_all_installs_what_is_present_and_names_what_it_skipped(
     captured = capsys.readouterr()
     skips = [line for line in captured.out.splitlines() if "skipped, not on PATH" in line]
     assert sorted(line.split()[1] for line in skips) == ["codex", "opencode"]
-    assert captured.err == ""
+    # Progress narration is the only thing allowed on stderr on success --
+    # anything else there is an error message that belongs beside a nonzero
+    # exit, and the skips above must stay on stdout, not be shouted here.
+    assert all(line.startswith("  …") for line in captured.err.splitlines())
 
 
 def test_main_all_fails_when_no_supported_agent_is_present(
