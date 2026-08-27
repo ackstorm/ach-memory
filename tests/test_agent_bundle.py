@@ -44,16 +44,15 @@ def _script(host: str, name: str) -> subprocess.CompletedProcess[str]:
 def test_claude_mcp_config_is_static_and_takes_both_values_from_the_environment() -> None:
     """The one test that protects the architecture.
 
-    A literal URL means someone reintroduced per-install rendering; a literal
-    credential means the bundle stopped being safe to commit. Neither may
-    appear, and the URL carries a localhost default so a fresh checkout works
-    against docker compose with nothing exported.
+    Claude spawns the stdio proxy (`uvx ach-memory mcp`), which reads
+    ACH_MEMORY_URL and ACH_MEMORY_API_KEY from its own environment on every
+    launch, so no endpoint or credential is written into the committed
+    config at all -- a literal one of either would mean someone reintroduced
+    per-install rendering or made the bundle unsafe to commit.
     """
     server = _json(ROOT / "plugins" / "claude-code" / ".mcp.json")["mcpServers"]["ach-memory"]
 
-    assert server["type"] == "http"
-    assert server["url"] == "${ACH_MEMORY_URL:-http://localhost:8000}/mcp/"
-    assert server["headers"] == {"Authorization": "Bearer ${ACH_MEMORY_API_KEY}"}
+    assert server == {"type": "stdio", "command": "uvx", "args": ["ach-memory", "mcp"]}
 
 
 def test_codex_plugin_ships_no_mcp_config_because_it_cannot_express_one() -> None:
@@ -68,8 +67,9 @@ def test_codex_plugin_ships_no_mcp_config_because_it_cannot_express_one() -> Non
       and env_http_headers empty, so calls would go out unauthenticated.
 
     A hardcoded localhost URL would start cleanly and point every remote user
-    at nothing, which is worse than shipping no config at all. README documents
-    the one-line `codex mcp add ... --bearer-token-env-var` instead.
+    at nothing, which is worse than shipping no config at all. `ach-memory
+    init codex` registers the stdio proxy instead, via `codex mcp add ... --
+    uvx ach-memory mcp`.
     """
     plugin = _json(ROOT / "plugins" / "codex" / ".codex-plugin" / "plugin.json")
 
