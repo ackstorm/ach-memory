@@ -23,13 +23,30 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server import create_proxy
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
+from memory.errors import ProjectInvalidSlug
+from memory.slugs import slug_from_locator
+
 
 def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | None]:
     """SPEC §8 order: MEMORY_PROJECT, else the repo's origin URL, else nothing.
 
-    Returns (project_slug, git_locator); at most one is set. The raw origin
-    URL is sent as git_locator -- canonicalization and the digest suffix are
-    the server's job (projects.resolve), same as for any other caller.
+    Returns (project_slug, git_locator). Deriving the slug from the remote is
+    the CLIENT's job (§8.2, §10) and this process is the client the spec
+    always meant: `slug_from_locator` shipped as a tested reference
+    implementation with no caller, because until v0.3.1 this repository had
+    no client to call it.
+
+    Sending the bare locator instead does not work and cannot be made to
+    work here: `resolve_project_bank` raises PROJECT_CONTEXT_UNAVAILABLE for
+    any call without a slug whatever locator it carries, and that is correct
+    -- a locator is metadata that never resolves identity (inv. 11) and is
+    deliberately not unique (§17), so two projects may legitimately share
+    one. Measured against production 2026-08-27:
+    list_memories(scope="project", git_locator=<origin>) is still
+    PROJECT_CONTEXT_UNAVAILABLE, by REST and through this proxy alike.
+
+    The locator travels alongside the derived slug so the server binds it to
+    the project on first touch and refuses a mismatch afterwards (§8.3/§8.4).
     """
     slug = os.environ.get("MEMORY_PROJECT")
     if slug:
@@ -49,7 +66,15 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
     locator = result.stdout.strip()
     if result.returncode != 0 or not locator:
         return None, None
-    return None, locator
+    try:
+        return slug_from_locator(locator), locator
+    except ProjectInvalidSlug:
+        # A remote that names no host and path -- a local clone, a bare path,
+        # a bundle file. It identifies no project, and raising here would take
+        # the whole session down at startup over a repository the agent may
+        # never ask about. Same outcome as no repo at all: the server's error
+        # tells the model what to pass.
+        return None, None
 
 
 def fill_project_arguments(
@@ -71,7 +96,10 @@ def fill_project_arguments(
         return
     if slug:
         arguments["project_slug"] = slug
-    elif locator:
+    if locator:
+        # Sent with the slug, never instead of it: the server stores it on
+        # first touch and compares it afterwards, so the project ends up bound
+        # to the repository it was derived from.
         arguments["git_locator"] = locator
 
 
