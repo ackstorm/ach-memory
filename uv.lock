@@ -38,7 +38,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "fastmcp", specifier = ">=3.4" },
+    { name = "fastmcp", specifier = ">=4.0.0b4,<4.1" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "mcp-types", specifier = ">=2.0.0" },
