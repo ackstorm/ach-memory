@@ -213,7 +213,30 @@ def _config_root(target: str) -> Path:
     raise CLIError(f"config installation is not available for {target}")
 
 
-def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]]:
+def _proxy_command(mode: str) -> list[str]:
+    """The spawn line hosts use for the stdio proxy.
+
+    "local" resolves this environment's own console script to an absolute
+    path, so a host launches the code sitting in this checkout instead of
+    whatever uvx last pulled from PyPI -- the only way to try an unreleased
+    proxy end to end. Resolved at init time on purpose: the written config
+    then works from any cwd, and a broken PATH fails here, loudly, not at
+    the host's first tool call.
+    """
+    if mode == "local":
+        script = shutil.which("ach-memory")
+        if not script:
+            raise CLIError(
+                "--local needs the ach-memory script on PATH "
+                "(run it as `uv run ach-memory init ... --local`)"
+            )
+        return [str(Path(script).resolve()), "mcp"]
+    return ["uvx", "ach-memory", "mcp"]
+
+
+def _config_plan(
+    target: str, url: str, mode: str = "stdio"
+) -> tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]]:
     root = _config_root(target)
     config_path = root / ("opencode.json" if target == "opencode" else "mcp.json")
     config = _read_json_object(config_path)
@@ -224,18 +247,40 @@ def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[
 
     server: dict[str, object]
     if target == "opencode":
-        server = {
-            "type": "local",
-            "command": ["uvx", "ach-memory", "mcp"],
-            "enabled": True,
-        }
+        if mode == "http":
+            # Direct remote entry, kept as an opt-in escape hatch: same
+            # endpoint the stdio proxy forwards to, minus the client-side
+            # project auto-resolution the proxy adds.
+            server = {
+                "type": "remote",
+                "url": url,
+                "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
+            }
+        else:
+            server = {
+                "type": "local",
+                "command": _proxy_command(mode),
+                "enabled": True,
+            }
         paths = (
             ("opencode.js", "plugins/ach-memory.js"),
             ("activation.txt", "plugins/ach-memory/activation.txt"),
             ("skills/ach-memory/SKILL.md", "skills/ach-memory/SKILL.md"),
         )
     else:
-        server = {"command": "uvx", "args": ["ach-memory", "mcp"]}
+        if mode == "http":
+            # pi cannot send a bearer header natively; the HTTP escape hatch
+            # keeps the pi-mcp-adapter bridge it always needed for remote.
+            server = {
+                "url": url,
+                "auth": "bearer",
+                "bearerTokenEnv": "ACH_MEMORY_API_KEY",
+                "lifecycle": "lazy",
+                "directTools": False,
+            }
+        else:
+            command = _proxy_command(mode)
+            server = {"command": command[0], "args": command[1:]}
         paths = (
             ("pi.js", "extensions/ach-memory.js"),
             ("activation.txt", "extensions/ach-memory/activation.txt"),
@@ -289,9 +334,11 @@ def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[
 
 
 def _install_opencode(
-    url: str, plan: tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]] | None = None
+    url: str,
+    plan: tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]] | None = None,
+    mode: str = "stdio",
 ) -> tuple[Path, ...]:
-    config_path, config, assets = plan or _config_plan("opencode", url)
+    config_path, config, assets = plan or _config_plan("opencode", url, mode)
     for source, destination in assets:
         _copy_file_atomic(source, destination)
     _write_json_atomic(config_path, config)
@@ -299,20 +346,26 @@ def _install_opencode(
 
 
 def _install_pi(
-    url: str, plan: tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]] | None = None
+    url: str,
+    plan: tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]] | None = None,
+    mode: str = "stdio",
 ) -> tuple[Path, ...]:
     """pi spawns our stdio proxy as a native mcp.json server -- no adapter to
     install. The `pi-mcp-adapter` package was only ever needed to bridge pi
     to a remote HTTP server; a plain `command`/`args` stdio entry is pi's own
-    format and needs nothing extra on top."""
-    config_path, config, assets = plan or _config_plan("pi", url)
+    format and needs nothing extra on top -- so the adapter install only
+    happens for the --http escape hatch, which is the one mode that still
+    talks to the remote endpoint from inside pi."""
+    config_path, config, assets = plan or _config_plan("pi", url, mode)
     for source, destination in assets:
         _copy_file_atomic(source, destination)
     _write_json_atomic(config_path, config)
+    if mode == "http":
+        _run(["pi", "install", "npm:pi-mcp-adapter"])
     return (config_path, *(destination for _source, destination in assets))
 
 
-def _register_codex_server() -> None:
+def _register_codex_server(url: str, mode: str = "stdio") -> None:
     """Register the MCP server with Codex, because its plugin cannot.
 
     Codex now spawns our stdio proxy directly (`uvx ach-memory mcp`), which
@@ -323,13 +376,26 @@ def _register_codex_server() -> None:
     left the install half done by default: plugin present, server absent,
     every tool call failing while everything looked correct.
 
+    The --http escape hatch is the exception: Codex cannot interpolate
+    ${ACH_MEMORY_URL} in a URL, so that mode writes the endpoint literally
+    (and main() requires the variable to be set, or localhost would be
+    pinned permanently while looking successful). bearer_token_env_var
+    stores the variable's NAME and Codex resolves it per call.
+
     Unconditional remove-then-add, with no read of the current state: whatever
     Codex held before, it ends up matching this command, so re-running init is
     also the update path. `codex mcp remove` exits 0 when the server is
     absent, so the remove needs no guard.
     """
     _run(["codex", "mcp", "remove", "ach-memory"])
-    _run(["codex", "mcp", "add", "ach-memory", "--", "uvx", "ach-memory", "mcp"])
+    if mode == "http":
+        _run([
+            "codex", "mcp", "add", "ach-memory",
+            "--url", url,
+            "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
+        ])
+    else:
+        _run(["codex", "mcp", "add", "ach-memory", "--", *_proxy_command(mode)])
 
 
 def _native_plan(target: str) -> tuple[dict[str, Path], set[str]]:
@@ -341,7 +407,10 @@ def _native_plan(target: str) -> tuple[dict[str, Path], set[str]]:
 
 
 def _install_native(
-    target: str, url: str, plan: tuple[dict[str, Path], set[str]] | None = None
+    target: str,
+    url: str,
+    plan: tuple[dict[str, Path], set[str]] | None = None,
+    mode: str = "stdio",
 ) -> str:
     """Register the repository as a marketplace and let the host install from it.
 
@@ -379,7 +448,15 @@ def _install_native(
         _run([target, "plugin", "install", "-y", "--scope", "user", plugin])
 
     if target == "codex":
-        _register_codex_server()
+        _register_codex_server(url, mode)
+    if target == "claude" and mode != "stdio":
+        # The claude plugin ships a committed, static .mcp.json (stdio via
+        # uvx); a flag at install time cannot rewrite it. README documents
+        # the direct-HTTP config to paste by hand.
+        return (
+            f"plugin installed from {MARKETPLACE} "
+            f"(stdio; --{mode} does not apply, see README for direct HTTP)"
+        )
     return f"plugin installed from {MARKETPLACE}"
 
 
@@ -482,6 +559,19 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument(
         "-v", "--verbose", action="store_true", help="list every file written"
     )
+    transport = init.add_mutually_exclusive_group()
+    transport.add_argument(
+        "--http",
+        action="store_true",
+        help="configure hosts against the remote HTTP endpoint directly "
+        "instead of the stdio proxy (no client-side project resolution)",
+    )
+    transport.add_argument(
+        "--local",
+        action="store_true",
+        help="stdio proxy from this checkout's ach-memory script instead of "
+        "uvx, to test unreleased code",
+    )
     commands.add_parser(
         "mcp",
         help="run the local stdio MCP proxy (forwards to $ACH_MEMORY_URL)",
@@ -520,24 +610,31 @@ def main(argv: list[str] | None = None) -> int:
         return _serve_mcp()
 
     base = os.environ.get("ACH_MEMORY_URL")
+    mode = "http" if args.http else ("local" if args.local else "stdio")
     try:
         url = _mcp_url(base or "http://localhost:8000")
         targets = _targets(args.target)
         for target in targets:
             _require_executable(target)
-        # Every host now spawns the stdio proxy, which reads ACH_MEMORY_URL
-        # per launch -- so the localhost fallback is just a warning here, the
-        # same as for every other target.
+        # The stdio proxy reads ACH_MEMORY_URL per launch, so the localhost
+        # fallback is just a warning -- except for --http codex, which writes
+        # the endpoint literally and would pin localhost permanently while
+        # looking successful.
+        if mode == "http" and "codex" in targets and base is None:
+            raise CLIError(
+                "ACH_MEMORY_URL must be set for --http codex: it stores the "
+                "endpoint literally and cannot read the variable later"
+            )
         native_plans = {target: _native_plan(target) for target in targets if target in {"codex", "claude"}}
-        config_plans = {target: _config_plan(target, url) for target in targets if target in {"opencode", "pi"}}
+        config_plans = {target: _config_plan(target, url, mode) for target in targets if target in {"opencode", "pi"}}
         asyncio.run(_preflight(url, os.environ.get("ACH_MEMORY_API_KEY", "")))
         results: list[tuple[str, str, tuple[Path, ...]]] = []
         for target in targets:
             if target in native_plans:
-                results.append((target, _install_native(target, url, native_plans[target]), ()))
+                results.append((target, _install_native(target, url, native_plans[target], mode), ()))
             else:
                 install = _install_opencode if target == "opencode" else _install_pi
-                paths = install(url, config_plans[target])
+                paths = install(url, config_plans[target], mode)
                 summary = (
                     f"{len(paths)} files \u2192 {_tilde(paths[0].parent)}" if paths else "configured"
                 )

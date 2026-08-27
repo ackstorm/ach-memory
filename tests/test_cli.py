@@ -88,14 +88,14 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None, raising=False)
     monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or "plugin installed"
+        cli, "_install_native", lambda name, _url, _plan, _mode: installed.append(name) or "plugin installed"
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli, "_install_opencode", lambda _url, _plan, _mode: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
 
     assert cli.main(["init", target]) == 0
     assert installed == ([target] if target != "all" else ["codex", "claude", "opencode", "pi"])
@@ -116,14 +116,14 @@ def test_main_all_checks_every_executable_and_preflight_before_installers(
     monkeypatch.setattr(cli, "_require_executable", lambda target: events.append(target))
     monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda target, _url, _plan: events.append(f"install:{target}") or "plugin installed"
+        cli, "_install_native", lambda target, _url, _plan, _mode: events.append(f"install:{target}") or "plugin installed"
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: events.append("install:opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli, "_install_opencode", lambda _url, _plan, _mode: events.append("install:opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: events.append("install:pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: events.append("install:pi") or (Path("/tmp/pi/mcp.json"),))
 
     assert cli.main(["init", "all"]) == 0
 
@@ -682,14 +682,14 @@ def _stub_installers(monkeypatch: pytest.MonkeyPatch, installed: list[str]) -> N
 
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or "plugin installed"
+        cli, "_install_native", lambda name, _url, _plan, _mode: installed.append(name) or "plugin installed"
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli, "_install_opencode", lambda _url, _plan, _mode: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
 
 
 def test_main_all_installs_what_is_present_and_names_what_it_skipped(
@@ -749,14 +749,14 @@ def _init_stubs(monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
     monkeypatch.setattr(cli, "_is_installed", lambda target: target in present)
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_install_native", lambda target, _url, _plan: f"plugin installed from {cli.MARKETPLACE}")
-    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(cli, "_install_native", lambda target, _url, _plan, _mode: f"plugin installed from {cli.MARKETPLACE}")
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
         cli, "_install_opencode",
-        lambda _url, _plan: (Path.home() / ".config/opencode/opencode.json",
+        lambda _url, _plan, _mode: (Path.home() / ".config/opencode/opencode.json",
                              Path.home() / ".config/opencode/plugins/ach-memory.js"),
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: (Path.home() / ".pi/agent/mcp.json",))
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: (Path.home() / ".pi/agent/mcp.json",))
 
 
 def test_init_reports_every_agent_including_the_ones_that_write_no_files(
@@ -1018,3 +1018,52 @@ def test_mcp_builds_proxy_from_env_and_runs_stdio(
     assert cli.main(["mcp"]) == 0
     # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
     assert calls == [("https://mem.example.com/mcp/", "mem_secret"), ("run", "stdio")]
+
+
+def test_config_plan_modes_pick_the_server_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--http restores the direct-remote entries; --local pins this
+    checkout's script. Only the server entry varies -- assets and paths are
+    covered by the stdio test above."""
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    url = "https://memory.example.com/mcp/"
+
+    _, config, _ = cli._config_plan("pi", url, "http")
+    assert config["mcpServers"]["ach-memory"] == {
+        "url": url,
+        "auth": "bearer",
+        "bearerTokenEnv": "ACH_MEMORY_API_KEY",
+        "lifecycle": "lazy",
+        "directTools": False,
+    }
+    _, config, _ = cli._config_plan("opencode", url, "http")
+    assert config["mcp"]["ach-memory"] == {
+        "type": "remote",
+        "url": url,
+        "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
+    }
+
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/checkout/.venv/bin/ach-memory")
+    _, config, _ = cli._config_plan("pi", url, "local")
+    assert config["mcpServers"]["ach-memory"] == {
+        "command": "/checkout/.venv/bin/ach-memory",
+        "args": ["mcp"],
+    }
+
+
+def test_register_codex_server_http_pins_url_and_env_var_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(cli, "_run", lambda command: commands.append(command))
+    cli._register_codex_server("https://memory.example.com/mcp/", "http")
+    assert commands == [
+        ["codex", "mcp", "remove", "ach-memory"],
+        [
+            "codex", "mcp", "add", "ach-memory",
+            "--url", "https://memory.example.com/mcp/",
+            "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
+        ],
+    ]

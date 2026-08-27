@@ -107,6 +107,17 @@ Restart claude and opencode to load ach-memory.
 Add `-v` to list every file written. Restart the agents afterward so they
 inherit `ACH_MEMORY_API_KEY`.
 
+Two transport flags cover the non-default cases (`init <target> --local|--http`):
+
+- `--local` writes the stdio entry with this checkout's own `ach-memory`
+  script (absolute path) instead of `uvx`, so hosts run unreleased code —
+  the way to test a proxy change end to end before cutting a release.
+- `--http` skips the proxy and points codex/opencode/pi at the remote HTTP
+  endpoint directly (no client-side project resolution; pi gets its
+  `pi-mcp-adapter` bridge back). The claude plugin is a committed static
+  config, so neither flag applies to it — paste the direct config from the
+  MCP section below instead.
+
 Memory is explicit: installation adds memory tools, but agents do not retain or
 recall anything automatically. Ask an agent to use memory when you want it to.
 
