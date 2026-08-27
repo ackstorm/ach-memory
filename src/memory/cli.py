@@ -18,6 +18,7 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 
 SUPPORTED = ("codex", "claude", "opencode", "pi")
 MARKETPLACE = "ackstorm/ach-memory"
+GIT_SOURCE = "git+https://github.com/ackstorm/ach-memory"
 
 
 class CLIError(Exception):
@@ -213,15 +214,27 @@ def _config_root(target: str) -> Path:
     raise CLIError(f"config installation is not available for {target}")
 
 
-def _proxy_command(mode: str) -> list[str]:
+def _proxy_command(mode: str, url: str) -> list[str]:
     """The spawn line hosts use for the stdio proxy.
+
+    The endpoint travels as `--url`, not as an inherited ACH_MEMORY_URL: a
+    config whose every input is invisible is unreadable and undebuggable,
+    and a host that does not export the variable failed at the first tool
+    call rather than at install. The API KEY deliberately does NOT travel
+    here -- argv is world-readable (`ps aux`), so the key stays in the
+    config's `env` block, which is where every MCP server in the ecosystem
+    puts a credential.
+
+    `uvx --from git+...@vX.Y.Z` is the install source: the repository is
+    public, the tag pins an immutable revision, and it needs no package
+    index -- so a release is installable the moment CI tags it.
 
     "local" resolves this environment's own console script to an absolute
     path, so a host launches the code sitting in this checkout instead of
-    whatever uvx last pulled from PyPI -- the only way to try an unreleased
-    proxy end to end. Resolved at init time on purpose: the written config
-    then works from any cwd, and a broken PATH fails here, loudly, not at
-    the host's first tool call.
+    the published tag -- the only way to try an unreleased proxy end to
+    end. Resolved at init time on purpose: the written config then works
+    from any cwd, and a broken PATH fails here, loudly, not at the host's
+    first tool call.
     """
     if mode == "local":
         script = shutil.which("ach-memory")
@@ -230,8 +243,8 @@ def _proxy_command(mode: str) -> list[str]:
                 "--local needs the ach-memory script on PATH "
                 "(run it as `uv run ach-memory init ... --local`)"
             )
-        return [str(Path(script).resolve()), "mcp"]
-    return ["uvx", "ach-memory", "mcp"]
+        return [str(Path(script).resolve()), "mcp", "--url", url]
+    return ["uvx", "--from", f"{GIT_SOURCE}@v{_version()}", "ach-memory", "mcp", "--url", url]
 
 
 def _config_plan(
@@ -259,7 +272,11 @@ def _config_plan(
         else:
             server = {
                 "type": "local",
-                "command": _proxy_command(mode),
+                "command": _proxy_command(mode, url),
+                # The key by NAME through opencode's own {env:...} form: the
+                # proxy inherits it as ACH_MEMORY_API_KEY, and no secret is
+                # written into a config file or into argv.
+                "environment": {"ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}"},
                 "enabled": True,
             }
         paths = (
@@ -279,7 +296,10 @@ def _config_plan(
                 "directTools": False,
             }
         else:
-            command = _proxy_command(mode)
+            command = _proxy_command(mode, url)
+            # No env block: pi's stdio servers inherit pi's own environment,
+            # which is where ACH_MEMORY_API_KEY already lives. Restating it
+            # here would only be a place for a secret to get pasted.
             server = {"command": command[0], "args": command[1:]}
         paths = (
             ("pi.js", "extensions/ach-memory.js"),
@@ -395,7 +415,7 @@ def _register_codex_server(url: str, mode: str = "stdio") -> None:
             "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
         ])
     else:
-        _run(["codex", "mcp", "add", "ach-memory", "--", *_proxy_command(mode)])
+        _run(["codex", "mcp", "add", "ach-memory", "--", *_proxy_command(mode, url)])
 
 
 def _native_plan(target: str) -> tuple[dict[str, Path], set[str]]:
@@ -572,19 +592,31 @@ def _parser() -> argparse.ArgumentParser:
         help="stdio proxy from this checkout's ach-memory script instead of "
         "uvx, to test unreleased code",
     )
-    commands.add_parser(
-        "mcp",
-        help="run the local stdio MCP proxy (forwards to $ACH_MEMORY_URL)",
+    mcp = commands.add_parser(
+        "mcp", help="run the local stdio MCP proxy"
+    )
+    mcp.add_argument(
+        "--url",
+        default=None,
+        help="memory service base URL (default: $ACH_MEMORY_URL). The API key "
+        "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
+        "because argv is world-readable",
     )
     return parser
 
 
-def _serve_mcp() -> int:
+def _serve_mcp(url_argument: str | None = None) -> int:
     """Run the stdio proxy until the host closes stdin.
 
     Imported lazily: `init` must keep working on an interpreter where
     fastmcp failed to install, and a plain `ach-memory --help` should not
     pay the fastmcp import.
+
+    The endpoint comes from --url when the host config states it (what
+    `init` writes, so the config is self-describing) and falls back to
+    ACH_MEMORY_URL for a hand-written config or a shell run. The key is
+    environment-only on purpose: `ps aux` shows every argument of every
+    process on the machine, so a credential must never be one.
     """
     from memory.mcp import proxy
 
@@ -595,7 +627,9 @@ def _serve_mcp() -> int:
             file=sys.stderr,
         )
         return 1
-    url = _mcp_url(os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000")
+    url = _mcp_url(
+        url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000"
+    )
     proxy.build_proxy(url, key).run()
     return 0
 
@@ -607,7 +641,7 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code)
 
     if args.command == "mcp":
-        return _serve_mcp()
+        return _serve_mcp(args.url)
 
     base = os.environ.get("ACH_MEMORY_URL")
     mode = "http" if args.http else ("local" if args.local else "stdio")

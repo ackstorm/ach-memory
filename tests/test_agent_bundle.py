@@ -15,6 +15,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).parents[1]
+
+
+def _pyproject_version() -> str:
+    text = (ROOT / "pyproject.toml").read_text()
+    match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+    assert match, "pyproject.toml states no version"
+    return match.group(1)
+
+
 NATIVE = ("claude-code", "codex")
 ADAPTED = ("opencode", "pi")
 ACTIVATION = (
@@ -44,15 +53,33 @@ def _script(host: str, name: str) -> subprocess.CompletedProcess[str]:
 def test_claude_mcp_config_is_static_and_takes_both_values_from_the_environment() -> None:
     """The one test that protects the architecture.
 
-    Claude spawns the stdio proxy (`uvx ach-memory mcp`), which reads
-    ACH_MEMORY_URL and ACH_MEMORY_API_KEY from its own environment on every
-    launch, so no endpoint or credential is written into the committed
-    config at all -- a literal one of either would mean someone reintroduced
-    per-install rendering or made the bundle unsafe to commit.
+    Claude spawns the stdio proxy from a tagged git revision, passing the
+    endpoint as `--url` (claude expands ${ACH_MEMORY_URL} there) and the
+    credential through the `env` block by NAME. Both values stay
+    per-deployment expansions of the committed file: a literal endpoint
+    would mean someone reintroduced per-install rendering, and a literal
+    key would make the bundle unsafe to commit. The key must never move
+    into `args` -- argv is world-readable.
+
+    The pinned tag must equal this checkout's version, or a release ships a
+    plugin that installs the previous release's proxy; `make release-bump`
+    rewrites it and asserts the result.
     """
     server = _json(ROOT / "plugins" / "claude-code" / ".mcp.json")["mcpServers"]["ach-memory"]
 
-    assert server == {"type": "stdio", "command": "uvx", "args": ["ach-memory", "mcp"]}
+    assert server == {
+        "type": "stdio",
+        "command": "uvx",
+        "args": [
+            "--from",
+            f"git+https://github.com/ackstorm/ach-memory@v{_pyproject_version()}",
+            "ach-memory",
+            "mcp",
+            "--url",
+            "${ACH_MEMORY_URL:-http://localhost:8000}",
+        ],
+        "env": {"ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}"},
+    }
 
 
 def test_codex_plugin_ships_no_mcp_config_because_it_cannot_express_one() -> None:

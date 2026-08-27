@@ -63,11 +63,28 @@ export ACH_MEMORY_URL=https://memory.example.com
 export ACH_MEMORY_API_KEY=<user-key>
 ```
 
-All four hosts run the same server: `uvx ach-memory mcp`, a local stdio proxy
-that reads `ACH_MEMORY_URL`/`ACH_MEMORY_API_KEY` from the environment on every
-launch and resolves the calling project per SPEC §8. Nothing host-specific is
-baked in at install time, so the same install commands work against any
-deployment and rotating the key or moving the endpoint needs no reinstall.
+All four hosts run the same server: a local stdio proxy that forwards to the
+service and resolves the calling project per SPEC §8. The config every host
+ends up with is the ordinary MCP stdio shape — install source and endpoint as
+arguments, credential in `env`:
+
+```json
+{
+  "command": "uvx",
+  "args": [
+    "--from", "git+https://github.com/ackstorm/ach-memory@v0.3.1",
+    "ach-memory", "mcp",
+    "--url", "https://memory.example.com"
+  ],
+  "env": { "ACH_MEMORY_API_KEY": "<user key>" }
+}
+```
+
+`uvx --from git+…@vX.Y.Z` needs no package index: the repository is public and
+the tag pins an immutable revision. The endpoint is an explicit `--url` so the
+config states what it talks to; the key stays in `env` (or inherited from your
+shell) because `ps aux` shows every argument of every process. `--url` falls
+back to `$ACH_MEMORY_URL` when omitted.
 
 Claude Code installs from this repository's own marketplace:
 

@@ -3,7 +3,17 @@
     "ach-memory": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["ach-memory", "mcp"]
+      "args": [
+        "--from",
+        "git+https://github.com/ackstorm/ach-memory@v0.3.1",
+        "ach-memory",
+        "mcp",
+        "--url",
+        "${ACH_MEMORY_URL:-http://localhost:8000}"
+      ],
+      "env": {
+        "ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}"
+      }
     }
   }
 }

@@ -401,7 +401,11 @@ def test_preflight_rejects_empty_key_before_opening_connection(
             "mcp",
             {
                 "type": "local",
-                "command": ["uvx", "ach-memory", "mcp"],
+                "command": [
+                    "uvx", "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
+                    "ach-memory", "mcp", "--url", "https://host/next/mcp/",
+                ],
+                "environment": {"ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}"},
                 "enabled": True,
             },
             [
@@ -416,7 +420,10 @@ def test_preflight_rejects_empty_key_before_opening_connection(
             "mcpServers",
             {
                 "command": "uvx",
-                "args": ["ach-memory", "mcp"],
+                "args": [
+                    "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
+                    "ach-memory", "mcp", "--url", "https://host/next/mcp/",
+                ],
             },
             [
                 "extensions/ach-memory.js",
@@ -950,9 +957,14 @@ def test_codex_install_registers_the_server_from_the_current_environment(
     mcp = [c for c in runner.commands if c[:2] == ["codex", "mcp"]]
     assert [c[2] for c in mcp] == ["remove", "add"]
     add = mcp[1]
-    assert add == ["codex", "mcp", "add", "ach-memory", "--", "uvx", "ach-memory", "mcp"]
+    assert add == [
+        "codex", "mcp", "add", "ach-memory", "--",
+        "uvx", "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
+        "ach-memory", "mcp", "--url", MCP_URL,
+    ]
+    # The endpoint travels as the proxy's own --url argument, never as codex's
+    # remote-server --url plus a bearer env var name: that is the --http shape.
     assert "--bearer-token-env-var" not in add
-    assert "--url" not in add
     assert not any("mcp" in c and "list" in c for c in runner.commands)
 
 
@@ -1052,7 +1064,7 @@ def test_config_plan_modes_pick_the_server_shape(
     _, config, _ = cli._config_plan("pi", url, "local")
     assert config["mcpServers"]["ach-memory"] == {
         "command": "/checkout/.venv/bin/ach-memory",
-        "args": ["mcp"],
+        "args": ["mcp", "--url", url],
     }
 
 
