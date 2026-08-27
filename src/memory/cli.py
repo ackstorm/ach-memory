@@ -225,9 +225,9 @@ def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[
     server: dict[str, object]
     if target == "opencode":
         server = {
-            "type": "remote",
-            "url": url,
-            "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
+            "type": "local",
+            "command": ["uvx", "ach-memory", "mcp"],
+            "enabled": True,
         }
         paths = (
             ("opencode.js", "plugins/ach-memory.js"),
@@ -235,13 +235,7 @@ def _config_plan(target: str, url: str) -> tuple[Path, dict[str, object], tuple[
             ("skills/ach-memory/SKILL.md", "skills/ach-memory/SKILL.md"),
         )
     else:
-        server = {
-            "url": url,
-            "auth": "bearer",
-            "bearerTokenEnv": "ACH_MEMORY_API_KEY",
-            "lifecycle": "lazy",
-            "directTools": False,
-        }
+        server = {"command": "uvx", "args": ["ach-memory", "mcp"]}
         paths = (
             ("pi.js", "extensions/ach-memory.js"),
             ("activation.txt", "extensions/ach-memory/activation.txt"),
@@ -307,38 +301,35 @@ def _install_opencode(
 def _install_pi(
     url: str, plan: tuple[Path, dict[str, object], tuple[tuple[Path, Path], ...]] | None = None
 ) -> tuple[Path, ...]:
+    """pi spawns our stdio proxy as a native mcp.json server -- no adapter to
+    install. The `pi-mcp-adapter` package was only ever needed to bridge pi
+    to a remote HTTP server; a plain `command`/`args` stdio entry is pi's own
+    format and needs nothing extra on top."""
     config_path, config, assets = plan or _config_plan("pi", url)
     for source, destination in assets:
         _copy_file_atomic(source, destination)
     _write_json_atomic(config_path, config)
-    _run(["pi", "install", "npm:pi-mcp-adapter"])
     return (config_path, *(destination for _source, destination in assets))
 
 
-def _register_codex_server(url: str) -> None:
+def _register_codex_server() -> None:
     """Register the MCP server with Codex, because its plugin cannot.
 
-    Codex does not interpolate ${ACH_MEMORY_URL} in a URL, so the endpoint has
-    to be written literally into its config -- which makes install time the only
-    moment we know it. Printing the command for the user to paste left the
-    install half done by default: plugin present, server absent, every tool call
-    failing while everything looked correct.
+    Codex now spawns our stdio proxy directly (`uvx ach-memory mcp`), which
+    reads ACH_MEMORY_URL and ACH_MEMORY_API_KEY from its own environment on
+    every launch. Nothing about the endpoint is written into Codex's config
+    at install time any more, so re-running init after changing the URL is
+    no longer required for codex. Printing the command for the user to paste
+    left the install half done by default: plugin present, server absent,
+    every tool call failing while everything looked correct.
 
     Unconditional remove-then-add, with no read of the current state: whatever
-    Codex held before, it ends up matching the environment this ran with, so
-    re-running init is also the update path. `codex mcp remove` exits 0 when the
-    server is absent, so the remove needs no guard.
-
-    Only the URL is pinned. bearer_token_env_var stores the variable's NAME and
-    Codex resolves it per call, so rotating the key needs no reinstall and the
-    value never reaches a command line.
+    Codex held before, it ends up matching this command, so re-running init is
+    also the update path. `codex mcp remove` exits 0 when the server is
+    absent, so the remove needs no guard.
     """
     _run(["codex", "mcp", "remove", "ach-memory"])
-    _run([
-        "codex", "mcp", "add", "ach-memory",
-        "--url", url,
-        "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
-    ])
+    _run(["codex", "mcp", "add", "ach-memory", "--", "uvx", "ach-memory", "mcp"])
 
 
 def _native_plan(target: str) -> tuple[dict[str, Path], set[str]]:
@@ -388,7 +379,7 @@ def _install_native(
         _run([target, "plugin", "install", "-y", "--scope", "user", plugin])
 
     if target == "codex":
-        _register_codex_server(url)
+        _register_codex_server()
     return f"plugin installed from {MARKETPLACE}"
 
 
@@ -455,9 +446,6 @@ def _report(
         print(f"  \u2013 {name.ljust(width)}  skipped, not on PATH")
 
     installed = [name for name, _, _ in results]
-    if "codex" in installed:
-        print()
-        print("  codex stores the endpoint, not $ACH_MEMORY_URL: re-run init after changing it")
     if installed:
         print()
         names = installed[0] if len(installed) == 1 else (
@@ -537,15 +525,9 @@ def main(argv: list[str] | None = None) -> int:
         targets = _targets(args.target)
         for target in targets:
             _require_executable(target)
-        # Everyone else resolves the endpoint at call time, so the localhost
-        # fallback is a warning for them. Codex writes it literally into its
-        # config, so installing without ACH_MEMORY_URL would pin localhost
-        # permanently and look successful doing it.
-        if "codex" in targets and base is None:
-            raise CLIError(
-                "ACH_MEMORY_URL must be set to install for codex: it stores the "
-                "endpoint literally and cannot read the variable later"
-            )
+        # Every host now spawns the stdio proxy, which reads ACH_MEMORY_URL
+        # per launch -- so the localhost fallback is just a warning here, the
+        # same as for every other target.
         native_plans = {target: _native_plan(target) for target in targets if target in {"codex", "claude"}}
         config_plans = {target: _config_plan(target, url) for target in targets if target in {"opencode", "pi"}}
         asyncio.run(_preflight(url, os.environ.get("ACH_MEMORY_API_KEY", "")))

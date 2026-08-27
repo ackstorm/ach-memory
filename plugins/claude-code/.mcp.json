@@ -1,11 +1,9 @@
 {
   "mcpServers": {
     "ach-memory": {
-      "type": "http",
-      "url": "${ACH_MEMORY_URL:-http://localhost:8000}/mcp/",
-      "headers": {
-        "Authorization": "Bearer ${ACH_MEMORY_API_KEY}"
-      }
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["ach-memory", "mcp"]
     }
   }
 }
