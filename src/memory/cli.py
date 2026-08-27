@@ -494,7 +494,32 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument(
         "-v", "--verbose", action="store_true", help="list every file written"
     )
+    commands.add_parser(
+        "mcp",
+        help="run the local stdio MCP proxy (forwards to $ACH_MEMORY_URL)",
+    )
     return parser
+
+
+def _serve_mcp() -> int:
+    """Run the stdio proxy until the host closes stdin.
+
+    Imported lazily: `init` must keep working on an interpreter where
+    fastmcp failed to install, and a plain `ach-memory --help` should not
+    pay the fastmcp import.
+    """
+    from memory.mcp import proxy
+
+    key = os.environ.get("ACH_MEMORY_API_KEY", "")
+    if not key:
+        print(
+            "ach-memory: ACH_MEMORY_API_KEY must be set to run the MCP proxy",
+            file=sys.stderr,
+        )
+        return 1
+    url = _mcp_url(os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000")
+    proxy.build_proxy(url, key).run()
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -502,6 +527,9 @@ def main(argv: list[str] | None = None) -> int:
         args = _parser().parse_args(argv)
     except SystemExit as exc:
         return int(exc.code)
+
+    if args.command == "mcp":
+        return _serve_mcp()
 
     base = os.environ.get("ACH_MEMORY_URL")
     try:

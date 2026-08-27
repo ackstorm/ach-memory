@@ -1015,3 +1015,30 @@ def test_opencode_install_keeps_skill_paths_the_user_already_set(tmp_path, monke
     assert "/srv/team-skills" in config["skills"]["paths"]
     assert str(config_dir / "skills") in config["skills"]["paths"]
     assert config["skills"]["urls"] == ["https://x/"]
+
+
+def test_mcp_requires_api_key(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.delenv("ACH_MEMORY_API_KEY", raising=False)
+    assert cli.main(["mcp"]) == 1
+    assert "ACH_MEMORY_API_KEY" in capsys.readouterr().err
+
+
+def test_mcp_builds_proxy_from_env_and_runs_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
+    calls: list[tuple[str, str]] = []
+
+    class FakeProxy:
+        def run(self) -> None:
+            calls.append(("run", "stdio"))
+
+    def fake_build(url: str, key: str) -> FakeProxy:
+        calls.append((url, key))
+        return FakeProxy()
+
+    monkeypatch.setattr("memory.mcp.proxy.build_proxy", fake_build)
+    assert cli.main(["mcp"]) == 0
+    # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
+    assert calls == [("https://mem.example.com/mcp/", "mem_secret"), ("run", "stdio")]
