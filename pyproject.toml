@@ -27,6 +27,11 @@ dependencies = [
     # crash-looping container, and the CI import guard only catches it once
     # CI actually runs (see .github/workflows/ci.yml's push trigger).
     "mcp-types>=2.0.0",
+    # Only src/memory/mcp/proxy.py (the local stdio forwarder behind
+    # `ach-memory mcp`) imports this. It is a hard dep, not an extra,
+    # because `uvx ach-memory mcp` must work bare -- an extra would put
+    # `--from 'ach-memory[proxy]'` into every host config for zero gain.
+    "fastmcp>=3.4",
     # Verifies externally-issued identity tokens
     # (memory/auth/providers/jwt_provider.py, added in a later task).
     # [crypto] is not optional for us: ACH signs EdDSA and Dex signs RS256,
