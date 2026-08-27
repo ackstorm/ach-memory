@@ -208,6 +208,14 @@ def create_app() -> FastAPI:
         "/mcp",
         mcp.streamable_http_app(
             streamable_http_path="/",
+            # No session state to keep: every tool re-authenticates from the
+            # request's own headers in `tool_session` and opens its own DB
+            # session, so a session id would pin a caller to one pod while
+            # carrying nothing. Stateful is also a scale-out trap -- the
+            # session lives in one process's memory, so a second replica
+            # behind the Gateway answers "session not found" to half the
+            # traffic unless the ingress is made sticky.
+            stateless_http=True,
             transport_security=TransportSecuritySettings(
                 allowed_hosts=allowed,
                 # v1 supports native/non-browser MCP clients only; browser

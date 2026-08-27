@@ -1422,3 +1422,41 @@ def test_the_envelope_omits_the_slug_fields_when_no_rename_was_followed(call_too
 
     assert dumped == {"result": {"results": []}}
 
+def test_the_mcp_mount_issues_no_session(app):
+    """Stateless, and it has to stay that way to run more than one replica.
+
+    A stateful streamable-HTTP mount keeps the session in the serving
+    process's memory and hands the client an Mcp-Session-Id to send back. With
+    a second replica behind the Gateway and no sticky routing, that id lands
+    on a pod that never saw the session and the call fails. Nothing here needs
+    it: `tool_session` authenticates every call from that call's own headers.
+    """
+    from fastapi.testclient import TestClient
+
+    # Entered as a context manager on purpose: the session manager is started
+    # by the host app's lifespan (create_app), which a bare TestClient never
+    # runs -- the mount then raises "Task group is not initialized".
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            "/mcp/",
+            headers={
+                # DNS-rebinding protection allows 127.0.0.1 and localhost only
+                # (config default), and TestClient's own "testserver" host is
+                # a 421.
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert "mcp-session-id" not in {k.lower() for k in response.headers}
