@@ -47,6 +47,11 @@ EXPECTED_ROUTES = {
     ("POST", "/v1/memory/operations/get"),
     ("POST", "/v1/memory/operations/cancel"),
     ("GET", "/v1/admin/audit"),
+    # The activity trail (SPEC observability). /metrics and /admin/ui are
+    # deliberately absent: both are include_in_schema=False, so they never
+    # reach app.openapi() and this pin cannot see them.
+    ("GET", "/v1/admin/activity"),
+    ("GET", "/v1/admin/activity/summary"),
     ("POST", "/v1/admin/memory/{scope}/clear"),
     ("DELETE", "/v1/admin/memory/{scope}"),
     ("POST", "/v1/admin/slugs/{retired_slug}/release"),

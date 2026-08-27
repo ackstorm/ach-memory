@@ -1118,6 +1118,35 @@ async def test_the_advertised_tool_surface_is_exactly_the_spec_set():
     assert advertised & FORBIDDEN_TOOLS == set()
 
 
+def test_instructions_carry_the_policy_to_callers_no_hook_reaches():
+    """Pinned against a trim, because nothing else pins it.
+
+    activation.txt says the same things and is tested clause by clause, but it
+    is delivered by a SessionStart hook: codex's never fires under any
+    configuration tried, and a hand-written config on any host has no hook at
+    all. `instructions` comes back from `initialize`, so it is the one text
+    every caller receives -- verified through the stdio proxy, which forwards
+    it verbatim while advertising none of its own.
+
+    The clauses below are the ones an agent gets wrong when they are missing:
+    it writes to the host's own file store (so name MEMORY.md and say instead
+    of), it never reads (so name the read moment), it stores in the
+    conversation's language and cannot find it again (so name English), and it
+    would happily retain a token.
+    """
+    from memory.mcp.server import build_mcp
+
+    text = (build_mcp().instructions or "").lower()
+
+    assert "memory.md" in text, "must name the store it replaces"
+    assert "recall" in text and "reflect" in text, "must name the read moment"
+    assert "durable" in text, "must name when a fact is worth writing"
+    assert "english" in text, "retrieval reranks in English only"
+    assert "credentials" in text, "must forbid storing secrets"
+    # Any MCP client gets this string, not only a coding agent.
+    assert "coding agent" not in text
+
+
 @pytest.mark.anyio
 async def test_no_tool_input_schema_exposes_bank_tenant_or_user_id():
     """SPEC §11.1: 'The LLM never supplies bank_id, tenant_id, its
@@ -1392,3 +1421,42 @@ def test_the_envelope_omits_the_slug_fields_when_no_rename_was_followed(call_too
     dumped = call_tool("recall", key, scope="user", query="deps").model_dump()
 
     assert dumped == {"result": {"results": []}}
+
+def test_the_mcp_mount_issues_no_session(app):
+    """Stateless, and it has to stay that way to run more than one replica.
+
+    A stateful streamable-HTTP mount keeps the session in the serving
+    process's memory and hands the client an Mcp-Session-Id to send back. With
+    a second replica behind the Gateway and no sticky routing, that id lands
+    on a pod that never saw the session and the call fails. Nothing here needs
+    it: `tool_session` authenticates every call from that call's own headers.
+    """
+    from fastapi.testclient import TestClient
+
+    # Entered as a context manager on purpose: the session manager is started
+    # by the host app's lifespan (create_app), which a bare TestClient never
+    # runs -- the mount then raises "Task group is not initialized".
+    with TestClient(app, base_url="http://localhost") as client:
+        response = client.post(
+            "/mcp/",
+            headers={
+                # DNS-rebinding protection allows 127.0.0.1 and localhost only
+                # (config default), and TestClient's own "testserver" host is
+                # a 421.
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert "mcp-session-id" not in {k.lower() for k in response.headers}

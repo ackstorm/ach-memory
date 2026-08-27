@@ -38,6 +38,15 @@ config:
   writeLimit: 60
   writeWindowSeconds: 60
 
+  # MEMORY_ADMIN_UI_ENABLED. The operator console at /admin/ui. It rides the
+  # SAME ingress as the API: if ingress.enabled is true and the host is public,
+  # so is the console. It is inert without the master key, but decide that
+  # deliberately rather than by default.
+  adminUiEnabled: true
+  # Activity rows are telemetry and age out; 0 keeps them forever. They hold no
+  # memory content, so this is a volume knob, not a retention-of-content one.
+  activityRetentionDays: 30
+
   # MEMORY_HINDSIGHT_TIMEOUT_SECONDS / MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS.
   # The LLM one covers `sync_retain` and `reflect`, which block on the model
   # Hindsight is configured with -- the deployment-specific knob. Too low and
@@ -212,3 +221,34 @@ resources:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# GET /metrics, and how Prometheus finds it. Served by the same FastAPI app on
+# the same port as the API -- there is no second port to publish, and pod
+# annotations (prometheus.io/scrape) are deliberately not used: the operator's
+# ServiceMonitor is the supported discovery path.
+#
+# The endpoint carries counts only -- by action, scope, surface, outcome and
+# error code, plus upstream latency. No identities, no project names, no
+# content, no bank ids, and never a user_id or project_slug label: an unbounded
+# label value kills the Prometheus that scrapes it. It is unauthenticated, and
+# it rides the same ingress as the API.
+metrics:
+  # MEMORY_METRICS_ENABLED. False removes the route entirely rather than
+  # answering 403 -- a deployment that withdraws metrics should not advertise
+  # that it has them.
+  enabled: true
+  serviceMonitor:
+    # Off by default because it needs the Prometheus Operator's CRDs: rendering
+    # it into a cluster without them fails the install outright. Turn it on
+    # wherever the operator is installed.
+    enabled: false
+    # Namespace to create the ServiceMonitor in. Empty means the release
+    # namespace, which is what a Prometheus watching all namespaces expects.
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels, for a Prometheus whose serviceMonitorSelector requires one
+    # (e.g. `release: kube-prometheus-stack`).
+    labels: {}
+    relabelings: []
+    metricRelabelings: []

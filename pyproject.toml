@@ -1,6 +1,6 @@
 [project]
 name = "ach-memory"
-version = "0.2.6"
+version = "0.3.2"
 description = "Multi-tenant memory service for coding agents, over Hindsight"
 requires-python = ">=3.12"
 dependencies = [
@@ -27,6 +27,16 @@ dependencies = [
     # crash-looping container, and the CI import guard only catches it once
     # CI actually runs (see .github/workflows/ci.yml's push trigger).
     "mcp-types>=2.0.0",
+    # Only src/memory/mcp/proxy.py (the local stdio forwarder behind
+    # `ach-memory mcp`) imports this. It is a hard dep, not an extra,
+    # because `uvx ach-memory mcp` must work bare -- an extra would put
+    # `--from 'ach-memory[proxy]'` into every host config for zero gain.
+    # Pinned to the 4.0.0b* line, not >=3.4: fastmcp 3.x (via fastmcp-slim)
+    # pins mcp<2.0, which conflicts with this repo's own mcp>=2.0.0 above --
+    # only 4.0.0b* supports mcp>=2.0, so the pre-release is structurally
+    # forced, not a stray beta pickup. The <4.1 bound stops a silent
+    # beta -> stable-4.x API jump from landing unreviewed.
+    "fastmcp>=4.0.0b4,<4.1",
     # Verifies externally-issued identity tokens
     # (memory/auth/providers/jwt_provider.py, added in a later task).
     # [crypto] is not optional for us: ACH signs EdDSA and Dex signs RS256,
@@ -34,6 +44,11 @@ dependencies = [
     # "Algorithm 'EdDSA' could not be found" at the first request, not at
     # import, so a missing extra ships as a runtime auth outage.
     "pyjwt[crypto]>=2.10",
+    # Exposition format and histogram bucketing for GET /metrics. Production
+    # code (src/memory/metrics.py), so it belongs here and not in the dev
+    # group -- the same mistake `mcp` and `mcp-types` each shipped once,
+    # which crash-looped the image because `uv export --no-dev` dropped them.
+    "prometheus-client>=0.21",
 ]
 
 [project.scripts]

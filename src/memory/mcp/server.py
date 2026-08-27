@@ -89,12 +89,46 @@ def build_mcp() -> MCPServer:
     Tools are added by `memory.mcp.tools.register(mcp)`, which the app calls.
     Keeping registration out of this module is what makes the exclusion test in
     Task 6 meaningful: the advertised set is one list in one place.
+
+    `instructions` carries the policy because it is the only delivery that
+    reaches every caller. activation.txt reaches a host whose SessionStart hook
+    runs, which codex's never does (measured, test_agent_bundle), and reaches
+    nobody who wires the endpoint by hand. This string is returned by
+    `initialize`, so it lands on every host, HTTP and stdio alike -- the proxy
+    forwards it verbatim when it advertises none of its own -- and it changes
+    on deploy, with no plugin update and no version bump anywhere.
+
+    It is not written for coding agents. Any MCP client gets it, so the text
+    names the read moment and the write moment in general terms and leaves the
+    per-tool detail to the tool descriptions.
     """
     return MCPServer(
         name="ach-memory",
         instructions=(
-            "Durable memory for coding agents. `scope` selects whose memory: "
-            "'user' is your own, 'project' is the shared memory of the project "
-            "named by project_slug. You never supply a bank id."
+            "Durable memory across sessions and context resets: the system of "
+            "record for what was decided, preferred or learned, which would "
+            "otherwise be lost when this conversation ends. An agent's own "
+            "notes, a host memory directory, a MEMORY.md index or a scratch "
+            "file are invisible here -- whatever is written there is lost to "
+            "every future session.\n\n"
+            "READ before acting. Recall whenever the work depends on something "
+            "settled earlier: a preference, a convention, a constraint, a "
+            "name, an approach already tried and rejected. Searching here "
+            "beats reconstructing the past from files or transcripts, which "
+            "record what was done and never why. `recall` returns matching "
+            "facts; `reflect` answers a question from them.\n\n"
+            "WRITE the moment a fact becomes durable -- when it will still "
+            "hold after this task: a decision confirmed or rejected, a stated "
+            "preference, a convention, a constraint, a gotcha and its cause, "
+            "whatever a context summary establishes. Store each as a "
+            "standalone statement that makes sense to a reader with none of "
+            "this conversation: name the subject, state the fact, say why it "
+            "holds. Skip what is routine, already stored or easily re-derived. "
+            "Never store credentials, tokens or keys. Write in English "
+            "whatever language the conversation uses: retrieval reranks in "
+            "English only.\n\n"
+            "`scope` selects whose memory: 'user' is your own, 'project' is "
+            "the shared memory of the project named by project_slug. You never "
+            "supply a bank id."
         ),
     )

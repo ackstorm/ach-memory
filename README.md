@@ -63,6 +63,29 @@ export ACH_MEMORY_URL=https://memory.example.com
 export ACH_MEMORY_API_KEY=<user-key>
 ```
 
+All four hosts run the same server: a local stdio proxy that forwards to the
+service and resolves the calling project per SPEC §8. The config every host
+ends up with is the ordinary MCP stdio shape — install source and endpoint as
+arguments, credential in `env`:
+
+```json
+{
+  "command": "uvx",
+  "args": [
+    "--from", "git+https://github.com/ackstorm/ach-memory@v0.3.1",
+    "ach-memory", "mcp",
+    "--url", "https://memory.example.com"
+  ],
+  "env": { "ACH_MEMORY_API_KEY": "<user key>" }
+}
+```
+
+`uvx --from git+…@vX.Y.Z` needs no package index: the repository is public and
+the tag pins an immutable revision. The endpoint is an explicit `--url` so the
+config states what it talks to; the key stays in `env` (or inherited from your
+shell) because `ps aux` shows every argument of every process. `--url` falls
+back to `$ACH_MEMORY_URL` when omitted.
+
 Claude Code installs from this repository's own marketplace:
 
 ```bash
@@ -70,23 +93,12 @@ claude plugin marketplace add ackstorm/ach-memory
 claude plugin install ach-memory@ach-memory
 ```
 
-Claude resolves both values at run time, so nothing is written per install and
-the same commands work against any deployment. With neither variable set it
-falls back to `http://localhost:8000`, which is what `docker compose up` serves.
-
-Codex takes the same plugin for its hooks and skill, but cannot expand
-`${ACH_MEMORY_URL}` in a URL, so its server has to be registered separately.
-`ach-memory init codex` does that for you, using the endpoint exported above:
+Codex takes the same plugin for its hooks and skill, and `ach-memory init
+codex` registers the stdio server for it, the same way the other installers do:
 
 ```bash
 uv run ach-memory init codex
 ```
-
-Only the URL is fixed at install time; the key is read from the environment on
-every call, so rotating it needs no reinstall. Because the URL is pinned,
-`init codex` refuses to run without `ACH_MEMORY_URL` rather than quietly
-recording `http://localhost:8000`, and re-running it after changing the
-variable repoints the server.
 
 OpenCode and pi have no marketplace, so they still need the installer, which
 writes their config files for them (see [TODO.md](TODO.md)):
@@ -112,12 +124,25 @@ Restart claude and opencode to load ach-memory.
 Add `-v` to list every file written. Restart the agents afterward so they
 inherit `ACH_MEMORY_API_KEY`.
 
+Two transport flags cover the non-default cases (`init <target> --local|--http`):
+
+- `--local` writes the stdio entry with this checkout's own `ach-memory`
+  script (absolute path) instead of `uvx`, so hosts run unreleased code —
+  the way to test a proxy change end to end before cutting a release.
+- `--http` skips the proxy and points codex/opencode/pi at the remote HTTP
+  endpoint directly (no client-side project resolution; pi gets its
+  `pi-mcp-adapter` bridge back). The claude plugin is a committed static
+  config, so neither flag applies to it — paste the direct config from the
+  MCP section below instead.
+
 Memory is explicit: installation adds memory tools, but agents do not retain or
 recall anything automatically. Ask an agent to use memory when you want it to.
 
 ## MCP
 
-Configure another MCP-capable agent with:
+`uvx ach-memory mcp` (stdio, above) is the default for all four hosts, but the
+remote streamable HTTP endpoint it proxies to remains fully supported for any
+MCP-capable agent that prefers to speak to it directly:
 
 ```text
 POST http://<host>:8000/mcp/
@@ -128,6 +153,26 @@ x-ach-memory-key: <user key>
 a gateway already uses `Authorization`; when both are sent,
 `x-ach-memory-key` wins. The master key is rejected on MCP, and v1 supports
 native/non-browser MCP clients only.
+
+### Direct HTTP
+
+A host that reads its own `mcpServers`-style JSON, such as Claude Code before
+`ach-memory init`, can point at the endpoint above without going through the
+stdio proxy at all:
+
+```json
+{
+  "mcpServers": {
+    "ach-memory": {
+      "type": "http",
+      "url": "${ACH_MEMORY_URL:-http://localhost:8000}/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${ACH_MEMORY_API_KEY}"
+      }
+    }
+  }
+}
+```
 
 ## Important limits
 
@@ -140,6 +185,60 @@ native/non-browser MCP clients only.
   master-key-only and irreversible.
 - The write limiter is in-process and per replica. It defaults to 60 writes per
   60 seconds per credential; replicas multiply the effective limit.
+
+## Seeing what is happening
+
+Three surfaces, because "how much" and "who, where, what" are different
+questions and neither store answers the other.
+
+`GET /metrics` — Prometheus exposition, unauthenticated. Counts by action,
+scope, surface and outcome, error codes by SPEC §18 code, upstream Hindsight
+latency, and request counts by route template. Deliberately aggregate: no
+identities, no project names, no content, no bank ids, and never a `user_id`
+or `project_slug` label — an unbounded label value kills the Prometheus that
+scrapes it, not this service. Disable with `MEMORY_METRICS_ENABLED=false`.
+
+`GET /v1/admin/activity` and `GET /v1/admin/activity/summary` — master key
+only, tenant-filtered. One record per data-plane call: which credential, which
+action, which bank (as `scope` + `user_id`/`project_slug`, plus a
+non-reversible `bank_fingerprint`), how many bytes, how long it took, and
+whether it actually landed. The summary rolls this up per bank with 24 hourly
+buckets, which is how you see that an agent went quiet.
+
+Rows carry no memory content, ever — a copy here would survive
+`DELETE /v1/admin/memory/{scope}` and quietly stop that from being a complete
+erasure. To read what was actually written, read the bank itself through
+`POST /v1/memory/list`; that path is authorized and audited. Rows age out
+after `MEMORY_ACTIVITY_RETENTION_DAYS` (default 30).
+
+Authentication failures are counted in `memory_errors_total`, not recorded as
+rows — on a public ingress a row per rejected credential is an unbounded
+insert. A wedged agent still reads clearly: a silent fleet row plus a 401 spike.
+
+`GET /admin/ui` — a single static page over those two routes, plus a tab that
+reads a bank live. No build step, no CDN, no third-party JavaScript: it holds
+the master key for the tab only (`sessionStorage`, never `localStorage`).
+Disable with `MEMORY_ADMIN_UI_ENABLED=false`.
+
+Both `/metrics` and `/admin/ui` sit behind the same ingress as everything else.
+If that ingress is public, so are they.
+
+`/metrics` is served by the same app on the same port as the API — there is no
+second port to publish. The chart ships a `ServiceMonitor` for the Prometheus
+Operator, off by default because rendering it without the operator's CRDs fails
+the install:
+
+```yaml
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack   # if your Prometheus selects on one
+```
+
+`metrics.enabled: false` removes the route and the ServiceMonitor together, so a
+monitor can never point at an endpoint that is switched off.
 
 ## Authentication
 
@@ -264,6 +363,9 @@ its server registration's `extra_headers`.
 | `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS` | `180` |
 | `MEMORY_WRITE_LIMIT` | `60` |
 | `MEMORY_WRITE_WINDOW_SECONDS` | `60` |
+| `MEMORY_METRICS_ENABLED` | `true` |
+| `MEMORY_ADMIN_UI_ENABLED` | `true` |
+| `MEMORY_ACTIVITY_RETENTION_DAYS` | `30` |
 | `MEMORY_AUTH_JWT_ENABLED` | `false` |
 | `MEMORY_AUTH_JWT_ISSUER` | empty (required when JWT is enabled) |
 | `MEMORY_AUTH_JWT_JWKS_URI` | empty (derived from the issuer) |

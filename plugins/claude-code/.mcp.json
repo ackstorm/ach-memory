@@ -1,10 +1,18 @@
 {
   "mcpServers": {
     "ach-memory": {
-      "type": "http",
-      "url": "${ACH_MEMORY_URL:-http://localhost:8000}/mcp/",
-      "headers": {
-        "Authorization": "Bearer ${ACH_MEMORY_API_KEY}"
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/ackstorm/ach-memory@v0.3.2",
+        "ach-memory",
+        "mcp",
+        "--url",
+        "${ACH_MEMORY_URL:-http://localhost:8000}"
+      ],
+      "env": {
+        "ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}"
       }
     }
   }

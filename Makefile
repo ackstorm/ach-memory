@@ -86,6 +86,10 @@ release-bump: ## Update release metadata (VERSION=X.Y.Z)
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^([[:space:]]*)"version": "[^"]*"/\1"version": "$(VERSION)"/' $(PLUGIN_MANIFESTS)
+	# The claude plugin pins its install source to a tag: uvx --from
+	# git+...@vX.Y.Z. A stale tag here means every claude install of the new
+	# release keeps running the previous one's proxy.
+	sed -i -E 's|(ach-memory@v)[0-9]+\.[0-9]+\.[0-9]+|\1$(VERSION)|' plugins/claude-code/.mcp.json
 	# uv.lock names the root package too. Left out, v0.2.0 was tagged with a
 	# lockfile still saying 0.1.2, and `uv run --frozen` reports that stale
 	# version through importlib.metadata -- which is what `ach-memory init`
@@ -99,6 +103,8 @@ release-bump: ## Update release metadata (VERSION=X.Y.Z)
 		grep -qE '^[[:space:]]*"version": "$(VERSION)"' "$$manifest" \
 			|| { echo "FAIL: $$manifest was not updated." >&2; exit 1; }; \
 	done
+	@grep -q 'ach-memory@v$(VERSION)' plugins/claude-code/.mcp.json \
+		|| { echo "FAIL: claude plugin git tag was not updated." >&2; exit 1; }
 	@grep -qx 'version = "$(VERSION)"' uv.lock \
 		|| { echo "FAIL: uv.lock was not updated." >&2; exit 1; }
 

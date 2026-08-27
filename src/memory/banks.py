@@ -67,8 +67,14 @@ def resolve_project_bank(
     retain/recall/reflect, which keep the default).
     """
     if not slug:
+        # git_locator is deliberately absent from this message. It is metadata
+        # that never resolves identity (inv. 11) and is not unique (§17), so
+        # this service cannot turn one into a project -- naming it here sent
+        # models down a path that always ends in this same error. Deriving the
+        # slug from the remote is the client's job (§8.2, §10); ach-memory's
+        # stdio proxy does it, so the model rarely sees this at all.
         raise ProjectContextUnavailable(
-            "scope=project needs MEMORY_PROJECT or a Git repository"
+            "scope=project needs a project: pass project_slug"
         )
     result = projects.resolve(db, principal, slug, git_locator, create=create)
     return result.project.bank_id, result.resolved_from, result.project.project_slug

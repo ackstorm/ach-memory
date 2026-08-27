@@ -119,6 +119,69 @@ def tenant(session) -> str:
 
 
 @pytest.fixture
+def seeded_activity(session, tenant) -> None:
+    """Two rows for `tenant`'s project `alpha`, plus one for a second
+    tenant so the tenant filter in activity.py is genuinely exercised.
+
+    Explicit `created_at` (not the server default) so the retain is
+    reliably ordered before the recall, and so both land in the summary's
+    current hour bucket.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from memory import ids
+    from memory.models import ActivityEvent, Tenant
+
+    session.add(Tenant(id="other-tenant"))
+    session.flush()
+
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            ActivityEvent(
+                id=ids.new_activity_id(),
+                tenant_id=tenant,
+                action="memory.retain",
+                surface="rest",
+                scope="project",
+                project_slug="alpha",
+                bank_fingerprint="fp-alpha",
+                content_bytes=10,
+                outcome="ok",
+                duration_ms=5,
+                created_at=now,
+            ),
+            ActivityEvent(
+                id=ids.new_activity_id(),
+                tenant_id=tenant,
+                action="memory.recall",
+                surface="rest",
+                scope="project",
+                project_slug="alpha",
+                bank_fingerprint="fp-alpha",
+                outcome="ok",
+                duration_ms=5,
+                created_at=now + timedelta(minutes=1),
+            ),
+            ActivityEvent(
+                id=ids.new_activity_id(),
+                tenant_id="other-tenant",
+                action="memory.retain",
+                surface="rest",
+                scope="project",
+                project_slug="beta",
+                bank_fingerprint="fp-beta",
+                content_bytes=5,
+                outcome="ok",
+                duration_ms=5,
+                created_at=now,
+            ),
+        ]
+    )
+    session.flush()
+
+
+@pytest.fixture
 def app(connection, session, monkeypatch):
     from memory import db, ratelimit
     from memory.api.app import create_app

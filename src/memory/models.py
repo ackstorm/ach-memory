@@ -171,3 +171,49 @@ class AuditEvent(Base):
         server_default=func.now(),
         index=True,
     )
+
+
+class ActivityEvent(Base):
+    """One row per data-plane call. Operational telemetry, NOT the audit
+    trail -- these rows age out (memory.activity._prune), while audit_events
+    do not.
+
+    No content column, ever. A copy of memory content here would survive
+    `DELETE /v1/admin/memory/{scope}`, so SPEC §12.3's only complete erasure
+    path would quietly stop being complete. Bytes and a document id say
+    enough for "did the write land"; the content itself is read live from
+    Hindsight by whoever is authorized to read that bank.
+    """
+
+    __tablename__ = "activity_events"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    # NULL for the master key, exactly as AuditEvent.actor_key_id.
+    credential_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    surface: Mapped[str] = mapped_column(String(4))
+    scope: Mapped[str] = mapped_column(String(8))
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The RESOLVED slug, never the caller's raw argument -- a rename
+    # tombstone must not make one project look like two.
+    project_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # sha256(bank_id)[:12]. The bank id itself may not leave this service
+    # (SPEC inv. 29), and this is enough to correlate a row with Hindsight's
+    # own logs without being reversible.
+    bank_fingerprint: Mapped[str] = mapped_column(String(16))
+    document_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    content_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    # Client-declared and unverified: it is a label that tells two agents
+    # apart when they share one credential, never attribution.
+    agent: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(8))
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    duration_ms: Mapped[int] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(
+        # server_default only, no `default=utcnow` -- see AuditEvent.created_at
+        # for why having both silently defeats the server default.
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+    )

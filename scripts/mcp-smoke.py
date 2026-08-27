@@ -20,7 +20,9 @@ from pathlib import Path
 
 import httpx
 import httpx2
+from mcp import StdioServerParameters
 from mcp.client.session import ClientSession
+from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
 API = os.environ.get("API", "http://localhost:8000")
@@ -108,11 +110,30 @@ async def main() -> None:
         await wait_for_api(rest)
         user_key = await provision_user_key(rest)
 
-    authed = httpx2.AsyncClient(
-        headers={"Authorization": f"Bearer {user_key}"}, timeout=30.0
-    )
+    if "--proxy" in sys.argv:
+        # --proxy: same fifteen-tool run, but through a spawned `ach-memory
+        # mcp` child -- proving the stdio transport, the bearer forwarding,
+        # and that the proxy's argument injection does not corrupt any
+        # tool's schema. The child gets the provisioned key via env exactly
+        # the way a host would pass it.
+        params = StdioServerParameters(
+            command="uv",
+            args=["run", "ach-memory", "mcp"],
+            env={
+                **os.environ,
+                "ACH_MEMORY_URL": API,
+                "ACH_MEMORY_API_KEY": user_key,
+            },
+        )
+        client_cm = stdio_client(params)
+    else:
+        authed = httpx2.AsyncClient(
+            headers={"Authorization": f"Bearer {user_key}"}, timeout=30.0
+        )
+        client_cm = streamable_http_client(MCP_URL, http_client=authed)
+
     async with (
-        streamable_http_client(MCP_URL, http_client=authed) as (read, write),
+        client_cm as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.initialize()

@@ -31,3 +31,7 @@ def new_project_internal_id() -> str:
 
 def new_audit_id() -> str:
     return f"aud_{uuid.uuid4().hex}"
+
+
+def new_activity_id() -> str:
+    return f"act_{uuid.uuid4().hex}"

@@ -88,14 +88,14 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None, raising=False)
     monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or "plugin installed"
+        cli, "_install_native", lambda name, _url, _plan, _mode: installed.append(name) or "plugin installed"
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli, "_install_opencode", lambda _url, _plan, _mode: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
 
     assert cli.main(["init", target]) == 0
     assert installed == ([target] if target != "all" else ["codex", "claude", "opencode", "pi"])
@@ -116,14 +116,14 @@ def test_main_all_checks_every_executable_and_preflight_before_installers(
     monkeypatch.setattr(cli, "_require_executable", lambda target: events.append(target))
     monkeypatch.setattr(cli, "_is_installed", lambda _target: True)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda target, _url, _plan: events.append(f"install:{target}") or "plugin installed"
+        cli, "_install_native", lambda target, _url, _plan, _mode: events.append(f"install:{target}") or "plugin installed"
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: events.append("install:opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli, "_install_opencode", lambda _url, _plan, _mode: events.append("install:opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: events.append("install:pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: events.append("install:pi") or (Path("/tmp/pi/mcp.json"),))
 
     assert cli.main(["init", "all"]) == 0
 
@@ -400,9 +400,13 @@ def test_preflight_rejects_empty_key_before_opening_connection(
             "opencode.json",
             "mcp",
             {
-                "type": "remote",
-                "url": "https://host/next/mcp/",
-                "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
+                "type": "local",
+                "command": [
+                    "uvx", "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
+                    "ach-memory", "mcp", "--url", "https://host/next/mcp/",
+                ],
+                "environment": {"ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}"},
+                "enabled": True,
             },
             [
                 "plugins/ach-memory.js",
@@ -415,11 +419,11 @@ def test_preflight_rejects_empty_key_before_opening_connection(
             "mcp.json",
             "mcpServers",
             {
-                "url": "https://host/next/mcp/",
-                "auth": "bearer",
-                "bearerTokenEnv": "ACH_MEMORY_API_KEY",
-                "lifecycle": "lazy",
-                "directTools": False,
+                "command": "uvx",
+                "args": [
+                    "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
+                    "ach-memory", "mcp", "--url", "https://host/next/mcp/",
+                ],
             },
             [
                 "extensions/ach-memory.js",
@@ -471,7 +475,7 @@ def test_config_install_upserts_only_ach_memory_and_refreshes_owned_files(
     assert all((root / relative).read_text() != "stale" for relative in owned_paths)
     assert all(b"user-secret" not in (root / relative).read_bytes() for relative in owned_paths)
     assert all("user-secret" not in " ".join(command) for command in commands)
-    assert commands == ([] if target == "opencode" else [["pi", "install", "npm:pi-mcp-adapter"], ["pi", "install", "npm:pi-mcp-adapter"]])
+    assert commands == []
 
 
 @pytest.mark.parametrize(
@@ -685,14 +689,14 @@ def _stub_installers(monkeypatch: pytest.MonkeyPatch, installed: list[str]) -> N
 
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _url, _plan: installed.append(name) or "plugin installed"
+        cli, "_install_native", lambda name, _url, _plan, _mode: installed.append(name) or "plugin installed"
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli, "_install_opencode", lambda _url, _plan, _mode: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
 
 
 def test_main_all_installs_what_is_present_and_names_what_it_skipped(
@@ -713,7 +717,10 @@ def test_main_all_installs_what_is_present_and_names_what_it_skipped(
     captured = capsys.readouterr()
     skips = [line for line in captured.out.splitlines() if "skipped, not on PATH" in line]
     assert sorted(line.split()[1] for line in skips) == ["codex", "opencode"]
-    assert captured.err == ""
+    # Progress narration is the only thing allowed on stderr on success --
+    # anything else there is an error message that belongs beside a nonzero
+    # exit, and the skips above must stay on stdout, not be shouted here.
+    assert all(line.startswith("  …") for line in captured.err.splitlines())
 
 
 def test_main_all_fails_when_no_supported_agent_is_present(
@@ -752,14 +759,14 @@ def _init_stubs(monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
     monkeypatch.setattr(cli, "_is_installed", lambda target: target in present)
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_install_native", lambda target, _url, _plan: f"plugin installed from {cli.MARKETPLACE}")
-    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url: (Path("config"), {}, ()))
+    monkeypatch.setattr(cli, "_install_native", lambda target, _url, _plan, _mode: f"plugin installed from {cli.MARKETPLACE}")
+    monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
         cli, "_install_opencode",
-        lambda _url, _plan: (Path.home() / ".config/opencode/opencode.json",
+        lambda _url, _plan, _mode: (Path.home() / ".config/opencode/opencode.json",
                              Path.home() / ".config/opencode/plugins/ach-memory.js"),
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan: (Path.home() / ".pi/agent/mcp.json",))
+    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: (Path.home() / ".pi/agent/mcp.json",))
 
 
 def test_init_reports_every_agent_including_the_ones_that_write_no_files(
@@ -788,41 +795,21 @@ def test_init_reports_every_agent_including_the_ones_that_write_no_files(
     assert "user-secret" not in out
 
 
-def test_init_notes_that_codex_pins_the_endpoint_and_others_do_not(
+def test_init_allows_codex_without_an_explicit_endpoint(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """init registers the Codex server itself now, so the note is about the
-    consequence -- a pinned URL that will not follow the environment -- not a
-    command left for the reader to paste."""
-    monkeypatch.setenv("ACH_MEMORY_URL", "https://memory.example.com")
-    monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
-
-    _init_stubs(monkeypatch, {"codex"})
-    assert cli.main(["init", "codex"]) == 0
-    out = capsys.readouterr().out
-    assert "re-run init after changing it" in out
-    # The command is run, not printed for the reader to copy.
-    assert "codex mcp add" not in out
-
-    _init_stubs(monkeypatch, {"claude"})
-    assert cli.main(["init", "claude"]) == 0
-    assert "re-run init" not in capsys.readouterr().out
-
-
-def test_init_refuses_codex_without_an_explicit_endpoint(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Codex writes the URL into its config, so the localhost fallback that is
-    merely a warning elsewhere would pin localhost permanently here -- and the
-    install would look successful doing it."""
+    """The proxy reads ACH_MEMORY_URL per spawn, not at install time, so codex
+    no longer needs the endpoint pinned into its config at init -- the
+    localhost fallback is just a warning for codex now, same as every other
+    host."""
     monkeypatch.delenv("ACH_MEMORY_URL", raising=False)
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
     _init_stubs(monkeypatch, {"codex"})
 
-    assert cli.main(["init", "codex"]) == 1
+    assert cli.main(["init", "codex"]) == 0
 
-    err = capsys.readouterr().err
-    assert "ACH_MEMORY_URL must be set to install for codex" in err
+    out = capsys.readouterr().out
+    assert "ACH_MEMORY_URL is not set" in out
 
 
 def test_init_still_allows_the_localhost_fallback_without_codex(
@@ -970,10 +957,14 @@ def test_codex_install_registers_the_server_from_the_current_environment(
     mcp = [c for c in runner.commands if c[:2] == ["codex", "mcp"]]
     assert [c[2] for c in mcp] == ["remove", "add"]
     add = mcp[1]
-    assert add[add.index("--url") + 1] == MCP_URL
-    # A variable NAME, never its value: rotating the key must not need a
-    # reinstall, and the secret must never reach a command line.
-    assert add[add.index("--bearer-token-env-var") + 1] == "ACH_MEMORY_API_KEY"
+    assert add == [
+        "codex", "mcp", "add", "ach-memory", "--",
+        "uvx", "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
+        "ach-memory", "mcp", "--url", MCP_URL,
+    ]
+    # The endpoint travels as the proxy's own --url argument, never as codex's
+    # remote-server --url plus a bearer env var name: that is the --http shape.
+    assert "--bearer-token-env-var" not in add
     assert not any("mcp" in c and "list" in c for c in runner.commands)
 
 
@@ -1015,3 +1006,79 @@ def test_opencode_install_keeps_skill_paths_the_user_already_set(tmp_path, monke
     assert "/srv/team-skills" in config["skills"]["paths"]
     assert str(config_dir / "skills") in config["skills"]["paths"]
     assert config["skills"]["urls"] == ["https://x/"]
+
+
+def test_mcp_requires_api_key(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.delenv("ACH_MEMORY_API_KEY", raising=False)
+    assert cli.main(["mcp"]) == 1
+    assert "ACH_MEMORY_API_KEY" in capsys.readouterr().err
+
+
+def test_mcp_builds_proxy_from_env_and_runs_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
+    calls: list[tuple[str, str]] = []
+
+    class FakeProxy:
+        def run(self) -> None:
+            calls.append(("run", "stdio"))
+
+    def fake_build(url: str, key: str) -> FakeProxy:
+        calls.append((url, key))
+        return FakeProxy()
+
+    monkeypatch.setattr("memory.mcp.proxy.build_proxy", fake_build)
+    assert cli.main(["mcp"]) == 0
+    # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
+    assert calls == [("https://mem.example.com/mcp/", "mem_secret"), ("run", "stdio")]
+
+
+def test_config_plan_modes_pick_the_server_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--http restores the direct-remote entries; --local pins this
+    checkout's script. Only the server entry varies -- assets and paths are
+    covered by the stdio test above."""
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    url = "https://memory.example.com/mcp/"
+
+    _, config, _ = cli._config_plan("pi", url, "http")
+    assert config["mcpServers"]["ach-memory"] == {
+        "url": url,
+        "auth": "bearer",
+        "bearerTokenEnv": "ACH_MEMORY_API_KEY",
+        "lifecycle": "lazy",
+        "directTools": False,
+    }
+    _, config, _ = cli._config_plan("opencode", url, "http")
+    assert config["mcp"]["ach-memory"] == {
+        "type": "remote",
+        "url": url,
+        "headers": {"Authorization": "Bearer {env:ACH_MEMORY_API_KEY}"},
+    }
+
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/checkout/.venv/bin/ach-memory")
+    _, config, _ = cli._config_plan("pi", url, "local")
+    assert config["mcpServers"]["ach-memory"] == {
+        "command": "/checkout/.venv/bin/ach-memory",
+        "args": ["mcp", "--url", url],
+    }
+
+
+def test_register_codex_server_http_pins_url_and_env_var_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(cli, "_run", lambda command: commands.append(command))
+    cli._register_codex_server("https://memory.example.com/mcp/", "http")
+    assert commands == [
+        ["codex", "mcp", "remove", "ach-memory"],
+        [
+            "codex", "mcp", "add", "ach-memory",
+            "--url", "https://memory.example.com/mcp/",
+            "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
+        ],
+    ]

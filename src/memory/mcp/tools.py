@@ -28,7 +28,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field, ValidationError, model_serializer
 
-from memory import provenance
+from memory import activity, metrics, provenance
 from memory.api.curation import CorrectRequest, ListMemoriesRequest
 from memory.api.documents import ListDocumentsRequest
 from memory.api.memory import (
@@ -201,6 +201,7 @@ def _run(
     both funnel through the same `_resolve_bank` and the same per-credential
     `memory.ratelimit.Limiter`.
     """
+    activity.new_call()
     try:
         with tool_session(ctx) as tc:
             # body_factory runs INSIDE the session, not before it: tool_session
@@ -259,10 +260,14 @@ def _run(
         # project_slug/owner_type, for instance, is meant to reach the
         # caller; nothing here adds a new leak, it just stops MCP from
         # throwing that decision away.
+        metrics.ERRORS.labels(code=exc.code).inc()
+        activity.set_error(exc.code)
         raise MCPToolError(exc.code, exc.message, exc.details) from None
     except ValidationError as exc:
+        metrics.ERRORS.labels(code="INVALID_REQUEST").inc()
+        activity.set_error("INVALID_REQUEST")
         raise MCPToolError("INVALID_REQUEST", _validation_message(exc)) from None
-    except MCPToolError:
+    except MCPToolError as exc:
         # Already the intended shape (e.g. the malformed-upstream-body
         # branch above, raised INSIDE the try on purpose so it reaches THIS
         # except chain rather than the SDK dispatcher). Without this branch
@@ -270,13 +275,18 @@ def _run(
         # "unhandled MCP tool error", and re-raised an equivalent error --
         # noise, since the first log line already said everything (review
         # finding 6, 2026-08-23).
+        activity.set_error(getattr(exc, "code", "INTERNAL_ERROR"))
         raise
     except Exception as exc:
         # Anything else is unexpected and may carry backend internals (SQL,
         # a connection string, a bank id) in its text — logged here, for our
         # eyes only, and never echoed to the caller.
         logger.error("unhandled MCP tool error", exc_info=exc)
+        metrics.ERRORS.labels(code="INTERNAL_ERROR").inc()
+        activity.set_error("INTERNAL_ERROR")
         raise MCPToolError("INTERNAL_ERROR", "internal error") from None
+    finally:
+        activity.finish("mcp")
 
 
 def register(mcp: MCPServer) -> None:

@@ -229,6 +229,17 @@ def test_project_scope_without_a_slug_is_unavailable(client, two_users, tenant):
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "PROJECT_CONTEXT_UNAVAILABLE"
+    # The caller that hits this is usually an LLM holding only the tool
+    # schema: "MEMORY_PROJECT or a Git repository" names things it cannot
+    # touch, so the message must name the parameter it can actually pass.
+    message = response.json()["error"]["message"]
+    assert "project_slug" in message
+    # And ONLY that one. git_locator was offered here and it is a dead end:
+    # no slug means this error whatever locator the call carries, because a
+    # locator never resolves identity (inv. 11) and is not unique (§17).
+    # Measured against production 2026-08-27, a model that took the offer got
+    # the identical error back.
+    assert "git_locator" not in message
 
 
 @respx.mock

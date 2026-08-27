@@ -4,10 +4,16 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.orm import Session
 
+# Imported unconditionally (not gated on metrics_enabled) so the collectors
+# register with the default REGISTRY and instrumentation runs regardless of
+# whether the /metrics scrape endpoint is exposed; metrics_enabled only
+# controls the endpoint below.
+from memory import activity, metrics
+from memory.api.observability import ObservabilityMiddleware
 from memory.auth.principal import Principal, resolve_principal
 from memory.config import get_settings
 from memory.db import get_session
@@ -87,6 +93,7 @@ def current_on_behalf_of(
 
 
 def create_app() -> FastAPI:
+    from memory.api import activity as activity_routes
     from memory.api import admin as admin_routes
     from memory.api import curation as curation_routes
     from memory.api import directives as directive_routes
@@ -112,6 +119,7 @@ def create_app() -> FastAPI:
             yield
 
     app = FastAPI(title="ach-memory", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(ObservabilityMiddleware)
 
     # httpx logs the full request URL at INFO, and our Hindsight URLs carry the
     # bank ID. Silent today only because nothing configures the root logger —
@@ -120,6 +128,8 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(DomainError)
     def _domain_error(_: Request, exc: DomainError) -> JSONResponse:
+        metrics.ERRORS.labels(code=exc.code).inc()
+        activity.set_error(exc.code)
         return JSONResponse(
             status_code=exc.status,
             content={
@@ -148,6 +158,8 @@ def create_app() -> FastAPI:
         a traceback -- the one line meant to survive everything else logging
         nothing. Passing `exc` explicitly bypasses `sys.exc_info()` entirely.
         """
+        metrics.ERRORS.labels(code="INTERNAL_ERROR").inc()
+        activity.set_error("INTERNAL_ERROR")
         logger.error("unhandled error", exc_info=exc)
         return JSONResponse(
             status_code=500,
@@ -155,6 +167,7 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(user_routes.router)
+    app.include_router(activity_routes.router)
     app.include_router(memory_routes.router)
     app.include_router(curation_routes.router)
     app.include_router(document_routes.router)
@@ -164,6 +177,28 @@ def create_app() -> FastAPI:
     app.include_router(admin_routes.router)
     app.include_router(directive_routes.router)
     app.include_router(mental_model_routes.router)
+
+    if get_settings().metrics_enabled:
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        @app.get("/metrics", include_in_schema=False)
+        def prometheus_metrics() -> Response:  # Name does not shadow memory.metrics module (line 15)
+            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    if get_settings().admin_ui_enabled:
+        from pathlib import Path
+
+        from fastapi.responses import FileResponse
+
+        dashboard = Path(__file__).resolve().parent.parent / "static" / "dashboard.html"
+
+        @app.get("/admin/ui", include_in_schema=False)
+        def admin_ui() -> FileResponse:
+            # One file, read from the package. No StaticFiles mount: a mount
+            # serves a whole directory, and this directory should never gain
+            # a second servable file by accident.
+            return FileResponse(dashboard, media_type="text/html")
+
     # DNS-rebinding protection is on by default in the SDK and allows only
     # 127.0.0.1, so a deployed service behind an ingress would answer 421 to
     # every MCP call. Configured rather than disabled: the check is worth
@@ -173,6 +208,14 @@ def create_app() -> FastAPI:
         "/mcp",
         mcp.streamable_http_app(
             streamable_http_path="/",
+            # No session state to keep: every tool re-authenticates from the
+            # request's own headers in `tool_session` and opens its own DB
+            # session, so a session id would pin a caller to one pod while
+            # carrying nothing. Stateful is also a scale-out trap -- the
+            # session lives in one process's memory, so a second replica
+            # behind the Gateway answers "session not found" to half the
+            # traffic unless the ingress is made sticky.
+            stateless_http=True,
             transport_security=TransportSecuritySettings(
                 allowed_hosts=allowed,
                 # v1 supports native/non-browser MCP clients only; browser
