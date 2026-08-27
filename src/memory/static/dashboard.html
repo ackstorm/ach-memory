@@ -205,6 +205,11 @@ tr.silent .ribbon{opacity:.55}
 }
 .mem-head{display:flex;gap:14px;align-items:baseline;margin-bottom:8px;font-size:11px;color:var(--text-3)}
 .mem-head b{color:var(--text-2);font-weight:400}
+.mem-head .gone{color:var(--rust)}
+.mem.gone{border-left-color:var(--rust)}
+.mem.gone p{color:var(--text-2);text-decoration:line-through}
+.mem-meta{margin-bottom:8px;font-size:11px;color:var(--text-3)}
+.mem-count{padding-bottom:12px;font-size:11px;color:var(--text-3)}
 .mem p{margin:0;font-family:var(--sans);font-size:14px;line-height:1.55;color:var(--text)}
 .empty{color:var(--text-3);padding:40px 0;text-align:center;font-size:13px}
 
@@ -405,6 +410,17 @@ function fmtAgo(iso) {
   return `${Math.round(h / 24)}d ago`;
 }
 
+/* Absolute, not "3d ago": peek is the panel where you compare a memory against
+   what you remember happening, and that needs a date you can name. The full
+   ISO stamp rides along in the title attribute. */
+function fmtWhen(iso) {
+  const d = new Date(iso);
+  if (!iso || isNaN(d.getTime())) return "undated";
+  return d.toLocaleString(undefined, {
+    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
 function bankTarget(row) {
   return row.scope === "project" ? row.project_slug : row.user_id;
 }
@@ -543,25 +559,53 @@ function buildPeekOptions(fleet) {
   select.innerHTML = options.join("");
 }
 
+/* The field names here are Hindsight's, not ours. A memory is `fact_type` and
+   `date` -- not type and created_at -- and it carries no agent and no
+   git_locator at all. Reading names that do not exist fails silently: every
+   row rendered "memory — —" while the payload underneath held the type, the
+   timestamp, the invalidation state and the proof count. Measured against a
+   live bank, an item is: id, text, context, date, fact_type, document_id,
+   mentioned_at, occurred_start/end, entities, chunk_id, proof_count, tags,
+   metadata, consolidated_at, consolidation_failed_at, state,
+   invalidation_reason, invalidated_at, edited_at. */
 function renderMemories(response) {
   const out = document.getElementById("peek-out");
-  const items = response?.result?.items ?? [];
+  const result = response?.result ?? {};
+  const items = result.items ?? [];
   if (!items.length) {
     out.innerHTML = `<div class="empty">This bank is empty. Nothing has been retained into it yet.</div>`;
     return;
   }
-  out.innerHTML = items.map((item) => {
-    const type = item.type ?? item.memory_type ?? "memory";
-    const when = item.created_at ?? item.updated_at ?? "";
-    const agent = item.metadata?.agent ?? item.agent ?? "—";
-    const branch = item.metadata?.git_locator ?? item.git_locator ?? "—";
-    const text = item.content ?? item.text ?? "";
+  const rows = items.map((item) => {
+    /* An invalidated memory is still stored and still returned; it just no
+       longer holds. Showing it identically to a valid one is the one way this
+       panel can actively mislead. */
+    const gone = item.state === "invalidated";
+    const head = [
+      `<b>${esc(item.fact_type ?? "memory")}</b>`,
+      `<span title="${esc(item.date ?? "")}">${esc(fmtWhen(item.date))}</span>`,
+      `<span class="${gone ? "gone" : ""}" title="${esc(item.invalidation_reason ?? "")}">${esc(item.state ?? "")}</span>`,
+      item.proof_count ? `<span>${esc(String(item.proof_count))} proof</span>` : "",
+      item.id ? `<span>${esc(String(item.id).slice(0, 8))}</span>` : "",
+    ].filter(Boolean).join("");
+    const meta = [
+      item.metadata?.topic ? `topic: ${item.metadata.topic}` : "",
+      item.entities ? `entities: ${item.entities}` : "",
+    ].filter(Boolean).join(" · ");
     return `
-    <article class="mem">
-      <div class="mem-head"><b>${esc(type)}</b><span>${esc(when)}</span><span>${esc(agent)}</span><span>${esc(branch)}</span></div>
-      <p>${esc(text)}</p>
+    <article class="mem${gone ? " gone" : ""}">
+      <div class="mem-head">${head}</div>
+      ${meta ? `<div class="mem-meta">${esc(meta)}</div>` : ""}
+      <p>${esc(item.text ?? "")}</p>
     </article>`;
   }).join("");
+  /* `total` is the whole bank; the rows are one page of it. Without this line
+     a bank of 208 memories looks like a bank of 20. */
+  const total = result.total;
+  const count = typeof total === "number" && total > items.length
+    ? `showing ${items.length} of ${total.toLocaleString()}`
+    : `${items.length} memor${items.length === 1 ? "y" : "ies"}`;
+  out.innerHTML = `<div class="mem-count">${esc(count)}</div>${rows}`;
 }
 
 document.getElementById("peek-go").addEventListener("click", async () => {
