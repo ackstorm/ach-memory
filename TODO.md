@@ -51,6 +51,19 @@ needing to know the endpoint.
 Until then `init` keeps working for these two, and `plugins/opencode/` and
 `plugins/pi/` stay in the wheel.
 
+**2026-08-27:** the table above is now history, not a live constraint. Every
+host spawns the same local stdio proxy (`uvx ach-memory mcp`), which reads
+`ACH_MEMORY_URL`/`ACH_MEMORY_API_KEY` from its own environment on every
+launch -- so codex's header-ignoring, the literal URLs opencode and pi wrote,
+and the `${VAR}`-expansion differences between hosts are all moot: nothing
+endpoint- or credential-shaped is written into a host config any more, on any
+of the four. `_install_pi` no longer shells out to `npm:pi-mcp-adapter`
+either, since pi's native `command`/`args` stdio entry needs no adapter to
+bridge it to a remote server. What remains open in this TODO is only the
+question above it: whether opencode and pi should distribute and update
+ach-memory through their own native plugin mechanisms instead of `init`
+writing their config files for them.
+
 
 ## Keyword-gated UserPromptSubmit
 

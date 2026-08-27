@@ -63,6 +63,12 @@ export ACH_MEMORY_URL=https://memory.example.com
 export ACH_MEMORY_API_KEY=<user-key>
 ```
 
+All four hosts run the same server: `uvx ach-memory mcp`, a local stdio proxy
+that reads `ACH_MEMORY_URL`/`ACH_MEMORY_API_KEY` from the environment on every
+launch and resolves the calling project per SPEC §8. Nothing host-specific is
+baked in at install time, so the same install commands work against any
+deployment and rotating the key or moving the endpoint needs no reinstall.
+
 Claude Code installs from this repository's own marketplace:
 
 ```bash
@@ -70,23 +76,12 @@ claude plugin marketplace add ackstorm/ach-memory
 claude plugin install ach-memory@ach-memory
 ```
 
-Claude resolves both values at run time, so nothing is written per install and
-the same commands work against any deployment. With neither variable set it
-falls back to `http://localhost:8000`, which is what `docker compose up` serves.
-
-Codex takes the same plugin for its hooks and skill, but cannot expand
-`${ACH_MEMORY_URL}` in a URL, so its server has to be registered separately.
-`ach-memory init codex` does that for you, using the endpoint exported above:
+Codex takes the same plugin for its hooks and skill, and `ach-memory init
+codex` registers the stdio server for it, the same way the other installers do:
 
 ```bash
 uv run ach-memory init codex
 ```
-
-Only the URL is fixed at install time; the key is read from the environment on
-every call, so rotating it needs no reinstall. Because the URL is pinned,
-`init codex` refuses to run without `ACH_MEMORY_URL` rather than quietly
-recording `http://localhost:8000`, and re-running it after changing the
-variable repoints the server.
 
 OpenCode and pi have no marketplace, so they still need the installer, which
 writes their config files for them (see [TODO.md](TODO.md)):
@@ -117,7 +112,9 @@ recall anything automatically. Ask an agent to use memory when you want it to.
 
 ## MCP
 
-Configure another MCP-capable agent with:
+`uvx ach-memory mcp` (stdio, above) is the default for all four hosts, but the
+remote streamable HTTP endpoint it proxies to remains fully supported for any
+MCP-capable agent that prefers to speak to it directly:
 
 ```text
 POST http://<host>:8000/mcp/
@@ -128,6 +125,26 @@ x-ach-memory-key: <user key>
 a gateway already uses `Authorization`; when both are sent,
 `x-ach-memory-key` wins. The master key is rejected on MCP, and v1 supports
 native/non-browser MCP clients only.
+
+### Direct HTTP
+
+A host that reads its own `mcpServers`-style JSON, such as Claude Code before
+`ach-memory init`, can point at the endpoint above without going through the
+stdio proxy at all:
+
+```json
+{
+  "mcpServers": {
+    "ach-memory": {
+      "type": "http",
+      "url": "${ACH_MEMORY_URL:-http://localhost:8000}/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${ACH_MEMORY_API_KEY}"
+      }
+    }
+  }
+}
+```
 
 ## Important limits
 
