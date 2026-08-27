@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).parents[1]
 NATIVE = ("claude-code", "codex")
@@ -383,9 +384,42 @@ def test_the_skill_carries_the_policy_for_hosts_whose_hooks_never_run(host: str)
     """
     text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
     assert "instead of the host's own file-based memory directory and memory.md" in text
-    assert "read at the start of any conversation" in text
+    assert "at the start of every conversation" in text
     assert "worth remembering" in text, "the skill copy must carry the write moment too"
     assert "`retain`" in text
+
+
+@pytest.mark.parametrize("host", NATIVE + ADAPTED)
+def test_the_skill_description_carries_the_policy_and_not_just_a_pointer(host: str) -> None:
+    """The description is the only text that arrives without being read.
+
+    A skill body is loaded when the host decides the description matches. The
+    description itself is injected into every session, in the same block as
+    CLAUDE.md, whether or not the body is ever opened -- so it is the cheapest
+    channel there is and the only one that survives a host that never runs our
+    hooks and never opens the skill.
+
+    engram uses it that way: its entire memory protocol description is
+    "ALWAYS ACTIVE -- Persistent memory protocol. You MUST save decisions,
+    conventions, bugs, and discoveries to engram proactively. Do NOT wait for
+    the user to ask." No CLAUDE.md, no hook -- one imperative sentence in
+    frontmatter. Ours described a capability and pointed at the body instead,
+    which meant the displacement policy was one indirection away at the moment
+    it had to win.
+
+    The proactive mandate is scoped to retain deliberately. Recall stays
+    demand-driven: "a memory call needs a task that depends on it, not merely
+    a session starting" is about reading, and the two must not blur.
+    """
+    fm = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().split("---")[1]
+    description = yaml.safe_load(fm)["description"]
+    assert len(description) <= 1024, "hosts truncate long descriptions"
+    text = description.lower()
+    assert "always active" in text, "the description must not read as an optional capability"
+    assert "proactively" in text and "never wait to be asked" in text
+    assert "memory.md" in text, "the displacement must survive a body that is never opened"
+    assert "`retain`" in text
+    assert "read this skill" in text, "the description must still route to the body"
 
 
 @pytest.mark.parametrize("host", NATIVE + ADAPTED)
