@@ -68,7 +68,8 @@ def resolve_project_bank(
     """
     if not slug:
         raise ProjectContextUnavailable(
-            "scope=project needs MEMORY_PROJECT or a Git repository"
+            "scope=project needs a project: pass project_slug "
+            "(or git_locator with the repo's origin URL)"
         )
     result = projects.resolve(db, principal, slug, git_locator, create=create)
     return result.project.bank_id, result.resolved_from, result.project.project_slug

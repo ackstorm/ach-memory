@@ -229,6 +229,11 @@ def test_project_scope_without_a_slug_is_unavailable(client, two_users, tenant):
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "PROJECT_CONTEXT_UNAVAILABLE"
+    # The caller that hits this is usually an LLM holding only the tool
+    # schema: "MEMORY_PROJECT or a Git repository" names things it cannot
+    # touch, so the message must name the parameters it can actually pass.
+    assert "project_slug" in response.json()["error"]["message"]
+    assert "git_locator" in response.json()["error"]["message"]
 
 
 @respx.mock
