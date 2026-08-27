@@ -31,6 +31,9 @@ def _release_fixture(tmp_path: Path) -> Path:
         "deploy/helm/ach-memory/Chart.yaml",
         "deploy/helm/ach-memory/values.yaml",
         "uv.lock",
+        # The claude plugin pins its install source to a git tag
+        # (uvx --from git+...@vX.Y.Z), which release-bump rewrites too.
+        "plugins/claude-code/.mcp.json",
         *VERSIONED_MANIFESTS,
     ):
         source = REPO_ROOT / relative_path
