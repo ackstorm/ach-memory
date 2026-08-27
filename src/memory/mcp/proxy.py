@@ -41,6 +41,7 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         # No git on PATH (or a hung filesystem): same outcome as no repo.

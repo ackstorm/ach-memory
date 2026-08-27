@@ -6,6 +6,7 @@ scripts/mcp-smoke.py --proxy exercises it end to end against a live stack.
 """
 
 import subprocess
+from typing import ClassVar
 
 import pytest
 
@@ -99,7 +100,7 @@ async def test_middleware_injects_into_call_tool(tmp_path, monkeypatch):
 
     class Message:
         name = "list_memories"
-        arguments = {"scope": "project"}
+        arguments: ClassVar = {"scope": "project"}
 
     class Context:
         message = Message()
