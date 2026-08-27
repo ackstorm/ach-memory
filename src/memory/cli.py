@@ -625,11 +625,21 @@ def main(argv: list[str] | None = None) -> int:
                 "ACH_MEMORY_URL must be set for --http codex: it stores the "
                 "endpoint literally and cannot read the variable later"
             )
-        native_plans = {target: _native_plan(target) for target in targets if target in {"codex", "claude"}}
+        # Progress goes to stderr: init spends seconds inside the host CLIs
+        # (`claude plugin list` alone takes a few) and one network round-trip,
+        # and silence reads as a hang. stderr keeps the final stdout report
+        # clean and pipeable.
+        native_plans = {}
+        for target in targets:
+            if target in {"codex", "claude"}:
+                print(f"  … querying {target} plugin state", file=sys.stderr)
+                native_plans[target] = _native_plan(target)
         config_plans = {target: _config_plan(target, url, mode) for target in targets if target in {"opencode", "pi"}}
+        print(f"  … verifying MCP endpoint {url}", file=sys.stderr)
         asyncio.run(_preflight(url, os.environ.get("ACH_MEMORY_API_KEY", "")))
         results: list[tuple[str, str, tuple[Path, ...]]] = []
         for target in targets:
+            print(f"  … installing {target}", file=sys.stderr)
             if target in native_plans:
                 results.append((target, _install_native(target, url, native_plans[target], mode), ()))
             else:
