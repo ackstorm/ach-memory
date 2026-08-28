@@ -595,6 +595,40 @@ def test_provision_reconciles_a_model_whose_query_drifted(
 
 
 @respx.mock
+def test_provision_addresses_the_user_id_not_the_on_behalf_of_header(
+    client, master_headers, two_users, session
+):
+    """`?user_id=` names the target here, like every other `/v1/admin/*` route;
+    `On-Behalf-Of` is audit-only. `GET /v1/session-brief` is deliberately the
+    other way round -- header-first, because the console's Brief tab addresses
+    a user that way -- and that side is pinned in test_brief.py. Pinning only
+    one of the two would let a "harmonisation" flip this one in silence.
+
+    Pinned to the named user's own bank: a `banks/[^/]+/` regex answers for
+    either user, so it would prove a model was provisioned and not whose.
+    """
+    from memory.models import User
+
+    named, header_subject = two_users
+    bank_id = session.get(User, named["user_id"]).bank_id
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/{bank_id}/mental-models").mock(
+        return_value=httpx.Response(200, json={"mental_models": []})
+    )
+    route = respx.post(
+        url__regex=rf"{BASE}/v1/default/banks/{bank_id}/mental-models$"
+    ).mock(return_value=httpx.Response(201, json={"id": "mm-new"}))
+
+    response = client.post(
+        "/v1/admin/brief/user/provision",
+        params={"user_id": named["user_id"]},
+        headers={**master_headers, "On-Behalf-Of": header_subject["user_id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert route.called
+
+
+@respx.mock
 def test_provision_on_an_unknown_project_slug_404s_without_creating_it(
     client, master_headers, tenant
 ):

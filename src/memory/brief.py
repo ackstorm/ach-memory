@@ -91,7 +91,7 @@ def _reconcile(client, bank_id: str, model: dict, source_query: str) -> None:
 
     Both the query and the trigger are versioned in code, so a deploy that
     changes either must reach the models that already exist -- they are created
-    once, the first time a bank is used, and nothing else ever revisits them.
+    once, by an explicit provision call, and nothing else ever revisits them.
     Only the query was reconciled here at first, which meant a changed TRIGGER
     silently applied to new banks alone: the two models already provisioned in
     production would have kept a trigger no source file described.
