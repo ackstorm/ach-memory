@@ -997,6 +997,10 @@ fi
 exit 0
 ```
 
+**`curl -sf` is load-bearing, not decoration.** On any failure the endpoint returns the JSON error envelope (`src/memory/api/app.py:130-146`) with a non-200 status — `format=text` does not make errors plain text. Without `-f`, a broken service pastes `{"error": {...}}` straight into the agent's context as though it were memory. Measured during Task 7's review.
+
+The empty brief is unambiguous and must stay that way: it is ~289 characters and always begins `-- ach-memory brief rev`, so a hook can tell "no memory yet" from "service broken" by status plus that prefix. Do not add a special case for it.
+
 Set `chmod 0600` on the cache file after `mv` — it holds the user's memory. Raise the `hooks.json` timeout from 5 to 6 so the 3s curl plus `git remote` has room, and the hook is still bounded well under it.
 
 **Step 5: Run the tests, then run it for real**
