@@ -37,6 +37,23 @@ dependencies = [
     # forced, not a stray beta pickup. The <4.1 bound stops a silent
     # beta -> stable-4.x API jump from landing unreviewed.
     "fastmcp>=4.0.0b4,<4.1",
+    # Never imported here: declared only so uv will resolve `fastmcp` at all.
+    # fastmcp 4.x is a thin wrapper -- every version depends on
+    # `fastmcp-slim[client,server]==<same version>` -- and fastmcp-slim's 4.x
+    # line is pre-releases only. uv enables pre-releases for a package solely
+    # when a DIRECT requirement names one; a transitive pre-release pin is not
+    # enough. So `uvx --from git+...ach-memory` (what the Claude plugin's
+    # .mcp.json runs, and what every agent host starts the stdio proxy with)
+    # died on "No solution found ... fastmcp-slim[client]==4.0.0b4" from
+    # 2026-08-27 17:29 onward -- silently, since a failed MCP server only
+    # leaves a line in the host's own log. `uv.lock` pins exact versions, so
+    # `uv sync`, `uv run` and CI all stayed green through the whole outage.
+    # The obvious flag fix is worse: --prerelease=allow is global, and uv then
+    # takes httpx 1.0.dev5 (an API rewrite with no top-level `get` and no
+    # `HTTPError`), which crashes fetch_brief on its first line. Naming
+    # fastmcp-slim here enables pre-releases for exactly the one package that
+    # structurally requires them, and httpx stays on 0.28.
+    "fastmcp-slim[client,server]>=4.0.0b4,<4.1",
     # Verifies externally-issued identity tokens
     # (memory/auth/providers/jwt_provider.py, added in a later task).
     # [crypto] is not optional for us: ACH signs EdDSA and Dex signs RS256,
