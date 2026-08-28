@@ -223,6 +223,9 @@ tr.silent .ribbon{opacity:.55}
 .mm-stale{background:var(--sodium-dim);color:var(--sodium)}
 .mm-blind{background:var(--quiet);color:var(--text-2)}
 .mm-bad{background:var(--rust-dim);color:var(--rust)}
+/* pre-wrap: a mental model is a list of one-line rules, and collapsing its
+   own line breaks runs them into one unreadable paragraph. */
+.mm-content{margin-bottom:8px;white-space:pre-wrap;word-break:break-word;font:13px/1.6 var(--mono);color:var(--text)}
 .mm-query{margin-bottom:8px;font-size:12px;color:var(--text-2);font-style:italic}
 .mm-line{font-size:11px;color:var(--text-3);margin-top:6px}
 .mm-line b{color:var(--text-2);font-weight:400}
@@ -817,7 +820,8 @@ function renderModels(models, histories) {
         <span>${esc(String(history.length))} version${history.length === 1 ? "" : "s"}</span>
         <span>${esc(shortId(model.id))}</span>
       </div>
-      ${model.source_query ? `<div class="mm-query">${esc(model.source_query)}</div>` : ""}
+      ${model.content ? `<div class="mm-content">${esc(model.content)}</div>` : `<div class="empty">No content yet — never refreshed, or cleared.</div>`}
+      ${model.source_query ? `<div class="mm-query">query: ${esc(model.source_query)}</div>` : ""}
       ${drift}
       ${traceLine(model)}
     </article>`;
@@ -828,7 +832,9 @@ document.getElementById("models-go").addEventListener("click", async () => {
   const value = document.getElementById("models-target").value;
   const out = document.getElementById("models-out");
   if (!value) { out.innerHTML = `<div class="empty">Pick a bank first.</div>`; return; }
-  const qs = new URLSearchParams(scopeParams(value)).toString();
+  // detail=full or the API returns no `content` and this tab renders the
+  // prompt where the synthesis belongs.
+  const qs = new URLSearchParams({ ...scopeParams(value), detail: "full" }).toString();
   out.innerHTML = `<div class="empty">Reading…</div>`;
   try {
     const listed = await api(`/v1/mental-models?${qs}`);

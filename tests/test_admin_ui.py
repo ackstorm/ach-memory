@@ -130,6 +130,21 @@ def test_brief_sends_the_scope_query_param_it_cannot_omit(client):
     assert '"on-behalf-of"' in body, "the subject travels as a header (SPEC §16.5)"
 
 
+def test_models_asks_for_the_content_and_renders_it(client):
+    """GET /v1/mental-models omits `content` unless detail=full is asked for.
+
+    Without it the tab fell back to `source_query` and drew the prompt in the
+    place the synthesis belongs, so an operator reading the panel saw the
+    question and concluded the summary was missing. brief.py already passes
+    detail="full" for the same reason, which is why /v1/session-brief showed
+    content while this panel never did.
+    """
+    body = client.get("/admin/ui").text
+
+    assert 'detail: "full"' in body
+    assert "model.content" in body
+
+
 def test_brief_shows_the_instructions_with_whitespace_intact(client):
     """The brief is a line-per-rule instruction list. Collapsing its whitespace
     would show something the agent never receives."""
