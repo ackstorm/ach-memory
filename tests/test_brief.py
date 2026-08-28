@@ -107,15 +107,17 @@ def test_a_changed_source_query_updates_the_model_in_place():
     assert kwargs["source_query"] == brief.USER_QUERY
 
 
-def test_a_long_digest_is_truncated_with_a_visible_marker():
-    """max_tokens is advisory upstream: measured ~850 tokens returned for a
-    512 request."""
-    client = FakeClient(models=[_model("x" * 5000)])
+def test_a_long_digest_is_served_whole():
+    """max_tokens is advisory upstream, so a digest routinely runs longer than
+    asked for. It still goes out intact: cutting it left the last line severed
+    mid-word, and an unmarked half sentence can read as the opposite of the
+    rule it came from."""
+    content = "* a rule that must not be cut\n" + "x" * 5000
+    client = FakeClient(models=[_model(content)])
 
     section = brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
 
-    assert len(section.text) <= brief.MAX_SECTION_CHARS + 40
-    assert section.text.endswith("[truncated]")
+    assert section.text == content
 
 
 def _section(text):

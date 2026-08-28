@@ -17,7 +17,6 @@ from datetime import datetime, timedelta
 BRIEF_MODEL_NAME = "ach-memory-session-brief"
 MAX_TOKENS = 400
 TRIGGER = {"mode": "delta", "refresh_cron": "0 3 * * *"}
-MAX_SECTION_CHARS = 2000
 # Stale AND older than this means refreshes are failing, not that the user
 # went quiet.
 STALE_AFTER = timedelta(days=7)
@@ -104,8 +103,14 @@ def ensure_section(
     if model.get("is_stale") and _older_than(refreshed_at, now):
         return None
 
-    if len(content) > MAX_SECTION_CHARS:
-        content = content[:MAX_SECTION_CHARS].rstrip() + "\n[truncated]"
+    # Served whole. A digest was hard-cut at 2000 characters here, which
+    # measured live meant every section lost its last line mid-word: both
+    # banks returned just over the cap (2018 and 2397 characters for a
+    # max_tokens: 400 request, so the cut was the normal path, not an edge
+    # case) and ended on "...omit tests entirely for trivi". A half sentence
+    # is worse than a missing one: nothing marks it as incomplete to the
+    # model reading it, so a rule can arrive meaning the opposite of what it
+    # says. `max_tokens` already bounds this upstream.
     return Section(text=content, refreshed_at=refreshed_at)
 
 
