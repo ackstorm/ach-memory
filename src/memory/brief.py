@@ -85,8 +85,9 @@ SMALLEST_BUDGET = 1800
 # what it does not know exists -- and must not be told to call what it cannot,
 # so `recall` is named with the confirmation its host will ask for, while the
 # profiles are named as things memory holds and not as a call to fetch them.
+_INDEX_HEADING = "-- What else memory holds --"
 INDEX_SECTION = (
-    "-- What else memory holds --\n"
+    f"{_INDEX_HEADING}\n"
     "user profile: this user's standing working preferences.\n"
     "project profile: this project's conventions, constraints and gotchas.\n"
     "facts and observations: recall(scope, query) -- your host will ask you to "
@@ -97,6 +98,22 @@ _ORIENTATION_HEADING = "-- This project --"
 _USER_HEADING = "-- What memory knows about you --"
 _PROJECT_HEADING = "-- What memory knows about this project --"
 _WORKING_STATE_HEADING = "-- Where the work was left --"
+
+# Only the compiler writes a heading. Profile text is model-generated from
+# content any project member can write, and a profile line reading
+# "-- What else memory holds --" renders a second, earlier affordance list
+# naming whatever tools it likes -- the highest-value forgery in the tier,
+# because that block is the one thing never dropped and it is what tells the
+# agent what it may call.
+_HEADINGS = frozenset(
+    {
+        _INDEX_HEADING,
+        _ORIENTATION_HEADING,
+        _USER_HEADING,
+        _PROJECT_HEADING,
+        _WORKING_STATE_HEADING,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -279,8 +296,18 @@ def budget_for(host: str | None) -> int:
     return HOST_BUDGETS.get(host or "", SMALLEST_BUDGET)
 
 
-def _header(revision: int) -> str:
-    return f"-- ach-memory brief rev {revision} / protocol {MEMORY_PROTOCOL} --"
+def _header(revision: int, project_slug: str | None) -> str:
+    """The revision is one counter per (user, project), so the tier has to name
+    which counter its number came from.
+
+    An MCP proxy that starts with no git locator caches a revision from the
+    no-project counter while a hook fetches the full tier with a slug, from a
+    different one: "INDEX rev 42 / FULL rev 39" then compares two unrelated
+    sequences and the consumer keeps the wrong tier -- the failure the revision
+    exists to prevent.
+    """
+    scope = f"project {project_slug}" if project_slug else "no project"
+    return f"-- ach-memory brief rev {revision} / protocol {MEMORY_PROTOCOL} / {scope} --"
 
 
 def _inert(value: str) -> str:
@@ -302,11 +329,22 @@ def _lines(section: Section | None) -> list[str]:
     these profiles are free text, so a line is the smallest unit the compiler
     can drop without cutting a sentence in half.
 
-    Blank lines go: they cost budget and say nothing.
+    Blank lines go: they cost budget and say nothing. Trailing whitespace goes
+    with them -- a CRLF digest would otherwise pay for a carriage return on
+    every line and render one too.
+
+    `splitlines`, not `split("\\n")`: it also breaks on U+2028 and friends,
+    which several hosts render as a line break. A "line" the compiler cannot
+    see is a line the heading check below cannot reject.
+
+    A line that IS one of our headings is dropped rather than shown: forgery
+    or coincidence, it cannot be rendered as itself, and dropping is the one
+    response that cannot be misread by whoever reads the tier next.
     """
     if section is None:
         return []
-    return [line for line in section.text.split("\n") if line.strip()]
+    stripped = (line.rstrip() for line in section.text.splitlines())
+    return [line for line in stripped if line.strip() and line.strip() not in _HEADINGS]
 
 
 def _orientation_lines(orientation: Orientation | None) -> list[str]:
@@ -368,6 +406,7 @@ def _fit(lines: list[str], remaining: int) -> tuple[list[str], int]:
 
 def compose_index(
     revision: int,
+    project_slug: str | None,
     user: Section | None,
     orientation: Orientation | None,
     project: Section | None,
@@ -391,12 +430,16 @@ def compose_index(
        `INDEX_SECTION`. Whole or not at all -- a metadata record quietly
        missing a field reads as a project that does not have one.
     2. A capped share for every other section, so no one of them can take the
-       tier (`INDEX_CAPS`).
-    3. The leftover, in `_FILL_ORDER` priority, so a user with three lines of
-       profile does not get a half-empty tier while the project has thirty
-       more lines to give.
+       tier (`INDEX_CAPS`) -- and a FLOOR held back for each, because a cap in
+       lines is not a cap in characters: five 300-character user lines spent
+       the project's room before the project was looked at, which put the
+       measured defect back with 171 characters left unspent.
+    3. The leftover, one line per section per lap, so a user with three lines
+       of profile does not get a half-empty tier while the project has thirty
+       more lines to give -- and so the surplus is not all handed to whoever
+       comes first in `_FILL_ORDER`.
     """
-    header = _header(revision)
+    header = _header(revision, project_slug)
     tail = INDEX_SECTION.rstrip("\n")
     remaining = budget - _cost(header) - _cost(tail)
 
@@ -413,17 +456,47 @@ def compose_index(
         chosen["orientation"] = kept
         remaining = left
 
+    # A heading and one line for every section that has something to say, held
+    # back before any section spends. Promised in priority order and only
+    # while the budget covers them: a section that cannot be promised a floor
+    # is not promised one, rather than taking it from a section ahead of it.
+    floors: dict[str, int] = {}
+    room = remaining
     for name in _FILL_ORDER:
-        kept, left = _fit(bodies[name][: INDEX_CAPS[name]], remaining - headings[name])
+        if not bodies[name]:
+            continue
+        floor = headings[name] + len(bodies[name][0]) + 1
+        if floor > room:
+            break
+        floors[name] = floor
+        room -= floor
+
+    reserved = sum(floors.values())
+    for name in _FILL_ORDER:
+        if not bodies[name]:
+            continue
+        # Everyone else's floor is off limits while this section spends.
+        held = reserved - floors.get(name, 0)
+        kept, left = _fit(
+            bodies[name][: INDEX_CAPS[name]], remaining - headings[name] - held
+        )
         if kept:
             chosen[name] = kept
-            remaining = left
+            remaining = left + held
+        reserved -= floors.get(name, 0)
 
-    for name in _FILL_ORDER:
-        taken = len(chosen.get(name, []))
-        if taken and taken < len(bodies[name]):
-            kept, remaining = _fit(bodies[name][taken:], remaining)
-            chosen[name] += kept
+    while True:
+        spent = False
+        for name in _FILL_ORDER:
+            taken = len(chosen.get(name, []))
+            if not taken or taken >= len(bodies[name]):
+                continue
+            kept, remaining = _fit(bodies[name][taken : taken + 1], remaining)
+            if kept:
+                chosen[name] += kept
+                spent = True
+        if not spent:
+            break
 
     parts = [header]
     parts += [
@@ -437,6 +510,7 @@ def compose_index(
 
 def compose_full(
     revision: int,
+    project_slug: str | None,
     user: Section | None,
     orientation: Orientation | None,
     project: Section | None,
@@ -448,7 +522,7 @@ def compose_full(
     `INDEX_SECTION` included: a consumer that keeps only whichever tier is
     newer must never lose the affordance list by keeping this one.
     """
-    parts = [_header(revision)]
+    parts = [_header(revision, project_slug)]
     parts += [
         "\n".join([*prefix, *body])
         for _, prefix, body in _sections(user, orientation, project, working_state)
@@ -456,3 +530,19 @@ def compose_full(
     ]
     parts.append(INDEX_SECTION.rstrip("\n"))
     return _SEPARATOR.join(parts)
+
+
+def survived(text: str) -> dict[str, bool]:
+    """Which sections a composed tier actually carries.
+
+    Read back off the tier rather than taken from what the compiler was
+    handed: a budget drops sections, so an index tier can be compiled from a
+    project digest and arrive with none of it. Reporting `project: true` there
+    tells a consumer -- and, from the next task, a disk cache -- that it holds
+    a project half it does not have.
+
+    Exact line equality is sound because `_lines` drops any profile line that
+    matches one of our headings, so the only headings in a tier are ours.
+    """
+    lines = text.split("\n")
+    return {"user": _USER_HEADING in lines, "project": _PROJECT_HEADING in lines}

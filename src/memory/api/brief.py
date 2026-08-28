@@ -28,10 +28,17 @@ router = APIRouter(prefix="/v1/session-brief", tags=["session-brief"])
 class BriefResponse(BaseModel):
     instructions: str
     generated_at: str | None
+    # What the composed tier CARRIES, not what the compiler was handed: a
+    # budget drops sections, and the next task caches this pair alongside the
+    # text it describes.
     sections: dict[str, bool]
     brief_revision: int
     memory_protocol: int
-    tier: str
+    tier: Literal["index", "full"]
+    # Which revision counter the number above came from -- one per (user,
+    # project). Without it, an index tier cached with no project and a full
+    # tier fetched with one compare two unrelated sequences.
+    project_slug: str | None
 
 
 def _oldest(*sections: brief.Section | None) -> str | None:
@@ -41,7 +48,14 @@ def _oldest(*sections: brief.Section | None) -> str | None:
     return min(stamps) if stamps else None
 
 
-@router.get("", response_model=BriefResponse)
+@router.get(
+    "",
+    response_model=BriefResponse,
+    # `format=text` returns a PlainTextResponse, which bypasses the response
+    # model. Declared, or the schema promises JSON to a hook that asks for
+    # text and gets it.
+    responses={200: {"content": {"text/plain": {}}}},
+)
 def session_brief(
     scoped: Annotated[ScopedRequest, Depends(scoped_query_params)],
     principal: Annotated[Principal, Depends(current_principal)],
@@ -54,7 +68,9 @@ def session_brief(
     # keeps getting a whole brief until it moves to the index tier.
     tier: Annotated[Literal["index", "full"], Query()] = "full",
     host: Annotated[str | None, Query()] = None,
-    format: Annotated[Literal["json", "text"], Query()] = "json",
+    # Aliased rather than named `format`: the query parameter has to keep that
+    # name for the hook, the argument must not shadow the builtin.
+    response_format: Annotated[Literal["json", "text"], Query(alias="format")] = "json",
     db: Session = Depends(get_session),
 ) -> BriefResponse | PlainTextResponse:
     now = datetime.now(UTC)
@@ -87,6 +103,9 @@ def session_brief(
                 ),
                 db, principal, on_behalf_of, "brief.get", create=False,
             )
+            # Resolved twice on purpose: `_resolve_bank` hands back a bank id
+            # and a slug, never the row, and the orientation record lives on
+            # the row. Same authorization, same tombstone forwarding.
             project = projects.resolve(db, principal, project_slug, create=False).project
         except DomainError:
             # A project this caller cannot reach, or one that does not exist
@@ -130,15 +149,15 @@ def session_brief(
     # nothing writes it yet, so the section is absent rather than empty.
     if tier == "index":
         instructions = brief.compose_index(
-            revision, user_section, orientation, project_section, None,
+            revision, project_slug, user_section, orientation, project_section, None,
             brief.budget_for(host),
         )
     else:
         instructions = brief.compose_full(
-            revision, user_section, orientation, project_section, None
+            revision, project_slug, user_section, orientation, project_section, None
         )
 
-    if format == "text":
+    if response_format == "text":
         # So a SessionStart hook stays a curl and a cat: no jq, no node, no
         # runtime that has to be installed before memory works.
         return PlainTextResponse(instructions)
@@ -146,11 +165,9 @@ def session_brief(
     return BriefResponse(
         instructions=instructions,
         generated_at=_oldest(user_section, project_section),
-        sections={
-            "user": user_section is not None,
-            "project": project_section is not None,
-        },
+        sections=brief.survived(instructions),
         brief_revision=revision,
         memory_protocol=brief.MEMORY_PROTOCOL,
         tier=tier,
+        project_slug=project_slug,
     )
