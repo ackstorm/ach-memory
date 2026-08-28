@@ -248,6 +248,19 @@ def master_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {MASTER_PLAINTEXT}"}
 
 
+def _create_user(client, master_headers) -> dict[str, object]:
+    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+    key = client.post(
+        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
+    ).json()["key"]
+    return {"user_id": user_id, "key": key, "headers": {"Authorization": f"Bearer {key}"}}
+
+
+@pytest.fixture
+def two_users(client, master_headers, tenant):
+    return [_create_user(client, master_headers) for _ in range(2)]
+
+
 @pytest.fixture
 def configured_env(monkeypatch):
     """Minimum configuration for `create_app()` to build.

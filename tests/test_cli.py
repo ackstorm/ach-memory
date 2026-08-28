@@ -1020,19 +1020,51 @@ def test_mcp_builds_proxy_from_env_and_runs_stdio(
     monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
     calls: list[tuple[str, str]] = []
+    built = []
 
     class FakeProxy:
+        instructions = None
+
         def run(self) -> None:
             calls.append(("run", "stdio"))
 
     def fake_build(url: str, key: str) -> FakeProxy:
         calls.append((url, key))
-        return FakeProxy()
+        proxy = FakeProxy()
+        built.append(proxy)
+        return proxy
 
     monkeypatch.setattr("memory.mcp.proxy.build_proxy", fake_build)
+    monkeypatch.setattr(
+        "memory.mcp.proxy.fetch_brief",
+        lambda base, key, slug, locator: {"instructions": "POLICY + BRIEF"},
+    )
     assert cli.main(["mcp"]) == 0
     # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
     assert calls == [("https://mem.example.com/mcp/", "mem_secret"), ("run", "stdio")]
+    assert built[0].instructions == "POLICY + BRIEF"
+
+
+def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A memory service that cannot answer costs the session its brief and
+    nothing else -- the proxy then advertises no instructions of its own and
+    FastMCP forwards the server's policy text."""
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
+    ran = []
+
+    class FakeProxy:
+        instructions = None
+
+        def run(self) -> None:
+            ran.append(True)
+
+    monkeypatch.setattr("memory.mcp.proxy.build_proxy", lambda _u, _k: FakeProxy())
+    monkeypatch.setattr("memory.mcp.proxy.fetch_brief", lambda *_a, **_k: None)
+
+    assert cli.main(["mcp"]) == 0
+    assert ran == [True]
+    assert FakeProxy.instructions is None
 
 
 def test_config_plan_modes_pick_the_server_shape(
@@ -1082,3 +1114,43 @@ def test_register_codex_server_http_pins_url_and_env_var_name(
             "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
         ],
     ]
+
+
+def test_brief_prints_what_would_be_injected(monkeypatch, capsys):
+    """The escape hatch. A subtly wrong brief shows up as an agent behaving
+    oddly for no visible reason; without this, diagnosing it means guessing at
+    text nobody can see."""
+    from memory import cli
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "k")
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_project_context", lambda: ("acme", None)
+    )
+    monkeypatch.setattr(
+        "memory.mcp.proxy.fetch_brief",
+        lambda *_args, **_kwargs: {
+            "instructions": "POLICY\n\n-- What memory knows about you --\nAsk first.",
+            "generated_at": "2026-08-27T03:00:00+00:00",
+            "sections": {"user": True, "project": False},
+        },
+    )
+
+    assert cli.main(["brief", "--url", "https://memory.test"]) == 0
+
+    captured = capsys.readouterr()
+    assert "Ask first." in captured.out
+    assert "generated_at: 2026-08-27T03:00:00+00:00" in captured.err
+    assert "project: absent" in captured.err
+
+
+def test_brief_says_so_when_there_is_none(monkeypatch, capsys):
+    from memory import cli
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "k")
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_project_context", lambda: (None, None)
+    )
+    monkeypatch.setattr("memory.mcp.proxy.fetch_brief", lambda *_a, **_k: None)
+
+    assert cli.main(["brief", "--url", "https://memory.test"]) == 1
+    assert "no brief" in capsys.readouterr().err

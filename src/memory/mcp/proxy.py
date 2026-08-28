@@ -18,6 +18,7 @@ HTTP directly sees identical behavior minus the auto-fill.
 import os
 import subprocess
 
+import httpx
 from fastmcp import FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server import create_proxy
@@ -25,6 +26,8 @@ from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 from memory.errors import ProjectInvalidSlug
 from memory.slugs import slug_from_locator
+
+BRIEF_TIMEOUT_SECONDS = 2.0
 
 
 def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | None]:
@@ -114,6 +117,40 @@ class ProjectContextMiddleware(Middleware):
         if isinstance(arguments, dict):
             fill_project_arguments(arguments, self._slug, self._locator)
         return await call_next(context)
+
+
+def fetch_brief(
+    base_url: str,
+    api_key: str,
+    slug: str | None,
+    locator: str | None,
+    timeout: float = BRIEF_TIMEOUT_SECONDS,
+) -> dict | None:
+    """The session brief, or None -- never an exception.
+
+    Bounded and silent on purpose: this runs before the host's first prompt,
+    so a slow or broken memory service must cost a session its brief and
+    nothing else. Returning None leaves the proxy advertising no instructions
+    of its own, which makes FastMCP forward the server's policy text verbatim.
+    """
+    params = {"scope": "user"}
+    if slug:
+        params["project_slug"] = slug
+    if locator:
+        params["git_locator"] = locator
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/v1/session-brief",
+            params=params,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            return None
+        body = response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    return body if isinstance(body, dict) and body.get("instructions") else None
 
 
 def build_proxy(url: str, api_key: str) -> FastMCP:

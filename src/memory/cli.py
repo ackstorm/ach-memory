@@ -25,7 +25,7 @@ class CLIError(Exception):
     """A concise, user-facing CLI failure."""
 
 
-def _mcp_url(base: str) -> str:
+def _validated_parts(base: str):
     parts = urlsplit(base)
     if (
         parts.scheme not in {"http", "https"}
@@ -37,8 +37,19 @@ def _mcp_url(base: str) -> str:
         or parts.fragment
     ):
         raise ValueError("ACH_MEMORY_URL must be an absolute http(s) URL without a query or fragment")
+    return parts
 
+
+def _mcp_url(base: str) -> str:
+    parts = _validated_parts(base)
     return urlunsplit((parts.scheme, parts.netloc, f"{parts.path.rstrip('/')}/mcp/", "", ""))
+
+
+def _base_url(base: str) -> str:
+    """The endpoint without the `/mcp/` suffix `_mcp_url` adds, for routes
+    like `/v1/session-brief` that live outside the MCP mount."""
+    parts = _validated_parts(base)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
 
 async def _preflight(url: str, api_key: str) -> None:
@@ -602,6 +613,16 @@ def _parser() -> argparse.ArgumentParser:
         "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
         "because argv is world-readable",
     )
+    brief = commands.add_parser(
+        "brief", help="print the session brief this host would receive"
+    )
+    brief.add_argument(
+        "--url",
+        default=None,
+        help="memory service base URL (default: $ACH_MEMORY_URL). The API key "
+        "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
+        "because argv is world-readable",
+    )
     return parser
 
 
@@ -627,10 +648,46 @@ def _serve_mcp(url_argument: str | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    url = _mcp_url(
+    base = url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000"
+    url = _mcp_url(base)
+    server = proxy.build_proxy(url, key)
+    slug, locator = proxy.resolve_project_context()
+    brief = proxy.fetch_brief(_base_url(base), key, slug, locator)
+    if brief:
+        server.instructions = brief["instructions"]
+    server.run()
+    return 0
+
+
+def _print_brief(url_argument: str | None) -> int:
+    """Print exactly the text a session would receive, metadata to stderr.
+
+    The text goes to stdout alone so it can be diffed or piped; everything a
+    human needs to explain a missing section goes to stderr.
+    """
+    from memory.mcp import proxy
+
+    key = os.environ.get("ACH_MEMORY_API_KEY", "")
+    if not key:
+        print(
+            "ach-memory: ACH_MEMORY_API_KEY must be set to read the brief",
+            file=sys.stderr,
+        )
+        return 1
+    base = _base_url(
         url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000"
     )
-    proxy.build_proxy(url, key).run()
+    slug, locator = proxy.resolve_project_context()
+    brief = proxy.fetch_brief(base, key, slug, locator)
+    if not brief:
+        print(f"ach-memory: no brief from {base}", file=sys.stderr)
+        return 1
+    print(brief["instructions"])
+    sections = brief.get("sections") or {}
+    for name in ("user", "project"):
+        state = "present" if sections.get(name) else "absent"
+        print(f"  {name}: {state}", file=sys.stderr)
+    print(f"  generated_at: {brief.get('generated_at')}", file=sys.stderr)
     return 0
 
 
@@ -642,6 +699,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "mcp":
         return _serve_mcp(args.url)
+
+    if args.command == "brief":
+        return _print_brief(args.url)
 
     base = os.environ.get("ACH_MEMORY_URL")
     mode = "http" if args.http else ("local" if args.local else "stdio")

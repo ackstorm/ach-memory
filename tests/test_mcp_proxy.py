@@ -139,3 +139,53 @@ async def test_middleware_injects_into_call_tool(tmp_path, monkeypatch):
 
     assert await middleware.on_call_tool(Context(), call_next) == "result"
     assert seen == {"scope": "project", "project_slug": "payments-api"}
+
+
+import httpx
+import respx
+
+from memory.mcp.proxy import fetch_brief
+
+
+@respx.mock
+def test_fetch_brief_sends_the_resolved_project_context():
+    route = respx.get("https://memory.test/v1/session-brief").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "instructions": "POLICY + BRIEF",
+                "generated_at": None,
+                "sections": {"user": True, "project": False},
+            },
+        )
+    )
+
+    result = fetch_brief("https://memory.test", "k", "acme-api", "git@host:acme/api.git")
+
+    assert result["instructions"] == "POLICY + BRIEF"
+    request = route.calls.last.request
+    assert request.url.params["project_slug"] == "acme-api"
+    assert request.url.params["git_locator"] == "git@host:acme/api.git"
+    assert request.headers["authorization"] == "Bearer k"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.Response(500),
+        httpx.Response(401),
+        httpx.Response(200, text="not json"),
+        httpx.ConnectError("down"),
+    ],
+)
+def test_a_brief_that_cannot_be_fetched_is_simply_absent(failure):
+    """Every failure is silent and returns None. The proxy then advertises no
+    instructions of its own, FastMCP forwards the server's, and the session is
+    exactly as good as it is today."""
+    if isinstance(failure, Exception):
+        respx.get("https://memory.test/v1/session-brief").mock(side_effect=failure)
+    else:
+        respx.get("https://memory.test/v1/session-brief").mock(return_value=failure)
+
+    assert fetch_brief("https://memory.test", "k", None, None) is None
