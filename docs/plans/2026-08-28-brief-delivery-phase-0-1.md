@@ -12,7 +12,9 @@
 
 ## Before you start
 
-**Source of truth:** `SPEC-memory-quality.md` v1.4.1. At the time of writing it lives at `/tmp/ach-memory-SPEC-memory-quality-v1.4a.md`; once the adoption commit lands it is at the repo root. Section references below (§11, §15, §16, D-numbers) are to that document. The companion rationale is `/tmp/ach-memory-DESIGN-NOTES-memory-quality.md`.
+**Source of truth:** `SPEC-memory-quality.md` **v1.4.1**, which lives at `/tmp/ach-memory-SPEC-memory-quality-v1.4a.md` and has **not** been adopted into this repo. Section references below (§11, §15, §16, D-numbers) are to that document. The companion rationale is `/tmp/ach-memory-DESIGN-NOTES-memory-quality.md`.
+
+> **Do not resolve those citations against the repo.** The untracked `SPEC-memory-quality.md` at the repo root is an earlier **v0** draft that stops at §13 — it has no §15 or §16. `SPEC-v1.md` is a different document entirely (its §15 is asynchronous operations). If you need the delivery or consumer contract, read the `/tmp` file or work from the task text, which restates what matters. Task 7 lost time to this.
 
 **Approval state — read this before touching anything.** The SPEC header says *Draft — Phase 0–1 proposed for approval*. No phase is approved. This plan is the "what it would take" for Phase 0 and Phase 1 only; Phases 2–5 are deliberately out of scope because their inputs do not exist yet (Phase 2's budgets come from a 2.2 measurement, Phase 3 is gated on probe O6). **Do not execute any task until Juan Carlos approves it.** Task 4 in particular mutates live production memory.
 
