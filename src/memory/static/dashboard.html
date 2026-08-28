@@ -703,6 +703,12 @@ document.getElementById("peek-go").addEventListener("click", async () => {
    are failing, not that the bank went quiet. */
 const STALE_AFTER_DAYS = 7;
 
+/* Matches PLACEHOLDER in src/memory/brief.py. Hindsight returns this for a
+   model that exists but has never refreshed, and it is truthy: rendered as
+   content it says "work in progress" for a model whose refresh has been
+   failing for a week. brief.py:130 treats it as absent; so does this. */
+const PLACEHOLDER = "Generating content...";
+
 function scopeParams(value) {
   const [kind, ...rest] = value.split(":");
   const id = rest.join(":");
@@ -800,6 +806,9 @@ function renderModels(models, histories) {
   }
   out.innerHTML = models.map((model, i) => {
     const history = histories[i] ?? [];
+    // Mirrors brief.py:129-130: trimmed, and the placeholder counts as absent.
+    const raw = (model.content || "").trim();
+    const content = raw === PLACEHOLDER ? "" : raw;
     const fresh = freshness(model, history);
     const state = refreshState(model, fresh);
     const when = fresh.at
@@ -820,7 +829,7 @@ function renderModels(models, histories) {
         <span>${esc(String(history.length))} version${history.length === 1 ? "" : "s"}</span>
         <span>${esc(shortId(model.id))}</span>
       </div>
-      ${model.content ? `<div class="mm-content">${esc(model.content)}</div>` : `<div class="empty">No content yet — never refreshed, or cleared.</div>`}
+      ${content ? `<div class="mm-content">${esc(content)}</div>` : `<div class="empty">No content yet — never refreshed, or cleared.</div>`}
       ${model.source_query ? `<div class="mm-query">query: ${esc(model.source_query)}</div>` : ""}
       ${drift}
       ${traceLine(model)}

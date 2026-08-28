@@ -145,6 +145,21 @@ def test_models_asks_for_the_content_and_renders_it(client):
     assert "model.content" in body
 
 
+def test_models_does_not_render_the_upstream_placeholder_as_content(client):
+    """Hindsight returns "Generating content..." for a model that exists but
+    has never refreshed, and that string is truthy.
+
+    Rendered as content it reads as work in progress, so a model whose refresh
+    has been failing for a week looks like one that is busy. brief.py:130
+    treats the placeholder as absent and tests/test_brief.py pins it; the
+    console has to agree, or the two drift and only the server is tested.
+    """
+    body = client.get("/admin/ui").text
+
+    assert 'PLACEHOLDER = "Generating content..."' in body
+    assert "=== PLACEHOLDER" in body
+
+
 def test_brief_shows_the_instructions_with_whitespace_intact(client):
     """The brief is a line-per-rule instruction list. Collapsing its whitespace
     would show something the agent never receives."""
