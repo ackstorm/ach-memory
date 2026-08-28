@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -226,3 +226,32 @@ class ActivityEvent(Base):
         server_default=func.now(),
         index=True,
     )
+
+
+class ContextRevision(Base):
+    """One monotonic revision per (user, project) compiled-context snapshot.
+
+    Bumped when any compiler input changes -- a profile refresh, a project
+    metadata edit, and later a Working State write. Both tiers compiled from
+    the same snapshot carry the same value; a cached tier keeps the value it
+    was compiled at, which is what makes "INDEX rev 42 / FULL rev 39" readable
+    without reconciliation logic in the agent.
+
+    Per (user, project) and not per project: half the snapshot is that user's
+    own profile, so a shared counter would bump for a colleague's refresh and
+    every consumer would re-read a brief nothing had changed.
+    """
+
+    __tablename__ = "context_revisions"
+
+    # Plain columns, no foreign keys: project_slug is "" for the snapshot with
+    # no project, which no projects row can satisfy, and a composite key half
+    # constrained is worse than one that is uniformly derived state.
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    # "" rather than NULL: this is a primary key, and NULL never equals NULL.
+    project_slug: Mapped[str] = mapped_column(String(128), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    # sha256 of the compiler inputs; 64 hex characters.
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

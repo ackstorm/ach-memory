@@ -66,6 +66,38 @@ _CAVEAT = (
     "acting on it)"
 )
 
+# Bumped when the shape of a tier changes in a way a consumer must notice.
+# A cached tier keeps the protocol it was compiled under, so a brief holding
+# instructions the current contract has replaced is visible instead of silent.
+MEMORY_PROTOCOL = 1
+
+# Per host, as the client names itself. Claude Code truncates MCP
+# `instructions` at 2048 characters -- measured against ours: the composed
+# brief was 6115 characters, 626 arrived, and the project half was discarded
+# every session. 1800 leaves headroom for a host that counts characters
+# differently than we do (tokens, UTF-16 units) before it cuts.
+HOST_BUDGETS = {"claude-code": 1800}
+# An unknown host gets the smallest known budget rather than the benefit of
+# the doubt: the overflow is silent, and what it drops is the end of the brief.
+SMALLEST_BUDGET = 1800
+
+# Reserved: never dropped to make room, in either tier. An agent cannot call
+# what it does not know exists -- and must not be told to call what it cannot,
+# so `recall` is named with the confirmation its host will ask for, while the
+# profiles are named as things memory holds and not as a call to fetch them.
+INDEX_SECTION = (
+    "-- What else memory holds --\n"
+    "user profile: this user's standing working preferences.\n"
+    "project profile: this project's conventions, constraints and gotchas.\n"
+    "facts and observations: recall(scope, query) -- your host will ask you to "
+    "confirm the call.\n"
+)
+
+_ORIENTATION_HEADING = "-- This project --"
+_USER_HEADING = "-- What memory knows about you --"
+_PROJECT_HEADING = "-- What memory knows about this project --"
+_WORKING_STATE_HEADING = "-- Where the work was left --"
+
 
 @dataclass(frozen=True)
 class Section:
@@ -199,3 +231,190 @@ def compose(
             f"-- What memory knows about {project_slug} --\n{_CAVEAT}\n{project.text}"
         )
     return "\n\n".join(parts)
+
+
+@dataclass(frozen=True)
+class Orientation:
+    """Deterministic project facts: a record, not memory.
+
+    All three are unconstrained free text set by any authorised project
+    member, so this is where untrusted content enters agent context. They are
+    composed as one labelled value per line, never as prose that could read as
+    an instruction, and `canonical_spec` is a pointer that is never fetched --
+    following a path a project member wrote would turn a metadata field into
+    a file read.
+    """
+
+    name: str | None
+    canonical_spec: str | None
+    purpose: str | None
+
+
+_SEPARATOR = "\n\n"
+
+# What the index tier spends its budget on FIRST. The user's standing rules
+# lead because nothing else in the session shows them: the repository in front
+# of the agent already carries the project's spec and layout.
+#
+# Both tiers EMIT in the order `_sections` returns, which is authority order.
+# Known consequence, measured: a user profile long enough to fill the budget
+# leaves the index tier with no project half at all. Bounding that means
+# per-section item budgets, which need the item structure a later phase adds;
+# until then the full tier is the one that always carries both halves.
+_FILL_ORDER = ("user", "orientation", "project", "working_state")
+
+
+def budget_for(host: str | None) -> int:
+    """Characters a host will carry, keyed on how it names itself."""
+    return HOST_BUDGETS.get(host or "", SMALLEST_BUDGET)
+
+
+def _header(revision: int) -> str:
+    return f"-- ach-memory brief rev {revision} / protocol {MEMORY_PROTOCOL} --"
+
+
+def _inert(value: str) -> str:
+    """One line, always: a line break inside `purpose` would forge a section
+    heading, and the forged section would read as one of ours.
+
+    The projects API already rejects C0 controls in these three fields, but it
+    is one validator away from this string reaching an agent, and U+2028 is
+    not a C0 control.
+    """
+    return " ".join(value.split())
+
+
+def _lines(section: Section | None) -> list[str]:
+    """Free text as the lines the budget is spent in.
+
+    The delivery contract describes both tiers in ITEMS ("at most 5"), but
+    item structure arrives with a response schema in a later phase: today
+    these profiles are free text, so a line is the smallest unit the compiler
+    can drop without cutting a sentence in half.
+
+    Blank lines go: they cost budget and say nothing.
+    """
+    if section is None:
+        return []
+    return [line for line in section.text.split("\n") if line.strip()]
+
+
+def _orientation_lines(orientation: Orientation | None) -> list[str]:
+    if orientation is None:
+        return []
+    labelled = (
+        ("project", orientation.name),
+        ("spec", orientation.canonical_spec),
+        ("purpose", orientation.purpose),
+    )
+    return [f"{label}: {_inert(text)}" for label, text in labelled if text and text.strip()]
+
+
+def _sections(
+    user: Section | None,
+    orientation: Orientation | None,
+    project: Section | None,
+    working_state: Section | None,
+) -> list[tuple[str, list[str], list[str]]]:
+    """(name, heading lines, body lines) in composition order.
+
+    Working State is item 3 of both tiers and belongs to a later phase: with
+    nothing writing it, its body is always empty and the section is never
+    emitted. The seam is here so the tier does not have to be re-cut later.
+    """
+    return [
+        ("orientation", [_ORIENTATION_HEADING], _orientation_lines(orientation)),
+        ("user", [_USER_HEADING, _CAVEAT], _lines(user)),
+        ("project", [_PROJECT_HEADING, _CAVEAT], _lines(project)),
+        ("working_state", [_WORKING_STATE_HEADING], _lines(working_state)),
+    ]
+
+
+def _cost(part: str) -> int:
+    """What a part costs assembled: itself plus the separator before it. Two
+    characters high for the last part, which is slack in the safe direction."""
+    return len(part) + len(_SEPARATOR)
+
+
+def _fit(prefix: list[str], body: list[str], remaining: int) -> tuple[str | None, int]:
+    """As many whole lines of one section as the remaining budget takes.
+
+    Whole lines, never part of one: the digest hard-cut at 2000 characters
+    ended every section mid-word, on "...omit tests entirely for trivi", and
+    nothing marks a half sentence as incomplete to the model reading it.
+
+    Stops at the first line that does not fit instead of skipping ahead to a
+    shorter one -- a contiguous prefix is "the first rules", while a sieve is
+    an unmarked selection. The heading is charged first and dropped with the
+    section when not one line fits: a heading over nothing says memory is
+    empty, which is a different claim than "this did not fit".
+    """
+    head = "\n".join(prefix)
+    left = remaining - _cost(head)
+    kept: list[str] = []
+    for line in body:
+        if len(line) + 1 > left:
+            break
+        kept.append(line)
+        left -= len(line) + 1
+    if not kept:
+        return None, remaining
+    return "\n".join([head, *kept]), left
+
+
+def compose_index(
+    revision: int,
+    user: Section | None,
+    orientation: Orientation | None,
+    project: Section | None,
+    working_state: Section | None,
+    budget: int,
+) -> str:
+    """The tier that rides a host's `instructions` field, under its budget.
+
+    The header and `INDEX_SECTION` are reserved: everything else competes for
+    what is left. A budget smaller than those two is honoured as far as it
+    goes -- the affordance list is never traded away to fit, because an agent
+    that is told half of what memory holds asks for the other half from the
+    user.
+    """
+    header = _header(revision)
+    tail = INDEX_SECTION.rstrip("\n")
+    remaining = budget - _cost(header) - _cost(tail)
+
+    sections = _sections(user, orientation, project, working_state)
+    bodies = {name: (prefix, body) for name, prefix, body in sections}
+    kept: dict[str, str] = {}
+    for name in _FILL_ORDER:
+        prefix, body = bodies[name]
+        if not body:
+            continue
+        block, remaining = _fit(prefix, body, remaining)
+        if block is not None:
+            kept[name] = block
+
+    parts = [header, *(kept[name] for name, _, _ in sections if name in kept), tail]
+    return _SEPARATOR.join(parts)
+
+
+def compose_full(
+    revision: int,
+    user: Section | None,
+    orientation: Orientation | None,
+    project: Section | None,
+    working_state: Section | None,
+) -> str:
+    """Every section whole, for the channel that has no cap.
+
+    A strict superset of the index tier compiled from the same snapshot,
+    `INDEX_SECTION` included: a consumer that keeps only whichever tier is
+    newer must never lose the affordance list by keeping this one.
+    """
+    parts = [_header(revision)]
+    parts += [
+        "\n".join([*prefix, *body])
+        for _, prefix, body in _sections(user, orientation, project, working_state)
+        if body
+    ]
+    parts.append(INDEX_SECTION.rstrip("\n"))
+    return _SEPARATOR.join(parts)
