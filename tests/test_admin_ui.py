@@ -202,3 +202,9 @@ def test_the_console_can_edit_project_metadata(client):
     # hides but still holds A's values, and a save would write A's orientation
     # onto B with nothing on screen saying so.
     assert "loadedProject !== slug" in body
+
+    # The picker lists every project, not the fleet summary the other tabs
+    # use: that one groups activity over the last 24 hours, so a project
+    # created a minute ago -- exactly when its purpose wants stating -- would
+    # not be in it. The notice claims this in words; this pins it.
+    assert 'api("/v1/projects")' in body
