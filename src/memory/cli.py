@@ -25,7 +25,7 @@ class CLIError(Exception):
     """A concise, user-facing CLI failure."""
 
 
-def _mcp_url(base: str) -> str:
+def _validated_parts(base: str):
     parts = urlsplit(base)
     if (
         parts.scheme not in {"http", "https"}
@@ -37,8 +37,19 @@ def _mcp_url(base: str) -> str:
         or parts.fragment
     ):
         raise ValueError("ACH_MEMORY_URL must be an absolute http(s) URL without a query or fragment")
+    return parts
 
+
+def _mcp_url(base: str) -> str:
+    parts = _validated_parts(base)
     return urlunsplit((parts.scheme, parts.netloc, f"{parts.path.rstrip('/')}/mcp/", "", ""))
+
+
+def _base_url(base: str) -> str:
+    """The endpoint without the `/mcp/` suffix `_mcp_url` adds, for routes
+    like `/v1/session-brief` that live outside the MCP mount."""
+    parts = _validated_parts(base)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
 
 async def _preflight(url: str, api_key: str) -> None:
@@ -627,10 +638,14 @@ def _serve_mcp(url_argument: str | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    url = _mcp_url(
-        url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000"
-    )
-    proxy.build_proxy(url, key).run()
+    base = url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000"
+    url = _mcp_url(base)
+    server = proxy.build_proxy(url, key)
+    slug, locator = proxy.resolve_project_context()
+    brief = proxy.fetch_brief(_base_url(base), key, slug, locator)
+    if brief:
+        server.instructions = brief["instructions"]
+    server.run()
     return 0
 
 
