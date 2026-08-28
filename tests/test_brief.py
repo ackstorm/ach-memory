@@ -47,13 +47,42 @@ def _model(content, *, refreshed=NOW, stale=False, query=None, trigger=None):
     }
 
 
-def test_a_missing_model_is_created_and_yields_no_section_yet():
-    """First contact provisions and returns nothing: upstream fills `content`
-    with a placeholder until the first refresh completes, and showing a
-    placeholder to a model is worse than showing it nothing."""
+def test_reading_a_bank_with_no_model_creates_nothing():
+    """A GET that provisions is a read minting state -- the same class as the
+    readOnlyHint slug-squat. One exploratory brief read against an unrelated
+    project created a model there and spent a generation on it."""
     client = FakeClient(models=[])
 
-    assert brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW) is None
+    assert brief.get_section(client, "user_1", NOW) is None
+    assert client.created == []
+    assert client.updated == []
+
+
+def test_a_read_never_reconciles_a_drifted_model():
+    """Reconciliation left the read path together with provisioning, and this
+    is the half that regresses silently: a stale `source_query` shows up
+    nowhere in the response, so only a test says the GET stopped repairing it.
+    A changed constant now reaches deployed models through `provision_section`
+    alone."""
+    client = FakeClient(models=[_model("real content", query="an older query")])
+
+    section = brief.get_section(client, "user_1", NOW)
+
+    assert section.text == "real content"
+    assert client.updated == []
+    assert client.created == []
+
+
+def test_provisioning_is_explicit_and_creates_the_model():
+    """Creation moved out of the read path, not out of the system: the query
+    and trigger are versioned in code and a deploy still has to reach models
+    that already exist. `max_tokens` and the trigger are pinned here because
+    both reached production once by accident, and the trigger assertion is the
+    only thing standing between a deploy and a silently changed refresh
+    schedule."""
+    client = FakeClient(models=[])
+
+    assert brief.provision_section(client, "user_1", brief.USER_QUERY) == "created"
 
     (bank_id, kwargs) = client.created[0]
     assert bank_id == "user_1"
@@ -68,15 +97,18 @@ def test_a_missing_model_is_created_and_yields_no_section_yet():
 
 
 def test_the_upstream_placeholder_is_not_a_section():
+    """Upstream fills `content` with a placeholder until the first refresh
+    completes, and showing a placeholder to a model is worse than showing it
+    nothing."""
     client = FakeClient(models=[_model("Generating content...")])
-    assert brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW) is None
+    assert brief.get_section(client, "user_1", NOW) is None
 
 
 @pytest.mark.parametrize("content", ["", "   \n  "])
 def test_an_empty_digest_is_not_a_section(content):
     """An empty heading is an invitation to invent one."""
     client = FakeClient(models=[_model(content)])
-    assert brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW) is None
+    assert brief.get_section(client, "user_1", NOW) is None
 
 
 def test_a_digest_whose_refreshes_are_failing_is_dropped():
@@ -86,7 +118,7 @@ def test_a_digest_whose_refreshes_are_failing_is_dropped():
     client = FakeClient(
         models=[_model("real content", refreshed=NOW - timedelta(days=8), stale=True)]
     )
-    assert brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW) is None
+    assert brief.get_section(client, "user_1", NOW) is None
 
 
 def test_an_old_but_current_digest_is_kept():
@@ -95,7 +127,7 @@ def test_an_old_but_current_digest_is_kept():
     refreshed = NOW - timedelta(days=30)
     client = FakeClient(models=[_model("real content", refreshed=refreshed, stale=False)])
 
-    section = brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+    section = brief.get_section(client, "user_1", NOW)
 
     assert section.text == "real content"
     assert section.refreshed_at == refreshed.isoformat()
@@ -103,11 +135,12 @@ def test_an_old_but_current_digest_is_kept():
 
 def test_a_changed_source_query_updates_the_model_in_place():
     """The query is code. A deploy that improves it must reach the next
-    refresh with no manual step -- upstream falls back from delta to a full
-    regeneration by itself when the query changed."""
+    refresh -- upstream falls back from delta to a full regeneration by itself
+    when the query changed -- and since the read path stopped provisioning,
+    the deploy step that carries it there is this call."""
     client = FakeClient(models=[_model("real content", query="an older query")])
 
-    brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+    assert brief.provision_section(client, "user_1", brief.USER_QUERY) == "reconciled"
 
     (bank_id, model_id, kwargs) = client.updated[0]
     assert (bank_id, model_id) == ("user_1", "mm-1")
@@ -123,7 +156,7 @@ def test_a_changed_trigger_reaches_a_model_that_already_exists():
     stale_trigger = {"mode": "delta", "refresh_cron": "0 3 * * *"}
     client = FakeClient(models=[_model("real content", trigger=stale_trigger)])
 
-    brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+    brief.provision_section(client, "user_1", brief.USER_QUERY)
 
     (_, _, kwargs) = client.updated[0]
     assert kwargs["trigger"] == brief.TRIGGER
@@ -138,7 +171,7 @@ def test_reconciling_a_trigger_keeps_fields_this_module_does_not_set():
         models=[_model("real content", trigger={"mode": "full", "upstream_knob": 7})]
     )
 
-    brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+    brief.provision_section(client, "user_1", brief.USER_QUERY)
 
     (_, _, kwargs) = client.updated[0]
     assert kwargs["trigger"]["upstream_knob"] == 7
@@ -146,11 +179,11 @@ def test_reconciling_a_trigger_keeps_fields_this_module_does_not_set():
 
 
 def test_a_model_already_in_line_is_not_patched():
-    """Reconciliation runs on every call, so an unnecessary PATCH would be one
-    write per session against every bank in use."""
+    """Provisioning is idempotent, so re-running it after a deploy that
+    changed nothing is not one write per bank."""
     client = FakeClient(models=[_model("real content")])
 
-    brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+    brief.provision_section(client, "user_1", brief.USER_QUERY)
 
     assert client.updated == []
 
@@ -163,7 +196,7 @@ def test_a_long_digest_is_served_whole():
     content = "* a rule that must not be cut\n" + "x" * 5000
     client = FakeClient(models=[_model(content)])
 
-    section = brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+    section = brief.get_section(client, "user_1", NOW)
 
     assert section.text == content
 
@@ -293,14 +326,12 @@ def test_a_project_that_does_not_exist_is_not_created_by_asking_for_a_brief(
     client, two_users
 ):
     """create=False. A session start must never mint a project -- an agent
-    opening any directory would otherwise squat a slug."""
+    opening any directory would otherwise squat a slug.
+
+    Neither bank has a brief model, and no POST is mocked: a read that went
+    back to provisioning would fail here on an unmocked request."""
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
         return_value=httpx.Response(200, json={"mental_models": []})
-    )
-    # The user bank's own model does not exist yet either -- ensure_section
-    # provisions it in the same call, unrelated to the project assertion.
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
-        return_value=httpx.Response(201, json={"id": "mm-new"})
     )
 
     response = client.get(

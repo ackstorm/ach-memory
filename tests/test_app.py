@@ -54,6 +54,7 @@ EXPECTED_ROUTES = {
     ("GET", "/v1/admin/activity/summary"),
     ("POST", "/v1/admin/memory/{scope}/clear"),
     ("DELETE", "/v1/admin/memory/{scope}"),
+    ("POST", "/v1/admin/brief/{scope}/provision"),
     ("POST", "/v1/admin/slugs/{retired_slug}/release"),
     ("POST", "/v1/directives"),
     ("GET", "/v1/directives"),

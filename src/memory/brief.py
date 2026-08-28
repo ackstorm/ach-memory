@@ -9,6 +9,14 @@ inverted one of his rules -- "after each change run a full test gate" where the
 stored fact forbids exactly that -- and invented a role and a toolchain for him
 that no memory contains. A missing section costs a session some context. A
 confidently wrong one steers the work.
+
+Reads never write. `get_section` only reads; `provision_section` is the only
+thing here that creates or patches a model, and nothing on the GET path calls
+it. The cost is that a deploy changing USER_QUERY, PROJECT_QUERY or TRIGGER no
+longer repairs live models by itself -- somebody has to call
+`POST /v1/admin/brief/{scope}/provision`. That is worth paying: repairing on
+read is the same mechanism that spent an LLM generation minting a model on a
+bank one exploratory GET happened to name.
 """
 
 from dataclasses import dataclass
@@ -88,6 +96,12 @@ def _reconcile(client, bank_id: str, model: dict, source_query: str) -> None:
     silently applied to new banks alone: the two models already provisioned in
     production would have kept a trigger no source file described.
 
+    Reached only through `provision_section`. Reads used to arrive here on
+    every brief, which repaired deployed models for free -- and was also how
+    one exploratory GET minted a model on an unrelated bank. Since that path
+    closed, carrying a changed constant to live models is an explicit
+    post-deploy call to `POST /v1/admin/brief/{scope}/provision`.
+
     The trigger is merged rather than replaced, and compared only on the keys
     this module sets. Hindsight puts its own fields in there, and overwriting
     the whole object would quietly drop whatever we do not model.
@@ -104,27 +118,17 @@ def _reconcile(client, bank_id: str, model: dict, source_query: str) -> None:
         client.update_mental_model(bank_id, model["id"], **changed)
 
 
-def ensure_section(
-    client, bank_id: str, source_query: str, now: datetime
-) -> Section | None:
+def get_section(client, bank_id: str, now: datetime) -> Section | None:
     """The bank's digest, or None when there is nothing worth showing.
 
-    Provisioning lives here rather than in a migration or a CLI step because a
-    bank appears the first time somebody uses it: there is no earlier moment
-    at which to create anything.
+    Reads only. Provisioning used to live here, which meant one exploratory
+    GET against an unrelated project minted a mental model there and spent a
+    generation on it -- a read creating state, the same class as the
+    readOnlyHint slug-squat. Creation moved to `provision_section`.
     """
     model = _find(client, bank_id)
     if model is None:
-        client.create_mental_model(
-            bank_id,
-            name=BRIEF_MODEL_NAME,
-            source_query=source_query,
-            max_tokens=MAX_TOKENS,
-            trigger=dict(TRIGGER),
-        )
         return None
-
-    _reconcile(client, bank_id, model, source_query)
 
     content = (model.get("content") or "").strip()
     if not content or content == PLACEHOLDER:
@@ -143,6 +147,26 @@ def ensure_section(
     # model reading it, so a rule can arrive meaning the opposite of what it
     # says. `max_tokens` already bounds this upstream.
     return Section(text=content, refreshed_at=refreshed_at)
+
+
+def provision_section(client, bank_id: str, source_query: str) -> str:
+    """Create the bank's brief model, or bring an existing one back in line.
+
+    Returns "created" or "reconciled" so the admin route can say which.
+    """
+    model = _find(client, bank_id)
+    if model is None:
+        client.create_mental_model(
+            bank_id,
+            name=BRIEF_MODEL_NAME,
+            source_query=source_query,
+            max_tokens=MAX_TOKENS,
+            trigger=dict(TRIGGER),
+        )
+        return "created"
+
+    _reconcile(client, bank_id, model, source_query)
+    return "reconciled"
 
 
 def _older_than(timestamp: str | None, now: datetime) -> bool:

@@ -59,7 +59,7 @@ def session_brief(
         db, principal, on_behalf_of, "brief.get",
         create=False,
     )
-    user_section = brief.ensure_section(client, user_bank, brief.USER_QUERY, now)
+    user_section = brief.get_section(client, user_bank, now)
 
     project_section = None
     project_slug = None
@@ -80,9 +80,7 @@ def session_brief(
             # wrong.
             project_slug = None
         else:
-            project_section = brief.ensure_section(
-                client, project_bank, brief.PROJECT_QUERY, now
-            )
+            project_section = brief.get_section(client, project_bank, now)
     db.commit()
 
     return BriefResponse(

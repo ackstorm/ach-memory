@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from memory import audit
+from memory import audit, brief
 from memory.api.app import current_on_behalf_of, require_master
 from memory.api.memory import (
     MAX_PAGE_SIZE,
@@ -256,6 +256,60 @@ def delete_bank(
     db.commit()
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
+        resolved_from=resolved_from,
+        project_slug=resolved_slug,
+    )
+
+
+@router.post("/brief/{scope}/provision", response_model=MemoryResponse)
+def provision_brief_model(
+    scope: Scope,
+    principal: Annotated[Principal, Depends(require_master)],
+    on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
+    db: Session = Depends(get_session),
+    user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
+    project_slug: str | None = None,
+    body: AdminScopeBody | None = None,
+) -> MemoryResponse:
+    """Create a bank's brief model, or reconcile the one it has.
+
+    The read path no longer provisions, so this is the moment a model comes
+    into existence and the moment a changed source query reaches one that
+    already exists. Master key only, for the same reason `clear` is: the
+    first refresh spends an LLM generation, which is not a decision a read --
+    or an agent -- gets to make.
+
+    Addressed with `?user_id=` like every other `/v1/admin/*` route, and
+    deliberately not like `GET /v1/session-brief`, which is header-first only
+    because the console's Brief tab addresses a user that way. No console
+    caller for provisioning exists; `On-Behalf-Of` stays audit-only here.
+
+    `create=False` (via `_resolve_bank`), for `clear`'s reason: an admin must
+    not be able to conjure a bank into existence by provisioning a brief for
+    one that never existed.
+    """
+    scoped = _admin_scope(scope, user_id, project_slug, body)
+    bank_id, resolved_from, resolved_slug = _resolve_bank(
+        scoped,
+        db,
+        principal,
+        on_behalf_of,
+        "admin.brief.provision",
+        create=False,
+        is_write=True,
+    )
+    source_query = brief.USER_QUERY if scope == "user" else brief.PROJECT_QUERY
+    # Commit AFTER the upstream call, for clear/delete's reason: the audited
+    # action IS the claim that the model now exists or now matches this
+    # deploy, so a 502 must not leave a row saying it does. `create=False`
+    # above means resolution created nothing, so there is no local state that
+    # needs to survive the failure.
+    outcome = brief.provision_section(get_client(), bank_id, source_query)
+    db.commit()
+    # No `_strip_bank_id`: this payload is built here and never carried a
+    # bank id, unlike the upstream results the neighbouring routes pass on.
+    return MemoryResponse(
+        result={"outcome": outcome},
         resolved_from=resolved_from,
         project_slug=resolved_slug,
     )
