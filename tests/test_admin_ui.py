@@ -103,3 +103,37 @@ def test_models_states_the_two_limits_of_keep_trace(client):
 
     assert "not retroactive" in body
     assert "most recent refresh" in body
+
+
+def test_brief_reports_both_sections_from_the_response_not_from_the_prose(client):
+    """A missing section leaves no marker in the composed text.
+
+    /v1/session-brief treats a project the caller cannot reach as a missing
+    section rather than an error, so a brief that lost half its content still
+    returns 200 with prose that reads perfectly well. The booleans are the only
+    honest source; inferring presence from the text would guess.
+    """
+    body = client.get("/admin/ui").text
+
+    assert "response?.sections" in body
+    assert "sections.user" in body and "sections.project" in body
+    assert "The user section is missing." in body
+
+
+def test_brief_sends_the_scope_query_param_it_cannot_omit(client):
+    """`scope` is required on GET /v1/session-brief even though the user half
+    is resolved from on-behalf-of and never from a param. Calling it with no
+    query string at all is a 422, not a user-only brief."""
+    body = client.get("/admin/ui").text
+
+    assert '{ scope: "user" }' in body
+    assert '"on-behalf-of"' in body, "the subject travels as a header (SPEC §16.5)"
+
+
+def test_brief_shows_the_instructions_with_whitespace_intact(client):
+    """The brief is a line-per-rule instruction list. Collapsing its whitespace
+    would show something the agent never receives."""
+    body = client.get("/admin/ui").text
+
+    assert "brief-text" in body
+    assert "white-space:pre-wrap" in body
