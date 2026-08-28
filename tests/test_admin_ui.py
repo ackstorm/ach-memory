@@ -167,3 +167,32 @@ def test_brief_shows_the_instructions_with_whitespace_intact(client):
 
     assert "brief-text" in body
     assert "white-space:pre-wrap" in body
+
+
+def test_the_console_can_edit_project_metadata(client):
+    """A metadata record nobody can set is a column, not a feature.
+
+    The brief composes name, canonical_spec and purpose into a project's
+    orientation, and until this panel existed nothing in the product could
+    write them. All three ids are pinned because a form wired for two looks
+    finished: the third input is simply never sent, the column stays null,
+    and there is no error anywhere to show for it.
+    """
+    body = client.get("/admin/ui").text
+
+    assert 'data-panel="projects"' in body
+    assert '<section class="panel" id="projects" hidden>' in body
+    assert "/v1/projects/" in body
+    assert '"PATCH"' in body
+
+    for field in ("name", "canonical_spec", "purpose"):
+        assert f'id="pm-{field}"' in body
+        assert f'{field}: metadataValue("pm-{field}")' in body
+
+    # An emptied box is an explicit null, never "": the API's min_length=1
+    # makes an empty string a 422 rather than a clear, so a form that sent
+    # strings would fail the first time anyone retracted a field.
+    assert 'value === "" ? null' in body
+
+    # The 256 cap is visible while typing, not only in the 422 afterwards.
+    assert "PURPOSE_MAX = 256" in body

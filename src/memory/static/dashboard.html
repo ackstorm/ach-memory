@@ -236,6 +236,23 @@ tr.silent .ribbon{opacity:.55}
    reads these as line-per-rule instructions. */
 .brief-text{margin:0;white-space:pre-wrap;word-break:break-word;font:13px/1.6 var(--mono);color:var(--text)}
 
+/* ── project metadata ───────────────────────────────────────────────────── */
+/* [hidden] is a UA rule, so display:grid outranks it and the form would stay
+   on screen with no project loaded. Same reason .panel[hidden] exists. */
+.pm{display:grid;gap:14px;max-width:720px;padding-bottom:20px}
+.pm[hidden]{display:none}
+.pm label{
+  display:block;margin-bottom:5px;
+  font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);
+}
+.pm input{
+  font:inherit;font-size:12px;width:100%;color:var(--text);
+  background:var(--ink-2);border:1px solid var(--rule);border-radius:3px;padding:6px 9px;
+}
+.pm input::placeholder{color:var(--text-3)}
+.pm-hint{margin-top:5px;font-size:11px;color:var(--text-3)}
+.pm-hint.over{color:var(--rust)}
+
 .legend{display:flex;gap:18px;padding:16px 0 0;font-size:11px;color:var(--text-3)}
 .legend b{display:inline-block;width:8px;height:8px;border-radius:1px;margin-right:6px;vertical-align:middle}
 
@@ -256,6 +273,7 @@ tr.silent .ribbon{opacity:.55}
     <button class="tab" role="tab" aria-selected="false" data-panel="peek">Peek</button>
     <button class="tab" role="tab" aria-selected="false" data-panel="models">Models</button>
     <button class="tab" role="tab" aria-selected="false" data-panel="brief">Brief</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="projects">Projects</button>
   </nav>
   <div class="top-right">
     <span class="key-state"><span class="dot"></span>master key held for this tab</span>
@@ -402,6 +420,44 @@ tr.silent .ribbon{opacity:.55}
   <div id="brief-out"><div class="empty">Pick a user to see the brief they would be handed.</div></div>
 </section>
 
+<!-- ── PROJECTS ──────────────────────────────────────────────────────── -->
+<section class="panel" id="projects" hidden>
+  <div class="sec">
+    <h2>Project metadata</h2>
+    <p>The record a project carries about itself: what it is called, what document rules it, what it is for.</p>
+  </div>
+  <div class="peek-bar">
+    <select id="projects-target">
+      <option value="">Pick a project…</option>
+    </select>
+    <button class="ghost" id="projects-save">Save</button>
+  </div>
+  <div class="pm" id="projects-form" hidden>
+    <div>
+      <label for="pm-name">Name</label>
+      <input id="pm-name" placeholder="what people call this project, not its slug">
+    </div>
+    <div>
+      <label for="pm-canonical_spec">Canonical spec</label>
+      <input id="pm-canonical_spec" placeholder="the document that wins when memory disagrees with it">
+    </div>
+    <div>
+      <!-- No maxlength on purpose: the browser would silently truncate a
+           pasted line at 256 and the operator would save a sentence that
+           stops mid-word. The counter shows the cap, the API enforces it. -->
+      <label for="pm-purpose">Purpose</label>
+      <input id="pm-purpose" placeholder="one line: what this project is for">
+      <div class="pm-hint" id="pm-purpose-count"></div>
+    </div>
+  </div>
+  <div class="notice">
+    The list is built from banks with recorded activity, like Peek and Models — a project
+    that has never been called is not in it. All three fields are saved together, and
+    emptying a box <b>clears</b> that field: leave a value as you found it to keep it.
+  </div>
+  <div id="projects-out"><div class="empty">Pick a project to see the record it carries.</div></div>
+</section>
+
 </main>
 
 <script>
@@ -431,8 +487,27 @@ async function api(path, options = {}) {
     askForKey("That key was refused. Try another.");
     throw new Error("refused");
   }
-  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+  if (!response.ok) {
+    /* The body travels with the error, not just the status. A 422 from the
+       projects PATCH names the field and the limit it broke; "answered 422"
+       under three inputs and one Save button says nothing about which.
+       Callers that only read .message are unaffected. */
+    const error = new Error(`${path} answered ${response.status}`);
+    error.detail = await response.json().catch(() => null);
+    throw error;
+  }
   return response.json();
+}
+
+/* Two envelopes reach here. FastAPI's own validation failure is
+   {detail:[{loc:["body","purpose"], msg}]}; ours is {error:{message}}
+   (app.py:130). Anything else falls back to the status line. */
+function apiFailure(e) {
+  const items = e.detail?.detail;
+  if (Array.isArray(items) && items.length) {
+    return items.map((i) => `${i.loc?.[i.loc.length - 1] ?? "request"}: ${i.msg}`).join("; ");
+  }
+  return e.detail?.error?.message || e.message;
 }
 
 function askForKey(message) {
@@ -910,6 +985,105 @@ document.getElementById("brief-go").addEventListener("click", async () => {
   }
 });
 
+/* ── projects ─────────────────────────────────────────────────────────────
+   The three metadata fields exist so a brief can state a project's
+   orientation outright instead of an agent learning it and paying to store
+   it. Nothing else in the product writes them, and brief.py does not read
+   them yet -- this panel is what puts values there first. */
+
+/* Matches UpdateProjectRequest.purpose in src/memory/api/projects.py, which
+   mirrors the projects.purpose column. Counted while typing because one
+   sentence of purpose passes 256 without looking like it has. */
+const PURPOSE_MAX = 256;
+
+/* The picker carries the same `p:`-prefixed value as every other bank picker
+   and this API is addressed by bare slug. scopeParams is the one place that
+   split lives; a second copy here would drift the day a scope is added. */
+function pickedProject() {
+  const value = document.getElementById("projects-target").value;
+  return value ? scopeParams(value).project_slug : "";
+}
+
+/* An emptied box is an explicit null, never "". The form is loaded from the
+   record and shows all three fields, so saving it means "the record is now
+   this" and a cleared box is a retraction. min_length=1 on the API makes ""
+   a 422 rather than a clear -- correctly, but the intent has to be spelled
+   here instead of sent as an empty string. Trimmed for the same reason: a
+   box holding only spaces was cleared, not filled in. */
+function metadataValue(id) {
+  const value = document.getElementById(id).value.trim();
+  return value === "" ? null : value;
+}
+
+function countPurpose() {
+  const n = document.getElementById("pm-purpose").value.length;
+  const hint = document.getElementById("pm-purpose-count");
+  hint.textContent = `${n}/${PURPOSE_MAX}`;
+  hint.classList.toggle("over", n > PURPOSE_MAX);
+}
+document.getElementById("pm-purpose").addEventListener("input", countPurpose);
+
+/* Values are assigned as DOM properties, not interpolated into value="...":
+   assignment cannot parse HTML, so free text set by any project member has
+   nothing to break out of. Everything this panel does put through innerHTML
+   -- the slug, the API's own message -- goes through esc(). */
+function fillProjectForm(project) {
+  document.getElementById("pm-name").value = project.name ?? "";
+  document.getElementById("pm-canonical_spec").value = project.canonical_spec ?? "";
+  document.getElementById("pm-purpose").value = project.purpose ?? "";
+  countPurpose();
+}
+
+document.getElementById("projects-target").addEventListener("change", async () => {
+  const slug = pickedProject();
+  const form = document.getElementById("projects-form");
+  const out = document.getElementById("projects-out");
+  if (!slug) {
+    form.hidden = true;
+    out.innerHTML = `<div class="empty">Pick a project to see the record it carries.</div>`;
+    return;
+  }
+  out.innerHTML = `<div class="empty">Reading…</div>`;
+  try {
+    fillProjectForm(await api(`/v1/projects/${encodeURIComponent(slug)}`));
+    form.hidden = false;
+    out.innerHTML = `<div class="empty">Editing ${esc(slug)}. Nothing is written until you press Save.</div>`;
+  } catch (e) {
+    form.hidden = true;
+    if (e.message !== "refused") {
+      out.innerHTML = `<div class="empty">Could not read ${esc(slug)}: ${esc(apiFailure(e))}</div>`;
+    }
+  }
+});
+
+document.getElementById("projects-save").addEventListener("click", async () => {
+  const slug = pickedProject();
+  const out = document.getElementById("projects-out");
+  if (!slug) {
+    out.innerHTML = `<div class="empty">Pick a project first.</div>`;
+    return;
+  }
+  out.innerHTML = `<div class="empty">Saving…</div>`;
+  try {
+    const project = await api(`/v1/projects/${encodeURIComponent(slug)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: metadataValue("pm-name"),
+        canonical_spec: metadataValue("pm-canonical_spec"),
+        purpose: metadataValue("pm-purpose"),
+      }),
+    });
+    /* Refilled from the response, not from what was typed: the record on
+       screen is then the record that was stored. */
+    fillProjectForm(project);
+    out.innerHTML = `<div class="empty">Saved ${esc(project.project_slug)}.</div>`;
+  } catch (e) {
+    if (e.message !== "refused") {
+      out.innerHTML = `<div class="empty">Not saved — ${esc(apiFailure(e))}</div>`;
+    }
+  }
+});
+
 /* tabs */
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", String(x === t)));
@@ -930,6 +1104,9 @@ async function load() {
   buildBankOptions("brief-user", fleet, { scope: "user", placeholder: "Pick a user…" });
   buildBankOptions("brief-project", fleet, {
     scope: "project", placeholder: "No project section",
+  });
+  buildBankOptions("projects-target", fleet, {
+    scope: "project", placeholder: "Pick a project…",
   });
 }
 
