@@ -83,6 +83,35 @@ def tool_session(ctx: HasHeaders) -> Iterator[ToolContext]:
         yield ToolContext(principal=principal, db=db)
 
 
+INSTRUCTIONS = (
+    "Durable memory across sessions and context resets: the system of "
+    "record for what was decided, preferred or learned, which would "
+    "otherwise be lost when this conversation ends. An agent's own "
+    "notes, a host memory directory, a MEMORY.md index or a scratch "
+    "file are invisible here -- whatever is written there is lost to "
+    "every future session.\n\n"
+    "READ before acting. Recall whenever the work depends on something "
+    "settled earlier: a preference, a convention, a constraint, a "
+    "name, an approach already tried and rejected. Searching here "
+    "beats reconstructing the past from files or transcripts, which "
+    "record what was done and never why. `recall` returns matching "
+    "facts; `reflect` answers a question from them.\n\n"
+    "WRITE the moment a fact becomes durable -- when it will still "
+    "hold after this task: a decision confirmed or rejected, a stated "
+    "preference, a convention, a constraint, a gotcha and its cause, "
+    "whatever a context summary establishes. Store each as a "
+    "standalone statement that makes sense to a reader with none of "
+    "this conversation: name the subject, state the fact, say why it "
+    "holds. Skip what is routine, already stored or easily re-derived. "
+    "Never store credentials, tokens or keys. Write in English "
+    "whatever language the conversation uses: retrieval reranks in "
+    "English only.\n\n"
+    "`scope` selects whose memory: 'user' is your own, 'project' is "
+    "the shared memory of the project named by project_slug. You never "
+    "supply a bank id."
+)
+
+
 def build_mcp() -> MCPServer:
     """The server, with no tools registered yet.
 
@@ -104,31 +133,5 @@ def build_mcp() -> MCPServer:
     """
     return MCPServer(
         name="ach-memory",
-        instructions=(
-            "Durable memory across sessions and context resets: the system of "
-            "record for what was decided, preferred or learned, which would "
-            "otherwise be lost when this conversation ends. An agent's own "
-            "notes, a host memory directory, a MEMORY.md index or a scratch "
-            "file are invisible here -- whatever is written there is lost to "
-            "every future session.\n\n"
-            "READ before acting. Recall whenever the work depends on something "
-            "settled earlier: a preference, a convention, a constraint, a "
-            "name, an approach already tried and rejected. Searching here "
-            "beats reconstructing the past from files or transcripts, which "
-            "record what was done and never why. `recall` returns matching "
-            "facts; `reflect` answers a question from them.\n\n"
-            "WRITE the moment a fact becomes durable -- when it will still "
-            "hold after this task: a decision confirmed or rejected, a stated "
-            "preference, a convention, a constraint, a gotcha and its cause, "
-            "whatever a context summary establishes. Store each as a "
-            "standalone statement that makes sense to a reader with none of "
-            "this conversation: name the subject, state the fact, say why it "
-            "holds. Skip what is routine, already stored or easily re-derived. "
-            "Never store credentials, tokens or keys. Write in English "
-            "whatever language the conversation uses: retrieval reranks in "
-            "English only.\n\n"
-            "`scope` selects whose memory: 'user' is your own, 'project' is "
-            "the shared memory of the project named by project_slug. You never "
-            "supply a bank id."
-        ),
+        instructions=INSTRUCTIONS,
     )
