@@ -248,13 +248,18 @@ def test_the_brief_carries_the_policy_and_the_user_section(client, two_users):
 
 @respx.mock
 def test_a_master_key_reads_a_brief_for_the_user_it_names(
-    client, master_headers, two_users
+    client, master_headers, two_users, session
 ):
     """The console's Brief tab was dead for every operator: scope=user was
     resolved with user_id=None, so a master key -- which has no identity of its
     own -- got InvalidScope on the one route whose whole purpose is reading
     somebody else's memory on their behalf."""
-    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
+    from memory.models import User
+
+    # Pinned to the named user's own bank: a `banks/[^/]+/` regex answers for
+    # any bank, so it proves a brief was read and not whose.
+    bank_id = session.get(User, two_users[0]["user_id"]).bank_id
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/{bank_id}/mental-models").mock(
         return_value=httpx.Response(
             200,
             json={

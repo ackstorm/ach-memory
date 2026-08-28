@@ -50,8 +50,10 @@ def session_brief(
 
     # `on_behalf_of` is the only identity a master key has here: the route is
     # read-on-behalf-of by construction (§16.5), and `_resolve_bank` uses the
-    # header for the rate limiter and the audit row, never for resolution. A
-    # user key ignores both and addresses itself.
+    # header for the audit row, never for resolution. A user key never sees the
+    # header (`current_on_behalf_of` blanks it) and its `?user_id` reaches
+    # `resolve_user_bank`, where naming somebody else is a 403, not a silent
+    # redirect.
     user_bank, _, _ = _resolve_bank(
         ScopedRequest(scope="user", user_id=on_behalf_of or scoped.user_id),
         db, principal, on_behalf_of, "brief.get",
