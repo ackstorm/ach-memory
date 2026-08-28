@@ -142,3 +142,76 @@ def test_compose_omits_a_section_it_has_no_material_for():
 def test_compose_with_nothing_is_exactly_the_policy():
     """The failure path must be indistinguishable from today's behaviour."""
     assert brief.compose("POLICY", None, None, None) == "POLICY"
+
+
+import httpx
+import respx
+
+BASE = "http://hindsight.test"
+
+
+def _headers(key):
+    return {"Authorization": f"Bearer {key}"}
+
+
+@respx.mock
+def test_the_brief_carries_the_policy_and_the_user_section(client, two_users):
+    """The endpoint returns the WHOLE instructions payload, not the brief
+    alone: the proxy replaces the server's instructions with whatever it
+    advertises, so composing anywhere else would drop the policy."""
+    from memory.mcp.server import INSTRUCTIONS
+
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "mental_models": [
+                    {
+                        "id": "mm-1",
+                        "name": "ach-memory-session-brief",
+                        "content": "Ask before planning.",
+                        "source_query": __import__(
+                            "memory.brief", fromlist=["x"]
+                        ).USER_QUERY,
+                        "is_stale": False,
+                        "last_refreshed_at": "2026-08-27T03:00:00+00:00",
+                    }
+                ]
+            },
+        )
+    )
+
+    response = client.get(
+        "/v1/session-brief?scope=user", headers=_headers(two_users[0]["key"])
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["instructions"].startswith(INSTRUCTIONS)
+    assert "Ask before planning." in body["instructions"]
+    assert body["sections"] == {"user": True, "project": False}
+    assert body["generated_at"] == "2026-08-27T03:00:00+00:00"
+
+
+@respx.mock
+def test_a_project_that_does_not_exist_is_not_created_by_asking_for_a_brief(
+    client, two_users
+):
+    """create=False. A session start must never mint a project -- an agent
+    opening any directory would otherwise squat a slug."""
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
+        return_value=httpx.Response(200, json={"mental_models": []})
+    )
+    # The user bank's own model does not exist yet either -- ensure_section
+    # provisions it in the same call, unrelated to the project assertion.
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
+        return_value=httpx.Response(201, json={"id": "mm-new"})
+    )
+
+    response = client.get(
+        "/v1/session-brief?scope=user&project_slug=never-created",
+        headers=_headers(two_users[0]["key"]),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sections"]["project"] is False
