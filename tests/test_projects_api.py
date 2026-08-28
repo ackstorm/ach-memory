@@ -247,6 +247,143 @@ def test_patch_without_git_locator_leaves_it_alone(client, juan, tenant):
     assert response.json()["git_locator"] == "github.com/acme/payments-api"
 
 
+def test_project_metadata_round_trips(client, juan, tenant):
+    """Orientation is derivable, so it must not cost a memory fact. An audit of
+    the project mental model found it carried zero orientation -- no name, no
+    spec pointer, no purpose -- because nothing but a Hindsight fact could hold
+    it, and facts compete for a profile item budget.
+    """
+    client.post(
+        "/v1/projects", json={"project_slug": "acme-api"}, headers=juan["headers"]
+    )
+
+    patched = client.patch(
+        "/v1/projects/acme-api",
+        json={
+            "name": "Acme API",
+            "canonical_spec": "docs/SPEC.md",
+            "purpose": "Billing and entitlements for the Acme platform.",
+        },
+        headers=juan["headers"],
+    )
+
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["name"] == "Acme API"
+    assert patched.json()["canonical_spec"] == "docs/SPEC.md"
+    assert patched.json()["purpose"].startswith("Billing")
+
+    fetched = client.get("/v1/projects/acme-api", headers=juan["headers"]).json()
+    assert fetched["name"] == "Acme API"
+    assert fetched["canonical_spec"] == "docs/SPEC.md"
+
+
+def test_patch_with_an_explicit_null_clears_project_metadata(client, juan, tenant):
+    """Same "clear or update" semantics the locator already has: a null is a
+    deliberate clear, and orientation someone retracted must actually go away
+    rather than keep being compiled into every session brief.
+
+    Replacing any of the three `in body.model_fields_set` checks with a
+    `body.<field> is not None` check turns this red -- the clear is skipped and
+    the stale value survives.
+    """
+    client.post(
+        "/v1/projects", json={"project_slug": "acme-api"}, headers=juan["headers"]
+    )
+    client.patch(
+        "/v1/projects/acme-api",
+        json={"name": "Acme API", "canonical_spec": "docs/SPEC.md", "purpose": "Billing."},
+        headers=juan["headers"],
+    )
+
+    response = client.patch(
+        "/v1/projects/acme-api",
+        json={"name": None, "canonical_spec": None, "purpose": None},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] is None
+    assert response.json()["canonical_spec"] is None
+    assert response.json()["purpose"] is None
+
+
+def test_patch_without_the_metadata_keys_leaves_them_alone(client, juan, tenant):
+    """An omitted key is not the same as null: a rename, or a console editor
+    saving only the field someone touched, must not wipe the other two.
+
+    This is the other direction of the pair above -- a `body.<field> is not
+    None` check passes here and fails the clear test, so only the
+    field-presence check satisfies both.
+    """
+    client.post(
+        "/v1/projects", json={"project_slug": "acme-api"}, headers=juan["headers"]
+    )
+    client.patch(
+        "/v1/projects/acme-api",
+        json={"name": "Acme API", "canonical_spec": "docs/SPEC.md", "purpose": "Billing."},
+        headers=juan["headers"],
+    )
+
+    response = client.patch(
+        "/v1/projects/acme-api",
+        json={"purpose": "Billing and entitlements."},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Acme API"
+    assert response.json()["canonical_spec"] == "docs/SPEC.md"
+    assert response.json()["purpose"] == "Billing and entitlements."
+
+
+def test_an_empty_metadata_string_is_a_typed_422(client, juan, tenant):
+    """min_length=1, for the reason git_locator has it: an explicit null is a
+    deliberate clear, an empty string carries no orientation and almost always
+    signals a caller bug. The two intents must not collapse into one.
+    """
+    client.post(
+        "/v1/projects", json={"project_slug": "acme-api"}, headers=juan["headers"]
+    )
+
+    response = client.patch(
+        "/v1/projects/acme-api", json={"name": ""}, headers=juan["headers"]
+    )
+
+    assert response.status_code == 422
+
+
+def test_a_control_character_in_metadata_is_a_typed_422(client, juan, tenant):
+    """These values reach the projects UPDATE. A NUL there is a psycopg
+    DataError -> 500, the same failure git_locator's validator was added for.
+    """
+    client.post(
+        "/v1/projects", json={"project_slug": "acme-api"}, headers=juan["headers"]
+    )
+
+    response = client.patch(
+        "/v1/projects/acme-api",
+        json={"purpose": "Billing\x00and entitlements."},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 422
+
+
+def test_oversize_metadata_is_a_typed_422(client, juan, tenant):
+    """purpose is capped at 256 because it is one line -- a budget, not a text
+    field. Without max_length the column overflow is a DB error, not a 422.
+    """
+    client.post(
+        "/v1/projects", json={"project_slug": "acme-api"}, headers=juan["headers"]
+    )
+
+    response = client.patch(
+        "/v1/projects/acme-api", json={"purpose": "x" * 257}, headers=juan["headers"]
+    )
+
+    assert response.status_code == 422
+
+
 def test_patch_rejects_an_unknown_field(client, juan, tenant):
     """The silent no-op is the bug behind I1: a caller following the SPEC got
     200 OK and no change. An unknown key must be a typed 422.

@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -67,6 +67,24 @@ class UpdateProjectRequest(BaseModel):
     # locator information and almost always signals a caller bug -- the two
     # intents must not collapse into the same silent-clear behavior.
     git_locator: str | None = Field(default=None, max_length=512, min_length=1)
+    # Orientation the brief compiler reads instead of spending memory on it.
+    # Lengths mirror the projects columns so an oversize value is a typed 422
+    # here, not a DB error; min_length=1 for the same reason as git_locator
+    # above -- null is a deliberate clear, "" is a caller bug.
+    name: str | None = Field(default=None, max_length=128, min_length=1)
+    canonical_spec: str | None = Field(default=None, max_length=512, min_length=1)
+    purpose: str | None = Field(default=None, max_length=256, min_length=1)
+
+    @field_validator("name", "canonical_spec", "purpose")
+    @classmethod
+    def _metadata_no_control_characters(
+        cls, value: str | None, info: ValidationInfo
+    ) -> str | None:
+        # Same psycopg DataError -> 500 as git_locator: these reach the
+        # projects UPDATE too.
+        if value and has_control_character(value):
+            raise ValueError(f"{info.field_name} must not contain control characters")
+        return value
 
     @field_validator("git_locator")
     @classmethod
@@ -82,6 +100,9 @@ class ProjectResponse(RenameForwarding):
     project_slug: str
     owner: Owner
     git_locator: str | None = None
+    name: str | None = None
+    canonical_spec: str | None = None
+    purpose: str | None = None
 
 
 def _response(project: Project, resolved_from: str | None = None) -> ProjectResponse:
@@ -91,6 +112,9 @@ def _response(project: Project, resolved_from: str | None = None) -> ProjectResp
         project_slug=project.project_slug,
         owner=Owner(type=project.owner_type, id=project.owner_id),
         git_locator=project.git_locator,
+        name=project.name,
+        canonical_spec=project.canonical_spec,
+        purpose=project.purpose,
         resolved_from=resolved_from,
     )
 
@@ -183,7 +207,7 @@ def update_project(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> ProjectResponse:
-    """Rename, repair the locator, or both (SPEC §8.4, §9).
+    """Rename, repair the locator, set the metadata record, or any of them (SPEC §8.4, §9).
 
     `model_fields_set`, not a None check: §8.4 says "clear or update", so an
     explicit null must clear the column while an omitted key must leave it
@@ -206,6 +230,20 @@ def update_project(
             db, principal, "project.locator.update", project.project_slug,
             on_behalf_of=on_behalf_of,
         )
+
+    # Same field-presence rule as the locator, for the same reason: a console
+    # editor saving one field must not wipe the two it did not send, and an
+    # explicit null must retract orientation rather than be ignored.
+    # No audit event: the log records identity, credential, membership,
+    # ownership and resolution changes -- the locator is in it because it is
+    # the key an agent's repo resolves through. These three are descriptive,
+    # like directives, which record none either.
+    if "name" in body.model_fields_set:
+        project.name = body.name
+    if "canonical_spec" in body.model_fields_set:
+        project.canonical_spec = body.canonical_spec
+    if "purpose" in body.model_fields_set:
+        project.purpose = body.purpose
 
     db.commit()
     # result.resolved_from, not a bare _response(project): SPEC §8.6 says a

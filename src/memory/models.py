@@ -108,6 +108,15 @@ class Project(Base):
     # Metadata, never identity and never authorization evidence (inv. 11).
     # Deliberately NOT unique: SPEC §17.
     git_locator: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Orientation, not memory: name, spec pointer and one-line purpose are
+    # derivable facts about a project, so they are a record here rather than
+    # three Hindsight facts competing for a profile item budget. purpose is
+    # capped at 256 because it is one line -- a budget, not a text field.
+    # All nullable: every existing project has none of them, and a NOT NULL
+    # with a default would invent orientation nobody wrote.
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    canonical_spec: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    purpose: Mapped[str | None] = mapped_column(String(256), nullable=True)
     owner_type: Mapped[str] = mapped_column(String(8))
     owner_id: Mapped[str] = mapped_column(String(128))
     bank_id: Mapped[str] = mapped_column(String(64), unique=True)
