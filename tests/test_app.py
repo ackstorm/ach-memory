@@ -63,6 +63,7 @@ EXPECTED_ROUTES = {
     ("POST", "/v1/mental-models"),
     ("GET", "/v1/mental-models"),
     ("GET", "/v1/mental-models/{mental_model_id}"),
+    ("GET", "/v1/mental-models/{mental_model_id}/history"),
     ("PATCH", "/v1/mental-models/{mental_model_id}"),
     ("DELETE", "/v1/mental-models/{mental_model_id}"),
     ("POST", "/v1/mental-models/{mental_model_id}/refresh"),

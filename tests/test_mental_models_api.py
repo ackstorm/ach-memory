@@ -851,3 +851,147 @@ def test_a_master_key_can_manage_mental_models_on_any_bank(
 
     assert response.status_code == 201
     assert create.call_count == 1
+
+
+# Measured live against hindsight-api 0.9.1 on 2026-08-28: history is a BARE
+# ARRAY, newest first, three keys per entry. The genesis entry carries the
+# literal placeholder Hindsight writes at create time, before the first
+# generation lands.
+HISTORY = [
+    {
+        "previous_content": "the version before the current one",
+        "previous_reflect_response": {"text": "t", "based_on": {"world": []}},
+        "changed_at": "2026-08-27T17:35:56.489829+00:00",
+    },
+    {
+        "previous_content": "Generating content...",
+        "previous_reflect_response": None,
+        "changed_at": "2026-08-27T17:26:17.552227+00:00",
+    },
+]
+
+
+@respx.mock
+def test_history_is_forwarded_as_a_bare_array_newest_first(client, juan, tenant):
+    """The array IS the contract (SPEC §14.5).
+
+    Wrapping it as `{"items": [...]}` to rhyme with this service's own list
+    routes would put a reshaping layer in front of the one structure whose
+    entire meaning is its ordering -- and an off-by-one there renders a
+    version that is wrong but entirely plausible.
+    """
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/{MM_ID}/history$"
+    ).mock(return_value=httpx.Response(200, json=HISTORY))
+
+    response = client.get(
+        f"/v1/mental-models/{MM_ID}/history",
+        params={"scope": "user"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert isinstance(result, list), "a dict here means someone added an envelope"
+    assert result == HISTORY
+    assert result[0]["changed_at"] > result[1]["changed_at"], "newest first"
+
+
+@respx.mock
+def test_history_uses_the_history_suffix_not_the_bare_mental_model_path(
+    client, juan, tenant
+):
+    """Same overlap trap as refresh: both routes are GET, and an unanchored
+    bare-path mock would swallow a call that dropped the suffix. Disjoint
+    bodies, so the regression shows up as which URL was hit."""
+    bare = respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/{MM_ID}$"
+    ).mock(return_value=httpx.Response(200, json={"id": MM_ID}))
+    history = respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/{MM_ID}/history$"
+    ).mock(return_value=httpx.Response(200, json=HISTORY))
+
+    response = client.get(
+        f"/v1/mental-models/{MM_ID}/history",
+        params={"scope": "user"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200
+    assert history.call_count == 1
+    assert bare.call_count == 0
+
+
+@respx.mock
+def test_history_of_a_model_that_never_changed_is_an_empty_array_not_an_error(
+    client, juan, tenant
+):
+    """A model created and never refreshed has no previous versions. That is
+    an answer, not a failure -- a 404 or a 502 here would make "never changed"
+    indistinguishable from "no such model"."""
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/{MM_ID}/history$"
+    ).mock(return_value=httpx.Response(200, json=[]))
+
+    response = client.get(
+        f"/v1/mental-models/{MM_ID}/history",
+        params={"scope": "user"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == []
+
+
+@respx.mock
+def test_history_redacts_the_bank_id_inside_the_array(client, juan, tenant):
+    """§16.4 redaction is absolute and must not depend on the response being
+    an object: the bank_id reaches this route embedded in entries, one list
+    level deeper than every other route redacts."""
+    seen: list[str] = []
+
+    def _echo_the_bank_id(request: httpx.Request) -> httpx.Response:
+        bank_id = request.url.path.split("/")[4]
+        seen.append(bank_id)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "previous_content": "c",
+                    "previous_reflect_response": None,
+                    "changed_at": "2026-08-27T17:35:56.489829+00:00",
+                    "chunk_id": f"{bank_id}:0",
+                }
+            ],
+        )
+
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/{MM_ID}/history$"
+    ).mock(side_effect=_echo_the_bank_id)
+
+    response = client.get(
+        f"/v1/mental-models/{MM_ID}/history",
+        params={"scope": "user"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200
+    body = json.dumps(response.json()["result"])
+    assert seen and seen[0] not in body
+    assert "REDACTED" in body
+
+
+@respx.mock
+def test_history_of_an_unknown_mental_model_is_a_404(client, juan, tenant):
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/{MM_ID}/history$"
+    ).mock(return_value=httpx.Response(404, json={"detail": "nope"}))
+
+    response = client.get(
+        f"/v1/mental-models/{MM_ID}/history",
+        params={"scope": "user"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "MENTAL_MODEL_NOT_FOUND"

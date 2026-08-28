@@ -12,13 +12,14 @@ new permission model, only a narrower surface.
 """
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from memory.api.app import current_on_behalf_of, current_principal
+from memory.api.common import RenameForwarding
 from memory.api.memory import (
     MAX_PAGE_SIZE,
     MemoryResponse,
@@ -43,6 +44,23 @@ class MentalModelTrigger(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     mode: Literal["full", "delta"] | None = None
+
+
+class MentalModelHistoryResponse(RenameForwarding):
+    """`result` is a LIST here, not the dict every other route in this service
+    returns.
+
+    Hindsight's history endpoint answers with a bare array, newest first, and
+    it is forwarded in that shape (SPEC §14.5). Wrapping it as
+    `{"items": [...]}` to rhyme with this service's own list routes would put
+    a reshaping layer in front of an ordering-sensitive structure, which is
+    the one place an off-by-one produces a wrong version that still looks
+    plausible.
+    """
+
+    result: list[dict[str, Any]]
+    # Mirrors MemoryResponse.project_slug (SPEC §8.6).
+    project_slug: str | None = None
 
 
 class CreateMentalModelRequest(ScopedRequest):
@@ -169,6 +187,38 @@ def get_mental_model(
     )
     result = get_client().get_mental_model(bank_id, mental_model_id)
     return MemoryResponse(
+        result=_strip_bank_id(result, bank_id),
+        resolved_from=resolved_from,
+        project_slug=project_slug,
+    )
+
+
+@router.get("/{mental_model_id}/history", response_model=MentalModelHistoryResponse)
+def list_mental_model_history(
+    mental_model_id: str,
+    scoped: Annotated[ScopedRequest, Depends(scoped_query_params)],
+    principal: Annotated[Principal, Depends(current_principal)],
+    on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
+    db: Session = Depends(get_session),
+) -> MentalModelHistoryResponse:
+    """Every previous version of the content, newest first.
+
+    Exists because `last_refreshed_at` is not a freshness signal. Measured in
+    production: the `session-brief-user` model reported
+    `last_refreshed_at=2026-08-27T17:26:03`, equal to its `created_at`, while
+    its content had actually been rewritten at 17:35:56 -- ten minutes later.
+    On another bank the two agreed to within 170ms, so the divergence is
+    silent and intermittent, and anything asking "is this stale?" has to ask
+    `history[0].changed_at` instead.
+
+    A read: no `is_write`. Unlike `refresh`, this spends nothing upstream --
+    it is a database read of versions Hindsight already stored.
+    """
+    bank_id, resolved_from, project_slug = _bank(
+        scoped, db, principal, on_behalf_of, "mental_models.history"
+    )
+    result = get_client().list_mental_model_history(bank_id, mental_model_id)
+    return MentalModelHistoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,
         project_slug=project_slug,

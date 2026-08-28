@@ -62,6 +62,11 @@ GOVERNANCE_ROUTES: dict[str, tuple[str, str, dict | None, dict | None, bool]] = 
     "mental_models.get": (
         "GET", f"/v1/mental-models/{MM_ID}", None, {"scope": "user"}, False,
     ),
+    # A read: it lists versions Hindsight already stored and spends nothing
+    # upstream, unlike refresh, which pays for a full reflect every call.
+    "mental_models.history": (
+        "GET", f"/v1/mental-models/{MM_ID}/history", None, {"scope": "user"}, False,
+    ),
     "mental_models.update": (
         "PATCH", f"/v1/mental-models/{MM_ID}",
         {"scope": "user", "source_query": "q2"}, None, True,
@@ -177,6 +182,13 @@ def test_rest_is_write_flags_match_the_governance_table(client, juan, tenant, mo
     monkeypatch.setenv("MEMORY_WRITE_WINDOW_SECONDS", "60")
     get_settings.cache_clear()
     ratelimit.get_limiter.cache_clear()
+    # Registered BEFORE the catch-all, which respx would otherwise match
+    # first. Mental-model history is the one upstream route that answers with
+    # a bare array instead of an object, and its response model says so, so
+    # the catch-all's `{}` fails validation and the read looks like a 500.
+    respx.get(url__regex=r"^http://hindsight\.test/.*/mental-models/.*/history$").mock(
+        return_value=httpx.Response(200, json=[])
+    )
     respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
         return_value=httpx.Response(200, json={})
     )

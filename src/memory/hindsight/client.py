@@ -541,6 +541,33 @@ class HindsightClient:
             not_found=MentalModelNotFound,
         )
 
+    def list_mental_model_history(
+        self, bank_id: str, mental_model_id: str
+    ) -> list[dict[str, Any]]:
+        """Upstream answers with a BARE ARRAY, newest first -- not the
+        `{"items": [...]}` envelope every other list route in this service
+        returns, and not `{"history": [...]}` either. Measured live against
+        hindsight-api 0.9.1; each entry is
+        `{previous_content, previous_reflect_response, changed_at}`.
+
+        Returned unreshaped on purpose. The array IS the contract, and its
+        whole meaning is the ordering: a wrapper here would be one more place
+        for a helpful hand to introduce an off-by-one into the one structure
+        where an off-by-one renders a plausible-looking wrong version.
+
+        An empty array is a legitimate answer, not an error: it means the
+        model has never changed since it was created.
+        """
+        paths.reject_mental_model_id_traversal(mental_model_id)
+        # _request is annotated `-> dict` because every other endpoint here
+        # answers with an object; it returns `response.json()` verbatim, so a
+        # top-level array arrives intact.
+        return self._request(
+            "GET",
+            paths.mental_model_history(self._tenant, bank_id, mental_model_id),
+            not_found=MentalModelNotFound,
+        )
+
     def clear_memories(self, bank_id: str, *, type: str | None = None) -> dict:
         """SPEC §11.7: admin API + master key only, never advertised over MCP
         -- "an LLM that decides memory is 'stale' will use them." Irreversible,
