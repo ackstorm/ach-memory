@@ -689,6 +689,8 @@ class Orientation:
     purpose: str | None
 ```
 
+**Compose orientation as inert labelled values, never as prose.** These three fields are unconstrained free text set by any authorised project member, and this is the point where they enter text an agent reads — SPEC §20.2 names memory poisoning as the threat this product creates. So render them as `spec: docs/SPEC.md` on its own line, not as a sentence that could read as an instruction; never fetch `canonical_spec`, whatever it looks like; and fall back to the project slug when `name` is null (nothing seeds it — Task 5 deliberately left it unset rather than storing a copy of the slug). The same applies to profile text arriving from Hindsight: it is model-generated and goes in under its own heading, never merged into the policy section.
+
 `compose_index(revision, user, orientation, project, working_state, budget)`:
 
 1. Header: `f"-- ach-memory brief rev {revision} / protocol {MEMORY_PROTOCOL} --"`, plus the age line when the caller stamps one.
