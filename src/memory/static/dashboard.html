@@ -213,6 +213,22 @@ tr.silent .ribbon{opacity:.55}
 .mem p{margin:0;font-family:var(--sans);font-size:14px;line-height:1.55;color:var(--text)}
 .empty{color:var(--text-3);padding:40px 0;text-align:center;font-size:13px}
 
+/* ── models ─────────────────────────────────────────────────────────────────
+   Three outcomes must never look alike here. A refresh that wrote, a refresh
+   that ran and did nothing, and a refresh that failed were indistinguishable
+   for six days behind a log line reading "took 0.003s", which is what a
+   no-op looks like when nothing draws it differently. */
+.mm-state{padding:1px 7px;border-radius:2px;font-size:10px;letter-spacing:.06em;text-transform:uppercase}
+.mm-fresh{background:var(--frost-dim);color:var(--frost)}
+.mm-stale{background:var(--sodium-dim);color:var(--sodium)}
+.mm-blind{background:var(--quiet);color:var(--text-2)}
+.mm-bad{background:var(--rust-dim);color:var(--rust)}
+.mm-query{margin-bottom:8px;font-size:12px;color:var(--text-2);font-style:italic}
+.mm-line{font-size:11px;color:var(--text-3);margin-top:6px}
+.mm-line b{color:var(--text-2);font-weight:400}
+.mm-warn{color:var(--sodium)}
+.mm-think{color:var(--sodium)}
+
 .legend{display:flex;gap:18px;padding:16px 0 0;font-size:11px;color:var(--text-3)}
 .legend b{display:inline-block;width:8px;height:8px;border-radius:1px;margin-right:6px;vertical-align:middle}
 
@@ -231,6 +247,7 @@ tr.silent .ribbon{opacity:.55}
     <button class="tab" role="tab" aria-selected="true"  data-panel="fleet">Fleet</button>
     <button class="tab" role="tab" aria-selected="false" data-panel="activity">Activity</button>
     <button class="tab" role="tab" aria-selected="false" data-panel="peek">Peek</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="models">Models</button>
   </nav>
   <div class="top-right">
     <span class="key-state"><span class="dot"></span>master key held for this tab</span>
@@ -327,6 +344,30 @@ tr.silent .ribbon{opacity:.55}
     another user's bank is recorded in the audit trail under your master key.
   </div>
   <div id="peek-out"><div class="empty">Pick a bank to see what your agents have actually written.</div></div>
+</section>
+
+<!-- ── MODELS ────────────────────────────────────────────────────────── -->
+<section class="panel" id="models" hidden>
+  <div class="sec">
+    <h2>Mental models</h2>
+    <p>What each bank has synthesized about itself, and whether its last refresh did anything.</p>
+  </div>
+  <div class="peek-bar">
+    <select id="models-target">
+      <option value="">Pick a bank…</option>
+    </select>
+    <button class="ghost" id="models-go">Read it</button>
+  </div>
+  <div class="notice">
+    Freshness is read from the version history, not from <code>last_refreshed_at</code> —
+    measured in production, those two disagreed by ten minutes on one model and matched to
+    the millisecond on another. Refresh diagnostics exist only where <code>keep_trace</code>
+    is on, and only for the most recent refresh: a trace answers why the last refresh did
+    what it did, never what has been going wrong all week. Turning it on is not retroactive.
+    Content and version diffs live in the Hindsight console, under Knowledge base → Mental
+    Models; this page deliberately cannot show you a bank id.
+  </div>
+  <div id="models-out"><div class="empty">Pick a bank to see what it believes about itself.</div></div>
 </section>
 
 </main>
@@ -542,10 +583,11 @@ const applyFilters = () => {
 ["f-text", "f-action", "f-outcome"].forEach((id) =>
   document.getElementById(id).addEventListener("input", applyFilters));
 
-/* peek: its target list is built from the fleet response, so it only ever
-   offers banks that exist. */
-function buildPeekOptions(fleet) {
-  const select = document.getElementById("peek-target");
+/* peek and models: the target list is built from the fleet response, so it
+   only ever offers banks that exist. Shared because a second copy would drift
+   the moment one of them learned about a new scope. */
+function buildBankOptions(selectId, fleet) {
+  const select = document.getElementById(selectId);
   const seen = new Set();
   const options = ['<option value="">Pick a bank…</option>'];
   for (const f of fleet) {
@@ -623,6 +665,151 @@ document.getElementById("peek-go").addEventListener("click", async () => {
   }
 });
 
+/* Matches STALE_AFTER in src/memory/brief.py. Stale AND old means refreshes
+   are failing, not that the bank went quiet. */
+const STALE_AFTER_DAYS = 7;
+
+function scopeParams(value) {
+  const [kind, ...rest] = value.split(":");
+  const id = rest.join(":");
+  return kind === "p" ? { scope: "project", project_slug: id }
+                      : { scope: "user", user_id: id };
+}
+
+function fmtTokens(n) {
+  return typeof n === "number" ? n.toLocaleString() : "?";
+}
+
+/* 11 chars, not 8: every id is "mm-" plus 32 hex, so a shorter slice spends
+   three of them on a prefix that every model shares. */
+function shortId(id) {
+  return String(id ?? "").slice(0, 11);
+}
+
+/* The whole point of this panel. `last_refreshed_at` is what the model says
+   about itself; history[0].changed_at is when its content demonstrably moved.
+   Measured in production on 2026-08-27 those disagreed by ten minutes on
+   session-brief-user and agreed to 170ms on gitlab-ackstorm, so the
+   disagreement is real, silent and intermittent -- it gets shown, not
+   averaged away. */
+function freshness(model, history) {
+  const changed = history.length ? history[0].changed_at : null;
+  const claimed = model.last_refreshed_at ?? null;
+  const at = changed ?? claimed;
+  const days = at ? (Date.now() - new Date(at).getTime()) / 86400000 : Infinity;
+  const drift = changed && claimed
+    ? Math.abs(new Date(changed).getTime() - new Date(claimed).getTime())
+    : 0;
+  return {
+    at,
+    changed,
+    claimed,
+    stale: days > STALE_AFTER_DAYS,
+    never: history.length === 0,
+    // A second of slack: on a healthy refresh the content lands a beat before
+    // the timestamp is stamped, and that gap is not drift.
+    diverges: drift > 1000,
+    driftMinutes: Math.round(drift / 60000),
+  };
+}
+
+/* Three outcomes that must not look alike, plus the one this console cannot
+   resolve. Without keep_trace there is no record of what a refresh did, so
+   "ran and wrote nothing" and "failed" are the same absence -- and saying so
+   is the honest answer, not a blank cell. */
+function refreshState(model, fresh) {
+  const trace = model.reflect_response?.trace;
+  if (trace) {
+    const failed = trace.outcome && /error|fail/i.test(trace.outcome);
+    if (failed) return { cls: "mm-bad", label: "last refresh failed" };
+    if (trace.outcome === "content_written") return { cls: "mm-fresh", label: "wrote content" };
+    return { cls: "mm-blind", label: `no-op · ${trace.outcome ?? "nothing written"}` };
+  }
+  if (fresh.never) return { cls: "mm-blind", label: "never changed" };
+  return { cls: fresh.stale ? "mm-stale" : "mm-fresh", label: fresh.stale ? "stale" : "fresh" };
+}
+
+function traceLine(model) {
+  const trace = model.reflect_response?.trace;
+  if (!trace) {
+    return `<div class="mm-line mm-warn">No trace kept. <b>keep_trace</b> is off for this
+      model, so a refresh that did nothing and a refresh that failed leave the same
+      evidence here: none.</div>`;
+  }
+  const u = trace.usage ?? {};
+  const bits = [
+    trace.llm_calls != null ? `<b>${esc(String(trace.llm_calls))}</b> LLM calls` : "",
+    trace.duration_ms != null ? `<b>${(trace.duration_ms / 1000).toFixed(1)}s</b>` : "",
+    `<b>${fmtTokens(u.input_tokens)}</b> in`,
+    `<b>${fmtTokens(u.output_tokens)}</b> out`,
+    // Never folded into a total. Reasoning tokens bill at the output rate on
+    // the Gemini family but never appear in the visible response, so a total
+    // that hides them under-reports exactly the cost we turned this on to see.
+    `<span class="mm-think"><b>${fmtTokens(u.thoughts_tokens)}</b> thinking</span>`,
+    u.cached_tokens ? `<b>${fmtTokens(u.cached_tokens)}</b> cached` : "",
+  ].filter(Boolean).join(" · ");
+  const warnings = (trace.warnings ?? []).length
+    ? `<div class="mm-line mm-warn">${esc(trace.warnings.join(" · "))}</div>` : "";
+  return `<div class="mm-line">${bits}</div>${warnings}`;
+}
+
+function renderModels(models, histories) {
+  const out = document.getElementById("models-out");
+  if (!models.length) {
+    out.innerHTML = `<div class="empty">This bank has no mental models. Nothing has been synthesized from it.</div>`;
+    return;
+  }
+  out.innerHTML = models.map((model, i) => {
+    const history = histories[i] ?? [];
+    const fresh = freshness(model, history);
+    const state = refreshState(model, fresh);
+    const when = fresh.at
+      ? `<span title="${esc(fresh.at)}">changed ${esc(fmtAgo(fresh.at))} · ${esc(fmtWhen(fresh.at))}</span>`
+      : `<span>never refreshed</span>`;
+    const drift = fresh.diverges
+      ? `<div class="mm-line mm-warn">last_refreshed_at disagrees with the history by
+         ${esc(String(fresh.driftMinutes))} min — it reads
+         ${esc(fmtWhen(fresh.claimed))}, the content moved ${esc(fmtWhen(fresh.changed))}.
+         Trust the history.</div>`
+      : "";
+    return `
+    <article class="mem">
+      <div class="mem-head">
+        <b>${esc(model.name ?? model.id ?? "unnamed")}</b>
+        <span class="mm-state ${state.cls}">${esc(state.label)}</span>
+        ${when}
+        <span>${esc(String(history.length))} version${history.length === 1 ? "" : "s"}</span>
+        <span>${esc(shortId(model.id))}</span>
+      </div>
+      ${model.source_query ? `<div class="mm-query">${esc(model.source_query)}</div>` : ""}
+      ${drift}
+      ${traceLine(model)}
+    </article>`;
+  }).join("");
+}
+
+document.getElementById("models-go").addEventListener("click", async () => {
+  const value = document.getElementById("models-target").value;
+  const out = document.getElementById("models-out");
+  if (!value) { out.innerHTML = `<div class="empty">Pick a bank first.</div>`; return; }
+  const qs = new URLSearchParams(scopeParams(value)).toString();
+  out.innerHTML = `<div class="empty">Reading…</div>`;
+  try {
+    const listed = await api(`/v1/mental-models?${qs}`);
+    const models = listed?.result?.items ?? [];
+    // One history call per model. The alternative is trusting
+    // last_refreshed_at, which is the bug this panel exists to expose.
+    const histories = await Promise.all(models.map(m =>
+      api(`/v1/mental-models/${encodeURIComponent(m.id)}/history?${qs}`)
+        .then(r => r?.result ?? [])
+        .catch(() => [])
+    ));
+    renderModels(models, histories);
+  } catch (e) {
+    if (e.message !== "refused") out.innerHTML = `<div class="empty">Could not read that bank's models.</div>`;
+  }
+});
+
 /* tabs */
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", String(x === t)));
@@ -638,7 +825,8 @@ async function load() {
   renderStats(fleet);
   renderFleet(fleet);
   renderLog(log);
-  buildPeekOptions(fleet);
+  buildBankOptions("peek-target", fleet);
+  buildBankOptions("models-target", fleet);
 }
 
 function boot() {
