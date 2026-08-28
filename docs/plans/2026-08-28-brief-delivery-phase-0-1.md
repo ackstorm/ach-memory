@@ -1039,6 +1039,10 @@ git commit -m "feat(hook): deliver the full brief tier with a bounded fetch and 
 - No read creates a mental model.
 - With the service down, a session starts anyway, in under six seconds, with a dated cached brief or with none.
 
+## Tracked, raised during execution, not yet done
+
+- **`SPEC-v1.md:1378` contradicts the Task 3 provision route.** That line reads "Normal bank authorization applies to mental-model CRUD/refresh/clear", and `POST /v1/admin/brief/{scope}/provision` makes one mental-model create/update master-key-only. The route is deliberately absent from the list at `:1381` — that list is headed "Master/admin-only **destructive** operations" and provisioning is not destructive, so appending it there would be wrong. What needs editing is the normative sentence at `:1378`, which takes judgment rather than a mechanical addition. Nothing surfaces this drift automatically: `tests/test_app.py::EXPECTED_ROUTES` is the only route contract with teeth and it does not read the SPEC. Decide with Juan Carlos whether it lands in this branch or with the SPEC v1.4.1 adoption commit.
+
 ## Deliberately not in this plan
 
 Phase 2 (Working State) and Phase 3 (write-side quality) — including the Stop/PreCompact background pass, `retain_mission`, `entity_labels` and profile item budgets. Phase 3 is gated on probe **O6**, which has not run. Phase 2's budgets come from the 2.2 measurement, which needs Phase 1 delivering first. The one Phase 1 seam left for them is deliberate: `revisions.fingerprint()` takes varargs so a Working State `updated_at` joins the hash without a migration.
