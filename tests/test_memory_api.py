@@ -7,12 +7,7 @@ import respx
 BASE = "http://hindsight.test"
 
 
-def _create_user(client, master_headers) -> dict[str, object]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "key": key, "headers": {"Authorization": f"Bearer {key}"}}
+from tests.conftest import _create_user
 
 
 @pytest.fixture
@@ -149,11 +144,6 @@ def test_master_key_reaches_a_named_user_bank(client, master_headers, user_key, 
 
     assert response.status_code == 200
     assert route.called
-
-
-@pytest.fixture
-def two_users(client, master_headers, tenant):
-    return [_create_user(client, master_headers) for _ in range(2)]
 
 
 @respx.mock
