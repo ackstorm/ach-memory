@@ -196,3 +196,9 @@ def test_the_console_can_edit_project_metadata(client):
 
     # The 256 cap is visible while typing, not only in the 422 afterwards.
     assert "PURPOSE_MAX = 256" in body
+
+    # Save is bound to the project the boxes were filled from, not to whatever
+    # the picker happens to read. Pick A, pick B, let B's load fail: the form
+    # hides but still holds A's values, and a save would write A's orientation
+    # onto B with nothing on screen saying so.
+    assert "loadedProject !== slug" in body

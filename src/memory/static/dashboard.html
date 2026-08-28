@@ -451,9 +451,10 @@ tr.silent .ribbon{opacity:.55}
     </div>
   </div>
   <div class="notice">
-    The list is built from banks with recorded activity, like Peek and Models — a project
-    that has never been called is not in it. All three fields are saved together, and
-    emptying a box <b>clears</b> that field: leave a value as you found it to keep it.
+    Every project this key can reach is listed, including ones with no activity — unlike
+    Peek, Models and Brief, whose pickers show only what has been called in the last 24
+    hours. All three fields are saved together, and emptying a box <b>clears</b> that
+    field: leave a value as you found it to keep it.
   </div>
   <div id="projects-out"><div class="empty">Pick a project to see the record it carries.</div></div>
 </section>
@@ -708,6 +709,21 @@ function buildBankOptions(selectId, fleet, { scope = null, placeholder = "Pick a
     options.push(`<option value="${esc(value)}">${label}</option>`);
   }
   select.innerHTML = options.join("");
+}
+
+/* Projects is the one picker not built from the fleet summary, because that
+   summary groups the last 24 hours (HOURS in src/memory/api/activity.py) and
+   this tab writes records rather than reading activity: a project idle over a
+   weekend would drop out of its own metadata form, and a project created
+   minutes ago -- the moment its purpose most wants stating -- would never be
+   in it at all. Values keep the `p:` prefix so scopeParams stays the only
+   place that split lives. */
+function buildProjectOptions(selectId, projects) {
+  const options = [`<option value="">Pick a project…</option>`];
+  for (const p of projects) {
+    options.push(`<option value="${esc(`p:${p.project_slug}`)}">${esc(p.project_slug)}</option>`);
+  }
+  document.getElementById(selectId).innerHTML = options.join("");
 }
 
 /* The field names here are Hindsight's, not ours. A memory is `fact_type` and
@@ -1034,25 +1050,43 @@ function fillProjectForm(project) {
   countPurpose();
 }
 
+/* The slug the boxes were filled from, which is not always the one the picker
+   reads. Pick A, then pick B and have B's GET fail: the form hides but still
+   holds A's values, and a Save would write A's orientation onto B. Nothing on
+   screen would say so. The same gap opens on its own if two GETs land out of
+   order -- a closed <select> fires one `change` per arrow key. */
+let loadedProject = null;
+
+function resetProjectForm() {
+  loadedProject = null;
+  document.getElementById("projects-form").hidden = true;
+  document.getElementById("projects-out").innerHTML =
+    `<div class="empty">Pick a project to see the record it carries.</div>`;
+}
+
 document.getElementById("projects-target").addEventListener("change", async () => {
   const slug = pickedProject();
   const form = document.getElementById("projects-form");
   const out = document.getElementById("projects-out");
   if (!slug) {
-    form.hidden = true;
-    out.innerHTML = `<div class="empty">Pick a project to see the record it carries.</div>`;
+    resetProjectForm();
     return;
   }
   out.innerHTML = `<div class="empty">Reading…</div>`;
   try {
-    fillProjectForm(await api(`/v1/projects/${encodeURIComponent(slug)}`));
+    const project = await api(`/v1/projects/${encodeURIComponent(slug)}`);
+    // The picker can have moved on while this was in flight; the answer to a
+    // question nobody is asking any more must not land in the form.
+    if (pickedProject() !== slug) return;
+    fillProjectForm(project);
+    loadedProject = slug;
     form.hidden = false;
     out.innerHTML = `<div class="empty">Editing ${esc(slug)}. Nothing is written until you press Save.</div>`;
   } catch (e) {
+    if (pickedProject() !== slug || e.message === "refused") return;
+    loadedProject = null;
     form.hidden = true;
-    if (e.message !== "refused") {
-      out.innerHTML = `<div class="empty">Could not read ${esc(slug)}: ${esc(apiFailure(e))}</div>`;
-    }
+    out.innerHTML = `<div class="empty">Could not read ${esc(slug)}: ${esc(apiFailure(e))}</div>`;
   }
 });
 
@@ -1061,6 +1095,13 @@ document.getElementById("projects-save").addEventListener("click", async () => {
   const out = document.getElementById("projects-out");
   if (!slug) {
     out.innerHTML = `<div class="empty">Pick a project first.</div>`;
+    return;
+  }
+  // The boxes must have come from this project. Writing one project's
+  // orientation onto another is silent, and these fields are what a brief
+  // states to an agent as fact.
+  if (loadedProject !== slug) {
+    out.innerHTML = `<div class="empty">Load the project first.</div>`;
     return;
   }
   out.innerHTML = `<div class="empty">Saving…</div>`;
@@ -1091,9 +1132,10 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
 }));
 
 async function load() {
-  const [fleet, log] = await Promise.all([
+  const [fleet, log, projects] = await Promise.all([
     api("/v1/admin/activity/summary"),
     api("/v1/admin/activity?limit=100"),
+    api("/v1/projects"),
   ]);
   ACTIVITY = log;
   renderStats(fleet);
@@ -1105,9 +1147,11 @@ async function load() {
   buildBankOptions("brief-project", fleet, {
     scope: "project", placeholder: "No project section",
   });
-  buildBankOptions("projects-target", fleet, {
-    scope: "project", placeholder: "Pick a project…",
-  });
+  buildProjectOptions("projects-target", projects);
+  /* Rebuilding the options resets the select to "" without firing `change`,
+     so without this a Refresh leaves a filled form and an "Editing X" line
+     under a picker that no longer names anything. */
+  resetProjectForm();
 }
 
 function boot() {
