@@ -40,7 +40,14 @@ def current(
     SELECT ... FOR UPDATE: two hosts starting a session at once would
     otherwise both bump, and the two tiers they cache would disagree by one
     forever. The insert path is the same race with no row to lock yet, so it
-    goes through a savepoint and re-reads whoever won.
+    goes through a savepoint and re-reads whoever won -- the pattern
+    `db.ensure_tenant` uses, for the same reason (review finding I9).
+
+    That recovery is deliberately untested: reaching it needs two connections
+    interleaved mid-transaction, and the re-read only sees the winner under
+    READ COMMITTED, so a single-session test would have to assert the wrong
+    behaviour to be deterministic. What it costs if it is wrong is one 500 on
+    the first-ever brief for a (user, project), never a wrong revision.
 
     The caller commits: the revision a tier was stamped with must land in the
     same transaction as the read it describes, or a consumer can hold a
