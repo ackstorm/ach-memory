@@ -11,3 +11,4 @@ __pycache__/
 # silently swallowed it.
 !.env.example
 .claude/
+.worktrees/
