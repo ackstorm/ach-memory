@@ -252,16 +252,26 @@ class Orientation:
 
 _SEPARATOR = "\n\n"
 
-# What the index tier spends its budget on FIRST. The user's standing rules
-# lead because nothing else in the session shows them: the repository in front
-# of the agent already carries the project's spec and layout.
+# Lines each section may claim before any other one is looked at again.
+# Measured: with no caps and a priority fill, a 2.4 KB user profile took the
+# whole budget and the index tier carried no project half at all -- the exact
+# failure this tier exists to fix, reproduced by the compiler meant to fix it.
+#
+# Both profiles get the same five: neither half of memory outranks the other,
+# and five lines is what the digests actually lead with before they drift into
+# the older, lower-value material. Working State gets its headline alone.
+#
+# Caps are LINE counts. Per-section ITEM budgets are a later phase and operate
+# on schema items; a line is all this tier can count today.
+INDEX_CAPS = {"user": 5, "project": 5, "working_state": 1}
+
+# Who gets the leftover once every section has had its capped share. The
+# user's standing rules lead because nothing else in the session shows them:
+# the repository in front of the agent already carries the project's spec and
+# layout. Orientation is not here -- it is filled first and whole, below.
 #
 # Both tiers EMIT in the order `_sections` returns, which is authority order.
-# Known consequence, measured: a user profile long enough to fill the budget
-# leaves the index tier with no project half at all. Bounding that means
-# per-section item budgets, which need the item structure a later phase adds;
-# until then the full tier is the one that always carries both halves.
-_FILL_ORDER = ("user", "orientation", "project", "working_state")
+_FILL_ORDER = ("user", "project", "working_state")
 
 
 def budget_for(host: str | None) -> int:
@@ -336,8 +346,8 @@ def _cost(part: str) -> int:
     return len(part) + len(_SEPARATOR)
 
 
-def _fit(prefix: list[str], body: list[str], remaining: int) -> tuple[str | None, int]:
-    """As many whole lines of one section as the remaining budget takes.
+def _fit(lines: list[str], remaining: int) -> tuple[list[str], int]:
+    """As many whole lines as the remaining budget takes.
 
     Whole lines, never part of one: the digest hard-cut at 2000 characters
     ended every section mid-word, on "...omit tests entirely for trivi", and
@@ -345,21 +355,15 @@ def _fit(prefix: list[str], body: list[str], remaining: int) -> tuple[str | None
 
     Stops at the first line that does not fit instead of skipping ahead to a
     shorter one -- a contiguous prefix is "the first rules", while a sieve is
-    an unmarked selection. The heading is charged first and dropped with the
-    section when not one line fits: a heading over nothing says memory is
-    empty, which is a different claim than "this did not fit".
+    an unmarked selection.
     """
-    head = "\n".join(prefix)
-    left = remaining - _cost(head)
     kept: list[str] = []
-    for line in body:
-        if len(line) + 1 > left:
+    for line in lines:
+        if len(line) + 1 > remaining:
             break
         kept.append(line)
-        left -= len(line) + 1
-    if not kept:
-        return None, remaining
-    return "\n".join([head, *kept]), left
+        remaining -= len(line) + 1
+    return kept, remaining
 
 
 def compose_index(
@@ -377,23 +381,57 @@ def compose_index(
     goes -- the affordance list is never traded away to fit, because an agent
     that is told half of what memory holds asks for the other half from the
     user.
+
+    Three passes, because one greedy pass in priority order gives the whole
+    budget to whichever section is longest and leaves the tier with one half
+    of the brief, measured:
+
+    1. Orientation, whole. Three deterministic lines, the only content here
+       that is not model-generated, and effectively reserved next to
+       `INDEX_SECTION`. Whole or not at all -- a metadata record quietly
+       missing a field reads as a project that does not have one.
+    2. A capped share for every other section, so no one of them can take the
+       tier (`INDEX_CAPS`).
+    3. The leftover, in `_FILL_ORDER` priority, so a user with three lines of
+       profile does not get a half-empty tier while the project has thirty
+       more lines to give.
     """
     header = _header(revision)
     tail = INDEX_SECTION.rstrip("\n")
     remaining = budget - _cost(header) - _cost(tail)
 
     sections = _sections(user, orientation, project, working_state)
-    bodies = {name: (prefix, body) for name, prefix, body in sections}
-    kept: dict[str, str] = {}
-    for name in _FILL_ORDER:
-        prefix, body = bodies[name]
-        if not body:
-            continue
-        block, remaining = _fit(prefix, body, remaining)
-        if block is not None:
-            kept[name] = block
+    bodies = {name: body for name, _, body in sections}
+    # A section's heading is charged once, the first time the section takes a
+    # line, and dropped with it when no line fits: a heading over nothing says
+    # memory is empty, a different claim than "this did not fit".
+    headings = {name: _cost("\n".join(prefix)) for name, prefix, _ in sections}
+    chosen: dict[str, list[str]] = {}
 
-    parts = [header, *(kept[name] for name, _, _ in sections if name in kept), tail]
+    kept, left = _fit(bodies["orientation"], remaining - headings["orientation"])
+    if kept and len(kept) == len(bodies["orientation"]):
+        chosen["orientation"] = kept
+        remaining = left
+
+    for name in _FILL_ORDER:
+        kept, left = _fit(bodies[name][: INDEX_CAPS[name]], remaining - headings[name])
+        if kept:
+            chosen[name] = kept
+            remaining = left
+
+    for name in _FILL_ORDER:
+        taken = len(chosen.get(name, []))
+        if taken and taken < len(bodies[name]):
+            kept, remaining = _fit(bodies[name][taken:], remaining)
+            chosen[name] += kept
+
+    parts = [header]
+    parts += [
+        "\n".join([*prefix, *chosen[name]])
+        for name, prefix, _ in sections
+        if name in chosen
+    ]
+    parts.append(tail)
     return _SEPARATOR.join(parts)
 
 

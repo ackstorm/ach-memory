@@ -228,6 +228,7 @@ def test_compose_with_nothing_is_exactly_the_policy():
 
 
 _USER_HEADING = "-- What memory knows about you --"
+_PROJECT_HEADING = "-- What memory knows about this project --"
 
 
 def _orientation():
@@ -257,6 +258,95 @@ def test_the_index_tier_fits_the_host_budget_without_cutting_a_word():
     assert len(text) <= 1800
     assert brief.INDEX_SECTION.strip() in text  # reserved, never dropped to make room
     assert "rev 42" in text
+
+
+REAL_USER_PROFILE = "\n".join(
+    [
+        (
+            "Prefers surgical changes: every changed line traces to the request, "
+            "and adjacent code is left alone even when it is worse."
+        ),
+        "Wants the tradeoffs surfaced before any code: options, not a silent pick.",
+        "Writes in Spanish, wants every answer, comment and commit message in English.",
+        (
+            "Runs everything through uv in a virtualenv; a system-wide pip install "
+            "is a standing no."
+        ),
+        "Asks for a plan with a verify step per item before multi-step work starts.",
+    ]
+    + [
+        f"Older, lower-value observation {i} that the digest keeps around because "
+        f"nothing has curated it away yet."
+        for i in range(20)
+    ]
+)
+
+REAL_PROJECT_PROFILE = "\n".join(
+    [
+        (
+            "Tests build their schema with create_all, so a green suite proves "
+            "nothing about a migration."
+        ),
+        (
+            "The test database is on port 5434; the compose dev database on 5433 "
+            "is not to be touched."
+        ),
+        "ScopedRequest is extra=forbid and shared by every data-plane route.",
+        "Comments explain why and cite the incident that caused the rule.",
+        "A project that cannot be reached is a missing section, never an error.",
+    ]
+    + [
+        f"Older project line {i} the digest still carries." for i in range(20)
+    ]
+)
+
+
+def test_a_real_sized_user_profile_does_not_take_the_whole_index_tier():
+    """The test that would have caught it: with a priority fill and no caps,
+    a 2.4 KB user profile took the entire budget and the index tier arrived
+    with no project half at all -- the exact failure the tier exists to fix,
+    reproduced by the compiler meant to fix it. Both halves, or this is the
+    6115-into-2048 truncation again with better manners."""
+    user = brief.Section(REAL_USER_PROFILE, NOW.isoformat())
+    project = brief.Section(REAL_PROJECT_PROFILE, NOW.isoformat())
+    assert len(user.text) > 2000  # the size that exposed it
+
+    text = brief.compose_index(
+        revision=42,
+        user=user,
+        orientation=_orientation(),
+        project=project,
+        working_state=None,
+        budget=1800,
+    )
+
+    assert len(text) <= 1800
+    assert "project: ach-memory" in text
+    assert "spec: SPEC-v1.md" in text
+    assert _USER_HEADING in text and _PROJECT_HEADING in text
+    # Its capped share, not a token line: five is what INDEX_CAPS promises.
+    for line in REAL_PROJECT_PROFILE.split("\n")[:5]:
+        assert line in text
+    for line in REAL_USER_PROFILE.split("\n")[:5]:
+        assert line in text
+
+
+def test_a_short_profile_does_not_leave_the_index_tier_half_empty():
+    """Caps are a share, not a ceiling: a user three lines into their profile
+    would otherwise get a tier with 1200 characters of budget unspent while
+    the project had twenty more lines to give."""
+    text = brief.compose_index(
+        revision=42,
+        user=brief.Section("just the one user rule", NOW.isoformat()),
+        orientation=_orientation(),
+        project=brief.Section(REAL_PROJECT_PROFILE, NOW.isoformat()),
+        working_state=None,
+        budget=1800,
+    )
+
+    assert len(text) <= 1800
+    kept = [line for line in REAL_PROJECT_PROFILE.split("\n") if line in text]
+    assert len(kept) > brief.INDEX_CAPS["project"]
 
 
 def test_both_tiers_carry_the_same_revision():
