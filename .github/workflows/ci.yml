@@ -274,12 +274,22 @@ jobs:
         env:
           RELEASE_MARKER: ${{ github.event.head_commit.message }}
         run: |
-          if ! printf '%s' "$RELEASE_MARKER" | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "FAIL: marker '${RELEASE_MARKER}' is not an exact release marker." >&2
+          # The SUBJECT is the marker. A commit message legitimately carries a
+          # body and trailers, and `grep -E '^...$'` matches per LINE, so the
+          # whole multi-line message passed both gates below while `version`
+          # silently kept every line of it -- measured on v0.3.4, whose
+          # Co-Authored-By trailer then broke the GITHUB_ENV write with
+          # "Invalid format" and published neither image nor chart, leaving
+          # Flux to fail on a chart tag that was never pushed. Taking the
+          # subject also closes the gap where a non-release commit whose BODY
+          # happened to contain a marker line would satisfy the first gate.
+          marker="${RELEASE_MARKER%%$'\n'*}"
+          if ! printf '%s' "$marker" | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "FAIL: marker '${marker}' is not an exact release marker." >&2
             echo "Expected exactly chore(release): vMAJOR.MINOR.PATCH[-prerelease]." >&2
             exit 1
           fi
-          version="${RELEASE_MARKER#chore(release): v}"
+          version="${marker#chore(release): v}"
           # SemVer, optionally with a pre-release, but NOT build metadata:
           # `+` is valid in SemVer and ILLEGAL in an OCI tag, so a v1.0.0+build.5
           # tag would die inside `docker build` with a bare "invalid reference
@@ -287,7 +297,7 @@ jobs:
           # enforce SemVer at package time either -- `--version 1` succeeds --
           # so without this a tag like `v1` publishes silently as version "1".
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "FAIL: marker '${RELEASE_MARKER}' does not yield a publishable version." >&2
+            echo "FAIL: marker '${marker}' does not yield a publishable version." >&2
             echo "Expected exactly chore(release): vMAJOR.MINOR.PATCH[-prerelease]." >&2
             echo "Build metadata (+...) is not supported: it is illegal in an OCI tag." >&2
             exit 1
