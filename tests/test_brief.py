@@ -247,6 +247,43 @@ def test_the_brief_carries_the_policy_and_the_user_section(client, two_users):
 
 
 @respx.mock
+def test_a_master_key_reads_a_brief_for_the_user_it_names(
+    client, master_headers, two_users
+):
+    """The console's Brief tab was dead for every operator: scope=user was
+    resolved with user_id=None, so a master key -- which has no identity of its
+    own -- got InvalidScope on the one route whose whole purpose is reading
+    somebody else's memory on their behalf."""
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "mental_models": [
+                    {
+                        "id": "mm-1",
+                        "name": brief.BRIEF_MODEL_NAME,
+                        "content": "Ask before planning.",
+                        "source_query": brief.USER_QUERY,
+                        "is_stale": False,
+                        "last_refreshed_at": "2026-08-27T03:00:00+00:00",
+                        "trigger": dict(brief.TRIGGER),
+                    }
+                ]
+            },
+        )
+    )
+
+    response = client.get(
+        "/v1/session-brief",
+        params={"scope": "user"},
+        headers={**master_headers, "On-Behalf-Of": two_users[0]["user_id"]},
+    )
+
+    assert response.status_code == 200
+    assert "Ask before planning." in response.json()["instructions"]
+
+
+@respx.mock
 def test_a_project_that_does_not_exist_is_not_created_by_asking_for_a_brief(
     client, two_users
 ):

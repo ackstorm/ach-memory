@@ -48,8 +48,13 @@ def session_brief(
     now = datetime.now(UTC)
     client = get_client()
 
+    # `on_behalf_of` is the only identity a master key has here: the route is
+    # read-on-behalf-of by construction (§16.5), and `_resolve_bank` uses the
+    # header for the rate limiter and the audit row, never for resolution. A
+    # user key ignores both and addresses itself.
     user_bank, _, _ = _resolve_bank(
-        ScopedRequest(scope="user"), db, principal, on_behalf_of, "brief.get",
+        ScopedRequest(scope="user", user_id=on_behalf_of or scoped.user_id),
+        db, principal, on_behalf_of, "brief.get",
         create=False,
     )
     user_section = brief.ensure_section(client, user_bank, brief.USER_QUERY, now)
