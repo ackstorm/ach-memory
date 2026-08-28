@@ -42,6 +42,10 @@ export MEMORY_MCP_ALLOWED_HOSTS="127.0.0.1:*,localhost:*"
 # guarded base/key settings remain local, inert placeholders for Compose.
 export HINDSIGHT_LLM_PROVIDER=mock
 export HINDSIGHT_LLM_MODEL=mock-model
+# The reflect path takes its own model (retain and reflect need opposite
+# behavior from a real provider, see docker-compose.yml). MockLLM serves
+# both, so this only keeps the override unconditional as stated above.
+export HINDSIGHT_REFLECT_LLM_MODEL=mock-model
 export HINDSIGHT_LLM_BASE_URL=http://127.0.0.1:9
 export HINDSIGHT_LLM_API_KEY=e2e-mock-not-a-secret
 
