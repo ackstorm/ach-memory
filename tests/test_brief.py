@@ -33,7 +33,7 @@ class FakeClient:
         return {"mental_model_id": mental_model_id}
 
 
-def _model(content, *, refreshed=NOW, stale=False, query=None):
+def _model(content, *, refreshed=NOW, stale=False, query=None, trigger=None):
     return {
         "id": "mm-1",
         "name": brief.BRIEF_MODEL_NAME,
@@ -41,6 +41,9 @@ def _model(content, *, refreshed=NOW, stale=False, query=None):
         "source_query": query if query is not None else brief.USER_QUERY,
         "is_stale": stale,
         "last_refreshed_at": refreshed.isoformat(),
+        # Already in line with the constants unless a test says otherwise, so
+        # reconciliation only fires where it is the subject.
+        "trigger": dict(brief.TRIGGER) if trigger is None else trigger,
     }
 
 
@@ -57,7 +60,11 @@ def test_a_missing_model_is_created_and_yields_no_section_yet():
     assert kwargs["name"] == brief.BRIEF_MODEL_NAME
     assert kwargs["source_query"] == brief.USER_QUERY
     assert kwargs["max_tokens"] == 400
-    assert kwargs["trigger"] == {"mode": "delta", "refresh_cron": "0 3 * * *"}
+    assert kwargs["trigger"] == {
+        "mode": "delta",
+        "refresh_cron": "0 3 * * *",
+        "keep_trace": True,
+    }
 
 
 def test_the_upstream_placeholder_is_not_a_section():
@@ -105,6 +112,47 @@ def test_a_changed_source_query_updates_the_model_in_place():
     (bank_id, model_id, kwargs) = client.updated[0]
     assert (bank_id, model_id) == ("user_1", "mm-1")
     assert kwargs["source_query"] == brief.USER_QUERY
+    assert "trigger" not in kwargs
+
+
+def test_a_changed_trigger_reaches_a_model_that_already_exists():
+    """The trigger is code too, and the models are provisioned once. Without
+    this, adding keep_trace to TRIGGER would apply to banks nobody has used
+    yet and to nothing else -- the two models already in production would keep
+    a trigger no source file describes."""
+    stale_trigger = {"mode": "delta", "refresh_cron": "0 3 * * *"}
+    client = FakeClient(models=[_model("real content", trigger=stale_trigger)])
+
+    brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+
+    (_, _, kwargs) = client.updated[0]
+    assert kwargs["trigger"] == brief.TRIGGER
+    assert "source_query" not in kwargs
+
+
+def test_reconciling_a_trigger_keeps_fields_this_module_does_not_set():
+    """Hindsight puts its own keys in the trigger. Replacing the object
+    wholesale would drop them silently, so only the keys set here are compared
+    and the rest are carried through."""
+    client = FakeClient(
+        models=[_model("real content", trigger={"mode": "full", "upstream_knob": 7})]
+    )
+
+    brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+
+    (_, _, kwargs) = client.updated[0]
+    assert kwargs["trigger"]["upstream_knob"] == 7
+    assert kwargs["trigger"]["mode"] == "delta"
+
+
+def test_a_model_already_in_line_is_not_patched():
+    """Reconciliation runs on every call, so an unnecessary PATCH would be one
+    write per session against every bank in use."""
+    client = FakeClient(models=[_model("real content")])
+
+    brief.ensure_section(client, "user_1", brief.USER_QUERY, NOW)
+
+    assert client.updated == []
 
 
 def test_a_long_digest_is_served_whole():
@@ -177,6 +225,9 @@ def test_the_brief_carries_the_policy_and_the_user_section(client, two_users):
                         ).USER_QUERY,
                         "is_stale": False,
                         "last_refreshed_at": "2026-08-27T03:00:00+00:00",
+                        # In line with TRIGGER, so this test exercises the
+                        # read path and not reconciliation.
+                        "trigger": dict(brief.TRIGGER),
                     }
                 ]
             },

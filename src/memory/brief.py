@@ -16,7 +16,15 @@ from datetime import datetime, timedelta
 
 BRIEF_MODEL_NAME = "ach-memory-session-brief"
 MAX_TOKENS = 400
-TRIGGER = {"mode": "delta", "refresh_cron": "0 3 * * *"}
+# keep_trace is what makes a failed refresh visible. Without it a refresh that
+# fails keeps serving the previous document and sets nothing -- measured
+# upstream, four unrelated mental models went six days without refreshing while
+# /health stayed green. Hindsight documents the flag as "the only way to
+# diagnose a cron- or consolidation-driven refresh after the fact, since no
+# human sees those run", which is this failure exactly. Only the latest
+# refresh's trace is kept, so it answers "why did the last one do that", never
+# "what has been failing all week".
+TRIGGER = {"mode": "delta", "refresh_cron": "0 3 * * *", "keep_trace": True}
 # Stale AND older than this means refreshes are failing, not that the user
 # went quiet.
 STALE_AFTER = timedelta(days=7)
@@ -70,6 +78,32 @@ def _find(client, bank_id: str) -> dict | None:
     return None
 
 
+def _reconcile(client, bank_id: str, model: dict, source_query: str) -> None:
+    """Bring an existing model back in line with the constants above.
+
+    Both the query and the trigger are versioned in code, so a deploy that
+    changes either must reach the models that already exist -- they are created
+    once, the first time a bank is used, and nothing else ever revisits them.
+    Only the query was reconciled here at first, which meant a changed TRIGGER
+    silently applied to new banks alone: the two models already provisioned in
+    production would have kept a trigger no source file described.
+
+    The trigger is merged rather than replaced, and compared only on the keys
+    this module sets. Hindsight puts its own fields in there, and overwriting
+    the whole object would quietly drop whatever we do not model.
+    """
+    changed: dict[str, object] = {}
+    if model.get("source_query") != source_query:
+        changed["source_query"] = source_query
+
+    stored = model.get("trigger") or {}
+    if any(stored.get(key) != value for key, value in TRIGGER.items()):
+        changed["trigger"] = {**stored, **TRIGGER}
+
+    if changed:
+        client.update_mental_model(bank_id, model["id"], **changed)
+
+
 def ensure_section(
     client, bank_id: str, source_query: str, now: datetime
 ) -> Section | None:
@@ -90,10 +124,7 @@ def ensure_section(
         )
         return None
 
-    if model.get("source_query") != source_query:
-        client.update_mental_model(
-            bank_id, model["id"], source_query=source_query
-        )
+    _reconcile(client, bank_id, model, source_query)
 
     content = (model.get("content") or "").strip()
     if not content or content == PLACEHOLDER:
