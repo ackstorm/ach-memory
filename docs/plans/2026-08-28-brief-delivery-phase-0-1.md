@@ -40,7 +40,7 @@ If the baseline is not green, stop and report — do not build on a red suite.
 - Every caller of `_resolve_bank` must `db.commit()` afterwards or audit rows are silently dropped.
 - Tests are named as sentences (`test_a_missing_model_is_created_and_yields_no_section_yet`), with a docstring saying why the rule exists.
 - Never log, echo or persist the master key or any API key. Cache filenames are derived from the URL and git locator, never from a credential.
-- **Addressing, settled in Task 1:** the two brief routes (`GET /v1/session-brief`, `POST /v1/admin/brief/provision`) resolve `scope=user` header-first — `on_behalf_of or user_id`. Every other route resolves from the query param or body alone and treats `On-Behalf-Of` as audit-only. The brief routes are a deliberate superset, because the console addresses a user by header there; both forms still work, and a master key sending both gets the header's target. Do not "harmonise" the siblings — that is not this plan's scope.
+- **Addressing, settled in Task 1:** `GET /v1/session-brief` resolves `scope=user` header-first — `on_behalf_of or user_id` — because the console's Brief tab addresses a user by `On-Behalf-Of` and never by query param. It is the only route that does. Everything else, `/v1/admin/*` included, resolves from the query param or body and treats `On-Behalf-Of` as audit-only. Both forms work on the brief read, and a master key sending both gets the header's target. Do not "harmonise" the siblings in either direction — that is not this plan's scope.
 
 ---
 
@@ -187,6 +187,8 @@ git commit -m "fix(console): request detail=full and render mental-model content
 
 **Why:** `brief.ensure_section` provisions a mental model when it does not find one, on the GET path. A single exploratory `GET /v1/session-brief?scope=project&project_slug=squall` during investigation created a model on the `squall` bank and spent an LLM generation. This is the same incident class as the `readOnlyHint` slug-squat measured at 80 projects in 5.1s: a read minting state. Split provisioning out of the read.
 
+**Consequence you are accepting, state it in the code:** `_reconcile` also leaves the read path. Today a deploy that changes `USER_QUERY`, `PROJECT_QUERY` or `TRIGGER` silently repairs existing models on the next brief read — `brief.py`'s own docstring says that is why `_reconcile` exists. After this task, a changed constant reaches deployed models only when someone calls the new provision route. That is the price of "reads never write", and it is worth paying: self-healing on read is precisely the mechanism that spent a generation on the `squall` bank. But it makes provisioning an explicit post-deploy step for anyone changing those constants, so say so in the docstring rather than leaving the next person to find out from a stale model.
+
 **Files:**
 - Modify: `src/memory/brief.py` (split `ensure_section`)
 - Modify: `src/memory/api/brief.py` (call the read-only half)
@@ -292,36 +294,32 @@ In `src/memory/api/brief.py`, replace both `brief.ensure_section(...)` calls wit
 
 In `src/memory/api/admin.py`, beside the other master-key routes:
 
+Copy the shape of `clear_memories` (`src/memory/api/admin.py:165`) exactly — same `require_master` guard, same `_admin_scope(scope, user_id, project_slug, body)` addressing, same `MemoryResponse(result=..., resolved_from=..., project_slug=...)` return, same `create=False`, same `Query(pattern=r"^[^\x00-\x1f\x7f]*$")` on `user_id`:
+
 ```python
-@router.post("/brief/provision", response_model=MemoryResponse)
+@router.post("/brief/{scope}/provision", response_model=MemoryResponse)
 def provision_brief_model(
-    body: ScopedRequest,
-    principal: Annotated[Principal, Depends(current_principal)],
+    scope: Scope,
+    principal: Annotated[Principal, Depends(require_master)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
+    user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
+    project_slug: str | None = None,
+    body: AdminScopeBody | None = None,
 ) -> MemoryResponse:
     """Create a bank's brief model, or reconcile the one it has.
 
     The read path no longer provisions (SPEC 1.5), so this is the moment a
-    model comes into existence. Master key only: it spends an LLM generation
-    on the first refresh, which is not something a read should decide.
+    model comes into existence and the moment a changed source query reaches
+    one that already exists. Master key only, for the same reason `clear` is:
+    the first refresh spends an LLM generation, which is not a decision a
+    read -- or an agent -- gets to make.
     """
-    # Same addressing as the read path: header first, body second. The console
-    # provisions and reads the same bank from the same screen, and addressing
-    # it one way to read and another way to write is how an operator ends up
-    # provisioning a model on somebody else's bank.
-    target = body.model_copy(update={"user_id": on_behalf_of or body.user_id}) \
-        if body.scope == "user" else body
-    bank_id, _, _ = _resolve_bank(
-        target, db, principal, on_behalf_of, "brief.provision", create=False
-    )
-    query = brief.USER_QUERY if body.scope == "user" else brief.PROJECT_QUERY
-    outcome = brief.provision_section(get_client(), bank_id, query)
-    db.commit()
-    return MemoryResponse(...)  # match the shape the neighbouring routes return
 ```
 
-Follow the master-key guard the other `/v1/admin/*` routes in this file already use; do not invent a new one.
+`create=False`, for `clear_memories`' reason: an admin must not conjure a bank into existence by provisioning a brief for one that never existed. Commit after the upstream call, as `clear_memories` does — an audit row saying a model was provisioned must not survive a 502 that meant it was not.
+
+**Addressing:** master key names the target with `?user_id=`, exactly like every other `/v1/admin/*` route; `On-Behalf-Of` stays audit-only there. This is *not* the header-first form the read path uses — `GET /v1/session-brief` is header-first because the console's Brief tab addresses a user that way, and no console caller for provisioning exists. Do not harmonise them.
 
 **Step 6: Run the suite**
 
