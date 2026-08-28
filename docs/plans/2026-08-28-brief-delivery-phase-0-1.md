@@ -40,6 +40,7 @@ If the baseline is not green, stop and report — do not build on a red suite.
 - Every caller of `_resolve_bank` must `db.commit()` afterwards or audit rows are silently dropped.
 - Tests are named as sentences (`test_a_missing_model_is_created_and_yields_no_section_yet`), with a docstring saying why the rule exists.
 - Never log, echo or persist the master key or any API key. Cache filenames are derived from the URL and git locator, never from a credential.
+- **Addressing, settled in Task 1:** the two brief routes (`GET /v1/session-brief`, `POST /v1/admin/brief/provision`) resolve `scope=user` header-first — `on_behalf_of or user_id`. Every other route resolves from the query param or body alone and treats `On-Behalf-Of` as audit-only. The brief routes are a deliberate superset, because the console addresses a user by header there; both forms still work, and a master key sending both gets the header's target. Do not "harmonise" the siblings — that is not this plan's scope.
 
 ---
 
@@ -49,11 +50,11 @@ If the baseline is not green, stop and report — do not build on a red suite.
 
 **Files:**
 - Modify: `src/memory/api/brief.py:51-54`
-- Test: `tests/test_app.py` (it already exercises `/v1/session-brief` end-to-end)
+- Test: `tests/test_brief.py` — it has the `client` + `two_users` + `respx` machinery. (An earlier draft of this plan named `tests/test_app.py`; that file is 153 lines of route-surface pins and platform-auth tests, with no user seeding and no Hindsight stub. Corrected after Task 1 hit it.)
 
 **Step 1: Write the failing test**
 
-Add to `tests/test_app.py`:
+Add to `tests/test_brief.py`, pinning the respx mock to the named user's bank id read from the DB — the pattern at `tests/test_curation_api.py:343-354`. A loose `banks/[^/]+/...` regex proves only that *some* bank was read, which is not what the test's name claims:
 
 ```python
 def test_a_master_key_reads_a_brief_for_the_user_it_names(client, master_headers):
@@ -87,8 +88,10 @@ Expected: FAIL, 400, body naming `must set user_id`.
 ```python
     # `on_behalf_of` is the only identity a master key has here: the route is
     # read-on-behalf-of by construction (§16.5), and `_resolve_bank` uses the
-    # header for the rate limiter and the audit row, never for resolution. A
-    # user key ignores both and addresses itself.
+    # header for the audit row, never for resolution. A user key never sees the
+    # header (`current_on_behalf_of` blanks it) and its `?user_id` reaches
+    # `resolve_user_bank`, where naming somebody else is a 403, not a silent
+    # redirect.
     user_bank, _, _ = _resolve_bank(
         ScopedRequest(scope="user", user_id=on_behalf_of or scoped.user_id),
         db, principal, on_behalf_of, "brief.get",
@@ -303,8 +306,14 @@ def provision_brief_model(
     model comes into existence. Master key only: it spends an LLM generation
     on the first refresh, which is not something a read should decide.
     """
+    # Same addressing as the read path: header first, body second. The console
+    # provisions and reads the same bank from the same screen, and addressing
+    # it one way to read and another way to write is how an operator ends up
+    # provisioning a model on somebody else's bank.
+    target = body.model_copy(update={"user_id": on_behalf_of or body.user_id}) \
+        if body.scope == "user" else body
     bank_id, _, _ = _resolve_bank(
-        body, db, principal, on_behalf_of, "brief.provision", create=False
+        target, db, principal, on_behalf_of, "brief.provision", create=False
     )
     query = brief.USER_QUERY if body.scope == "user" else brief.PROJECT_QUERY
     outcome = brief.provision_section(get_client(), bank_id, query)
