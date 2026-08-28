@@ -1,6 +1,6 @@
 [project]
 name = "ach-memory"
-version = "0.3.2"
+version = "0.3.3"
 description = "Multi-tenant memory service for coding agents, over Hindsight"
 requires-python = ">=3.12"
 dependencies = [

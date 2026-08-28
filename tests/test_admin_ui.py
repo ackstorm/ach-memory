@@ -15,6 +15,27 @@ def test_the_console_loads_no_third_party_code(client):
     assert "https://" not in body
 
 
+def test_peek_reads_the_field_names_hindsight_actually_returns(client):
+    """Reading a field that does not exist fails silently, and did.
+
+    Peek asked each item for `type`, `created_at`, `metadata.agent` and
+    `metadata.git_locator`. Hindsight returns `fact_type` and `date`, and
+    returns no agent and no git_locator at all -- so every row rendered
+    "memory" with two em-dashes while the payload underneath held the type,
+    the timestamp, the state and the proof count. No error, no empty page,
+    just a panel that quietly said nothing.
+    """
+    body = client.get("/admin/ui").text
+
+    assert "item.fact_type" in body
+    assert "item.date" in body
+    assert "item.state" in body
+    assert "item.memory_type" not in body
+    assert "item.created_at" not in body
+    assert "metadata?.agent" not in body
+    assert "metadata?.git_locator" not in body
+
+
 def test_the_console_can_be_turned_off(configured_env, monkeypatch):
     from fastapi.testclient import TestClient
 

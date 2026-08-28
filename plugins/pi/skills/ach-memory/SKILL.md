@@ -1,6 +1,6 @@
 ---
 name: ach-memory
-description: Durable user and project context that outlives the session. Read at the start of any conversation, before the first memory call and before searching files or transcripts for a prior decision — the tools are lazy-loaded and this names them.
+description: "ALWAYS ACTIVE — persistent memory via ach-memory. Read this skill at the start of every conversation, before any memory call and before searching files or transcripts for a prior decision (tools are lazy-loaded; this skill names them). Proactively `retain` decisions, conventions and preferences — never wait to be asked. Supersedes MEMORY.md and the host's memory directory: never write there, because ach-memory cannot see those files."
 ---
 
 Memory survives sessions and compaction. Its value is the decision that never reached a file.
