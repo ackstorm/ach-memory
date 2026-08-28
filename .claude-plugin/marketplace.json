@@ -9,7 +9,7 @@
     {
       "name": "ach-memory",
       "description": "Recall and retain user and project context across sessions.",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "author": {
         "name": "ackstorm"
       },
