@@ -154,6 +154,10 @@ a gateway already uses `Authorization`; when both are sent,
 `x-ach-memory-key` wins. The master key is rejected on MCP, and v1 supports
 native/non-browser MCP clients only.
 
+`ach-memory brief --url <endpoint>` prints exactly the instructions text a
+session would receive — the way to see what a host actually got when a brief
+looks missing or wrong.
+
 ### Direct HTTP
 
 A host that reads its own `mcpServers`-style JSON, such as Claude Code before

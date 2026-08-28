@@ -613,6 +613,16 @@ def _parser() -> argparse.ArgumentParser:
         "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
         "because argv is world-readable",
     )
+    brief = commands.add_parser(
+        "brief", help="print the session brief this host would receive"
+    )
+    brief.add_argument(
+        "--url",
+        default=None,
+        help="memory service base URL (default: $ACH_MEMORY_URL). The API key "
+        "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
+        "because argv is world-readable",
+    )
     return parser
 
 
@@ -649,6 +659,38 @@ def _serve_mcp(url_argument: str | None = None) -> int:
     return 0
 
 
+def _print_brief(url_argument: str | None) -> int:
+    """Print exactly the text a session would receive, metadata to stderr.
+
+    The text goes to stdout alone so it can be diffed or piped; everything a
+    human needs to explain a missing section goes to stderr.
+    """
+    from memory.mcp import proxy
+
+    key = os.environ.get("ACH_MEMORY_API_KEY", "")
+    if not key:
+        print(
+            "ach-memory: ACH_MEMORY_API_KEY must be set to read the brief",
+            file=sys.stderr,
+        )
+        return 1
+    base = _base_url(
+        url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000"
+    )
+    slug, locator = proxy.resolve_project_context()
+    brief = proxy.fetch_brief(base, key, slug, locator)
+    if not brief:
+        print(f"ach-memory: no brief from {base}", file=sys.stderr)
+        return 1
+    print(brief["instructions"])
+    sections = brief.get("sections") or {}
+    for name in ("user", "project"):
+        state = "present" if sections.get(name) else "absent"
+        print(f"  {name}: {state}", file=sys.stderr)
+    print(f"  generated_at: {brief.get('generated_at')}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -657,6 +699,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "mcp":
         return _serve_mcp(args.url)
+
+    if args.command == "brief":
+        return _print_brief(args.url)
 
     base = os.environ.get("ACH_MEMORY_URL")
     mode = "http" if args.http else ("local" if args.local else "stdio")

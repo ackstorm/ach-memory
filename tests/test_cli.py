@@ -1114,3 +1114,43 @@ def test_register_codex_server_http_pins_url_and_env_var_name(
             "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
         ],
     ]
+
+
+def test_brief_prints_what_would_be_injected(monkeypatch, capsys):
+    """The escape hatch. A subtly wrong brief shows up as an agent behaving
+    oddly for no visible reason; without this, diagnosing it means guessing at
+    text nobody can see."""
+    from memory import cli
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "k")
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_project_context", lambda: ("acme", None)
+    )
+    monkeypatch.setattr(
+        "memory.mcp.proxy.fetch_brief",
+        lambda *_args, **_kwargs: {
+            "instructions": "POLICY\n\n-- What memory knows about you --\nAsk first.",
+            "generated_at": "2026-08-27T03:00:00+00:00",
+            "sections": {"user": True, "project": False},
+        },
+    )
+
+    assert cli.main(["brief", "--url", "https://memory.test"]) == 0
+
+    captured = capsys.readouterr()
+    assert "Ask first." in captured.out
+    assert "generated_at: 2026-08-27T03:00:00+00:00" in captured.err
+    assert "project: absent" in captured.err
+
+
+def test_brief_says_so_when_there_is_none(monkeypatch, capsys):
+    from memory import cli
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "k")
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_project_context", lambda: (None, None)
+    )
+    monkeypatch.setattr("memory.mcp.proxy.fetch_brief", lambda *_a, **_k: None)
+
+    assert cli.main(["brief", "--url", "https://memory.test"]) == 1
+    assert "no brief" in capsys.readouterr().err
