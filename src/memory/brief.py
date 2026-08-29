@@ -19,6 +19,7 @@ read is the same mechanism that spent an LLM generation minting a model on a
 bank one exploratory GET happened to name.
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -69,7 +70,11 @@ _CAVEAT = (
 # Bumped when the shape of a tier changes in a way a consumer must notice.
 # A cached tier keeps the protocol it was compiled under, so a brief holding
 # instructions the current contract has replaced is visible instead of silent.
-MEMORY_PROTOCOL = 1
+MEMORY_PROTOCOL = 2
+FULL_MAX_TOKENS = 2500
+_CACHE_AGE_WIDTH = 10
+_CACHE_AGE_PREFIX = "cache-age "
+_CACHE_AGE_RE = re.compile(r"cache-age [0-9]{10}s")
 
 # Per host, as the client names itself. Claude Code truncates MCP
 # `instructions` at 2048 characters -- measured against ours: the composed
@@ -286,7 +291,25 @@ def _header(revision: int, project_slug: str | None) -> str:
     exists to prevent.
     """
     scope = f"project {project_slug}" if project_slug else "no project"
-    return f"-- ach-memory brief rev {revision} / protocol {MEMORY_PROTOCOL} / {scope} --"
+    return (
+        f"-- ach-memory brief rev {revision} / protocol {MEMORY_PROTOCOL} / "
+        f"{_cache_age_field(0)} / {scope} --"
+    )
+
+
+def _cache_age_field(age_seconds: int) -> str:
+    bounded = min(max(age_seconds, 0), (10**_CACHE_AGE_WIDTH) - 1)
+    return f"{_CACHE_AGE_PREFIX}{bounded:0{_CACHE_AGE_WIDTH}d}s"
+
+
+def stamp_cache_age(instructions: str, age_seconds: int) -> str:
+    """Stamp a compiled payload without changing its budgeted length."""
+    return _CACHE_AGE_RE.sub(_cache_age_field(age_seconds), instructions, count=1)
+
+
+def token_upper_bound(text: str) -> int:
+    """Safe upper bound for byte-level host tokenizers."""
+    return len(text.encode("utf-8"))
 
 
 def _inert(value: str) -> str:
@@ -494,20 +517,57 @@ def compose_full(
     orientation: Orientation | None,
     project: Section | None,
     working_state: Section | None,
+    max_tokens: int = FULL_MAX_TOKENS,
 ) -> str:
-    """Every section whole, for the channel that has no cap.
+    """Compile a bounded Full tier, dropping only whole semantic lines."""
+    header = _header(revision, project_slug)
+    tail = INDEX_SECTION.rstrip("\n")
+    separator_cost = token_upper_bound(_SEPARATOR)
 
-    A strict superset of the index tier compiled from the same snapshot,
-    `INDEX_SECTION` included: a consumer that keeps only whichever tier is
-    newer must never lose the affordance list by keeping this one.
-    """
-    parts = [_header(revision, project_slug)]
+    def part_cost(lines: list[str]) -> int:
+        return token_upper_bound("\n".join(lines)) + separator_cost
+
+    remaining = max_tokens - part_cost([header]) - part_cost([tail])
+    sections = _sections(user, orientation, project, working_state)
+    chosen: dict[str, list[str]] = {}
+
+    orientation_section = next(item for item in sections if item[0] == "orientation")
+    _, orientation_prefix, orientation_body = orientation_section
+    orientation_lines = [*orientation_prefix, *orientation_body]
+    orientation_cost = part_cost(orientation_lines)
+    if orientation_body and orientation_cost <= remaining:
+        chosen["orientation"] = list(orientation_body)
+        remaining -= orientation_cost
+
+    dynamic = [item for item in sections if item[0] != "orientation" and item[2]]
+    for name, prefix, body in dynamic:
+        floor_cost = part_cost([*prefix, body[0]])
+        if floor_cost > remaining:
+            break
+        chosen[name] = [body[0]]
+        remaining -= floor_cost
+
+    while True:
+        spent = False
+        for name, _, body in dynamic:
+            taken = len(chosen.get(name, []))
+            if not taken or taken >= len(body):
+                continue
+            line_cost = token_upper_bound("\n" + body[taken])
+            if line_cost <= remaining:
+                chosen[name].append(body[taken])
+                remaining -= line_cost
+                spent = True
+        if not spent:
+            break
+
+    parts = [header]
     parts += [
-        "\n".join([*prefix, *body])
-        for _, prefix, body in _sections(user, orientation, project, working_state)
-        if body
+        "\n".join([*prefix, *chosen[name]])
+        for name, prefix, _ in sections
+        if name in chosen
     ]
-    parts.append(INDEX_SECTION.rstrip("\n"))
+    parts.append(tail)
     return _SEPARATOR.join(parts)
 
 

@@ -154,7 +154,8 @@ def session_brief(
         )
     else:
         instructions = brief.compose_full(
-            revision, project_slug, user_section, orientation, project_section, None
+            revision, project_slug, user_section, orientation, project_section, None,
+            max_tokens=brief.FULL_MAX_TOKENS,
         )
 
     if response_format == "text":

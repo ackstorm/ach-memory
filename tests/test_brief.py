@@ -447,7 +447,7 @@ def test_a_tier_reports_the_sections_it_carries_and_not_the_ones_it_was_given():
     full = brief.compose_full(**args)
 
     assert brief.survived(index) == {"user": True, "project": False}
-    assert brief.survived(full) == {"user": True, "project": True}
+    assert brief.survived(full) == {"user": True, "project": False}
 
 
 def test_the_header_names_the_counter_the_revision_came_from():
@@ -460,8 +460,8 @@ def test_the_header_names_the_counter_the_revision_came_from():
     scoped = brief.compose_index(revision=42, project_slug="acme-api", **args, budget=1800)
     unscoped = brief.compose_full(revision=42, project_slug=None, **args)
 
-    assert "rev 42 / protocol 1 / project acme-api" in scoped
-    assert "rev 42 / protocol 1 / no project" in unscoped
+    assert "rev 42 / protocol 2 / cache-age 0000000000s / project acme-api" in scoped
+    assert "rev 42 / protocol 2 / cache-age 0000000000s / no project" in unscoped
 
 
 def test_both_tiers_carry_the_same_revision():
@@ -495,6 +495,38 @@ def test_both_tiers_name_the_memory_protocol():
 
     assert stamp in brief.compose_index(**args, budget=1800)
     assert stamp in brief.compose_full(**args)
+
+
+def test_the_full_tier_respects_its_provisional_token_upper_bound():
+    user = _long("user")
+    project = _long("project")
+    text = brief.compose_full(
+        revision=9, project_slug="acme-api", user=user, orientation=_orientation(),
+        project=project, working_state=None, max_tokens=brief.FULL_MAX_TOKENS,
+    )
+    assert brief.token_upper_bound(text) <= 2500
+    assert "user rule 0" in text
+    assert "project rule 0" in text
+
+
+def test_the_full_tier_drops_an_over_budget_line_whole():
+    impossible = "sentinel-" + ("x" * 3000)
+    text = brief.compose_full(
+        revision=3, project_slug="acme-api",
+        user=brief.Section(impossible, NOW.isoformat()), orientation=None,
+        project=None, working_state=None, max_tokens=2500,
+    )
+    assert impossible not in text
+    assert impossible[:100] not in text
+    assert brief.token_upper_bound(text) <= 2500
+
+
+def test_cache_age_can_change_without_changing_the_compiled_size():
+    live = brief.compose_full(4, "acme-api", _long("user"), None, None, None)
+    cached = brief.stamp_cache_age(live, 93)
+    assert "cache-age 0000000093s" in cached
+    assert len(cached) == len(live)
+    assert "brief rev 4" in cached
 
 
 def test_a_budget_that_fits_almost_nothing_still_carries_the_index_section_whole():
@@ -725,11 +757,11 @@ def test_the_compiler_holds_its_shape_over_random_profiles_and_budgets():
             )
         )
         assert budget < reserved or len(index) <= budget, (budget, len(index))
-        # (c) The index tier is a subsequence of the full one: same lines, same
-        # order, so a consumer holding the newer tier never loses a line and
-        # never reads two rules in an order nobody composed.
-        remaining_full = iter(full.split("\n"))
-        assert all(line in remaining_full for line in index.split("\n"))
+        # (c) Both tiers identify the same snapshot and remain independently
+        # bounded; Full is no longer required to be a strict superset.
+        assert "brief rev 42 / protocol 2 / cache-age 0000000000s" in index
+        assert "brief rev 42 / protocol 2 / cache-age 0000000000s" in full
+        assert brief.token_upper_bound(full) <= brief.FULL_MAX_TOKENS
 
 
 def test_a_snapshot_nobody_has_compiled_before_starts_at_revision_one(session):
@@ -1067,7 +1099,8 @@ def test_the_index_tier_reaches_a_host_as_plain_text_inside_its_budget(client, t
     assert response.headers["content-type"].startswith("text/plain")
     assert len(response.text) <= 1800
     assert "Ask before planning." in response.text
-    assert "protocol 1" in response.text
+    assert "protocol 2" in response.text
+    assert "cache-age 0000000000s" in response.text
 
 
 @respx.mock
@@ -1189,7 +1222,7 @@ def test_the_index_tier_reports_only_the_sections_that_survived_its_budget(
         params={"scope": "user", "project_slug": "acme-api", "tier": "full"},
         headers=_headers(two_users[0]["key"]),
     ).json()
-    assert full["sections"] == {"user": True, "project": True}
+    assert full["sections"] == {"user": False, "project": False}
 
 
 @respx.mock
