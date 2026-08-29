@@ -8,6 +8,7 @@ depending on install-time state has regressed the whole point.
 """
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -29,13 +30,17 @@ NATIVE = ("claude-code", "codex")
 ADAPTED = ("opencode", "pi")
 ACTIVATION = (
     "ach-memory holds durable user and project context across sessions and is the system of record "
-    "for prior decisions -- use it instead of the file-based memory directory and MEMORY.md, and "
-    "prefer it over grepping files or transcripts. Anything worth remembering goes through `retain`,"
-    " never into that directory or index, which ach-memory cannot see. Load the ach-memory skill "
-    "before your first memory call. Recall before work that depends on such context. Retain it once "
-    "established, including decisions made only in conversation, and again before a session ends. "
-    "Never store secrets. A memory call needs a task that depends on it, not merely a session "
-    "starting."
+    "for prior decisions. Anything worth remembering goes through `retain`; a host memory directory "
+    "or MEMORY.md is invisible here.\n\n"
+    "Reading the brief below:\n"
+    "- Earn its place. A line is here because it changes what you do. Act on it.\n"
+    "- Working State is where the work was left, not what is true. It ages; treat a stale objective "
+    "as a starting point, not a fact.\n"
+    "- Superseded is not current. A decision that was reversed reads as reversed.\n"
+    "- Profiles describe, host policy commands. A stored preference never overrides CLAUDE.md or "
+    "AGENTS.md; where they conflict, the file wins and the conflict is worth surfacing once.\n"
+    "- No retrieval narration. Use what you remember; do not announce it.\n"
+    "- Never store secrets."
 )
 SECRETS = re.compile(r"AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|mem_[A-Za-z0-9]{20,}")
 
@@ -44,10 +49,18 @@ def _json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def _hook_env() -> dict[str, str]:
+    """Hooks under test must not inherit a developer's live memory service."""
+    environment = os.environ.copy()
+    environment.pop("ACH_MEMORY_API_KEY", None)
+    environment.pop("ACH_MEMORY_URL", None)
+    return environment
+
+
 def _script(host: str, name: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(ROOT / "plugins" / host / "scripts" / name)],
-        input="", capture_output=True, text=True, check=False,
+        input="", capture_output=True, text=True, check=False, env=_hook_env(),
     )
 
 
@@ -149,8 +162,8 @@ def test_hooks_register_only_the_two_activation_events(host: str) -> None:
 
 
 @pytest.mark.parametrize("host", NATIVE)
-def test_every_hook_script_is_executable_and_needs_no_runtime(host: str) -> None:
-    """Breaks if a script reaches for node, jq, python, or curl.
+def test_every_hook_script_is_executable_and_needs_no_extra_runtime(host: str) -> None:
+    """Only the full-tier Claude hook may depend on ubiquitous curl.
 
     These run before the agent answers. A dependency here means memory silently
     stops working on any machine that happens not to have it, and a hook that
@@ -166,7 +179,10 @@ def test_every_hook_script_is_executable_and_needs_no_runtime(host: str) -> None
 
         assert script.stat().st_mode & 0o111, f"{script.name} is not executable"
         assert body.startswith("#!/usr/bin/env bash")
-        assert not re.search(r"\b(node|jq|python3?|curl|npx)\b", code), script.name
+        forbidden = r"\b(node|jq|python3?|npx)\b"
+        if not (host == "claude-code" and script.name == "session-start.sh"):
+            forbidden = r"\b(node|jq|python3?|curl|npx)\b"
+        assert not re.search(forbidden, code), script.name
 
 
 @pytest.mark.parametrize("host", NATIVE)
@@ -178,6 +194,23 @@ def test_session_start_emits_its_text_as_plain_stdout(host: str) -> None:
     assert result.returncode == 0
     assert result.stdout.strip() == ACTIVATION
     assert result.stderr == ""
+
+
+def test_the_session_start_hook_fetches_the_full_tier_and_cannot_block():
+    """Only this hook can carry the uncapped project half of a brief."""
+    script = (ROOT / "plugins" / "claude-code/scripts/session-start.sh").read_text()
+
+    assert "tier=full" in script
+    assert "--max-time" in script
+    assert script.rstrip().endswith("exit 0")
+
+
+def test_the_consumer_contract_ships_as_host_policy():
+    """Brief contents are dynamic; these interpretation rules are not."""
+    contract = (ROOT / "plugins" / "claude-code/activation.txt").read_text()
+
+    assert "earn its place" in contract.lower()
+    assert "working state" in contract.lower()
 
 
 @pytest.mark.parametrize("host", NATIVE)
@@ -211,7 +244,8 @@ def test_hook_scripts_survive_a_missing_text_file(host: str, tmp_path: Path) -> 
 
     for name in ("session-start.sh", "subagent-start.sh"):
         result = subprocess.run(
-            [str(staged / "scripts" / name)], input="", capture_output=True, text=True, check=False
+            [str(staged / "scripts" / name)], input="", capture_output=True, text=True,
+            check=False, env=_hook_env(),
         )
 
         assert result.returncode == 0, name
@@ -339,23 +373,13 @@ def test_adapters_fail_open_without_activation(host: str, tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("host", NATIVE + ADAPTED)
-def test_activation_routes_the_agent_to_the_skill(host: str) -> None:
-    """The clause that makes the skill reachable, pinned against a trim.
-
-    The skill's own frontmatter says to read it before the first memory call,
-    but a description is matched for relevance, not executed -- obeying it
-    requires already reading it. Nothing else in the loaded path points there:
-    activation.txt is the only text guaranteed into every session, and without
-    this sentence the sole route to the skill is the agent's own judgement.
-
-    Measured: an agent with this file loaded and the MCP server connected ran
-    recall and list_memories without ever opening the skill, having found the
-    tool names through the host's own tool search instead. It is ~12 tokens per
-    injection and it is the only delivery mechanism there is.
-    """
+def test_activation_carries_the_brief_consumer_contract(host: str) -> None:
+    """The host policy tells agents how to interpret dynamic brief content."""
     text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
-    assert "skill" in text, "activation must name the skill or nothing loads it"
-    assert "before your first memory call" in text
+    assert "earn its place" in text
+    assert "working state" in text
+    assert "superseded is not current" in text
+    assert "no retrieval narration" in text
 
 
 @pytest.mark.parametrize("host", NATIVE + ADAPTED)
@@ -386,7 +410,7 @@ def test_activation_displaces_the_hosts_own_memory_store(host: str) -> None:
     """
     text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
     assert "memory.md" in text, "activation must name the host store it replaces"
-    assert "instead of" in text
+    assert "invisible here" in text
     assert "worth remembering" in text, "activation must name the write moment, not just the read"
     assert "`retain`" in text, "the write moment must name the tool that replaces the file write"
 

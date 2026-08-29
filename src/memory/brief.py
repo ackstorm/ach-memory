@@ -229,27 +229,6 @@ def _older_than(timestamp: str | None, now: datetime) -> bool:
     return now - refreshed > STALE_AFTER
 
 
-def compose(
-    policy: str,
-    user: Section | None,
-    project: Section | None,
-    project_slug: str | None,
-) -> str:
-    """Policy first, sections after, and nothing at all when there is nothing.
-
-    With no sections this returns the policy byte-for-byte, so a memory
-    service that is down leaves the model with exactly what it gets today.
-    """
-    parts = [policy]
-    if user:
-        parts.append(f"-- What memory knows about you --\n{_CAVEAT}\n{user.text}")
-    if project and project_slug:
-        parts.append(
-            f"-- What memory knows about {project_slug} --\n{_CAVEAT}\n{project.text}"
-        )
-    return "\n\n".join(parts)
-
-
 @dataclass(frozen=True)
 class Orientation:
     """Deterministic project facts: a record, not memory.

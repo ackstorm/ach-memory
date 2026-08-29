@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh\"",
-            "timeout": 5,
+            "timeout": 6,
             "statusMessage": "Loading ach-memory..."
           }
         ]

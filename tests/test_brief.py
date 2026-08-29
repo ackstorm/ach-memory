@@ -207,28 +207,6 @@ def _section(text):
     return brief.Section(text=text, refreshed_at="2026-08-27T03:00:00+00:00")
 
 
-def test_compose_states_the_briefs_status_and_keeps_the_policy_first():
-    text = brief.compose("POLICY", _section("user facts"), _section("project facts"), "acme-api")
-
-    assert text.startswith("POLICY")
-    assert "user facts" in text and "project facts" in text
-    assert "acme-api" in text
-    # The one clause that makes a wrong digest survivable.
-    assert "verify with recall" in text
-
-
-def test_compose_omits_a_section_it_has_no_material_for():
-    text = brief.compose("POLICY", _section("user facts"), None, "acme-api")
-
-    assert "user facts" in text
-    assert "acme-api" not in text
-
-
-def test_compose_with_nothing_is_exactly_the_policy():
-    """The failure path must be indistinguishable from today's behaviour."""
-    assert brief.compose("POLICY", None, None, None) == "POLICY"
-
-
 _USER_HEADING = "-- What memory knows about you --"
 _PROJECT_HEADING = "-- What memory knows about this project --"
 
