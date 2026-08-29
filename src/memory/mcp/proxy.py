@@ -15,8 +15,12 @@ model omitted and forwards everything else verbatim, so a host talking
 HTTP directly sees identical behavior minus the auto-fill.
 """
 
+import hashlib
 import os
 import subprocess
+import tempfile
+import threading
+from pathlib import Path
 
 import httpx
 from fastmcp import FastMCP
@@ -125,6 +129,9 @@ def fetch_brief(
     slug: str | None,
     locator: str | None,
     timeout: float = BRIEF_TIMEOUT_SECONDS,
+    *,
+    tier: str = "index",
+    host: str | None = None,
 ) -> dict | None:
     """The session brief, or None -- never an exception.
 
@@ -133,11 +140,13 @@ def fetch_brief(
     nothing else. Returning None leaves the proxy advertising no instructions
     of its own, which makes FastMCP forward the server's policy text verbatim.
     """
-    params = {"scope": "user"}
+    params = {"scope": "user", "tier": tier}
     if slug:
         params["project_slug"] = slug
     if locator:
         params["git_locator"] = locator
+    if host:
+        params["host"] = host
     try:
         response = httpx.get(
             f"{base_url.rstrip('/')}/v1/session-brief",
@@ -151,6 +160,99 @@ def fetch_brief(
     except (httpx.HTTPError, ValueError):
         return None
     return body if isinstance(body, dict) and body.get("instructions") else None
+
+
+def _cache_path(base_url: str, slug: str | None, locator: str | None) -> Path:
+    """One private cache file per memory service and project context.
+
+    A credential never contributes to a filename: filenames are observable
+    metadata, while the cache content itself is protected because it holds the
+    current user's memory.
+    """
+    root = Path(
+        os.environ.get("ACH_MEMORY_CACHE_DIR")
+        or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        / "ach-memory"
+    )
+    digest = hashlib.sha256(
+        f"{base_url}|{slug or ''}|{locator or ''}".encode()
+    ).hexdigest()[:16]
+    return root / f"index-{digest}.txt"
+
+
+def load_cached_index(base_url: str, slug: str | None, locator: str | None) -> str | None:
+    """Return a last-good index, if this host can safely read one."""
+    try:
+        text = _cache_path(base_url, slug, locator).read_text()
+    except OSError:
+        return None
+    return text or None
+
+
+def store_cached_index(
+    base_url: str, slug: str | None, locator: str | None, instructions: str
+) -> None:
+    """Atomically replace the private last-good index, or quietly give up."""
+    path = _cache_path(base_url, slug, locator)
+    temporary: str | None = None
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        with os.fdopen(descriptor, "w") as file:
+            file.write(instructions)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        temporary = None
+    except OSError:
+        # A read-only home directory must cost this session its cache, not its
+        # MCP server. A later session may run somewhere writable.
+        pass
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _refresh_cached_index(
+    base_url: str, api_key: str, slug: str | None, locator: str | None
+) -> None:
+    brief = fetch_brief(base_url, api_key, slug, locator, tier="index")
+    if brief:
+        store_cached_index(base_url, slug, locator, brief["instructions"])
+
+
+def startup_instructions(
+    base_url: str,
+    api_key: str,
+    slug: str | None,
+    locator: str | None,
+    *,
+    refresh: bool = True,
+) -> str:
+    """Return a cached index immediately and refresh it for the next session.
+
+    With no cache, the one bounded request is the best available orientation.
+    A total failure returns an explicit stub so the agent knows memory may
+    exist and can use ``recall`` after startup.
+    """
+    cached = load_cached_index(base_url, slug, locator)
+    if cached:
+        if refresh:
+            threading.Thread(
+                target=_refresh_cached_index,
+                args=(base_url, api_key, slug, locator),
+                daemon=True,
+            ).start()
+        return cached
+
+    brief = fetch_brief(base_url, api_key, slug, locator, tier="index")
+    if brief:
+        instructions = brief["instructions"]
+        store_cached_index(base_url, slug, locator, instructions)
+        return instructions
+    return "[ach-memory] Session brief unavailable; recall still works."
 
 
 def build_proxy(url: str, api_key: str) -> FastMCP:

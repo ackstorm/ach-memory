@@ -1118,29 +1118,18 @@ async def test_the_advertised_tool_surface_is_exactly_the_spec_set():
     assert advertised & FORBIDDEN_TOOLS == set()
 
 
-def test_instructions_carry_the_policy_to_callers_no_hook_reaches():
-    """Pinned against a trim, because nothing else pins it.
+def test_instructions_carry_the_static_mcp_contract_to_every_caller():
+    """Direct HTTP clients still need the service identity and safety floor.
 
-    activation.txt says the same things and is tested clause by clause, but it
-    is delivered by a SessionStart hook: codex's never fires under any
-    configuration tried, and a hand-written config on any host has no hook at
-    all. `instructions` comes back from `initialize`, so it is the one text
-    every caller receives -- verified through the stdio proxy, which forwards
-    it verbatim while advertising none of its own.
-
-    The clauses below are the ones an agent gets wrong when they are missing:
-    it writes to the host's own file store (so name MEMORY.md and say instead
-    of), it never reads (so name the read moment), it stores in the
-    conversation's language and cannot find it again (so name English), and it
-    would happily retain a token.
+    The mutable read/write policy now ships as host policy in Task 9, leaving
+    the capped MCP instruction field for the session index tier.
     """
     from memory.mcp.server import build_mcp
 
     text = (build_mcp().instructions or "").lower()
 
-    assert "memory.md" in text, "must name the store it replaces"
-    assert "recall" in text and "reflect" in text, "must name the read moment"
-    assert "durable" in text, "must name when a fact is worth writing"
+    assert "durable" in text, "must name the service's purpose"
+    assert "scope" in text and "project_slug" in text, "must describe addressing"
     assert "english" in text, "retrieval reranks in English only"
     assert "credentials" in text, "must forbid storing secrets"
     # Any MCP client gets this string, not only a coding agent.

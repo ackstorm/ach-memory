@@ -1036,8 +1036,8 @@ def test_mcp_builds_proxy_from_env_and_runs_stdio(
 
     monkeypatch.setattr("memory.mcp.proxy.build_proxy", fake_build)
     monkeypatch.setattr(
-        "memory.mcp.proxy.fetch_brief",
-        lambda base, key, slug, locator: {"instructions": "POLICY + BRIEF"},
+        "memory.mcp.proxy.startup_instructions",
+        lambda base, key, slug, locator: "POLICY + BRIEF",
     )
     assert cli.main(["mcp"]) == 0
     # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
@@ -1052,6 +1052,7 @@ def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
     ran = []
+    built = []
 
     class FakeProxy:
         instructions = None
@@ -1059,12 +1060,20 @@ def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) 
         def run(self) -> None:
             ran.append(True)
 
-    monkeypatch.setattr("memory.mcp.proxy.build_proxy", lambda _u, _k: FakeProxy())
-    monkeypatch.setattr("memory.mcp.proxy.fetch_brief", lambda *_a, **_k: None)
+    def fake_build(_url, _key):
+        proxy = FakeProxy()
+        built.append(proxy)
+        return proxy
+
+    monkeypatch.setattr("memory.mcp.proxy.build_proxy", fake_build)
+    monkeypatch.setattr(
+        "memory.mcp.proxy.startup_instructions",
+        lambda *_a, **_k: "[ach-memory] Session brief unavailable; recall still works.",
+    )
 
     assert cli.main(["mcp"]) == 0
     assert ran == [True]
-    assert FakeProxy.instructions is None
+    assert "unavailable" in built[0].instructions.lower()
 
 
 def test_config_plan_modes_pick_the_server_shape(

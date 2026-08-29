@@ -652,9 +652,10 @@ def _serve_mcp(url_argument: str | None = None) -> int:
     url = _mcp_url(base)
     server = proxy.build_proxy(url, key)
     slug, locator = proxy.resolve_project_context()
-    brief = proxy.fetch_brief(_base_url(base), key, slug, locator)
-    if brief:
-        server.instructions = brief["instructions"]
+    # Cache first, network in the background: startup must not wait on the
+    # service merely to gain orientation. A cached index may be one session
+    # behind, which its brief_revision makes visible to consumers.
+    server.instructions = proxy.startup_instructions(_base_url(base), key, slug, locator)
     server.run()
     return 0
 

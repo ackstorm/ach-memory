@@ -6,6 +6,11 @@ from memory.mcp import server as mcp_server
 MASTER_PLAINTEXT = "mem_master_secret_for_tests"
 
 
+def test_the_static_policy_leaves_room_for_memory():
+    """A fixed 1428-char policy displaced the dynamic project orientation."""
+    assert len(mcp_server.INSTRUCTIONS) <= 600
+
+
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch):
     """`resolve_principal` and `session_scope` both call `get_settings()`.

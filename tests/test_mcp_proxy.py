@@ -144,6 +144,7 @@ async def test_middleware_injects_into_call_tool(tmp_path, monkeypatch):
 import httpx
 import respx
 
+from memory.mcp import proxy
 from memory.mcp.proxy import fetch_brief
 
 
@@ -189,3 +190,34 @@ def test_a_brief_that_cannot_be_fetched_is_simply_absent(failure):
         respx.get("https://memory.test/v1/session-brief").mock(return_value=failure)
 
     assert fetch_brief("https://memory.test", "k", None, None) is None
+
+
+def test_the_proxy_serves_a_cached_index_without_waiting(tmp_path, monkeypatch):
+    """Startup must not depend on the network once a cache exists.
+
+    The previous pre-``run()`` fetch made a slow service delay every MCP
+    session, despite having a usable brief from the prior session on disk.
+    """
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
+    proxy.store_cached_index("https://memory.test", "acme-api", None, "INDEX rev 42")
+
+    def _never_called(*args, **kwargs):
+        raise AssertionError("startup must not block on a fetch when a cache exists")
+
+    monkeypatch.setattr(proxy.httpx, "get", _never_called)
+
+    assert "rev 42" in proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=False
+    )
+
+
+def test_with_no_cache_and_no_service_the_proxy_still_starts(tmp_path, monkeypatch):
+    """A broken service costs a session its brief, never its startup."""
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)
+
+    text = proxy.startup_instructions(
+        "https://memory.test", "k", None, None, refresh=False
+    )
+
+    assert "unavailable" in text.lower()
