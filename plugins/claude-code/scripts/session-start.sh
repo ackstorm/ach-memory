@@ -31,7 +31,21 @@ owner="$(printf '%s' "$key" | { sha256sum 2>/dev/null || shasum -a 256; } | cut 
 show_cache() {
   [ -s "$cache" ] || return 1
   [ "$(head -n 1 "$cache" 2>/dev/null || true)" = "$owner" ] || return 1
-  tail -n +2 "$cache" 2>/dev/null
+  second="$(sed -n '2p' "$cache" 2>/dev/null || true)"
+  case "$second" in
+    ''|*[!0-9]*) start=2; stored="$(date -r "$cache" '+%s' 2>/dev/null || printf '0')" ;;
+    *) start=3; stored="$second" ;;
+  esac
+  now="$(date '+%s' 2>/dev/null || printf '0')"
+  age=$((now > stored ? now - stored : 0))
+  [ "$age" -le 9999999999 ] || age=9999999999
+  padded="$(printf '%010d' "$age")"
+  if tail -n +"$start" "$cache" | grep -Eq 'cache-age [0-9]{10}s'; then
+    tail -n +"$start" "$cache" | sed -E "s/cache-age [0-9]{10}s/cache-age ${padded}s/"
+  else
+    printf '[ach-memory] cached Full tier; age unknown\n'
+    tail -n +"$start" "$cache" 2>/dev/null
+  fi
 }
 
 # format=text keeps this a curl and a cat: no jq, node, or extra runtime is
@@ -52,7 +66,8 @@ fi
 
 if curl "${curl_args[@]}" 2>/dev/null; then
   cat "$tmp" 2>/dev/null || true
-  { printf '%s\n' "$owner"; cat "$tmp"; } > "$cache_tmp" 2>/dev/null && \
+  stored_at="$(date '+%s' 2>/dev/null || printf '0')"
+  { printf '%s\n' "$owner"; printf '%s\n' "$stored_at"; cat "$tmp"; } > "$cache_tmp" 2>/dev/null && \
     mv -f "$cache_tmp" "$cache" 2>/dev/null || true
   chmod 0600 "$cache" 2>/dev/null || true
   rm -f "$tmp" "$cache_tmp" 2>/dev/null || true
@@ -62,6 +77,9 @@ else
     printf '[ach-memory] service unreachable; cached brief from %s\n' \
       "$(date -r "$cache" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown)"
     show_cache || true
+  else
+    printf '%s\n' \
+      '[ach-memory] Full tier unavailable; this session has only the MCP Index if the MCP server started.'
   fi
 fi
 

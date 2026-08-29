@@ -288,6 +288,66 @@ def test_the_full_tier_hook_fails_open_without_home_or_xdg_cache(tmp_path: Path)
     assert result.returncode == 0
 
 
+def test_the_full_cache_exposes_its_revision_and_age(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    curl = fake_bin / "curl"
+    curl.write_text(
+        """#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    printf '%s\\n' '-- ach-memory brief rev 17 / protocol 2 / cache-age 0000000000s / project acme-api --' > "$2"
+    exit 0
+  fi
+  shift
+done
+exit 1
+"""
+    )
+    curl.chmod(0o755)
+    date = fake_bin / "date"
+    date.write_text("#!/usr/bin/env bash\ncat \"$FAKE_EPOCH\"\n")
+    date.chmod(0o755)
+    epoch = tmp_path / "epoch"
+    epoch.write_text("100")
+    environment = _hook_env()
+    environment.update({
+        "ACH_MEMORY_API_KEY": "test-key", "ACH_MEMORY_URL": "https://memory.test",
+        "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"), "FAKE_EPOCH": str(epoch),
+        "PATH": f"{fake_bin}:{environment['PATH']}",
+    })
+    script = [str(ROOT / "plugins/claude-code/scripts/session-start.sh")]
+    first = subprocess.run(script, capture_output=True, text=True, check=False, env=environment)
+    assert first.returncode == 0
+    curl.write_text("#!/usr/bin/env bash\nexit 1\n")
+    curl.chmod(0o755)
+    epoch.write_text("165")
+    second = subprocess.run(script, capture_output=True, text=True, check=False, env=environment)
+    assert second.returncode == 0
+    assert "brief rev 17" in second.stdout
+    assert "cache-age 0000000065s" in second.stdout
+
+
+def test_no_full_context_says_the_session_has_only_the_mcp_index(tmp_path: Path) -> None:
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text("#!/usr/bin/env bash\nexit 1\n")
+    fake_curl.chmod(0o755)
+    environment = _hook_env()
+    environment.update({
+        "ACH_MEMORY_API_KEY": "test-key", "ACH_MEMORY_URL": "https://memory.test",
+        "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
+        "PATH": f"{tmp_path}:{environment['PATH']}",
+    })
+    result = subprocess.run(
+        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    assert "full tier unavailable" in result.stdout.lower()
+    assert "only the mcp index" in result.stdout.lower()
+    assert "memory is absent" not in result.stdout.lower()
+    assert result.returncode == 0
+
+
 def test_the_full_tier_cache_never_crosses_api_key_identities(tmp_path: Path) -> None:
     """A cache is user memory; one local account may deliberately switch keys."""
     fake_curl = tmp_path / "bin" / "curl"
