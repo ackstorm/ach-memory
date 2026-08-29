@@ -16,6 +16,8 @@ HTTP directly sees identical behavior minus the auto-fill.
 """
 
 import hashlib
+import hmac
+import json
 import os
 import subprocess
 import tempfile
@@ -180,17 +182,36 @@ def _cache_path(base_url: str, slug: str | None, locator: str | None) -> Path:
     return root / f"index-{digest}.txt"
 
 
-def load_cached_index(base_url: str, slug: str | None, locator: str | None) -> str | None:
+def _cache_owner(api_key: str) -> str:
+    """A private cache-record fingerprint, never a filename component."""
+    return hashlib.sha256(api_key.encode()).hexdigest()
+
+
+def load_cached_index(
+    base_url: str, api_key: str, slug: str | None, locator: str | None
+) -> str | None:
     """Return a last-good index, if this host can safely read one."""
     try:
-        text = _cache_path(base_url, slug, locator).read_text()
-    except OSError:
+        record = json.loads(_cache_path(base_url, slug, locator).read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    return text or None
+    if not isinstance(record, dict):
+        return None
+    owner = record.get("owner")
+    instructions = record.get("instructions")
+    if not isinstance(owner, str) or not isinstance(instructions, str):
+        return None
+    if not hmac.compare_digest(owner, _cache_owner(api_key)):
+        return None
+    return instructions or None
 
 
 def store_cached_index(
-    base_url: str, slug: str | None, locator: str | None, instructions: str
+    base_url: str,
+    api_key: str,
+    slug: str | None,
+    locator: str | None,
+    instructions: str,
 ) -> None:
     """Atomically replace the private last-good index, or quietly give up."""
     path = _cache_path(base_url, slug, locator)
@@ -199,7 +220,7 @@ def store_cached_index(
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         with os.fdopen(descriptor, "w") as file:
-            file.write(instructions)
+            json.dump({"owner": _cache_owner(api_key), "instructions": instructions}, file)
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
         temporary = None
@@ -220,7 +241,7 @@ def _refresh_cached_index(
 ) -> None:
     brief = fetch_brief(base_url, api_key, slug, locator, tier="index")
     if brief:
-        store_cached_index(base_url, slug, locator, brief["instructions"])
+        store_cached_index(base_url, api_key, slug, locator, brief["instructions"])
 
 
 def startup_instructions(
@@ -237,7 +258,7 @@ def startup_instructions(
     A total failure returns an explicit stub so the agent knows memory may
     exist and can use ``recall`` after startup.
     """
-    cached = load_cached_index(base_url, slug, locator)
+    cached = load_cached_index(base_url, api_key, slug, locator)
     if cached:
         if refresh:
             threading.Thread(
@@ -250,7 +271,7 @@ def startup_instructions(
     brief = fetch_brief(base_url, api_key, slug, locator, tier="index")
     if brief:
         instructions = brief["instructions"]
-        store_cached_index(base_url, slug, locator, instructions)
+        store_cached_index(base_url, api_key, slug, locator, instructions)
         return instructions
     return "[ach-memory] Session brief unavailable; recall still works."
 

@@ -199,7 +199,9 @@ def test_the_proxy_serves_a_cached_index_without_waiting(tmp_path, monkeypatch):
     session, despite having a usable brief from the prior session on disk.
     """
     monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    proxy.store_cached_index("https://memory.test", "acme-api", None, "INDEX rev 42")
+    proxy.store_cached_index(
+        "https://memory.test", "k", "acme-api", None, "INDEX rev 42"
+    )
 
     def _never_called(*args, **kwargs):
         raise AssertionError("startup must not block on a fetch when a cache exists")
@@ -221,3 +223,61 @@ def test_with_no_cache_and_no_service_the_proxy_still_starts(tmp_path, monkeypat
     )
 
     assert "unavailable" in text.lower()
+
+
+def test_a_cached_index_never_crosses_api_key_identities(tmp_path, monkeypatch):
+    """The cache holds user memory, while one Unix account may switch keys."""
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
+    proxy.store_cached_index(
+        "https://memory.test", "key-for-alice", "acme-api", None, "ALICE INDEX"
+    )
+    monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)
+
+    text = proxy.startup_instructions(
+        "https://memory.test", "key-for-bob", "acme-api", None, refresh=False
+    )
+
+    assert "ALICE INDEX" not in text
+    assert "unavailable" in text.lower()
+
+
+def test_a_corrupt_cache_is_a_miss_not_a_startup_failure(tmp_path, monkeypatch):
+    """A killed or manually edited cache must not prevent MCP startup."""
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
+    path = proxy._cache_path("https://memory.test", None, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff")
+    monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)
+
+    text = proxy.startup_instructions(
+        "https://memory.test", "k", None, None, refresh=False
+    )
+
+    assert "unavailable" in text.lower()
+
+
+def test_a_cache_hit_refreshes_the_index_for_the_next_session(tmp_path, monkeypatch):
+    """The served cache is immediate; its replacement is an index-tier fetch."""
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
+    proxy.store_cached_index("https://memory.test", "k", None, None, "OLD INDEX")
+    calls = []
+
+    def fake_fetch(*args, **kwargs):
+        calls.append(kwargs)
+        return {"instructions": "NEW INDEX"}
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(proxy, "fetch_brief", fake_fetch)
+    monkeypatch.setattr(proxy.threading, "Thread", ImmediateThread)
+
+    assert proxy.startup_instructions("https://memory.test", "k", None, None) == "OLD INDEX"
+    assert calls == [{"tier": "index"}]
+    assert proxy.load_cached_index("https://memory.test", "k", None, None) == "NEW INDEX"
