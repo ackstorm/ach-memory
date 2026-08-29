@@ -288,6 +288,46 @@ def test_the_full_tier_hook_fails_open_without_home_or_xdg_cache(tmp_path: Path)
     assert result.returncode == 0
 
 
+def test_the_full_tier_cache_never_crosses_api_key_identities(tmp_path: Path) -> None:
+    """A cache is user memory; one local account may deliberately switch keys."""
+    fake_curl = tmp_path / "bin" / "curl"
+    fake_curl.parent.mkdir()
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+while [ \"$#\" -gt 0 ]; do
+  if [ \"$1\" = \"-o\" ]; then
+    printf '%s\\n' 'ALICE FULL BRIEF' > \"$2\"
+    exit 0
+  fi
+  shift
+done
+exit 1
+"""
+    )
+    fake_curl.chmod(0o755)
+    cache = tmp_path / "cache"
+    environment = _hook_env()
+    environment.update(
+        {
+            "ACH_MEMORY_API_KEY": "key-for-alice",
+            "ACH_MEMORY_URL": "https://memory.test",
+            "ACH_MEMORY_CACHE_DIR": str(cache),
+            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
+        }
+    )
+    script = [str(ROOT / "plugins/claude-code/scripts/session-start.sh")]
+
+    assert subprocess.run(script, capture_output=True, text=True, check=False, env=environment).returncode == 0
+
+    fake_curl.write_text("#!/usr/bin/env bash\nexit 1\n")
+    fake_curl.chmod(0o755)
+    environment["ACH_MEMORY_API_KEY"] = "key-for-bob"
+    result = subprocess.run(script, capture_output=True, text=True, check=False, env=environment)
+
+    assert result.returncode == 0
+    assert "ALICE FULL BRIEF" not in result.stdout
+
+
 @pytest.mark.parametrize("host", NATIVE)
 def test_subagent_hook_emits_the_envelope_that_event_requires(host: str) -> None:
     """SubagentStart is the only event that takes JSON rather than raw stdout.

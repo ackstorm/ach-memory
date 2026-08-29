@@ -22,6 +22,17 @@ mkdir -p "$cache_dir" 2>/dev/null || true
 digest="$(printf '%s|%s' "$url" "$locator" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"
 cache="$cache_dir/full-$digest.txt"
 tmp="$cache.$$"
+cache_tmp="$cache.cache.$$"
+# The filename deliberately names only the service and repository. The
+# private record still binds its content to the current API key, so switching
+# identities under one Unix account cannot replay another user's brief.
+owner="$(printf '%s' "$key" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d ' ' -f1)"
+
+show_cache() {
+  [ -s "$cache" ] || return 1
+  [ "$(head -n 1 "$cache" 2>/dev/null || true)" = "$owner" ] || return 1
+  tail -n +2 "$cache" 2>/dev/null
+}
 
 # format=text keeps this a curl and a cat: no jq, node, or extra runtime is
 # needed before memory can orient a session. -f prevents an error envelope
@@ -40,15 +51,17 @@ if [ -n "$locator" ]; then
 fi
 
 if curl "${curl_args[@]}" 2>/dev/null; then
-  mv -f "$tmp" "$cache" 2>/dev/null || true
+  cat "$tmp" 2>/dev/null || true
+  { printf '%s\n' "$owner"; cat "$tmp"; } > "$cache_tmp" 2>/dev/null && \
+    mv -f "$cache_tmp" "$cache" 2>/dev/null || true
   chmod 0600 "$cache" 2>/dev/null || true
-  cat "$cache" 2>/dev/null || true
+  rm -f "$tmp" "$cache_tmp" 2>/dev/null || true
 else
-  rm -f "$tmp" 2>/dev/null || true
-  if [ -s "$cache" ]; then
+  rm -f "$tmp" "$cache_tmp" 2>/dev/null || true
+  if show_cache >/dev/null; then
     printf '[ach-memory] service unreachable; cached brief from %s\n' \
       "$(date -r "$cache" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown)"
-    cat "$cache" 2>/dev/null || true
+    show_cache || true
   fi
 fi
 
