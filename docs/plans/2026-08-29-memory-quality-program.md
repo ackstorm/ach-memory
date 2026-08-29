@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy/Alembic, Hindsight 0.9.x, FastMCP, Bash host hooks, pytest/respx.
 
-**Spec:** `/tmp/SPEC-memory-quality-v1.4.md` (external source of truth; do not confuse it with the historical untracked root draft).
+**Spec:** `docs/specs/2026-08-29-memory-quality-v1.4.md` (the versioned repository copy; do not confuse it with the historical untracked root draft).
 
 ---
 
@@ -138,7 +138,7 @@ Phase 0 is last by explicit product decision. Nothing in this program authorizes
 
 ## Cross-Phase Rules
 
-- Treat the external v1.4 SPEC as authoritative; the root `SPEC-memory-quality.md` is historical until separately adopted.
+- Treat the versioned v1.4 SPEC as authoritative; the root `SPEC-memory-quality.md` is historical until separately adopted.
 - Each detailed phase plan must name exact files, interfaces, migrations, tests, rollout conditions and rollback behavior.
 - No phase starts on a red targeted suite. Run the phase-specific tests first; integration tests requiring unavailable secrets/services are reported separately, never silently waived.
 - Keep production-data operations out of code commits and out of automated test fixtures.
