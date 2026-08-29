@@ -22,6 +22,8 @@ import os
 import subprocess
 import tempfile
 import threading
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -30,6 +32,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server import create_proxy
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
+from memory import brief
 from memory.errors import ProjectInvalidSlug
 from memory.slugs import slug_from_locator
 
@@ -187,9 +190,15 @@ def _cache_owner(api_key: str) -> str:
     return hashlib.sha256(api_key.encode()).hexdigest()
 
 
+@dataclass(frozen=True)
+class CachedIndex:
+    instructions: str
+    stored_at: datetime
+
+
 def load_cached_index(
     base_url: str, api_key: str, slug: str | None, locator: str | None
-) -> str | None:
+) -> CachedIndex | None:
     """Return a last-good index, if this host can safely read one."""
     try:
         record = json.loads(_cache_path(base_url, slug, locator).read_text())
@@ -203,7 +212,26 @@ def load_cached_index(
         return None
     if not hmac.compare_digest(owner, _cache_owner(api_key)):
         return None
-    return instructions or None
+    if not instructions:
+        return None
+    stored_at = None
+    if record.get("version") == 2:
+        value = record.get("stored_at")
+        if isinstance(value, str):
+            try:
+                stored_at = datetime.fromisoformat(value)
+                if stored_at.tzinfo is None:
+                    stored_at = None
+            except ValueError:
+                pass
+    if stored_at is None:
+        try:
+            stored_at = datetime.fromtimestamp(
+                _cache_path(base_url, slug, locator).stat().st_mtime, UTC
+            )
+        except (OSError, ValueError, OverflowError):
+            return None
+    return CachedIndex(instructions=instructions, stored_at=stored_at.astimezone(UTC))
 
 
 def store_cached_index(
@@ -212,6 +240,8 @@ def store_cached_index(
     slug: str | None,
     locator: str | None,
     instructions: str,
+    *,
+    stored_at: datetime | None = None,
 ) -> None:
     """Atomically replace the private last-good index, or quietly give up."""
     path = _cache_path(base_url, slug, locator)
@@ -220,7 +250,13 @@ def store_cached_index(
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         with os.fdopen(descriptor, "w") as file:
-            json.dump({"owner": _cache_owner(api_key), "instructions": instructions}, file)
+            timestamp = (stored_at or datetime.now(UTC)).astimezone(UTC)
+            json.dump({
+                "version": 2,
+                "owner": _cache_owner(api_key),
+                "stored_at": timestamp.isoformat(),
+                "instructions": instructions,
+            }, file)
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
         temporary = None
@@ -251,6 +287,7 @@ def startup_instructions(
     locator: str | None,
     *,
     refresh: bool = True,
+    now: datetime | None = None,
 ) -> str:
     """Return a cached index immediately and refresh it for the next session.
 
@@ -266,11 +303,13 @@ def startup_instructions(
                 args=(base_url, api_key, slug, locator),
                 daemon=True,
             ).start()
-        return cached
+        instant = (now or datetime.now(UTC)).astimezone(UTC)
+        age_seconds = int(max((instant - cached.stored_at).total_seconds(), 0))
+        return brief.stamp_cache_age(cached.instructions, age_seconds)
 
-    brief = fetch_brief(base_url, api_key, slug, locator, tier="index")
-    if brief:
-        instructions = brief["instructions"]
+    fetched = fetch_brief(base_url, api_key, slug, locator, tier="index")
+    if fetched:
+        instructions = fetched["instructions"]
         store_cached_index(base_url, api_key, slug, locator, instructions)
         return instructions
     return "[ach-memory] Session brief unavailable; recall still works."

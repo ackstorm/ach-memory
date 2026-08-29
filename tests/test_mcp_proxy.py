@@ -5,7 +5,10 @@ The forwarding itself is FastMCP's create_proxy and is not re-tested here;
 scripts/mcp-smoke.py --proxy exercises it end to end against a live stack.
 """
 
+import json
+import os
 import subprocess
+from datetime import UTC, datetime
 from typing import ClassVar
 
 import pytest
@@ -213,6 +216,36 @@ def test_the_proxy_serves_a_cached_index_without_waiting(tmp_path, monkeypatch):
     )
 
 
+def test_a_cached_index_exposes_its_revision_and_age(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
+    index = (
+        "-- ach-memory brief rev 42 / protocol 2 / "
+        "cache-age 0000000000s / project acme-api --\n\n"
+        "-- What else memory holds --"
+    )
+    stored = datetime(2026, 8, 29, 10, 0, tzinfo=UTC)
+    now = datetime(2026, 8, 29, 10, 2, 3, tzinfo=UTC)
+    proxy.store_cached_index("https://memory.test", "k", "acme-api", None, index, stored_at=stored)
+    text = proxy.startup_instructions("https://memory.test", "k", "acme-api", None, refresh=False, now=now)
+    assert "brief rev 42" in text
+    assert "cache-age 0000000123s" in text
+    assert len(text) == len(index)
+
+
+def test_a_legacy_index_cache_uses_its_file_mtime_for_age(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
+    index = "-- ach-memory brief rev 42 / protocol 2 / cache-age 0000000000s --"
+    path = proxy._cache_path("https://memory.test", "acme-api", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"owner": proxy._cache_owner("k"), "instructions": index}))
+    legacy_time = datetime(2026, 8, 29, 10, 0, tzinfo=UTC).timestamp()
+    os.utime(path, (legacy_time, legacy_time))
+    cached = proxy.load_cached_index("https://memory.test", "k", "acme-api", None)
+    assert cached is not None
+    assert cached.instructions == index
+    assert cached.stored_at.timestamp() == legacy_time
+
+
 def test_with_no_cache_and_no_service_the_proxy_still_starts(tmp_path, monkeypatch):
     """A broken service costs a session its brief, never its startup."""
     monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
@@ -278,6 +311,6 @@ def test_a_cache_hit_refreshes_the_index_for_the_next_session(tmp_path, monkeypa
     monkeypatch.setattr(proxy, "fetch_brief", fake_fetch)
     monkeypatch.setattr(proxy.threading, "Thread", ImmediateThread)
 
-    assert proxy.startup_instructions("https://memory.test", "k", None, None) == "OLD INDEX"
+    assert "OLD INDEX" in proxy.startup_instructions("https://memory.test", "k", None, None)
     assert calls == [{"tier": "index"}]
-    assert proxy.load_cached_index("https://memory.test", "k", None, None) == "NEW INDEX"
+    assert proxy.load_cached_index("https://memory.test", "k", None, None).instructions == "NEW INDEX"
