@@ -213,6 +213,81 @@ def test_the_consumer_contract_ships_as_host_policy():
     assert "working state" in contract.lower()
 
 
+def test_the_full_tier_hook_passes_a_git_locator_as_curls_separate_value(
+    tmp_path: Path,
+) -> None:
+    """Curl treats an option and its value in one shell word as an unknown flag."""
+    fake_curl = tmp_path / "bin" / "curl"
+    fake_curl.parent.mkdir()
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+printf '%s\\n' \"$@\" > \"$CURL_ARGS\"
+while [ \"$#\" -gt 0 ]; do
+  if [ \"$1\" = \"-o\" ]; then
+    printf '%s\\n' '-- ach-memory brief rev 1 / protocol 1 / no project --' > \"$2\"
+    break
+  fi
+  shift
+done
+"""
+    )
+    fake_curl.chmod(0o755)
+    args = tmp_path / "curl-args"
+    environment = _hook_env()
+    environment.update(
+        {
+            "ACH_MEMORY_API_KEY": "test-key",
+            "ACH_MEMORY_URL": "https://memory.test",
+            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
+            "CURL_ARGS": str(args),
+            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
+        }
+    )
+
+    result = subprocess.run(
+        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    values = args.read_text().splitlines()
+    locator = next(value for value in values if "git_locator=" in value)
+    position = values.index(locator)
+    assert result.returncode == 0
+    assert locator.startswith("git_locator=")
+    assert values[position - 1] == "--data-urlencode"
+
+
+def test_the_full_tier_hook_fails_open_without_home_or_xdg_cache(tmp_path: Path) -> None:
+    """SessionStart must still exit zero in a minimal inherited environment."""
+    fake_curl = tmp_path / "bin" / "curl"
+    fake_curl.parent.mkdir()
+    fake_curl.write_text("#!/usr/bin/env bash\nexit 1\n")
+    fake_curl.chmod(0o755)
+    environment = _hook_env()
+    environment.update(
+        {
+            "ACH_MEMORY_API_KEY": "test-key",
+            "ACH_MEMORY_URL": "https://memory.test",
+            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
+        }
+    )
+    environment.pop("HOME", None)
+    environment.pop("XDG_CACHE_HOME", None)
+
+    result = subprocess.run(
+        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert result.returncode == 0
+
+
 @pytest.mark.parametrize("host", NATIVE)
 def test_subagent_hook_emits_the_envelope_that_event_requires(host: str) -> None:
     """SubagentStart is the only event that takes JSON rather than raw stdout.
