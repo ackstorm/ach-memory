@@ -267,6 +267,31 @@ def test_the_same_subject_from_two_issuers_stays_two_identities(session, tenant)
     session.flush()  # no constraint violation
 
 
+def test_context_revision_accepts_separate_rows_per_workspace(session, tenant):
+    """workspace_id joined the primary key in the working-state migration;
+    "" is the existing no-workspace snapshot, kept working unchanged."""
+    from datetime import UTC, datetime
+
+    from memory.models import ContextRevision
+
+    def _row(workspace_id: str) -> ContextRevision:
+        return ContextRevision(
+            tenant_id=tenant,
+            user_id="usr_x",
+            project_slug="acme-api",
+            workspace_id=workspace_id,
+            revision=1,
+            fingerprint="f" * 64,
+            updated_at=datetime.now(UTC),
+        )
+
+    for workspace_id in ("", "ws_" + "a" * 32, "ws_" + "b" * 32):
+        session.add(_row(workspace_id))
+    session.flush()
+
+    assert session.query(ContextRevision).count() == 3
+
+
 def test_activity_event_stamps_created_at_from_the_database(session, tenant):
     """server_default only, no Python-side default -- the same reasoning
     AuditEvent.created_at records: one clock, the database's, or ordering

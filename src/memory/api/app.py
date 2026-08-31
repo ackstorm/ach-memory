@@ -140,6 +140,7 @@ def create_app() -> FastAPI:
     from memory.api import operations as operation_routes
     from memory.api import projects as project_routes
     from memory.api import users as user_routes
+    from memory.api import working_state as working_state_routes
     from memory.mcp.server import build_mcp
     from memory.mcp.tools import register as register_tools
 
@@ -214,6 +215,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_routes.router)
     app.include_router(directive_routes.router)
     app.include_router(mental_model_routes.router)
+    app.include_router(working_state_routes.router)
 
     if get_settings().metrics_enabled:
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest

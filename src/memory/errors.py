@@ -188,3 +188,36 @@ class UpstreamRejected(DomainError):
 
     code = "UPSTREAM_REJECTED"
     status = 400
+
+
+class WorkingSessionNotFound(DomainError):
+    """The (session_id, session_epoch) pair a write named does not resolve to
+    a session this principal, project and workspace own.
+
+    Covers both an invented epoch and a real epoch borrowed from someone
+    else's session -- the server verifies the pair, so a caller can never win
+    by inventing a large one. 404, not 409: an unrecognized session is not a
+    fact about ordering, it names nothing at all.
+    """
+
+    code = "WORKING_SESSION_NOT_FOUND"
+    status = 404
+
+
+class WorkingStateStale(DomainError):
+    """The write's (session_epoch, checkpoint_seq) pair is lexicographically
+    behind the stored one. Working State keeps no history, so a stale write
+    is simply refused rather than merged or queued."""
+
+    code = "WORKING_STATE_STALE"
+    status = 409
+
+
+class WorkingStateConflict(DomainError):
+    """The write's (session_epoch, checkpoint_seq) pair matches the stored
+    one exactly but the payload differs. An identical retry at the same pair
+    is idempotent; a different one at the same pair is a caller error, never
+    last-write-wins."""
+
+    code = "WORKING_STATE_CONFLICT"
+    status = 409

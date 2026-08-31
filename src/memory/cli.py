@@ -698,11 +698,14 @@ def _serve_mcp(url_argument: str | None = None) -> int:
     base = url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000"
     url = _mcp_url(base)
     slug, locator = proxy.resolve_project_context()
+    workspace_id = proxy.resolve_workspace_context()
     # Cache first, network in the background: startup must not wait on the
     # service merely to gain orientation. A cached index may be one session
     # behind, which its brief_revision makes visible to consumers.
-    instructions = proxy.startup_instructions(_base_url(base), key, slug, locator)
-    proxy.run_stdio_bridge(url, key, slug, locator, instructions)
+    instructions = proxy.startup_instructions(
+        _base_url(base), key, slug, locator, workspace_id=workspace_id
+    )
+    proxy.run_stdio_bridge(url, key, slug, locator, instructions, workspace_id=workspace_id)
     return 0
 
 
@@ -723,7 +726,8 @@ def _print_brief(url_argument: str | None) -> int:
         return 1
     base = _base_url(url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000")
     slug, locator = proxy.resolve_project_context()
-    brief = proxy.fetch_brief(base, key, slug, locator)
+    workspace_id = proxy.resolve_workspace_context()
+    brief = proxy.fetch_brief(base, key, slug, locator, workspace_id=workspace_id)
     if not brief:
         print(f"ach-memory: no brief from {base}", file=sys.stderr)
         return 1

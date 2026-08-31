@@ -33,7 +33,12 @@ def fingerprint(*inputs: str | None) -> str:
 
 
 def current(
-    db: Session, tenant_id: str, user_id: str, project_slug: str, digest: str
+    db: Session,
+    tenant_id: str,
+    user_id: str,
+    project_slug: str,
+    digest: str,
+    workspace_id: str = "",
 ) -> int:
     """The revision for this snapshot, bumping it if the inputs moved.
 
@@ -46,11 +51,15 @@ def current(
     at READ COMMITTED; two threads on a barrier between the SELECT and the
     INSERT pin both halves of that in tests.
 
+    workspace_id defaults to "": Working State is per-workspace, so two git
+    worktrees of the same project must not bump a revision the other is
+    holding a cache against. "" is the existing snapshot with no workspace.
+
     The caller commits: the revision a tier was stamped with must land in the
     same transaction as the read it describes, or a consumer can hold a
     revision this service never issued.
     """
-    row = _locked(db, tenant_id, user_id, project_slug)
+    row = _locked(db, tenant_id, user_id, project_slug, workspace_id)
     now = datetime.now(UTC)
 
     if row is None:
@@ -61,6 +70,7 @@ def current(
                         tenant_id=tenant_id,
                         user_id=user_id,
                         project_slug=project_slug,
+                        workspace_id=workspace_id,
                         revision=1,
                         fingerprint=digest,
                         updated_at=now,
@@ -70,7 +80,7 @@ def current(
         except IntegrityError:
             # Lost the race; the winner's row is what this snapshot is
             # numbered by, exactly as if it had always been there.
-            row = _locked(db, tenant_id, user_id, project_slug)
+            row = _locked(db, tenant_id, user_id, project_slug, workspace_id)
             if row is None:
                 raise
 
@@ -82,7 +92,11 @@ def current(
 
 
 def _locked(
-    db: Session, tenant_id: str, user_id: str, project_slug: str
+    db: Session,
+    tenant_id: str,
+    user_id: str,
+    project_slug: str,
+    workspace_id: str = "",
 ) -> ContextRevision | None:
     return db.execute(
         select(ContextRevision)
@@ -90,6 +104,7 @@ def _locked(
             ContextRevision.tenant_id == tenant_id,
             ContextRevision.user_id == user_id,
             ContextRevision.project_slug == project_slug,
+            ContextRevision.workspace_id == workspace_id,
         )
         .with_for_update()
     ).scalar_one_or_none()

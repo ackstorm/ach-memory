@@ -1093,24 +1093,54 @@ def test_mcp_runs_stdio_http_bridge_from_env(
         lambda: ("acme-api", "git@github.com:acme/api.git"),
     )
     monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
+    )
+    monkeypatch.setattr(
         "memory.mcp.proxy.startup_instructions",
-        lambda base, key, slug, locator: "POLICY + BRIEF",
+        lambda base, key, slug, locator, **_kwargs: "POLICY + BRIEF",
     )
     monkeypatch.setattr(
         "memory.mcp.proxy.run_stdio_bridge",
-        lambda *args: calls.append(args),
+        lambda *args, **kwargs: calls.append((args, kwargs)),
     )
     assert cli.main(["mcp"]) == 0
     # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
     assert calls == [
         (
-            "https://mem.example.com/mcp/",
-            "mem_secret",
-            "acme-api",
-            "git@github.com:acme/api.git",
-            "POLICY + BRIEF",
+            (
+                "https://mem.example.com/mcp/",
+                "mem_secret",
+                "acme-api",
+                "git@github.com:acme/api.git",
+                "POLICY + BRIEF",
+            ),
+            {"workspace_id": "ws_" + "a" * 32},
         )
     ]
+
+
+def test_mcp_passes_the_resolved_workspace_id_to_startup_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
+
+    monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
+    )
+    monkeypatch.setattr("memory.mcp.proxy.run_stdio_bridge", lambda *args, **kwargs: None)
+    seen = {}
+
+    def fake_startup_instructions(base, key, slug, locator, **kwargs):
+        seen.update(kwargs)
+        return "POLICY"
+
+    monkeypatch.setattr("memory.mcp.proxy.startup_instructions", fake_startup_instructions)
+
+    assert cli.main(["mcp"]) == 0
+
+    assert seen["workspace_id"] == "ws_" + "a" * 32
 
 
 def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1125,7 +1155,7 @@ def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) 
     )
     monkeypatch.setattr(
         "memory.mcp.proxy.run_stdio_bridge",
-        lambda *args: calls.append(args),
+        lambda *args, **kwargs: calls.append(args),
     )
 
     assert cli.main(["mcp"]) == 0
@@ -1245,6 +1275,33 @@ def test_brief_prints_what_would_be_injected(monkeypatch, capsys):
     assert "Ask first." in captured.out
     assert "generated_at: 2026-08-27T03:00:00+00:00" in captured.err
     assert "project: absent" in captured.err
+
+
+def test_brief_command_passes_the_resolved_workspace_id(monkeypatch, capsys):
+    from memory import cli
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "k")
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_project_context", lambda: ("acme", None)
+    )
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
+    )
+    seen = {}
+
+    def fake_fetch_brief(*args, **kwargs):
+        seen.update(kwargs)
+        return {
+            "instructions": "POLICY",
+            "generated_at": "2026-08-27T03:00:00+00:00",
+            "sections": {"user": True},
+        }
+
+    monkeypatch.setattr("memory.mcp.proxy.fetch_brief", fake_fetch_brief)
+
+    assert cli.main(["brief", "--url", "https://memory.test"]) == 0
+
+    assert seen["workspace_id"] == "ws_" + "a" * 32
 
 
 def test_brief_says_so_when_there_is_none(monkeypatch, capsys):

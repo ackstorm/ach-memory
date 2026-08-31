@@ -5,6 +5,7 @@ is missing: it arrives with no citation and nothing to check it against.
 """
 
 import random
+import re
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -446,8 +447,8 @@ def test_a_tier_reports_the_sections_it_carries_and_not_the_ones_it_was_given():
     index = brief.compose_index(**args, budget=1800)
     full = brief.compose_full(**args)
 
-    assert brief.survived(index) == {"user": True, "project": False}
-    assert brief.survived(full) == {"user": True, "project": False}
+    assert brief.survived(index) == {"user": True, "project": False, "working_state": False}
+    assert brief.survived(full) == {"user": True, "project": False, "working_state": False}
 
 
 def test_the_header_names_the_counter_the_revision_came_from():
@@ -518,6 +519,27 @@ def test_the_full_tier_drops_an_over_budget_line_whole():
     )
     assert impossible not in text
     assert impossible[:100] not in text
+    assert brief.token_upper_bound(text) <= 2500
+
+
+def test_the_full_tier_does_not_abandon_later_sections_for_one_oversized_line():
+    """An earlier section whose first line does not fit must not end
+    allocation for every section after it -- the compiler broke at the first
+    unaffordable floor and a fitting project or Working State section never
+    got a turn."""
+    impossible = "sentinel-" + ("x" * 3000)
+    text = brief.compose_full(
+        revision=5,
+        project_slug="acme-api",
+        user=brief.Section(impossible, NOW.isoformat()),
+        orientation=None,
+        project=brief.Section("project rule 0", NOW.isoformat()),
+        working_state=brief.Section("objective: ship the feature", NOW.isoformat()),
+        max_tokens=2500,
+    )
+    assert impossible not in text
+    assert "project rule 0" in text
+    assert "objective: ship the feature" in text
     assert brief.token_upper_bound(text) <= 2500
 
 
@@ -810,6 +832,9 @@ def test_two_hosts_starting_at_once_do_not_issue_two_first_revisions(engine, mon
     from memory.models import ContextRevision
 
     key = ("default", "usr_race", "race-api")
+    # A real workspace, not the default "": the race must self-heal exactly
+    # the same way per workspace, not only in the no-workspace namespace.
+    workspace_id = "ws_" + "r" * 32
     digest = revisions.fingerprint("2026-08-27T03:00:00+00:00", None, None)
     factory = sessionmaker(bind=engine)
     start = threading.Barrier(2, timeout=10)
@@ -835,7 +860,7 @@ def test_two_hosts_starting_at_once_do_not_issue_two_first_revisions(engine, mon
         db = factory()
         try:
             start.wait()
-            seen.append(revisions.current(db, *key, digest))
+            seen.append(revisions.current(db, *key, digest, workspace_id=workspace_id))
             db.commit()
         except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
             failures.append(exc)
@@ -856,7 +881,7 @@ def test_two_hosts_starting_at_once_do_not_issue_two_first_revisions(engine, mon
 
         audit = factory()
         rows = audit.query(ContextRevision).filter_by(
-            tenant_id=key[0], user_id=key[1], project_slug=key[2]
+            tenant_id=key[0], user_id=key[1], project_slug=key[2], workspace_id=workspace_id
         ).all()
         assert [row.revision for row in rows] == [1]
         audit.close()
@@ -993,7 +1018,7 @@ def test_the_brief_carries_the_user_section_and_no_host_policy(client, two_users
     assert INSTRUCTIONS not in body["instructions"]
     assert body["instructions"].startswith("-- ach-memory brief rev ")
     assert "Ask before planning." in body["instructions"]
-    assert body["sections"] == {"user": True, "project": False}
+    assert body["sections"] == {"user": True, "project": False, "working_state": False}
     assert body["generated_at"] == "2026-08-27T03:00:00+00:00"
 
 
@@ -1214,7 +1239,7 @@ def test_the_index_tier_reports_only_the_sections_that_survived_its_budget(
     ).json()
 
     assert len(index["instructions"]) <= 1800
-    assert index["sections"] == {"user": False, "project": False}
+    assert index["sections"] == {"user": False, "project": False, "working_state": False}
     # The digests exist; this is the tier saying what it carries, not what the
     # compiler was handed.
     full = client.get(
@@ -1222,7 +1247,7 @@ def test_the_index_tier_reports_only_the_sections_that_survived_its_budget(
         params={"scope": "user", "project_slug": "acme-api", "tier": "full"},
         headers=_headers(two_users[0]["key"]),
     ).json()
-    assert full["sections"] == {"user": False, "project": False}
+    assert full["sections"] == {"user": False, "project": False, "working_state": False}
 
 
 @respx.mock
@@ -1243,3 +1268,323 @@ def test_a_project_with_no_name_is_oriented_by_its_slug(client, two_users):
 
     assert response.status_code == 200
     assert "project: acme-api" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Working State delivery (Task 6)
+# ---------------------------------------------------------------------------
+
+_WST_WS = "ws_" + "a" * 32
+_WST_WS_B = "ws_" + "b" * 32
+
+
+def _checkpoint(
+    client, headers, *, workspace_id=_WST_WS, project_slug="acme-api",
+    session_id="sess-1", **fields
+):
+    client.post("/v1/projects", json={"project_slug": project_slug}, headers=headers)
+    epoch = client.post(
+        "/v1/working-state/sessions",
+        json={"project_slug": project_slug, "workspace_id": workspace_id, "session_id": session_id},
+        headers=headers,
+    ).json()["session_epoch"]
+    body = {
+        "project_slug": project_slug,
+        "workspace_id": workspace_id,
+        "session_id": session_id,
+        "session_epoch": epoch,
+        "checkpoint_seq": 1,
+        "objective": "ship the feature",
+        **fields,
+    }
+    response = client.put("/v1/working-state", json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+@respx.mock
+def test_no_workspace_id_omits_working_state_and_keeps_the_existing_revision_namespace(
+    client, two_users
+):
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers)
+
+    without_workspace = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api"},
+        headers=headers,
+    ).json()
+
+    assert without_workspace["sections"]["working_state"] is False
+    assert "ship the feature" not in without_workspace["instructions"]
+    assert without_workspace["workspace_id"] is None
+
+
+@respx.mock
+def test_a_matching_workspace_gets_only_its_own_state_and_another_gets_neither(
+    client, two_users
+):
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers, workspace_id=_WST_WS, objective="workspace A's objective")
+    _checkpoint(
+        client, headers,
+        workspace_id=_WST_WS_B, session_id="sess-2", objective="workspace B's objective",
+    )
+
+    brief_a = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS},
+        headers=headers,
+    ).json()
+    brief_b = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS_B},
+        headers=headers,
+    ).json()
+
+    assert "workspace A's objective" in brief_a["instructions"]
+    assert "workspace B's objective" not in brief_a["instructions"]
+    assert "workspace B's objective" in brief_b["instructions"]
+    assert "workspace A's objective" not in brief_b["instructions"]
+    assert brief_a["sections"]["working_state"] is True
+    assert brief_b["sections"]["working_state"] is True
+
+
+@respx.mock
+def test_the_index_headline_and_full_section_render_the_expected_content(client, two_users):
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(
+        client, headers,
+        current_direction="leaning toward option B",
+        recent_decisions=["chose approach A"],
+        open_questions=["is B in scope?"],
+        next_steps=["write tests", "wire the API"],
+    )
+
+    index = client.get(
+        "/v1/session-brief",
+        params={
+            "scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS,
+            "tier": "index", "host": "claude-code",
+        },
+        headers=headers,
+    ).json()
+    full = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS, "tier": "full"},
+        headers=headers,
+    ).json()
+
+    assert "objective: ship the feature" in index["instructions"]
+    assert "next: write tests" in index["instructions"]
+    assert re.search(r"age: \d+s", index["instructions"])
+    assert len(index["instructions"]) <= 1800
+
+    assert "objective: ship the feature" in full["instructions"]
+    assert "current direction: leaning toward option B" in full["instructions"]
+    assert "recent decision: chose approach A" in full["instructions"]
+    assert "open question: is B in scope?" in full["instructions"]
+    assert "next step: write tests" in full["instructions"]
+    assert "next step: wire the API" in full["instructions"]
+    assert re.search(r"age: \d+s", full["instructions"])
+    assert "source session: sess-1 (epoch" in full["instructions"]
+    assert "verify against the repository" in full["instructions"]
+
+    assert index["sections"]["working_state"] is True
+    assert full["sections"]["working_state"] is True
+    assert index["brief_revision"] == full["brief_revision"]
+
+
+@respx.mock
+def test_a_working_state_update_bumps_revision_for_that_workspace_only(client, two_users):
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers, workspace_id=_WST_WS)
+
+    before_a = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS},
+        headers=headers,
+    ).json()["brief_revision"]
+    before_bare = client.get(
+        "/v1/session-brief", params={"scope": "user", "project_slug": "acme-api"},
+        headers=headers,
+    ).json()["brief_revision"]
+
+    _checkpoint(client, headers, workspace_id=_WST_WS, checkpoint_seq=2, objective="a new objective")
+
+    after_a = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS},
+        headers=headers,
+    ).json()["brief_revision"]
+    after_bare = client.get(
+        "/v1/session-brief", params={"scope": "user", "project_slug": "acme-api"},
+        headers=headers,
+    ).json()["brief_revision"]
+
+    assert after_a == before_a + 1
+    assert after_bare == before_bare
+
+
+@respx.mock
+def test_old_working_state_age_is_visible_with_no_staleness_label(client, two_users, session):
+    from memory.models import WorkingState
+
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers)
+    old = datetime.now(UTC) - timedelta(days=2)
+    session.query(WorkingState).update({WorkingState.updated_at: old})
+    session.commit()
+
+    full = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS, "tier": "full"},
+        headers=headers,
+    ).json()
+
+    assert "age: 2d" in full["instructions"]
+    for forbidden in ("stale", "expired", "outdated"):
+        assert forbidden not in full["instructions"].lower()
+
+
+@respx.mock
+def test_phase_2_delivered_payload_gate(client, two_users, tmp_path, monkeypatch):
+    """The Phase 2 acceptance test, entirely through host-facing paths: REST
+    project/session/handoff, the delivered Index and Full for the right
+    workspace only, and the MCP proxy's last-good cache serving that
+    workspace's content -- never another workspace's -- when the live
+    fetch is down."""
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    ws_a = "ws_" + "a" * 32
+    ws_b = "ws_" + "b" * 32
+
+    # 1. create an authorized project
+    created = client.post("/v1/projects", json={"project_slug": "acme-api"}, headers=headers)
+    assert created.status_code == 201
+
+    # 2. derive/select workspace A and start session A (plus an older sibling
+    # session, started first, for step 4's "older session" case)
+    older_epoch = client.post(
+        "/v1/working-state/sessions",
+        json={"project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-older"},
+        headers=headers,
+    ).json()["session_epoch"]
+    epoch = client.post(
+        "/v1/working-state/sessions",
+        json={"project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-A"},
+        headers=headers,
+    ).json()["session_epoch"]
+    assert epoch > older_epoch
+
+    # 3. write checkpoint 2 as an explicit handoff
+    write_two = client.put(
+        "/v1/working-state",
+        json={
+            "project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-A",
+            "session_epoch": epoch, "checkpoint_seq": 2, "objective": "ship the feature",
+            "next_steps": ["write tests"],
+        },
+        headers=headers,
+    )
+    assert write_two.status_code == 200
+
+    # 4. checkpoint 1 (same session) and the older session cannot overwrite it
+    same_session_stale = client.put(
+        "/v1/working-state",
+        json={
+            "project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-A",
+            "session_epoch": epoch, "checkpoint_seq": 1, "objective": "should not land",
+        },
+        headers=headers,
+    )
+    assert same_session_stale.status_code == 409
+    assert same_session_stale.json()["error"]["code"] == "WORKING_STATE_STALE"
+
+    older_session_stale = client.put(
+        "/v1/working-state",
+        json={
+            "project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-older",
+            "session_epoch": older_epoch, "checkpoint_seq": 999, "objective": "should not land",
+        },
+        headers=headers,
+    )
+    assert older_session_stale.status_code == 409
+    assert older_session_stale.json()["error"]["code"] == "WORKING_STATE_STALE"
+
+    # 5. fetch delivered Index and Full for workspace A
+    index = client.get(
+        "/v1/session-brief",
+        params={
+            "scope": "user", "project_slug": "acme-api", "workspace_id": ws_a,
+            "tier": "index", "host": "claude-code",
+        },
+        headers=headers,
+    ).json()
+    full = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": ws_a, "tier": "full"},
+        headers=headers,
+    ).json()
+
+    assert "objective: ship the feature" in index["instructions"]
+    assert "next: write tests" in index["instructions"]
+    assert re.search(r"age: \d+s", index["instructions"])
+    assert len(index["instructions"]) <= 1800
+
+    assert "objective: ship the feature" in full["instructions"]
+    assert "next step: write tests" in full["instructions"]
+    assert re.search(r"age: \d+s", full["instructions"])
+    assert "source session: sess-A (epoch" in full["instructions"]
+    assert brief.token_upper_bound(full["instructions"]) <= brief.FULL_MAX_TOKENS
+    assert index["brief_revision"] == full["brief_revision"]
+
+    # 6. fetch workspace B: A's state is absent
+    other = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": ws_b},
+        headers=headers,
+    ).json()
+    assert "ship the feature" not in other["instructions"]
+    assert other["sections"]["working_state"] is False
+
+    # 7. the MCP proxy's last-good cache serves A's content, with a visible
+    # cache age, when the live Full fetch fails -- and B, never cached,
+    # cannot read A's cache.
+    from memory.mcp import proxy
+
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path / "cache"))
+    live_content = (
+        "-- ach-memory brief rev 1 / protocol 2 / cache-age 0000000000s / "
+        "project acme-api --\n\n"
+        "-- Where the work was left --\n"
+        "objective: ship the feature; next: write tests; age: 0s"
+    )
+    route = respx.get("https://memory.test/v1/session-brief").mock(
+        return_value=httpx.Response(
+            200, json={"instructions": live_content, "generated_at": None, "sections": {}}
+        )
+    )
+    warm = proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=False, workspace_id=ws_a
+    )
+    assert "ship the feature" in warm
+
+    route.mock(side_effect=httpx.ConnectError("memory service unreachable"))
+
+    cached_a = proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=False, workspace_id=ws_a
+    )
+    assert "ship the feature" in cached_a
+    assert re.search(r"cache-age \d+s", cached_a)
+
+    unavailable_b = proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=False, workspace_id=ws_b
+    )
+    assert "ship the feature" not in unavailable_b
+    assert "unavailable" in unavailable_b.lower()

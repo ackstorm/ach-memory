@@ -67,6 +67,11 @@ _CAVEAT = (
     "acting on it)"
 )
 
+_WORKING_STATE_CAVEAT = (
+    "(a prior session's checkpoint, not an agenda -- verify against the "
+    "repository before acting on it)"
+)
+
 # Bumped when the shape of a tier changes in a way a consumer must notice.
 # A cached tier keeps the protocol it was compiled under, so a brief holding
 # instructions the current contract has replaced is visible instead of silent.
@@ -307,12 +312,22 @@ def stamp_cache_age(instructions: str, age_seconds: int) -> str:
     return _CACHE_AGE_RE.sub(_cache_age_field(age_seconds), instructions, count=1)
 
 
+def carries_cache_age(text: str) -> bool:
+    """Whether a compiled payload reserves a cache-age slot to stamp.
+
+    False for anything compiled before protocol 2 introduced the field --
+    stamp_cache_age's substitution is then a silent no-op, and the caller
+    must fall back to making the age visible some other way.
+    """
+    return bool(_CACHE_AGE_RE.search(text))
+
+
 def token_upper_bound(text: str) -> int:
     """Safe upper bound for byte-level host tokenizers."""
     return len(text.encode("utf-8"))
 
 
-def _inert(value: str) -> str:
+def inert(value: str) -> str:
     """One line, always: a line break inside `purpose` would forge a section
     heading, and the forged section would read as one of ours.
 
@@ -357,7 +372,7 @@ def _orientation_lines(orientation: Orientation | None) -> list[str]:
         ("spec", orientation.canonical_spec),
         ("purpose", orientation.purpose),
     )
-    return [f"{label}: {_inert(text)}" for label, text in labelled if text and text.strip()]
+    return [f"{label}: {inert(text)}" for label, text in labelled if text and text.strip()]
 
 
 def _sections(
@@ -368,15 +383,20 @@ def _sections(
 ) -> list[tuple[str, list[str], list[str]]]:
     """(name, heading lines, body lines) in composition order.
 
-    Working State is item 3 of both tiers and belongs to a later phase: with
-    nothing writing it, its body is always empty and the section is never
-    emitted. The seam is here so the tier does not have to be re-cut later.
+    Working State is item 3 of both tiers: absent (empty body, never
+    emitted) when the caller has no workspace_id or nothing stored there,
+    present as a rendered Section from working_state.py otherwise -- see
+    render_index_headline() and render_full_section().
     """
     return [
         ("orientation", [_ORIENTATION_HEADING], _orientation_lines(orientation)),
         ("user", [_USER_HEADING, _CAVEAT], _lines(user)),
         ("project", [_PROJECT_HEADING, _CAVEAT], _lines(project)),
-        ("working_state", [_WORKING_STATE_HEADING], _lines(working_state)),
+        (
+            "working_state",
+            [_WORKING_STATE_HEADING, _WORKING_STATE_CAVEAT],
+            _lines(working_state),
+        ),
     ]
 
 
@@ -543,7 +563,7 @@ def compose_full(
     for name, prefix, body in dynamic:
         floor_cost = part_cost([*prefix, body[0]])
         if floor_cost > remaining:
-            break
+            continue
         chosen[name] = [body[0]]
         remaining -= floor_cost
 
@@ -584,4 +604,8 @@ def survived(text: str) -> dict[str, bool]:
     matches one of our headings, so the only headings in a tier are ours.
     """
     lines = text.split("\n")
-    return {"user": _USER_HEADING in lines, "project": _PROJECT_HEADING in lines}
+    return {
+        "user": _USER_HEADING in lines,
+        "project": _PROJECT_HEADING in lines,
+        "working_state": _WORKING_STATE_HEADING in lines,
+    }

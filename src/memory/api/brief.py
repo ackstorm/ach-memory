@@ -15,12 +15,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from memory import brief, projects, revisions
+from memory import working_state as working_state_domain
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import ScopedRequest, _resolve_bank, scoped_query_params
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.errors import DomainError
 from memory.hindsight.client import get_client
+from memory.working_state import WORKSPACE_ID_PATTERN
 
 router = APIRouter(prefix="/v1/session-brief", tags=["session-brief"])
 
@@ -39,6 +41,9 @@ class BriefResponse(BaseModel):
     # project). Without it, an index tier cached with no project and a full
     # tier fetched with one compare two unrelated sequences.
     project_slug: str | None
+    # Which workspace's revision sequence, if any -- "" and no workspace are
+    # both possible callers, and this is how a JSON consumer tells them apart.
+    workspace_id: str | None
 
 
 def _oldest(*sections: brief.Section | None) -> str | None:
@@ -68,6 +73,10 @@ def session_brief(
     # keeps getting a whole brief until it moves to the index tier.
     tier: Annotated[Literal["index", "full"], Query()] = "full",
     host: Annotated[str | None, Query()] = None,
+    # Absent by default: a client that never resolved a workspace (not in a
+    # git worktree, or an older client) gets the existing no-workspace
+    # behavior, not a validation error.
+    workspace_id: Annotated[str | None, Query(pattern=WORKSPACE_ID_PATTERN.pattern)] = None,
     # Aliased rather than named `format`: the query parameter has to keep that
     # name for the hook, the argument must not shadow the builtin.
     response_format: Annotated[Literal["json", "text"], Query(alias="format")] = "json",
@@ -91,6 +100,7 @@ def session_brief(
 
     project_section = None
     project_slug = None
+    project_internal_id = None
     orientation = None
     project_stamp = None
     if scoped.project_slug or scoped.git_locator:
@@ -126,6 +136,17 @@ def session_brief(
             # onupdate=utcnow, so a metadata edit moves this and the revision
             # bumps with it.
             project_stamp = project.updated_at.isoformat()
+            project_internal_id = project.internal_id
+
+    # Working State is read only once the project it belongs to is
+    # authorized AND a workspace was named -- an unresolved project or a bare
+    # /v1/session-brief call (no workspace_id) never sees it.
+    working_state_row = None
+    if project_internal_id and workspace_id:
+        working_state_row = working_state_domain.get_current(
+            db, principal, project_internal_id, workspace_id
+        )
+    working_state_stamp = working_state_domain.state_fingerprint(working_state_row)
 
     revision = revisions.current(
         db,
@@ -139,23 +160,37 @@ def session_brief(
             user_section.refreshed_at if user_section else None,
             project_section.refreshed_at if project_section else None,
             project_stamp,
+            working_state_stamp,
         ),
+        workspace_id=workspace_id or "",
     )
     # One commit for the audit rows and the revision together: a consumer must
     # never hold a revision this service did not record issuing.
     db.commit()
 
-    # Working State is item 3 of both tiers and arrives with a later phase;
-    # nothing writes it yet, so the section is absent rather than empty.
+    # Working State is item 3 of both tiers. Index and Full use separate
+    # renderers (working_state.py) because INDEX_CAPS["working_state"] == 1 --
+    # the Full multiline body can never be reused as the Index input.
+    working_state_index = (
+        working_state_domain.render_index_headline(working_state_row, now)
+        if working_state_row
+        else None
+    )
+    working_state_full = (
+        working_state_domain.render_full_section(working_state_row, now)
+        if working_state_row
+        else None
+    )
+
     if tier == "index":
         instructions = brief.compose_index(
-            revision, project_slug, user_section, orientation, project_section, None,
-            brief.budget_for(host),
+            revision, project_slug, user_section, orientation, project_section,
+            working_state_index, brief.budget_for(host),
         )
     else:
         instructions = brief.compose_full(
-            revision, project_slug, user_section, orientation, project_section, None,
-            max_tokens=brief.FULL_MAX_TOKENS,
+            revision, project_slug, user_section, orientation, project_section,
+            working_state_full, max_tokens=brief.FULL_MAX_TOKENS,
         )
 
     if response_format == "text":
@@ -171,4 +206,5 @@ def session_brief(
         memory_protocol=brief.MEMORY_PROTOCOL,
         tier=tier,
         project_slug=project_slug,
+        workspace_id=workspace_id,
     )
