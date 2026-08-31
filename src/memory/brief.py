@@ -307,6 +307,16 @@ def stamp_cache_age(instructions: str, age_seconds: int) -> str:
     return _CACHE_AGE_RE.sub(_cache_age_field(age_seconds), instructions, count=1)
 
 
+def carries_cache_age(text: str) -> bool:
+    """Whether a compiled payload reserves a cache-age slot to stamp.
+
+    False for anything compiled before protocol 2 introduced the field --
+    stamp_cache_age's substitution is then a silent no-op, and the caller
+    must fall back to making the age visible some other way.
+    """
+    return bool(_CACHE_AGE_RE.search(text))
+
+
 def token_upper_bound(text: str) -> int:
     """Safe upper bound for byte-level host tokenizers."""
     return len(text.encode("utf-8"))
@@ -543,7 +553,7 @@ def compose_full(
     for name, prefix, body in dynamic:
         floor_cost = part_cost([*prefix, body[0]])
         if floor_cost > remaining:
-            break
+            continue
         chosen[name] = [body[0]]
         remaining -= floor_cost
 

@@ -521,6 +521,27 @@ def test_the_full_tier_drops_an_over_budget_line_whole():
     assert brief.token_upper_bound(text) <= 2500
 
 
+def test_the_full_tier_does_not_abandon_later_sections_for_one_oversized_line():
+    """An earlier section whose first line does not fit must not end
+    allocation for every section after it -- the compiler broke at the first
+    unaffordable floor and a fitting project or Working State section never
+    got a turn."""
+    impossible = "sentinel-" + ("x" * 3000)
+    text = brief.compose_full(
+        revision=5,
+        project_slug="acme-api",
+        user=brief.Section(impossible, NOW.isoformat()),
+        orientation=None,
+        project=brief.Section("project rule 0", NOW.isoformat()),
+        working_state=brief.Section("objective: ship the feature", NOW.isoformat()),
+        max_tokens=2500,
+    )
+    assert impossible not in text
+    assert "project rule 0" in text
+    assert "objective: ship the feature" in text
+    assert brief.token_upper_bound(text) <= 2500
+
+
 def test_cache_age_can_change_without_changing_the_compiled_size():
     live = brief.compose_full(4, "acme-api", _long("user"), None, None, None)
     cached = brief.stamp_cache_age(live, 93)

@@ -246,6 +246,44 @@ def test_a_legacy_index_cache_uses_its_file_mtime_for_age(tmp_path, monkeypatch)
     assert cached.stored_at.timestamp() == legacy_time
 
 
+def test_a_pre_protocol_2_cached_index_still_shows_a_visible_age(tmp_path, monkeypatch):
+    """stamp_cache_age substitutes into a reserved header slot that protocol 2
+    introduced. A payload compiled before that slot existed has nowhere for
+    the substitution to land, so the served cache silently carried no age at
+    all."""
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
+    index = (
+        "-- ach-memory brief rev 7 / protocol 1 / project acme-api --\n\n"
+        "-- What memory knows about you --\n"
+        "a stored rule\n\n"
+        "-- What else memory holds --"
+    )
+    path = proxy._cache_path("https://memory.test", "acme-api", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"owner": proxy._cache_owner("k"), "instructions": index}))
+    legacy_time = datetime(2026, 8, 29, 10, 0, tzinfo=UTC).timestamp()
+    os.utime(path, (legacy_time, legacy_time))
+    now = datetime(2026, 8, 29, 10, 2, 3, tzinfo=UTC)
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, daemon):
+            self.target, self.args = target, args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)  # a failed refresh
+    monkeypatch.setattr(proxy.threading, "Thread", ImmediateThread)
+
+    text = proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=True, now=now
+    )
+
+    assert "brief rev 7" in text
+    assert "cached-index age 123s" in text
+    assert len(text) <= proxy.brief.SMALLEST_BUDGET
+
+
 def test_with_no_cache_and_no_service_the_proxy_still_starts(tmp_path, monkeypatch):
     """A broken service costs a session its brief, never its startup."""
     monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))

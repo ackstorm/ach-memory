@@ -280,6 +280,26 @@ def _refresh_cached_index(
         store_cached_index(base_url, api_key, slug, locator, brief["instructions"])
 
 
+def _stamp_or_append_cache_age(instructions: str, age_seconds: int) -> str:
+    """Make a served cache's age visible, whichever protocol compiled it.
+
+    A payload compiled under protocol 2 already reserves a cache-age slot;
+    stamping it costs no budget. A payload compiled before that slot existed
+    has nowhere to put the number, so append one compact line instead and
+    trim only complete trailing lines -- never the header, never a partial
+    line -- until it fits SMALLEST_BUDGET. A cache entry must never be served
+    with its age invisible.
+    """
+    if brief.carries_cache_age(instructions):
+        return brief.stamp_cache_age(instructions, age_seconds)
+
+    age_line = f"cached-index age {age_seconds}s"
+    lines = instructions.split("\n")
+    while len(lines) > 1 and len("\n".join([*lines, age_line])) > brief.SMALLEST_BUDGET:
+        lines.pop()
+    return "\n".join([*lines, age_line])
+
+
 def startup_instructions(
     base_url: str,
     api_key: str,
@@ -305,7 +325,7 @@ def startup_instructions(
             ).start()
         instant = (now or datetime.now(UTC)).astimezone(UTC)
         age_seconds = int(max((instant - cached.stored_at).total_seconds(), 0))
-        return brief.stamp_cache_age(cached.instructions, age_seconds)
+        return _stamp_or_append_cache_age(cached.instructions, age_seconds)
 
     fetched = fetch_brief(base_url, api_key, slug, locator, tier="index")
     if fetched:
