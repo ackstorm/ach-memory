@@ -315,3 +315,120 @@ def test_activity_event_stamps_created_at_from_the_database(session, tenant):
 
     assert row.created_at is not None
     assert row.id.startswith("act_")
+
+
+def _capture_user_and_project(session, tenant, *, user_id: str = "usr_cap", slug: str = "acme-api"):
+    from memory.models import Project, User
+
+    user = User(id=user_id, tenant_id=tenant, bank_id=ids.new_user_bank_id())
+    project = Project(
+        internal_id=ids.new_project_internal_id(),
+        tenant_id=tenant,
+        project_slug=slug,
+        owner_type="user",
+        owner_id=user_id,
+        bank_id=ids.new_project_bank_id(),
+    )
+    session.add_all([user, project])
+    session.flush()
+    return user, project
+
+
+def test_capture_slice_unique_identity_rejects_an_exact_duplicate(session, tenant):
+    from memory.models import CaptureSlice
+
+    user, project = _capture_user_and_project(session, tenant)
+
+    def _row(**overrides) -> CaptureSlice:
+        fields = {
+            "tenant_id": tenant,
+            "user_id": user.id,
+            "project_internal_id": project.internal_id,
+            "workspace_id": "ws_" + "a" * 32,
+            "host": "claude-code",
+            "session_id": "sess-1",
+            "session_epoch": 1,
+            "start_offset": 0,
+            "end_offset": 100,
+            "content_hash": "a" * 64,
+            "sanitized_hash": "b" * 64,
+            "status": "pending",
+            "attempt_count": 0,
+        }
+        fields.update(overrides)
+        return CaptureSlice(**fields)
+
+    session.add(_row())
+    session.flush()
+    session.add(_row())
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_capture_slice_allows_the_same_offsets_for_a_different_session(session, tenant):
+    """The identity includes session_id -- two different Claude Code
+    sessions coincidentally producing the same content_hash at the same
+    offsets must not collide."""
+    from memory.models import CaptureSlice
+
+    user, project = _capture_user_and_project(session, tenant)
+
+    def _row(session_id: str) -> CaptureSlice:
+        return CaptureSlice(
+            tenant_id=tenant,
+            user_id=user.id,
+            project_internal_id=project.internal_id,
+            workspace_id="ws_" + "a" * 32,
+            host="claude-code",
+            session_id=session_id,
+            session_epoch=1,
+            start_offset=0,
+            end_offset=100,
+            content_hash="a" * 64,
+            sanitized_hash="b" * 64,
+            status="pending",
+            attempt_count=0,
+        )
+
+    session.add(_row("sess-1"))
+    session.add(_row("sess-2"))
+    session.flush()
+
+    assert session.query(CaptureSlice).count() == 2
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"start_offset": -1}, "start offset"),
+        ({"start_offset": 100, "end_offset": 100}, "end after start"),
+        ({"attempt_count": -1}, "attempt count"),
+    ],
+    ids=["start-offset-non-negative", "end-after-start", "attempt-count-non-negative"],
+)
+def test_capture_slice_check_constraints(session, tenant, overrides, message):
+    from memory.models import CaptureSlice
+
+    user, project = _capture_user_and_project(session, tenant)
+    fields = {
+        "tenant_id": tenant,
+        "user_id": user.id,
+        "project_internal_id": project.internal_id,
+        "workspace_id": "ws_" + "a" * 32,
+        "host": "claude-code",
+        "session_id": "sess-1",
+        "session_epoch": 1,
+        "start_offset": 0,
+        "end_offset": 100,
+        "content_hash": "a" * 64,
+        "sanitized_hash": "b" * 64,
+        "status": "pending",
+        "attempt_count": 0,
+    }
+    fields.update(overrides)
+
+    session.add(CaptureSlice(**fields))
+
+    with pytest.raises(IntegrityError):
+        session.flush()

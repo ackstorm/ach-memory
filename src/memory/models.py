@@ -1,3 +1,4 @@
+import uuid as uuid_module
 from datetime import UTC, datetime
 
 from sqlalchemy import (
@@ -7,10 +8,12 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -353,3 +356,80 @@ class WorkingState(Base):
     session_id: Mapped[str] = mapped_column(String(128))
     session_epoch: Mapped[int] = mapped_column(BigInteger)
     checkpoint_seq: Mapped[int] = mapped_column(BigInteger)
+
+
+class CaptureSlice(Base):
+    """One durable, replay-safe checkpoint job (SPEC Phase 3 §5-§6).
+
+    Identity is the full unique constraint below: resubmitting the exact
+    same slice after a lost acknowledgement must resolve to the row already
+    there, never create a second one or re-run a completed stage. `session_
+    epoch` is not a foreign key, for the same reason WorkingState's is not
+    (above): the referenced working_sessions row must never become
+    undeletable because a queue row happens to cite its epoch.
+
+    Only the fields a stage actually needs are ever non-null at once:
+    `sanitized_content` and `extraction` are cleared on completion (SPEC:
+    "on completion, sanitized_content and transient extractor output are
+    cleared"), leaving identity, status, counters and operation state for
+    replay/audit.
+    """
+
+    __tablename__ = "capture_slices"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "project_internal_id",
+            "workspace_id",
+            "session_id",
+            "start_offset",
+            "end_offset",
+            "content_hash",
+            name="uq_capture_slices_identity",
+        ),
+        CheckConstraint("start_offset >= 0", name="ck_capture_slices_start_offset_non_negative"),
+        CheckConstraint("end_offset > start_offset", name="ck_capture_slices_end_after_start"),
+        CheckConstraint(
+            "attempt_count >= 0", name="ck_capture_slices_attempt_count_non_negative"
+        ),
+        Index("ix_capture_slices_status_available_at", "status", "available_at"),
+        Index("ix_capture_slices_lease_until", "lease_until"),
+    )
+
+    id: Mapped[uuid_module.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid_module.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    project_internal_id: Mapped[str] = mapped_column(ForeignKey("projects.internal_id"))
+    workspace_id: Mapped[str] = mapped_column(String(35))
+
+    host: Mapped[str] = mapped_column(String(32))
+    session_id: Mapped[str] = mapped_column(String(128))
+    session_epoch: Mapped[int] = mapped_column(BigInteger)
+
+    start_offset: Mapped[int] = mapped_column(BigInteger)
+    end_offset: Mapped[int] = mapped_column(BigInteger)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    sanitized_hash: Mapped[str] = mapped_column(String(64))
+
+    # Never the raw transcript or the raw transcript path (SPEC
+    # non-negotiable contract) -- only the already-sanitized text the local
+    # client built.
+    sanitized_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extraction: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    hindsight_operations: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

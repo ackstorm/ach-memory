@@ -1534,6 +1534,8 @@ RATE_LIMITED
 WORKING_SESSION_NOT_FOUND
 WORKING_STATE_STALE
 WORKING_STATE_CONFLICT
+CAPTURE_INTEGRITY_ERROR
+CAPTURE_CONFLICT
 INVALID_REQUEST
 INTERNAL_ERROR
 ```
@@ -1600,6 +1602,19 @@ refused outright rather than merged or queued.
 but the payload differs. An identical retry at the same pair is idempotent
 and returns 200 unchanged; a different payload at the same pair is a caller
 error, never resolved by last-write-wins.
+
+`CAPTURE_INTEGRITY_ERROR` (400): a checkpoint submission's `sanitized_hash`
+does not match `sha256(content)`. The server never sees the raw transcript
+bytes `content_hash` identifies, so it cannot check that half of the pair --
+`sanitized_hash` protects the one payload it does receive, and a mismatch
+means the request was corrupted or tampered with in transit.
+
+`CAPTURE_CONFLICT` (409): a checkpoint submission's offset range
+(`start_offset`, `end_offset`) matches a slice already stored for the same
+`(tenant, user, project, workspace, session)`, but its `content_hash` or
+`sanitized_hash` differs. Never resolved by last-write-wins: the local
+cursor and the stored row disagree about what happened at this offset, which
+is a caller/client bug to fix, not a value to overwrite.
 
 `INVALID_REQUEST`: the MCP surface's mapping for a tool call whose input
 failed validation before anything was resolved or written -- a bad `state`, a

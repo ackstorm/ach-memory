@@ -72,6 +72,7 @@ EXPECTED_ROUTES = {
     ("GET", "/v1/session-brief"),
     ("POST", "/v1/working-state/sessions"),
     ("PUT", "/v1/working-state"),
+    ("POST", "/v1/capture/checkpoints"),
 }
 
 
