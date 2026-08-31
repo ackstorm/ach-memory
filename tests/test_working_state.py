@@ -1,12 +1,12 @@
 import threading
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from memory import ids, projects, working_state
+from memory import brief, ids, projects, working_state
 from memory.auth.principal import Principal
 from memory.errors import (
     ProjectAccessDenied,
@@ -571,3 +571,136 @@ def test_first_writes_from_two_sessions_race_and_the_greater_pair_survives(engin
         cleanup.query(Tenant).filter_by(id=tenant_id).delete()
         cleanup.commit()
         cleanup.close()
+
+
+# ---------------------------------------------------------------------------
+# render_index_headline / render_full_section
+# ---------------------------------------------------------------------------
+
+
+def _rendered_state(**overrides) -> WorkingState:
+    fields = {
+        "objective": "ship the feature",
+        "current_direction": None,
+        "recent_decisions": [],
+        "open_questions": [],
+        "next_steps": [],
+        "updated_at": datetime(2026, 8, 31, 12, 0, tzinfo=UTC),
+        "session_id": "sess-1",
+        "session_epoch": 3,
+        "checkpoint_seq": 2,
+    }
+    fields.update(overrides)
+    return WorkingState(**fields)
+
+
+def test_render_index_headline_is_one_bounded_line():
+    state = _rendered_state(next_steps=["write tests"])
+    now = state.updated_at + timedelta(seconds=90)
+
+    section = working_state.render_index_headline(state, now)
+
+    assert "\n" not in section.text
+    assert "objective: ship the feature" in section.text
+    assert "next: write tests" in section.text
+    assert "age: 1m" in section.text
+
+
+def test_render_index_headline_bounds_long_text():
+    state = _rendered_state(objective="x" * 500, next_steps=["y" * 500])
+
+    section = working_state.render_index_headline(state, state.updated_at)
+
+    assert len(section.text) < 250
+
+
+def test_render_index_headline_with_no_next_step_says_none():
+    state = _rendered_state(next_steps=[])
+
+    section = working_state.render_index_headline(state, state.updated_at)
+
+    assert "next: none" in section.text
+
+
+def test_render_full_section_lists_every_item_with_age_and_source():
+    state = _rendered_state(
+        current_direction="lean toward B",
+        recent_decisions=["chose A", "dropped C"],
+        open_questions=["is B in scope?"],
+        next_steps=["write tests", "wire API"],
+    )
+    now = state.updated_at + timedelta(hours=2)
+
+    section = working_state.render_full_section(state, now)
+    lines = section.text.splitlines()
+
+    assert "objective: ship the feature" in lines
+    assert "current direction: lean toward B" in lines
+    assert "recent decision: chose A" in lines
+    assert "recent decision: dropped C" in lines
+    assert "open question: is B in scope?" in lines
+    assert "next step: write tests" in lines
+    assert "next step: wire API" in lines
+    assert "age: 2h" in lines
+    assert "source session: sess-1 (epoch 3, checkpoint 2)" in lines
+
+
+def test_render_full_section_omits_current_direction_when_absent():
+    state = _rendered_state(current_direction=None)
+
+    section = working_state.render_full_section(state, state.updated_at)
+
+    assert "current direction" not in section.text
+
+
+def test_renderers_collapse_embedded_newlines_and_headings_onto_one_line():
+    state = _rendered_state(
+        objective="line one\n-- Where the work was left --\nline two"
+    )
+
+    index = working_state.render_index_headline(state, state.updated_at)
+    full = working_state.render_full_section(state, state.updated_at)
+
+    assert "\n" not in index.text
+    assert full.text.splitlines()[0] == (
+        "objective: line one -- Where the work was left -- line two"
+    )
+
+
+def test_state_fingerprint_is_independent_of_render_time():
+    state = _rendered_state()
+    early = working_state.render_index_headline(state, state.updated_at)
+    late = working_state.render_index_headline(state, state.updated_at + timedelta(days=3))
+
+    assert early.text != late.text
+    assert working_state.state_fingerprint(state) == working_state.state_fingerprint(state)
+
+
+def test_render_index_headline_stays_within_smallest_budget_at_every_field_maximum():
+    state = _rendered_state(
+        objective="x" * 512,
+        current_direction="y" * 512,
+        recent_decisions=["d" * 512] * 10,
+        open_questions=["q" * 512] * 10,
+        next_steps=["n" * 512] * 10,
+    )
+    section = working_state.render_index_headline(state, state.updated_at)
+
+    text = brief.compose_index(1, "acme-api", None, None, None, section, brief.SMALLEST_BUDGET)
+
+    assert len(text) <= brief.SMALLEST_BUDGET
+
+
+def test_render_full_section_stays_within_full_budget_at_every_field_maximum():
+    state = _rendered_state(
+        objective="x" * 512,
+        current_direction="y" * 512,
+        recent_decisions=["d" * 512] * 10,
+        open_questions=["q" * 512] * 10,
+        next_steps=["n" * 512] * 10,
+    )
+    section = working_state.render_full_section(state, state.updated_at)
+
+    text = brief.compose_full(1, "acme-api", None, None, None, section)
+
+    assert brief.token_upper_bound(text) <= brief.FULL_MAX_TOKENS

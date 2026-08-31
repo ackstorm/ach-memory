@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from memory import projects
 from memory.auth.principal import Principal
+from memory.brief import Section, inert
 from memory.errors import WorkingSessionNotFound, WorkingStateConflict, WorkingStateStale
 from memory.identifiers import has_control_character
 from memory.models import WorkingSession, WorkingState
@@ -217,6 +218,63 @@ def state_fingerprint(state: WorkingState | None) -> str | None:
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+_INDEX_FIELD_MAX = 80
+
+
+def _bounded(text: str, limit: int = _INDEX_FIELD_MAX) -> str:
+    """Sanitized (inert) and shortened for the one line INDEX_CAPS allows.
+    Never used for Full, whose own budget-fitting drops whole lines instead
+    of truncating one."""
+    text = inert(text)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _format_age(elapsed_seconds: float) -> str:
+    """A compact, always-present duration -- no expiry or freshness
+    classification, only how long ago updated_at was."""
+    seconds = max(int(elapsed_seconds), 0)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h"
+    return f"{hours // 24}d"
+
+
+def render_index_headline(state: WorkingState, now: datetime) -> Section:
+    """The one line INDEX_CAPS["working_state"] allows: objective, the
+    first next step and age, each bounded so the compiler is never forced
+    to drop this line whole for being too long (see compose_index's
+    whole-line-only rule)."""
+    next_step = _bounded(state.next_steps[0]) if state.next_steps else "none"
+    age = _format_age((now - state.updated_at).total_seconds())
+    line = f"objective: {_bounded(state.objective)}; next: {next_step}; age: {age}"
+    return Section(text=line, refreshed_at=state.updated_at.isoformat())
+
+
+def render_full_section(state: WorkingState, now: datetime) -> Section:
+    """Every stored field, unbounded here: compose_full()'s own budget
+    fitting drops whole lines from the end if it does not all fit, never a
+    partial one."""
+    lines = [f"objective: {inert(state.objective)}"]
+    if state.current_direction:
+        lines.append(f"current direction: {inert(state.current_direction)}")
+    lines += [f"recent decision: {inert(item)}" for item in state.recent_decisions]
+    lines += [f"open question: {inert(item)}" for item in state.open_questions]
+    lines += [f"next step: {inert(item)}" for item in state.next_steps]
+    lines.append(f"age: {_format_age((now - state.updated_at).total_seconds())}")
+    lines.append(
+        f"source session: {state.session_id} "
+        f"(epoch {state.session_epoch}, checkpoint {state.checkpoint_seq})"
+    )
+    return Section(text="\n".join(lines), refreshed_at=state.updated_at.isoformat())
 
 
 def _apply(current: WorkingState, request: WorkingStateWrite) -> tuple[WorkingState, bool]:

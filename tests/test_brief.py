@@ -5,6 +5,7 @@ is missing: it arrives with no citation and nothing to check it against.
 """
 
 import random
+import re
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -446,8 +447,8 @@ def test_a_tier_reports_the_sections_it_carries_and_not_the_ones_it_was_given():
     index = brief.compose_index(**args, budget=1800)
     full = brief.compose_full(**args)
 
-    assert brief.survived(index) == {"user": True, "project": False}
-    assert brief.survived(full) == {"user": True, "project": False}
+    assert brief.survived(index) == {"user": True, "project": False, "working_state": False}
+    assert brief.survived(full) == {"user": True, "project": False, "working_state": False}
 
 
 def test_the_header_names_the_counter_the_revision_came_from():
@@ -831,6 +832,9 @@ def test_two_hosts_starting_at_once_do_not_issue_two_first_revisions(engine, mon
     from memory.models import ContextRevision
 
     key = ("default", "usr_race", "race-api")
+    # A real workspace, not the default "": the race must self-heal exactly
+    # the same way per workspace, not only in the no-workspace namespace.
+    workspace_id = "ws_" + "r" * 32
     digest = revisions.fingerprint("2026-08-27T03:00:00+00:00", None, None)
     factory = sessionmaker(bind=engine)
     start = threading.Barrier(2, timeout=10)
@@ -856,7 +860,7 @@ def test_two_hosts_starting_at_once_do_not_issue_two_first_revisions(engine, mon
         db = factory()
         try:
             start.wait()
-            seen.append(revisions.current(db, *key, digest))
+            seen.append(revisions.current(db, *key, digest, workspace_id=workspace_id))
             db.commit()
         except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
             failures.append(exc)
@@ -877,7 +881,7 @@ def test_two_hosts_starting_at_once_do_not_issue_two_first_revisions(engine, mon
 
         audit = factory()
         rows = audit.query(ContextRevision).filter_by(
-            tenant_id=key[0], user_id=key[1], project_slug=key[2]
+            tenant_id=key[0], user_id=key[1], project_slug=key[2], workspace_id=workspace_id
         ).all()
         assert [row.revision for row in rows] == [1]
         audit.close()
@@ -1014,7 +1018,7 @@ def test_the_brief_carries_the_user_section_and_no_host_policy(client, two_users
     assert INSTRUCTIONS not in body["instructions"]
     assert body["instructions"].startswith("-- ach-memory brief rev ")
     assert "Ask before planning." in body["instructions"]
-    assert body["sections"] == {"user": True, "project": False}
+    assert body["sections"] == {"user": True, "project": False, "working_state": False}
     assert body["generated_at"] == "2026-08-27T03:00:00+00:00"
 
 
@@ -1235,7 +1239,7 @@ def test_the_index_tier_reports_only_the_sections_that_survived_its_budget(
     ).json()
 
     assert len(index["instructions"]) <= 1800
-    assert index["sections"] == {"user": False, "project": False}
+    assert index["sections"] == {"user": False, "project": False, "working_state": False}
     # The digests exist; this is the tier saying what it carries, not what the
     # compiler was handed.
     full = client.get(
@@ -1243,7 +1247,7 @@ def test_the_index_tier_reports_only_the_sections_that_survived_its_budget(
         params={"scope": "user", "project_slug": "acme-api", "tier": "full"},
         headers=_headers(two_users[0]["key"]),
     ).json()
-    assert full["sections"] == {"user": False, "project": False}
+    assert full["sections"] == {"user": False, "project": False, "working_state": False}
 
 
 @respx.mock
@@ -1264,3 +1268,185 @@ def test_a_project_with_no_name_is_oriented_by_its_slug(client, two_users):
 
     assert response.status_code == 200
     assert "project: acme-api" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Working State delivery (Task 6)
+# ---------------------------------------------------------------------------
+
+_WST_WS = "ws_" + "a" * 32
+_WST_WS_B = "ws_" + "b" * 32
+
+
+def _checkpoint(
+    client, headers, *, workspace_id=_WST_WS, project_slug="acme-api",
+    session_id="sess-1", **fields
+):
+    client.post("/v1/projects", json={"project_slug": project_slug}, headers=headers)
+    epoch = client.post(
+        "/v1/working-state/sessions",
+        json={"project_slug": project_slug, "workspace_id": workspace_id, "session_id": session_id},
+        headers=headers,
+    ).json()["session_epoch"]
+    body = {
+        "project_slug": project_slug,
+        "workspace_id": workspace_id,
+        "session_id": session_id,
+        "session_epoch": epoch,
+        "checkpoint_seq": 1,
+        "objective": "ship the feature",
+        **fields,
+    }
+    response = client.put("/v1/working-state", json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+@respx.mock
+def test_no_workspace_id_omits_working_state_and_keeps_the_existing_revision_namespace(
+    client, two_users
+):
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers)
+
+    without_workspace = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api"},
+        headers=headers,
+    ).json()
+
+    assert without_workspace["sections"]["working_state"] is False
+    assert "ship the feature" not in without_workspace["instructions"]
+    assert without_workspace["workspace_id"] is None
+
+
+@respx.mock
+def test_a_matching_workspace_gets_only_its_own_state_and_another_gets_neither(
+    client, two_users
+):
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers, workspace_id=_WST_WS, objective="workspace A's objective")
+    _checkpoint(
+        client, headers,
+        workspace_id=_WST_WS_B, session_id="sess-2", objective="workspace B's objective",
+    )
+
+    brief_a = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS},
+        headers=headers,
+    ).json()
+    brief_b = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS_B},
+        headers=headers,
+    ).json()
+
+    assert "workspace A's objective" in brief_a["instructions"]
+    assert "workspace B's objective" not in brief_a["instructions"]
+    assert "workspace B's objective" in brief_b["instructions"]
+    assert "workspace A's objective" not in brief_b["instructions"]
+    assert brief_a["sections"]["working_state"] is True
+    assert brief_b["sections"]["working_state"] is True
+
+
+@respx.mock
+def test_the_index_headline_and_full_section_render_the_expected_content(client, two_users):
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(
+        client, headers,
+        current_direction="leaning toward option B",
+        recent_decisions=["chose approach A"],
+        open_questions=["is B in scope?"],
+        next_steps=["write tests", "wire the API"],
+    )
+
+    index = client.get(
+        "/v1/session-brief",
+        params={
+            "scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS,
+            "tier": "index", "host": "claude-code",
+        },
+        headers=headers,
+    ).json()
+    full = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS, "tier": "full"},
+        headers=headers,
+    ).json()
+
+    assert "objective: ship the feature" in index["instructions"]
+    assert "next: write tests" in index["instructions"]
+    assert re.search(r"age: \d+s", index["instructions"])
+    assert len(index["instructions"]) <= 1800
+
+    assert "objective: ship the feature" in full["instructions"]
+    assert "current direction: leaning toward option B" in full["instructions"]
+    assert "recent decision: chose approach A" in full["instructions"]
+    assert "open question: is B in scope?" in full["instructions"]
+    assert "next step: write tests" in full["instructions"]
+    assert "next step: wire the API" in full["instructions"]
+    assert re.search(r"age: \d+s", full["instructions"])
+    assert "source session: sess-1 (epoch" in full["instructions"]
+    assert "verify against the repository" in full["instructions"]
+
+    assert index["sections"]["working_state"] is True
+    assert full["sections"]["working_state"] is True
+    assert index["brief_revision"] == full["brief_revision"]
+
+
+@respx.mock
+def test_a_working_state_update_bumps_revision_for_that_workspace_only(client, two_users):
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers, workspace_id=_WST_WS)
+
+    before_a = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS},
+        headers=headers,
+    ).json()["brief_revision"]
+    before_bare = client.get(
+        "/v1/session-brief", params={"scope": "user", "project_slug": "acme-api"},
+        headers=headers,
+    ).json()["brief_revision"]
+
+    _checkpoint(client, headers, workspace_id=_WST_WS, checkpoint_seq=2, objective="a new objective")
+
+    after_a = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS},
+        headers=headers,
+    ).json()["brief_revision"]
+    after_bare = client.get(
+        "/v1/session-brief", params={"scope": "user", "project_slug": "acme-api"},
+        headers=headers,
+    ).json()["brief_revision"]
+
+    assert after_a == before_a + 1
+    assert after_bare == before_bare
+
+
+@respx.mock
+def test_old_working_state_age_is_visible_with_no_staleness_label(client, two_users, session):
+    from memory.models import WorkingState
+
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers)
+    old = datetime.now(UTC) - timedelta(days=2)
+    session.query(WorkingState).update({WorkingState.updated_at: old})
+    session.commit()
+
+    full = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS, "tier": "full"},
+        headers=headers,
+    ).json()
+
+    assert "age: 2d" in full["instructions"]
+    for forbidden in ("stale", "expired", "outdated"):
+        assert forbidden not in full["instructions"].lower()
