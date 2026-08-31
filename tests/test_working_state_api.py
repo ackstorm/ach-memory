@@ -268,3 +268,82 @@ def test_extra_forbid_rejects_a_misspelled_field(client, juan, tenant):
     )
 
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 review finding #3: workspace_id used `.match()` against a
+# `$`-anchored pattern, which also matches just before a trailing newline;
+# session_id had no bound at all. Both must fail as a 422 before reaching
+# PostgreSQL, on the session-allocation route and the checkpoint route.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("route", ["session", "checkpoint"])
+def test_a_workspace_id_with_a_trailing_newline_is_a_422(client, juan, tenant, route):
+    _project(client, juan["headers"])
+    smuggled = WS + "\n"
+
+    if route == "session":
+        response = _start(client, juan["headers"], "sess-1", workspace_id=smuggled)
+    else:
+        response = client.put(
+            "/v1/working-state", json=_write(workspace_id=smuggled), headers=juan["headers"]
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "bad_session_id", ["", "   ", "sess\x00-1", "sess\n1", "s" * 129], ids=repr
+)
+@pytest.mark.parametrize("route", ["session", "checkpoint"])
+def test_a_blank_control_or_over_length_session_id_is_a_422(
+    client, juan, tenant, route, bad_session_id
+):
+    _project(client, juan["headers"])
+
+    if route == "session":
+        response = _start(client, juan["headers"], bad_session_id)
+    else:
+        response = client.put(
+            "/v1/working-state", json=_write(session_id=bad_session_id), headers=juan["headers"]
+        )
+
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 review finding #6: both routes echoed the request's `project_slug`
+# verbatim instead of the resolved project's current slug, so a caller
+# following a rename tombstone got its own retired slug reflected back with
+# no rename signal at all.
+# ---------------------------------------------------------------------------
+
+
+def test_a_retired_slug_returns_the_current_slug_and_rename_metadata(client, juan, tenant):
+    _project(client, juan["headers"], slug="acme-api")
+    rename = client.patch(
+        "/v1/projects/acme-api", json={"project_slug": "acme-api-v2"}, headers=juan["headers"]
+    )
+    assert rename.status_code == 200, rename.text
+
+    session_response = _start(client, juan["headers"], "sess-1", project_slug="acme-api")
+    assert session_response.status_code == 200, session_response.text
+    session_body = session_response.json()
+    assert session_body["project_slug"] == "acme-api-v2"
+    assert session_body["resolved_from"] == "acme-api"
+    assert session_body["notice"] == "PROJECT_RENAMED"
+
+    write_response = client.put(
+        "/v1/working-state",
+        json=_write(
+            project_slug="acme-api",
+            session_epoch=session_body["session_epoch"],
+        ),
+        headers=juan["headers"],
+    )
+    assert write_response.status_code == 200, write_response.text
+    write_body = write_response.json()
+    assert write_body["project_slug"] == "acme-api-v2"
+    assert write_body["resolved_from"] == "acme-api"
+    assert write_body["notice"] == "PROJECT_RENAMED"

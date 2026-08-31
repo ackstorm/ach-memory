@@ -560,23 +560,51 @@ def compose_full(
         remaining -= orientation_cost
 
     dynamic = [item for item in sections if item[0] != "orientation" and item[2]]
+
+    # For every dynamic section, body[0] is the mandatory floor line. For
+    # "working_state" specifically, body[-2:] (age, source session -- see
+    # working_state.render_full_section) is ALSO mandatory: the caller's
+    # only signal that a checkpoint might be stale. Split each body into its
+    # optional middle and (for working_state) a protected tail, so the
+    # round-robin below can grow the middle without that tail ever losing a
+    # budget race to unrelated project/user content or to Working State's
+    # own optional lines (current direction, decisions, questions, next
+    # steps).
+    middles: dict[str, list[str]] = {}
+    tails: dict[str, list[str]] = {}
+    for name, _, body in dynamic:
+        if name == "working_state":
+            middles[name] = body[1:-2]
+            tails[name] = body[-2:]
+        else:
+            middles[name] = body[1:]
+            tails[name] = []
+
     for name, prefix, body in dynamic:
-        floor_cost = part_cost([*prefix, body[0]])
+        floor_lines = [body[0], *tails[name]]
+        floor_cost = part_cost([*prefix, *floor_lines])
         if floor_cost > remaining:
             continue
-        chosen[name] = [body[0]]
+        chosen[name] = floor_lines
         remaining -= floor_cost
 
+    grown: dict[str, int] = dict.fromkeys(chosen, 0)
     while True:
         spent = False
-        for name, _, body in dynamic:
-            taken = len(chosen.get(name, []))
-            if not taken or taken >= len(body):
+        for name, _, _ in dynamic:
+            if name not in chosen:
                 continue
-            line_cost = token_upper_bound("\n" + body[taken])
+            middle = middles[name]
+            taken = grown[name]
+            if taken >= len(middle):
+                continue
+            line_cost = token_upper_bound("\n" + middle[taken])
             if line_cost <= remaining:
-                chosen[name].append(body[taken])
+                protected = tails[name]
+                head = chosen[name][: len(chosen[name]) - len(protected)]
+                chosen[name] = [*head, middle[taken], *protected]
                 remaining -= line_cost
+                grown[name] = taken + 1
                 spent = True
         if not spent:
             break

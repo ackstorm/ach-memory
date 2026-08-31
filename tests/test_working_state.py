@@ -704,3 +704,35 @@ def test_render_full_section_stays_within_full_budget_at_every_field_maximum():
     text = brief.compose_full(1, "acme-api", None, None, None, section)
 
     assert brief.token_upper_bound(text) <= brief.FULL_MAX_TOKENS
+
+
+def test_full_payload_at_maximum_size_keeps_objective_age_and_source_session():
+    """Phase 2 review finding #1: the test above passes user=project=None, so
+    working_state never has to compete for budget against anything -- it
+    cannot catch a floor that only reserves the section's first line. With
+    crowded user/project sections, a maximum-size Working State could spend
+    the whole round-robin on its own optional middle (current direction,
+    decisions, questions, next steps) and never reach age/source session,
+    which sit at the tail of the same body list.
+    """
+    state = _rendered_state(
+        objective="x" * 512,
+        current_direction="y" * 512,
+        recent_decisions=["d" * 512] * 10,
+        open_questions=["q" * 512] * 10,
+        next_steps=["n" * 512] * 10,
+    )
+    now = state.updated_at + timedelta(hours=2)
+    section = working_state.render_full_section(state, now)
+    crowded = brief.Section(
+        text="\n".join(f"line {i}: " + "p" * 200 for i in range(200)),
+        refreshed_at="2026-08-31T00:00:00+00:00",
+    )
+
+    text = brief.compose_full(1, "acme-api", crowded, None, crowded, section)
+
+    assert brief.token_upper_bound(text) <= brief.FULL_MAX_TOKENS
+    lines = text.splitlines()
+    assert "objective: " + "x" * 512 in lines
+    assert "age: 2h" in lines
+    assert "source session: sess-1 (epoch 3, checkpoint 2)" in lines

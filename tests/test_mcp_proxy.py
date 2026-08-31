@@ -161,16 +161,22 @@ def test_fill_project_arguments_locator(arguments, expected):
         ),
         # Explicit values from the model are never overridden.
         (
-            {"session_id": "s1", "project_slug": "theirs"},
-            {"session_id": "s1", "project_slug": "theirs", "git_locator": "L", "workspace_id": "W"},
-        ),
-        (
             {"session_id": "s1", "workspace_id": "theirs"},
             {"session_id": "s1", "project_slug": "acme-api", "git_locator": "L", "workspace_id": "theirs"},
         ),
+        # Phase 2 review finding #7: project_slug and git_locator are filled
+        # only together, from the SAME branch as fill_project_arguments. A
+        # model naming an explicit alternate project_slug (or an explicit
+        # alternate git_locator) must not have this repository's OTHER half
+        # silently paired in -- that would point the call at a
+        # slug/locator combination the model never asked for.
+        (
+            {"session_id": "s1", "project_slug": "theirs"},
+            {"session_id": "s1", "project_slug": "theirs", "workspace_id": "W"},
+        ),
         (
             {"session_id": "s1", "git_locator": "theirs"},
-            {"session_id": "s1", "project_slug": "acme-api", "git_locator": "theirs", "workspace_id": "W"},
+            {"session_id": "s1", "git_locator": "theirs", "workspace_id": "W"},
         ),
     ],
 )
@@ -616,7 +622,10 @@ async def test_bridge_preserves_explicit_values_for_working_state_tools():
 
     assert result["project_slug"] == "explicit-project"
     assert result["workspace_id"] == "ws_" + "c" * 32
-    assert result["git_locator"] == "L"
+    # Phase 2 review finding #7: an explicit alternate project_slug must not
+    # get this repository's git_locator silently paired in -- that would aim
+    # the call at a slug/locator combination the model never asked for.
+    assert "git_locator" not in result
 
 
 @pytest.mark.anyio

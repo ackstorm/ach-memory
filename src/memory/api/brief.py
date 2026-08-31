@@ -144,7 +144,11 @@ def session_brief(
     working_state_row = None
     if project_internal_id and workspace_id:
         working_state_row = working_state_domain.get_current(
-            db, principal, project_internal_id, workspace_id
+            db,
+            principal,
+            project_internal_id,
+            workspace_id,
+            user_id=on_behalf_of or scoped.user_id or principal.user_id,
         )
     working_state_stamp = working_state_domain.state_fingerprint(working_state_row)
 
@@ -198,9 +202,10 @@ def session_brief(
         # runtime that has to be installed before memory works.
         return PlainTextResponse(instructions)
 
+    working_state_section = working_state_index if tier == "index" else working_state_full
     return BriefResponse(
         instructions=instructions,
-        generated_at=_oldest(user_section, project_section),
+        generated_at=_oldest(user_section, project_section, working_state_section),
         sections=brief.survived(instructions),
         brief_revision=revision,
         memory_protocol=brief.MEMORY_PROTOCOL,

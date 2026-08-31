@@ -91,6 +91,46 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    # The old primary key is (tenant_id, user_id, project_slug) -- one row
+    # per tuple. This upgrade let workspace revisions multiply that into
+    # several rows (one per workspace_id), which collides re-creating the
+    # three-column key unless collapsed first. Prefer the legacy
+    # workspace_id="" row where one exists (every write before this upgrade,
+    # and every write since that named no workspace); otherwise a workspace
+    # revision is the only evidence for the tuple, so keep the newest one
+    # deterministically rather than picking arbitrarily.
+    op.execute(
+        """
+        DELETE FROM context_revisions cr
+        WHERE cr.workspace_id <> ''
+          AND EXISTS (
+              SELECT 1 FROM context_revisions legacy
+              WHERE legacy.tenant_id = cr.tenant_id
+                AND legacy.user_id = cr.user_id
+                AND legacy.project_slug = cr.project_slug
+                AND legacy.workspace_id = ''
+          )
+        """
+    )
+    op.execute(
+        """
+        DELETE FROM context_revisions cr
+        USING (
+            SELECT tenant_id, user_id, project_slug, workspace_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY tenant_id, user_id, project_slug
+                       ORDER BY updated_at DESC, workspace_id DESC
+                   ) AS rn
+            FROM context_revisions
+        ) ranked
+        WHERE cr.tenant_id = ranked.tenant_id
+          AND cr.user_id = ranked.user_id
+          AND cr.project_slug = ranked.project_slug
+          AND cr.workspace_id = ranked.workspace_id
+          AND ranked.rn > 1
+        """
+    )
+
     op.drop_constraint("context_revisions_pkey", "context_revisions", type_="primary")
     op.create_primary_key(
         "context_revisions_pkey",

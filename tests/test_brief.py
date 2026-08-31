@@ -1353,6 +1353,36 @@ def test_a_matching_workspace_gets_only_its_own_state_and_another_gets_neither(
 
 
 @respx.mock
+def test_a_master_on_behalf_of_full_brief_includes_the_effective_users_working_state(
+    client, master_headers, two_users
+):
+    """Phase 2 review finding #5: `get_current` filtered by
+    `principal.user_id`, which is None for a master credential -- a master's
+    On-Behalf-Of read matched nothing regardless of what the effective user
+    had checkpointed.
+    """
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    _checkpoint(client, headers, objective="juan's own objective")
+
+    response = client.get(
+        "/v1/session-brief",
+        params={
+            "scope": "user",
+            "project_slug": "acme-api",
+            "workspace_id": _WST_WS,
+            "tier": "full",
+        },
+        headers={**master_headers, "On-Behalf-Of": two_users[0]["user_id"]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sections"]["working_state"] is True
+    assert "juan's own objective" in body["instructions"]
+
+
+@respx.mock
 def test_the_index_headline_and_full_section_render_the_expected_content(client, two_users):
     _mock_user_model()
     headers = two_users[0]["headers"]

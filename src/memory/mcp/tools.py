@@ -28,7 +28,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field, ValidationError, model_serializer
 
-from memory import activity, metrics, provenance, ratelimit
+from memory import activity, metrics, projects, provenance, ratelimit
 from memory import working_state as working_state_domain
 from memory.api.curation import CorrectRequest, ListMemoriesRequest
 from memory.api.documents import ListDocumentsRequest
@@ -42,6 +42,14 @@ from memory.api.memory import (
 )
 from memory.api.operations import ListOperationsRequest
 from memory.api.working_state import StartSessionRequest
+from memory.contracts import (
+    CheckpointSeq,
+    SessionEpoch,
+    SessionId,
+    WorkingStateLine,
+    WorkingStateLines,
+    WorkspaceId,
+)
 from memory.errors import DomainError
 from memory.hindsight.client import get_client
 from memory.mcp.compact import compact as compact_payload
@@ -334,25 +342,57 @@ def _run_working_state(ctx: Context, body_factory, call) -> ToolResult:
         activity.finish("mcp")
 
 
+def _record_working_state_call(*, action: str, principal, project) -> None:
+    """Neither working-state tool has a Hindsight bank to fingerprint through
+    `_resolve_bank`, so without this call `activity.finish()` (which requires
+    "action"/"scope" to already be set) silently wrote no row and no metrics
+    for either tool."""
+    activity.describe(
+        action=action,
+        scope="project",
+        tenant_id=principal.tenant_id,
+        credential_id=principal.credential_id,
+        project_slug=project.project_slug,
+        bank_fingerprint=activity.fingerprint(project.bank_id),
+    )
+
+
 def _start_working_session(db, principal, body: StartSessionRequest) -> ToolResult:
+    resolution = projects.resolve(
+        db, principal, body.project_slug, git_locator=body.git_locator, create=False
+    )
+    project = resolution.project
     row = working_state_domain.start_session(
-        db, principal, body.project_slug, body.workspace_id, body.session_id, body.git_locator
+        db, principal, project.project_slug, body.workspace_id, body.session_id, body.git_locator
+    )
+    _record_working_state_call(
+        action="working_state.start_session", principal=principal, project=project
     )
     return ToolResult(
         result={
             "session_epoch": row.session_epoch,
             "session_id": row.session_id,
             "workspace_id": row.workspace_id,
-            "project_slug": body.project_slug,
-        }
+            "project_slug": project.project_slug,
+        },
+        project_slug=project.project_slug,
+        resolved_from=resolution.resolved_from,
+        notice="PROJECT_RENAMED" if resolution.resolved_from else None,
     )
 
 
 def _set_working_state(db, principal, body: WorkingStateWrite) -> ToolResult:
+    resolution = projects.resolve(
+        db, principal, body.project_slug, git_locator=body.git_locator, create=False
+    )
+    project = resolution.project
     state, changed = working_state_domain.replace(db, principal, body)
+    _record_working_state_call(
+        action="working_state.replace", principal=principal, project=project
+    )
     return ToolResult(
         result={
-            "project_slug": body.project_slug,
+            "project_slug": project.project_slug,
             "workspace_id": state.workspace_id,
             "session_id": state.session_id,
             "session_epoch": state.session_epoch,
@@ -364,7 +404,10 @@ def _set_working_state(db, principal, body: WorkingStateWrite) -> ToolResult:
             "next_steps": state.next_steps,
             "updated_at": state.updated_at.isoformat(),
             "changed": changed,
-        }
+        },
+        project_slug=project.project_slug,
+        resolved_from=resolution.resolved_from,
+        notice="PROJECT_RENAMED" if resolution.resolved_from else None,
     )
 
 
@@ -845,8 +888,8 @@ def register(mcp: MCPServer) -> None:
     )
     def start_working_session(
         project_slug: str,
-        workspace_id: str,
-        session_id: str,
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
         ctx: Context,
         git_locator: str | None = None,
     ) -> ToolResult:
@@ -879,16 +922,16 @@ def register(mcp: MCPServer) -> None:
     )
     def set_working_state(
         project_slug: str,
-        workspace_id: str,
-        session_id: str,
-        session_epoch: int,
-        checkpoint_seq: int,
-        objective: str,
+        workspace_id: WorkspaceId,
+        session_id: SessionId,
+        session_epoch: SessionEpoch,
+        checkpoint_seq: CheckpointSeq,
+        objective: WorkingStateLine,
         ctx: Context,
-        current_direction: str | None = None,
-        recent_decisions: list[str] | None = None,
-        open_questions: list[str] | None = None,
-        next_steps: list[str] | None = None,
+        current_direction: WorkingStateLine | None = None,
+        recent_decisions: WorkingStateLines | None = None,
+        open_questions: WorkingStateLines | None = None,
+        next_steps: WorkingStateLines | None = None,
         git_locator: str | None = None,
     ) -> ToolResult:
         return _run_working_state(

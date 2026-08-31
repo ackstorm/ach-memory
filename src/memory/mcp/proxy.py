@@ -145,11 +145,19 @@ def fill_working_state_arguments(
     place. Explicit values from the model always win -- same reasoning as
     fill_project_arguments, just with no `scope` gate: these two tools carry
     no `scope` argument at all.
+
+    project_slug and git_locator are filled only together, from the SAME
+    branch, exactly like fill_project_arguments: a model that names an
+    explicit alternate project_slug (or an explicit alternate git_locator)
+    must never have the OTHER half silently paired in from this repository,
+    which would point the call at a slug/locator combination the model never
+    asked for.
     """
-    if not arguments.get("project_slug") and slug:
-        arguments["project_slug"] = slug
-    if not arguments.get("git_locator") and locator:
-        arguments["git_locator"] = locator
+    if not arguments.get("project_slug") and not arguments.get("git_locator"):
+        if slug:
+            arguments["project_slug"] = slug
+        if locator:
+            arguments["git_locator"] = locator
     if not arguments.get("workspace_id") and workspace_id:
         arguments["workspace_id"] = workspace_id
 

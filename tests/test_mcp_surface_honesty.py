@@ -75,6 +75,34 @@ def test_the_advertised_schema_carries_the_vocabulary_the_models_enforce():
         assert "500" in str(limit), (tool, limit)
 
 
+def test_working_state_schemas_advertise_the_bounds_the_models_enforce():
+    """Phase 2 review finding #2: WorkingStateWrite/StartSessionRequest
+    enforced these bounds at runtime already, but the two tool functions took
+    bare `str`/`int`/`list[str]` -- the SDK's advertised schema (built from
+    the function SIGNATURE) never showed a calling model any of it.
+    """
+    mgr = _manager()
+    start = mgr.get_tool("start_working_session").parameters["properties"]
+    write = mgr.get_tool("set_working_state").parameters["properties"]
+
+    workspace_schema = str(start["workspace_id"])
+    assert "pattern" in workspace_schema and "ws_" in workspace_schema
+
+    session_schema = str(start["session_id"])
+    assert "minLength" in session_schema
+    assert "maxLength" in session_schema and "128" in session_schema
+
+    assert "minimum" in str(write["session_epoch"])
+    assert "minimum" in str(write["checkpoint_seq"])
+
+    objective_schema = str(write["objective"])
+    assert "maxLength" in objective_schema and "512" in objective_schema
+
+    list_schema = str(write["recent_decisions"])
+    assert "maxItems" in list_schema and "10" in list_schema
+    assert "maxLength" in list_schema and "512" in list_schema
+
+
 def test_a_malformed_upstream_body_is_internal_error_not_invalid_request(
     client, master_headers, tenant
 ):

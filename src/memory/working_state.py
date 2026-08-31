@@ -11,32 +11,33 @@ never win a race by inventing a large one.
 import hashlib
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from memory import projects
 from memory.auth.principal import Principal
 from memory.brief import Section, inert
+from memory.contracts import WORKSPACE_ID_PATTERN as _WORKSPACE_ID_PATTERN_SOURCE
+from memory.contracts import (
+    CheckpointSeq,
+    SessionEpoch,
+    SessionId,
+    WorkingStateLine,
+    WorkingStateLines,
+    WorkspaceId,
+)
 from memory.errors import WorkingSessionNotFound, WorkingStateConflict, WorkingStateStale
-from memory.identifiers import has_control_character
 from memory.models import WorkingSession, WorkingState
 
-WORKSPACE_ID_PATTERN = re.compile(r"^ws_[0-9a-f]{32}$")
-
-_MAX_TEXT_LENGTH = 512
-_MAX_LIST_ITEMS = 10
-
-
-def _validated_text(value: str, *, field: str) -> str:
-    if not value.strip() or has_control_character(value):
-        raise ValueError(f"{field} must not be blank or contain control characters")
-    if len(value) > _MAX_TEXT_LENGTH:
-        raise ValueError(f"{field} must be at most {_MAX_TEXT_LENGTH} characters")
-    return value
+# Compiled form kept here (rather than only the pattern string in
+# contracts.py) because api/brief.py's Query(pattern=...) already imports
+# this exact name -- re-deriving it from the shared source string keeps that
+# one bound instead of a second, silently-drifting copy of it.
+WORKSPACE_ID_PATTERN = re.compile(_WORKSPACE_ID_PATTERN_SOURCE)
 
 
 class WorkingStateWrite(BaseModel):
@@ -51,40 +52,16 @@ class WorkingStateWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_slug: str
-    workspace_id: str
-    session_id: str
-    session_epoch: int = Field(ge=0)
-    checkpoint_seq: int = Field(ge=0)
-    objective: str
-    current_direction: str | None = None
-    recent_decisions: list[str] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
-    next_steps: list[str] = Field(default_factory=list)
+    workspace_id: WorkspaceId
+    session_id: SessionId
+    session_epoch: SessionEpoch
+    checkpoint_seq: CheckpointSeq
+    objective: WorkingStateLine
+    current_direction: WorkingStateLine | None = None
+    recent_decisions: WorkingStateLines = Field(default_factory=list)
+    open_questions: WorkingStateLines = Field(default_factory=list)
+    next_steps: WorkingStateLines = Field(default_factory=list)
     git_locator: str | None = None
-
-    @field_validator("workspace_id")
-    @classmethod
-    def _workspace_id_is_well_formed(cls, value: str) -> str:
-        if not WORKSPACE_ID_PATTERN.match(value):
-            raise ValueError("workspace_id must be 'ws_' followed by 32 hex characters")
-        return value
-
-    @field_validator("objective")
-    @classmethod
-    def _objective_is_valid(cls, value: str) -> str:
-        return _validated_text(value, field="objective")
-
-    @field_validator("current_direction")
-    @classmethod
-    def _current_direction_is_valid(cls, value: str | None) -> str | None:
-        return None if value is None else _validated_text(value, field="current_direction")
-
-    @field_validator("recent_decisions", "open_questions", "next_steps")
-    @classmethod
-    def _list_is_valid(cls, value: list[str], info) -> list[str]:
-        if len(value) > _MAX_LIST_ITEMS:
-            raise ValueError(f"{info.field_name} must have at most {_MAX_LIST_ITEMS} items")
-        return [_validated_text(item, field=info.field_name) for item in value]
 
 
 def start_session(
@@ -146,7 +123,7 @@ def replace(db: Session, principal: Principal, request: WorkingStateWrite) -> tu
 
     current = _locked(db, principal, project.internal_id, request.workspace_id)
     if current is not None:
-        return _apply(current, request)
+        return _apply(db, current, request)
 
     try:
         with db.begin_nested():
@@ -160,7 +137,7 @@ def replace(db: Session, principal: Principal, request: WorkingStateWrite) -> tu
                 recent_decisions=list(request.recent_decisions),
                 open_questions=list(request.open_questions),
                 next_steps=list(request.next_steps),
-                updated_at=datetime.now(UTC),
+                updated_at=_db_now(db),
                 session_id=request.session_id,
                 session_epoch=request.session_epoch,
                 checkpoint_seq=request.checkpoint_seq,
@@ -173,22 +150,38 @@ def replace(db: Session, principal: Principal, request: WorkingStateWrite) -> tu
         current = _locked(db, principal, project.internal_id, request.workspace_id)
         if current is None:
             raise
-        return _apply(current, request)
+        return _apply(db, current, request)
+
+
+def _db_now(db: Session) -> datetime:
+    """The database's clock, not this process's -- multiple API replicas can
+    disagree on wall time, and `updated_at` ordering must not depend on which
+    one happened to handle the request."""
+    return db.execute(select(func.now())).scalar_one()
 
 
 def get_current(
-    db: Session, principal: Principal, project_internal_id: str, workspace_id: str
+    db: Session,
+    principal: Principal,
+    project_internal_id: str,
+    workspace_id: str,
+    *,
+    user_id: str | None = None,
 ) -> WorkingState | None:
     """The stored state for a project the caller has already resolved.
 
     Scoped by principal.tenant_id/user_id, not re-authorized here: this is a
     raw lookup for a caller (the brief compiler) that already holds an
     authorized project, not a public entry point.
+
+    `user_id` overrides `principal.user_id` for a master credential's
+    On-Behalf-Of read: a master principal has no user_id of its own to filter
+    by, so without this override the lookup silently matched nothing.
     """
     return db.scalar(
         select(WorkingState).where(
             WorkingState.tenant_id == principal.tenant_id,
-            WorkingState.user_id == principal.user_id,
+            WorkingState.user_id == (user_id if user_id is not None else principal.user_id),
             WorkingState.project_internal_id == project_internal_id,
             WorkingState.workspace_id == workspace_id,
         )
@@ -271,13 +264,15 @@ def render_full_section(state: WorkingState, now: datetime) -> Section:
     lines += [f"next step: {inert(item)}" for item in state.next_steps]
     lines.append(f"age: {_format_age((now - state.updated_at).total_seconds())}")
     lines.append(
-        f"source session: {state.session_id} "
+        f"source session: {inert(state.session_id)} "
         f"(epoch {state.session_epoch}, checkpoint {state.checkpoint_seq})"
     )
     return Section(text="\n".join(lines), refreshed_at=state.updated_at.isoformat())
 
 
-def _apply(current: WorkingState, request: WorkingStateWrite) -> tuple[WorkingState, bool]:
+def _apply(
+    db: Session, current: WorkingState, request: WorkingStateWrite
+) -> tuple[WorkingState, bool]:
     incoming = (request.session_epoch, request.checkpoint_seq)
     stored = (current.session_epoch, current.checkpoint_seq)
 
@@ -305,7 +300,7 @@ def _apply(current: WorkingState, request: WorkingStateWrite) -> tuple[WorkingSt
     current.session_id = request.session_id
     current.session_epoch = request.session_epoch
     current.checkpoint_seq = request.checkpoint_seq
-    current.updated_at = datetime.now(UTC)
+    current.updated_at = _db_now(db)
     return current, True
 
 
