@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from mcp.server.mcpserver import MCPServer
 
@@ -183,15 +184,14 @@ def _headers(mapping: dict[str, str]):
     return _Ctx()
 
 
-def test_the_mcp_endpoint_answers_the_host_it_is_configured_for(
+@pytest.mark.anyio
+async def test_the_mcp_endpoint_answers_the_host_it_is_configured_for(
     monkeypatch, configured_env
 ):
     """The SDK enables DNS-rebinding protection and allows only 127.0.0.1 by
     default, so a deployed service behind an ingress answers 421 to every MCP
     call. Configured, not disabled -- the check is worth keeping, it just has
     to know the hostname it runs under."""
-    from fastapi.testclient import TestClient
-
     from memory.api.app import create_app
     from memory.config import get_settings
 
@@ -201,23 +201,33 @@ def test_the_mcp_endpoint_answers_the_host_it_is_configured_for(
     body = {
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "initialize",
+        "method": "server/discover",
         "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "probe", "version": "0"},
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "probe",
+                    "version": "0",
+                },
+            },
         },
     }
     headers = {
         "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "server/discover",
     }
 
-    with TestClient(create_app()) as c:
-        allowed = c.post(
+    app = create_app()
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://memory.example.com"
+    ) as client:
+        allowed = await client.post(
             "/mcp/", json=body, headers={**headers, "Host": "memory.example.com"}
         )
-        origin_refused = c.post(
+        origin_refused = await client.post(
             "/mcp/",
             json=body,
             headers={
@@ -226,13 +236,52 @@ def test_the_mcp_endpoint_answers_the_host_it_is_configured_for(
                 "Origin": "https://memory.example.com",
             },
         )
-        refused = c.post(
+        refused = await client.post(
             "/mcp/", json=body, headers={**headers, "Host": "evil.example.com"}
         )
 
     assert allowed.status_code == 200
     assert origin_refused.status_code == 403
     assert refused.status_code == 421
+
+
+@pytest.mark.anyio
+async def test_the_mcp_endpoint_rejects_the_initialize_era(
+    monkeypatch, configured_env
+):
+    from memory.api.app import create_app
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_MCP_ALLOWED_HOSTS", "memory.example.com")
+    get_settings.cache_clear()
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://memory.example.com"
+    ) as client:
+        old_stream = await client.get("/mcp/")
+        response = await client.post(
+            "/mcp/",
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "Host": "memory.example.com",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "legacy", "version": "0"},
+                },
+            },
+        )
+
+    assert old_stream.status_code == 405
+    assert old_stream.headers["allow"] == "POST"
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == -32020
 
 
 def test_mcp_transport_security_does_not_treat_hosts_as_origins(

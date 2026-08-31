@@ -1,4 +1,4 @@
-"""Local stdio MCP server that forwards to the remote HTTP endpoint.
+"""Thin stdio-to-Streamable-HTTP bridge for the remote MCP endpoint.
 
 This is the client-side half SPEC §8 always assumed and nothing ever
 shipped: "the MCP derives a slug from the current Git repository" cannot
@@ -10,16 +10,20 @@ the model left bare. Measured motivation: pi called
 list_memories(scope="project") with neither param and got
 PROJECT_CONTEXT_UNAVAILABLE with no way to recover (2026-08-27).
 
-The remote HTTP endpoint stays first-class: this proxy adds arguments the
-model omitted and forwards everything else verbatim, so a host talking
-HTTP directly sees identical behavior minus the auto-fill.
+The remote HTTP endpoint stays first-class: this bridge adds arguments the
+model omitted and otherwise forwards the JSON-RPC messages unchanged.  It is
+not a second MCP server and it does not mirror the remote tool registry.
 """
 
+import asyncio
+import copy
 import hashlib
 import hmac
+import inspect
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -27,10 +31,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
-from fastmcp import FastMCP
-from fastmcp.client.transports import StreamableHttpTransport
-from fastmcp.server import create_proxy
-from fastmcp.server.middleware import Middleware, MiddlewareContext
+from mcp.shared.inbound import (
+    encode_header_value,
+    find_invalid_x_mcp_header,
+    mcp_param_headers,
+    x_mcp_header_map,
+)
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from memory import brief
 from memory.errors import ProjectInvalidSlug
@@ -89,9 +96,7 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
         return None, None
 
 
-def fill_project_arguments(
-    arguments: dict, slug: str | None, locator: str | None
-) -> None:
+def fill_project_arguments(arguments: dict, slug: str | None, locator: str | None) -> None:
     """Inject project context into a bare scope=project call, in place.
 
     Only when the call already carries scope="project": every tool that
@@ -115,17 +120,345 @@ def fill_project_arguments(
         arguments["git_locator"] = locator
 
 
-class ProjectContextMiddleware(Middleware):
-    """Resolves once at startup: the cwd of a stdio child never changes."""
+class StdioHttpBridge:
+    """Forward protocol MCP requests between stdio and Streamable HTTP.
 
-    def __init__(self) -> None:
-        self._slug, self._locator = resolve_project_context()
+    Both sides speak the per-request protocol introduced in 2026-07-28. There
+    is no initialization handshake or transport session to translate.
+    """
 
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
-        arguments = context.message.arguments
-        if isinstance(arguments, dict):
-            fill_project_arguments(arguments, self._slug, self._locator)
-        return await call_next(context)
+    def __init__(
+        self,
+        url: str,
+        api_key: str,
+        *,
+        slug: str | None = None,
+        locator: str | None = None,
+        instructions: str | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._url = url
+        self._api_key = api_key
+        self._slug = slug
+        self._locator = locator
+        self._instructions = instructions
+        self._client = client or httpx.AsyncClient(timeout=300.0)
+        self._owns_client = client is None
+        self._tool_header_maps: dict[str, dict[tuple[str, ...], str]] = {}
+
+    async def close(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def forward(self, message: dict) -> list[dict]:
+        """Collect one exchange; ``serve`` streams the same exchange live."""
+        return [reply async for reply in self.stream(message)]
+
+    async def stream(self, message: dict):
+        """Yield one remote MCP exchange without buffering an SSE response."""
+        outgoing = copy.deepcopy(message)
+        if outgoing.get("method") == "tools/call":
+            params = outgoing.get("params")
+            arguments = params.get("arguments") if isinstance(params, dict) else None
+            if isinstance(arguments, dict):
+                fill_project_arguments(arguments, self._slug, self._locator)
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+        protocol_version = _protocol_version(outgoing)
+        if protocol_version not in MODERN_PROTOCOL_VERSIONS:
+            raise UnsupportedProtocolVersion(protocol_version)
+        headers["MCP-Protocol-Version"] = protocol_version
+        method = outgoing.get("method")
+        if not isinstance(method, str) or "id" not in outgoing:
+            raise InvalidMCPRequest("Streamable HTTP accepts MCP requests only")
+        headers["Mcp-Method"] = method
+        name = _request_name(outgoing)
+        if name is not None:
+            headers["Mcp-Name"] = encode_header_value(name)
+        if method == "tools/call" and name is not None:
+            params = outgoing.get("params")
+            arguments = params.get("arguments") if isinstance(params, dict) else None
+            if isinstance(arguments, dict):
+                header_map = self._tool_header_maps.get(name, {})
+                headers.update(mcp_param_headers(header_map, arguments))
+
+        async with self._client.stream(
+            "POST", self._url, headers=headers, json=outgoing
+        ) as response:
+            media_type = (
+                response.headers.get("content-type", "").partition(";")[0].strip()
+            )
+            if media_type == "text/event-stream":
+                async for reply in _iter_sse_messages(response):
+                    self._process_reply(method, outgoing.get("id"), reply)
+                    yield reply
+                return
+
+            body = await response.aread()
+            reply = _decode_json_message(body)
+            if reply is None:
+                if response.is_error:
+                    response.raise_for_status()
+                raise RemoteProtocolError("remote MCP returned no JSON-RPC response")
+            self._process_reply(method, outgoing.get("id"), reply)
+            yield reply
+
+    def _process_reply(self, method: str, request_id: object, reply: dict) -> None:
+        if method == "server/discover":
+            self._replace_discovery_instructions([reply], request_id)
+        elif method == "tools/list":
+            self._absorb_tool_listing(reply)
+
+    def _absorb_tool_listing(self, reply: dict) -> None:
+        result = reply.get("result")
+        tools = result.get("tools") if isinstance(result, dict) else None
+        if not isinstance(tools, list):
+            return
+        kept = []
+        for tool in tools:
+            if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+                continue
+            name = tool["name"]
+            schema = tool.get("inputSchema")
+            reason = find_invalid_x_mcp_header(schema)
+            if reason is not None:
+                self._tool_header_maps.pop(name, None)
+                print(
+                    f"ach-memory: dropping tool {name!r}: invalid x-mcp-header ({reason})",
+                    file=sys.stderr,
+                )
+                continue
+            self._tool_header_maps[name] = x_mcp_header_map(schema)
+            kept.append(tool)
+        result["tools"] = kept
+
+    def _replace_discovery_instructions(
+        self, messages: list[dict], request_id: object
+    ) -> None:
+        for message in messages:
+            if message.get("id") != request_id:
+                continue
+            result = message.get("result")
+            if not isinstance(result, dict):
+                continue
+            if self._instructions is not None:
+                result["instructions"] = self._instructions
+
+    async def serve(self, input_stream=None, output_stream=None) -> None:
+        """Run until the MCP host closes stdin, emitting only JSON on stdout."""
+        source = input_stream or await _stdin_reader()
+        destination = output_stream or await _stdout_writer()
+        writes = asyncio.Lock()
+        pending: set[asyncio.Task] = set()
+        in_flight: dict[object, asyncio.Task] = {}
+
+        async def emit(replies: list[dict]) -> None:
+            async with writes:
+                for reply in replies:
+                    payload = json.dumps(reply, separators=(",", ":")).encode() + b"\n"
+                    destination.write(payload)
+                drain = getattr(destination, "drain", None)
+                if drain is not None:
+                    await drain()
+                else:
+                    destination.flush()
+
+        async def handle(message: dict) -> None:
+            request_id = message.get("id")
+            try:
+                async for reply in self.stream(message):
+                    await emit([reply])
+                return
+            except UnsupportedProtocolVersion as exc:
+                replies = [
+                    _jsonrpc_error(
+                        request_id,
+                        -32022,
+                        "Unsupported protocol version",
+                        {
+                            "supported": list(MODERN_PROTOCOL_VERSIONS),
+                            "requested": exc.requested,
+                        },
+                    )
+                ]
+            except InvalidMCPRequest as exc:
+                replies = [_jsonrpc_error(request_id, -32600, str(exc))]
+            except (RemoteProtocolError, httpx.HTTPError) as exc:
+                print(f"ach-memory: remote MCP request failed: {exc}", file=sys.stderr)
+                replies = [
+                    _jsonrpc_error(request_id, -32000, "Remote MCP request failed")
+                ]
+            if replies:
+                await emit(replies)
+
+        try:
+            while line := await _readline(source):
+                if not line.strip():
+                    continue
+                try:
+                    message = json.loads(line)
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    await emit([_jsonrpc_error(None, -32700, str(exc))])
+                    continue
+                if not isinstance(message, dict):
+                    await emit(
+                        [_jsonrpc_error(None, -32600, "MCP message must be an object")]
+                    )
+                    continue
+                if message.get("method") == "notifications/cancelled":
+                    params = message.get("params")
+                    request_id = (
+                        params.get("requestId") if isinstance(params, dict) else None
+                    )
+                    task = in_flight.get(request_id)
+                    if task is not None:
+                        task.cancel()
+                    continue
+
+                task = asyncio.create_task(handle(message))
+                pending.add(task)
+                request_id = message.get("id")
+                if request_id is not None:
+                    in_flight[request_id] = task
+
+                def finished(done: asyncio.Task, request_id=request_id) -> None:
+                    pending.discard(done)
+                    if in_flight.get(request_id) is done:
+                        in_flight.pop(request_id, None)
+
+                task.add_done_callback(finished)
+        finally:
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            await self.close()
+
+
+class UnsupportedProtocolVersion(Exception):
+    def __init__(self, requested: str | None) -> None:
+        self.requested = requested
+
+
+class InvalidMCPRequest(Exception):
+    pass
+
+
+class RemoteProtocolError(Exception):
+    pass
+
+
+async def _stdin_reader() -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+    return reader
+
+
+async def _stdout_writer() -> asyncio.StreamWriter:
+    loop = asyncio.get_running_loop()
+    transport, protocol = await loop.connect_write_pipe(
+        lambda: asyncio.streams.FlowControlMixin(loop=loop), sys.stdout.buffer
+    )
+    return asyncio.StreamWriter(transport, protocol, None, loop)
+
+
+async def _readline(source) -> bytes:
+    line = source.readline()
+    return await line if inspect.isawaitable(line) else line
+
+
+def _protocol_version(message: dict) -> str | None:
+    params = message.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    version = (
+        meta.get("io.modelcontextprotocol/protocolVersion")
+        if isinstance(meta, dict)
+        else None
+    )
+    return version if isinstance(version, str) else None
+
+
+def _request_name(message: dict) -> str | None:
+    method = message.get("method")
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return None
+    if method in {"tools/call", "prompts/get"}:
+        value = params.get("name")
+    elif method == "resources/read":
+        value = params.get("uri")
+    else:
+        return None
+    return value if isinstance(value, str) else None
+
+
+async def _iter_sse_messages(response: httpx.Response):
+    data_lines: list[str] = []
+    async for line in response.aiter_lines():
+        if not line:
+            if data_lines:
+                data = "\n".join(data_lines)
+                data_lines = []
+                if data:
+                    reply = _decode_json_message(data.encode())
+                    if reply is None:
+                        raise RemoteProtocolError("remote MCP returned invalid SSE data")
+                    yield reply
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip(" "))
+    if data_lines:
+        reply = _decode_json_message("\n".join(data_lines).encode())
+        if reply is None:
+            raise RemoteProtocolError("remote MCP returned invalid SSE data")
+        yield reply
+
+
+def _decode_json_message(body: bytes) -> dict | None:
+    try:
+        value = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or value.get("jsonrpc") != "2.0":
+        return None
+    if "method" in value:
+        return value if isinstance(value["method"], str) else None
+    if "id" not in value or ("result" in value) == ("error" in value):
+        return None
+    return value
+
+
+def _jsonrpc_error(
+    request_id: object, code: int, message: str, data: object | None = None
+) -> dict:
+    error = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": error,
+    }
+
+
+def run_stdio_bridge(
+    url: str,
+    api_key: str,
+    slug: str | None,
+    locator: str | None,
+    instructions: str,
+) -> None:
+    bridge = StdioHttpBridge(
+        url,
+        api_key,
+        slug=slug,
+        locator=locator,
+        instructions=instructions,
+    )
+    asyncio.run(bridge.serve())
 
 
 def fetch_brief(
@@ -142,8 +475,8 @@ def fetch_brief(
 
     Bounded and silent on purpose: this runs before the host's first prompt,
     so a slow or broken memory service must cost a session its brief and
-    nothing else. Returning None leaves the proxy advertising no instructions
-    of its own, which makes FastMCP forward the server's policy text verbatim.
+    nothing else. The caller supplies the small fallback instruction when this
+    returns ``None``.
     """
     params = {"scope": "user", "tier": tier}
     if slug:
@@ -176,12 +509,9 @@ def _cache_path(base_url: str, slug: str | None, locator: str | None) -> Path:
     """
     root = Path(
         os.environ.get("ACH_MEMORY_CACHE_DIR")
-        or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-        / "ach-memory"
+        or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ach-memory"
     )
-    digest = hashlib.sha256(
-        f"{base_url}|{slug or ''}|{locator or ''}".encode()
-    ).hexdigest()[:16]
+    digest = hashlib.sha256(f"{base_url}|{slug or ''}|{locator or ''}".encode()).hexdigest()[:16]
     return root / f"index-{digest}.txt"
 
 
@@ -251,12 +581,15 @@ def store_cached_index(
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         with os.fdopen(descriptor, "w") as file:
             timestamp = (stored_at or datetime.now(UTC)).astimezone(UTC)
-            json.dump({
-                "version": 2,
-                "owner": _cache_owner(api_key),
-                "stored_at": timestamp.isoformat(),
-                "instructions": instructions,
-            }, file)
+            json.dump(
+                {
+                    "version": 2,
+                    "owner": _cache_owner(api_key),
+                    "stored_at": timestamp.isoformat(),
+                    "instructions": instructions,
+                },
+                file,
+            )
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
         temporary = None
@@ -313,12 +646,3 @@ def startup_instructions(
         store_cached_index(base_url, api_key, slug, locator, instructions)
         return instructions
     return "[ach-memory] Session brief unavailable; recall still works."
-
-
-def build_proxy(url: str, api_key: str) -> FastMCP:
-    transport = StreamableHttpTransport(
-        url, headers={"Authorization": f"Bearer {api_key}"}
-    )
-    proxy = create_proxy(transport, name="ach-memory")
-    proxy.add_middleware(ProjectContextMiddleware())
-    return proxy

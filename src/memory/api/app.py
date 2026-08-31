@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse, Response
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp_types.version import LATEST_MODERN_VERSION
 from sqlalchemy.orm import Session
 
 # Imported unconditionally (not gated on metrics_enabled) so the collectors
@@ -20,6 +21,40 @@ from memory.db import get_session
 from memory.errors import DomainError, Forbidden
 
 logger = logging.getLogger("memory.api")
+
+
+class CurrentProtocolMCP:
+    """Expose only the sessionless per-request MCP protocol revision."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http" and scope["method"] != "POST":
+            response = Response(status_code=405, headers={"Allow": "POST"})
+            await response(scope, receive, send)
+            return
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", ()))
+            version = headers.get(b"mcp-protocol-version", b"").decode(
+                "ascii", errors="ignore"
+            )
+            if version != LATEST_MODERN_VERSION:
+                response = JSONResponse(
+                    status_code=400,
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32020,
+                            "message": "MCP-Protocol-Version header is required",
+                            "data": {"supported": [LATEST_MODERN_VERSION]},
+                        },
+                    },
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 def _platform_token(request: Request) -> str | None:
@@ -206,24 +241,22 @@ def create_app() -> FastAPI:
     # every MCP call. Configured rather than disabled: the check is worth
     # keeping, it just has to know the hostname it is deployed under.
     allowed = [h.strip() for h in get_settings().mcp_allowed_hosts.split(",") if h.strip()]
-    app.mount(
-        "/mcp",
-        mcp.streamable_http_app(
-            streamable_http_path="/",
-            # No session state to keep: every tool re-authenticates from the
-            # request's own headers in `tool_session` and opens its own DB
-            # session, so a session id would pin a caller to one pod while
-            # carrying nothing. Stateful is also a scale-out trap -- the
-            # session lives in one process's memory, so a second replica
-            # behind the Gateway answers "session not found" to half the
-            # traffic unless the ingress is made sticky.
-            stateless_http=True,
-            transport_security=TransportSecuritySettings(
-                allowed_hosts=allowed,
-                # v1 supports native/non-browser MCP clients only; browser
-                # Origin support stays off until a tested requirement exists.
-                # Host values are not origins, so leave this SDK default empty.
-            ),
+    mcp_app = mcp.streamable_http_app(
+        streamable_http_path="/",
+        # ach-memory emits request/response tool results only. JSON mode
+        # avoids opening an SSE stream for exchanges that never publish
+        # progress or subscriptions, while remaining Streamable HTTP.
+        json_response=True,
+        # The 2026-07-28 protocol is per-request and has no transport
+        # sessions. Keep the SDK's storage path stateless too: every tool
+        # re-authenticates from its own headers and opens its own DB unit.
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=allowed,
+            # v1 supports native/non-browser MCP clients only; browser
+            # Origin support stays off until a tested requirement exists.
+            # Host values are not origins, so leave this SDK default empty.
         ),
     )
+    app.mount("/mcp", CurrentProtocolMCP(mcp_app))
     return app

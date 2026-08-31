@@ -1434,15 +1434,22 @@ def test_the_mcp_mount_issues_no_session(app):
                 # a 421.
                 "accept": "application/json, text/event-stream",
                 "content-type": "application/json",
+                "mcp-protocol-version": "2026-07-28",
+                "mcp-method": "server/discover",
             },
             json={
                 "jsonrpc": "2.0",
                 "id": 1,
-                "method": "initialize",
+                "method": "server/discover",
                 "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0"},
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                        "io.modelcontextprotocol/clientInfo": {
+                            "name": "test",
+                            "version": "0",
+                        },
+                    },
                 },
             },
         )

@@ -136,7 +136,7 @@ async def main() -> None:
         client_cm as (read, write),
         ClientSession(read, write) as session,
     ):
-        await session.initialize()
+        await session.discover()
 
         tools = await session.list_tools()
         names = {t.name for t in tools.tools}

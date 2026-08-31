@@ -1,20 +1,16 @@
-"""The proxy's own logic: SPEC §8 resolution done client-side, and the
-injection rule that must never override what the model passed.
+"""The stdio bridge: protocol forwarding plus SPEC §8 client-side context."""
 
-The forwarding itself is FastMCP's create_proxy and is not re-tested here;
-scripts/mcp-smoke.py --proxy exercises it end to end against a live stack.
-"""
-
+import asyncio
+import io
 import json
 import os
 import subprocess
 from datetime import UTC, datetime
-from typing import ClassVar
 
 import pytest
 
 from memory.mcp.proxy import (
-    ProjectContextMiddleware,
+    StdioHttpBridge,
     fill_project_arguments,
     resolve_project_context,
 )
@@ -123,25 +119,368 @@ def test_fill_sends_the_slug_and_the_locator_together():
 
 
 @pytest.mark.anyio
-async def test_middleware_injects_into_call_tool(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEMORY_PROJECT", "payments-api")
-    middleware = ProjectContextMiddleware()
+async def test_stdio_http_bridge_forwards_protocol_and_injects_project_context():
+    seen = []
+    tool_names = {
+        "retain",
+        "sync_retain",
+        "recall",
+        "reflect",
+        "list_memories",
+        "get_memory",
+        "forget",
+        "correct",
+        "restore",
+        "list_documents",
+        "get_document",
+        "delete_document",
+        "get_operation",
+        "list_operations",
+        "cancel_operation",
+    }
 
-    seen = {}
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        seen.append((message, dict(request.headers)))
+        if message.get("method") == "server/discover":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": {
+                        "resultType": "complete",
+                        "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {}},
+                        "instructions": "REMOTE POLICY",
+                    },
+                },
+            )
+        if message.get("method") == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": {"tools": [{"name": name} for name in tool_names]},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": message["id"], "result": {}},
+        )
 
-    async def call_next(context):
-        seen.update(context.message.arguments)
-        return "result"
+    meta = {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge(
+            "https://memory.test/mcp/",
+            "secret",
+            slug="acme-api",
+            locator="git@github.com:acme/api.git",
+            instructions="POLICY + BRIEF",
+            client=client,
+        )
+        discovered = await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": "discover-1",
+                "method": "server/discover",
+                "params": {"_meta": meta},
+            }
+        )
+        listed = await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": "list-1",
+                "method": "tools/list",
+                "params": {"_meta": meta},
+            }
+        )
+        await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": "call-1",
+                "method": "tools/call",
+                "params": {
+                    "name": "recall",
+                    "arguments": {"scope": "project", "query": "decisions"},
+                    "_meta": meta,
+                },
+            }
+        )
 
-    class Message:
-        name = "list_memories"
-        arguments: ClassVar = {"scope": "project"}
+    assert discovered[0]["result"]["instructions"] == "POLICY + BRIEF"
+    assert {tool["name"] for tool in listed[0]["result"]["tools"]} == tool_names
+    assert {headers["mcp-protocol-version"] for _, headers in seen} == {
+        "2026-07-28"
+    }
+    assert seen[2][0]["params"]["arguments"] == {
+        "scope": "project",
+        "query": "decisions",
+        "project_slug": "acme-api",
+        "git_locator": "git@github.com:acme/api.git",
+    }
+    assert seen[2][1]["authorization"] == "Bearer secret"
+    assert "application/json" in seen[2][1]["accept"]
+    assert "text/event-stream" in seen[2][1]["accept"]
 
-    class Context:
-        message = Message()
 
-    assert await middleware.on_call_tool(Context(), call_next) == "result"
-    assert seen == {"scope": "project", "project_slug": "payments-api"}
+@pytest.mark.anyio
+async def test_stdio_http_bridge_decodes_every_sse_message():
+    async def remote(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n'
+                'data: {"jsonrpc":"2.0","id":7,"result":{"tools":[]}}\n\n'
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge("https://memory.test/mcp/", "secret", client=client)
+        messages = await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/list",
+                "params": {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+                    }
+                },
+            }
+        )
+
+    assert messages == [
+        {"jsonrpc": "2.0", "method": "notifications/progress"},
+        {"jsonrpc": "2.0", "id": 7, "result": {"tools": []}},
+    ]
+
+
+@pytest.mark.anyio
+async def test_modern_mcp_request_metadata_is_mirrored_into_http_headers():
+    seen = []
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        seen.append((json.loads(request.content), dict(request.headers)))
+        message = seen[-1][0]
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "resultType": "complete",
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}},
+                    "instructions": "REMOTE POLICY",
+                },
+            },
+        )
+
+    meta = {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge(
+            "https://memory.test/mcp/",
+            "secret",
+            instructions="POLICY + BRIEF",
+            client=client,
+        )
+        discovered = await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": "discover-1",
+                "method": "server/discover",
+                "params": {"_meta": meta},
+            }
+        )
+        await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": "call-1",
+                "method": "tools/call",
+                "params": {
+                    "name": "recall",
+                    "arguments": {"scope": "user", "query": "decisions"},
+                    "_meta": meta,
+                },
+            }
+        )
+
+    assert discovered[0]["result"]["instructions"] == "POLICY + BRIEF"
+    assert seen[0][1]["mcp-protocol-version"] == "2026-07-28"
+    assert seen[0][1]["mcp-method"] == "server/discover"
+    assert "mcp-name" not in seen[0][1]
+    assert seen[1][1]["mcp-protocol-version"] == "2026-07-28"
+    assert seen[1][1]["mcp-method"] == "tools/call"
+    assert seen[1][1]["mcp-name"] == "recall"
+
+
+@pytest.mark.anyio
+async def test_stdio_serve_frames_one_modern_request_and_response_per_line():
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": message["id"], "result": {"tools": []}},
+        )
+
+    request = {
+        "jsonrpc": "2.0",
+        "id": "list-1",
+        "method": "tools/list",
+        "params": {
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+        },
+    }
+    source = io.BytesIO(json.dumps(request).encode() + b"\n")
+    destination = io.BytesIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge("https://memory.test/mcp/", "secret", client=client)
+        await bridge.serve(source, destination)
+
+    assert json.loads(destination.getvalue()) == {
+        "jsonrpc": "2.0",
+        "id": "list-1",
+        "result": {"tools": []},
+    }
+
+
+@pytest.mark.anyio
+async def test_stdio_bridge_rejects_initialize_without_contacting_remote():
+    contacted = False
+
+    async def remote(_request: httpx.Request) -> httpx.Response:
+        nonlocal contacted
+        contacted = True
+        return httpx.Response(500)
+
+    source = io.BytesIO(
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n'
+    )
+    destination = io.BytesIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge("https://memory.test/mcp/", "secret", client=client)
+        await bridge.serve(source, destination)
+
+    error = json.loads(destination.getvalue())
+    assert error["error"] == {
+        "code": -32022,
+        "message": "Unsupported protocol version",
+        "data": {"supported": ["2026-07-28"], "requested": None},
+    }
+    assert contacted is False
+
+
+@pytest.mark.anyio
+async def test_stdio_cancellation_closes_the_matching_http_exchange():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def remote(_request: httpx.Request) -> httpx.Response:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+    request = {
+        "jsonrpc": "2.0",
+        "id": "call-1",
+        "method": "tools/call",
+        "params": {
+            "name": "recall",
+            "arguments": {"scope": "user", "query": "decisions"},
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+        },
+    }
+    cancellation = {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {"requestId": "call-1", "reason": "test"},
+    }
+
+    class Input:
+        def __init__(self) -> None:
+            self.index = 0
+
+        async def readline(self) -> bytes:
+            self.index += 1
+            if self.index == 1:
+                return json.dumps(request).encode() + b"\n"
+            if self.index == 2:
+                await started.wait()
+                return json.dumps(cancellation).encode() + b"\n"
+            return b""
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge("https://memory.test/mcp/", "secret", client=client)
+        await bridge.serve(Input(), io.BytesIO())
+
+    assert cancelled.is_set()
+
+
+@pytest.mark.anyio
+async def test_tool_schema_header_annotations_are_mirrored_on_calls():
+    seen = []
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        seen.append(dict(request.headers))
+        if message["method"] == "tools/list":
+            result = {
+                "tools": [
+                    {
+                        "name": "recall",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "region": {
+                                    "type": "string",
+                                    "x-mcp-header": "Region",
+                                }
+                            },
+                        },
+                    }
+                ]
+            }
+        else:
+            result = {}
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": message["id"], "result": result}
+        )
+
+    meta = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge("https://memory.test/mcp/", "secret", client=client)
+        await bridge.forward(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta}}
+        )
+        await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "recall",
+                    "arguments": {"region": "eu-west-1"},
+                    "_meta": meta,
+                },
+            }
+        )
+
+    assert seen[1]["mcp-param-region"] == "eu-west-1"
 
 
 import httpx
@@ -184,9 +523,7 @@ def test_fetch_brief_sends_the_resolved_project_context():
     ],
 )
 def test_a_brief_that_cannot_be_fetched_is_simply_absent(failure):
-    """Every failure is silent and returns None. The proxy then advertises no
-    instructions of its own, FastMCP forwards the server's, and the session is
-    exactly as good as it is today."""
+    """Every failure is silent and returns None for the caller to handle."""
     if isinstance(failure, Exception):
         respx.get("https://memory.test/v1/session-brief").mock(side_effect=failure)
     else:
@@ -202,9 +539,7 @@ def test_the_proxy_serves_a_cached_index_without_waiting(tmp_path, monkeypatch):
     session, despite having a usable brief from the prior session on disk.
     """
     monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    proxy.store_cached_index(
-        "https://memory.test", "k", "acme-api", None, "INDEX rev 42"
-    )
+    proxy.store_cached_index("https://memory.test", "k", "acme-api", None, "INDEX rev 42")
 
     def _never_called(*args, **kwargs):
         raise AssertionError("startup must not block on a fetch when a cache exists")
@@ -226,7 +561,9 @@ def test_a_cached_index_exposes_its_revision_and_age(tmp_path, monkeypatch):
     stored = datetime(2026, 8, 29, 10, 0, tzinfo=UTC)
     now = datetime(2026, 8, 29, 10, 2, 3, tzinfo=UTC)
     proxy.store_cached_index("https://memory.test", "k", "acme-api", None, index, stored_at=stored)
-    text = proxy.startup_instructions("https://memory.test", "k", "acme-api", None, refresh=False, now=now)
+    text = proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=False, now=now
+    )
     assert "brief rev 42" in text
     assert "cache-age 0000000123s" in text
     assert len(text) == len(index)
@@ -251,9 +588,7 @@ def test_with_no_cache_and_no_service_the_proxy_still_starts(tmp_path, monkeypat
     monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)
 
-    text = proxy.startup_instructions(
-        "https://memory.test", "k", None, None, refresh=False
-    )
+    text = proxy.startup_instructions("https://memory.test", "k", None, None, refresh=False)
 
     assert "unavailable" in text.lower()
 
@@ -282,9 +617,7 @@ def test_a_corrupt_cache_is_a_miss_not_a_startup_failure(tmp_path, monkeypatch):
     path.write_bytes(b"\xff")
     monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)
 
-    text = proxy.startup_instructions(
-        "https://memory.test", "k", None, None, refresh=False
-    )
+    text = proxy.startup_instructions("https://memory.test", "k", None, None, refresh=False)
 
     assert "unavailable" in text.lower()
 
@@ -313,4 +646,6 @@ def test_a_cache_hit_refreshes_the_index_for_the_next_session(tmp_path, monkeypa
 
     assert "OLD INDEX" in proxy.startup_instructions("https://memory.test", "k", None, None)
     assert calls == [{"tier": "index"}]
-    assert proxy.load_cached_index("https://memory.test", "k", None, None).instructions == "NEW INDEX"
+    assert (
+        proxy.load_cached_index("https://memory.test", "k", None, None).instructions == "NEW INDEX"
+    )

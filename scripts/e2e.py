@@ -1355,7 +1355,7 @@ async def _() -> None:
         streamable_http_client(MCP_URL, http_client=authed) as (read, write),
         ClientSession(read, write) as session,
     ):
-        await session.initialize()
+        await session.discover()
         tools = await session.list_tools()
         names = {t.name for t in tools.tools}
         assert len(names) == 15, f"expected 15 tools, got {len(names)}: {sorted(names)}"
@@ -1377,7 +1377,7 @@ async def _() -> None:
         streamable_http_client(MCP_URL, http_client=authed) as (read, write),
         ClientSession(read, write) as session,
     ):
-        await session.initialize()
+        await session.discover()
         called: list[str] = []
 
         async def tool(name: str, args: dict) -> dict:
@@ -1493,7 +1493,7 @@ async def _() -> None:
         streamable_http_client(MCP_URL, http_client=authed) as (read, write),
         ClientSession(read, write) as session,
     ):
-        await session.initialize()
+        await session.discover()
         res = await session.call_tool("recall", {"scope": "user", "query": "anything"})
         text = res.content[0].text if res.content else ""
         scan("mcp:master_key_refused", text)

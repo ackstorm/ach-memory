@@ -104,10 +104,9 @@ def build_mcp() -> MCPServer:
     reaches every caller. activation.txt reaches a host whose SessionStart hook
     runs, which codex's never does (measured, test_agent_bundle), and reaches
     nobody who wires the endpoint by hand. This string is returned by
-    `initialize`, so it lands on every host, HTTP and stdio alike -- the proxy
-    forwards it verbatim when it advertises none of its own. The stdio proxy
-    overrides it with the compact index tier when one is available; direct
-    HTTP clients still receive this static safety floor.
+    `server/discover`, so it lands on every host, HTTP and stdio alike. The
+    stdio bridge replaces it with the compact index tier; direct HTTP clients
+    still receive this static safety floor.
 
     It is not written for coding agents. Any MCP client gets it, so the text
     names the read moment and the write moment in general terms and leaves the

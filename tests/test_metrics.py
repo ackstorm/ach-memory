@@ -5,6 +5,9 @@ input turns one time series into unbounded thousands, and the failure lands
 on the Prometheus, not on us.
 """
 
+import httpx
+import pytest
+
 
 def test_metrics_exposes_build_info(client):
     response = client.get("/metrics")
@@ -78,7 +81,8 @@ def test_a_domain_error_increments_its_code(client):
     assert _sample("memory_errors_total", code="UNAUTHORIZED") == before + 1
 
 
-def test_an_mcp_request_gets_its_own_route_label_not_unmatched(client):
+@pytest.mark.anyio
+async def test_an_mcp_request_gets_its_own_route_label_not_unmatched(app):
     """The /mcp mount is a plain starlette.routing.Mount, which never sets
     scope["route"] (only FastAPI's APIRoute does) -- without the mount-prefix
     fallback in _route_label, every real MCP call would collapse into
@@ -89,23 +93,29 @@ def test_an_mcp_request_gets_its_own_route_label_not_unmatched(client):
     body = {
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "initialize",
+        "method": "server/discover",
         "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "probe", "version": "0"},
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "probe",
+                    "version": "0",
+                },
+            },
         },
     }
     headers = {
         "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",
         "Host": "127.0.0.1",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "server/discover",
     }
-    # The MCP session manager's task group only exists once the app's
-    # lifespan has run -- entering the client as a context manager triggers
-    # startup, same as test_the_mcp_endpoint_answers_the_host_it_is_configured_for.
-    with client as c:
-        response = c.post("/mcp/", json=body, headers=headers)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+    ) as client:
+        response = await client.post("/mcp/", json=body, headers=headers)
 
     assert response.status_code == 200
     after = _sample("memory_http_requests_total", route="/mcp", method="POST", status="200")

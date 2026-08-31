@@ -1,6 +1,7 @@
 import asyncio
 import json
 import subprocess
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,11 +13,7 @@ from memory import cli
 
 
 def _files_under(root: Path) -> dict[Path, bytes]:
-    return {
-        path.relative_to(root): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file()
-    }
+    return {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 
 @pytest.mark.parametrize(
@@ -90,12 +87,20 @@ def test_main_accepts_targets(monkeypatch: pytest.MonkeyPatch, target: str) -> N
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _url, _plan, _mode: installed.append(name) or "plugin installed"
+        cli,
+        "_install_native",
+        lambda name, _url, _plan, _mode: installed.append(name) or "plugin installed",
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan, _mode: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli,
+        "_install_opencode",
+        lambda _url, _plan, _mode: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),),
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(
+        cli,
+        "_install_pi",
+        lambda _url, _plan, _mode: installed.append("pi") or (Path("/tmp/pi/mcp.json"),),
+    )
 
     assert cli.main(["init", target]) == 0
     assert installed == ([target] if target != "all" else ["codex", "claude", "opencode", "pi"])
@@ -118,12 +123,22 @@ def test_main_all_checks_every_executable_and_preflight_before_installers(
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda target, _url, _plan, _mode: events.append(f"install:{target}") or "plugin installed"
+        cli,
+        "_install_native",
+        lambda target, _url, _plan, _mode: events.append(f"install:{target}") or "plugin installed",
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan, _mode: events.append("install:opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli,
+        "_install_opencode",
+        lambda _url, _plan, _mode: (
+            events.append("install:opencode") or (Path("/tmp/oc/opencode.json"),)
+        ),
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: events.append("install:pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(
+        cli,
+        "_install_pi",
+        lambda _url, _plan, _mode: events.append("install:pi") or (Path("/tmp/pi/mcp.json"),),
+    )
 
     assert cli.main(["init", "all"]) == 0
 
@@ -337,7 +352,7 @@ def test_preflight_lists_required_tools_without_calling_memory_tools(
     class FakeSession:
         def __init__(self, read: str, write: str) -> None:
             assert (read, write) == ("read", "write")
-            self.initialized = False
+            self.discovered = False
             self.listed = 0
             self.memory_calls = 0
             sessions.append(self)
@@ -348,8 +363,8 @@ def test_preflight_lists_required_tools_without_calling_memory_tools(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def initialize(self) -> None:
-            self.initialized = True
+        async def discover(self) -> None:
+            self.discovered = True
 
         async def list_tools(self) -> SimpleNamespace:
             self.listed += 1
@@ -375,7 +390,7 @@ def test_preflight_lists_required_tools_without_calling_memory_tools(
     asyncio.run(cli._preflight("https://memory.example.com/mcp/", "user-secret"))
 
     assert headers == [{"Authorization": "Bearer user-secret"}]
-    assert sessions[0].initialized is True
+    assert sessions[0].discovered is True
     assert sessions[0].listed == 1
     assert sessions[0].memory_calls == 0
 
@@ -402,8 +417,13 @@ def test_preflight_rejects_empty_key_before_opening_connection(
             {
                 "type": "local",
                 "command": [
-                    "uvx", "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
-                    "ach-memory", "mcp", "--url", "https://host/next/mcp/",
+                    "uvx",
+                    "--from",
+                    f"{cli.GIT_SOURCE}@v{cli._version()}",
+                    "ach-memory",
+                    "mcp",
+                    "--url",
+                    "https://host/next/mcp/",
                 ],
                 "environment": {"ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}"},
                 "enabled": True,
@@ -421,8 +441,12 @@ def test_preflight_rejects_empty_key_before_opening_connection(
             {
                 "command": "uvx",
                 "args": [
-                    "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
-                    "ach-memory", "mcp", "--url", "https://host/next/mcp/",
+                    "--from",
+                    f"{cli.GIT_SOURCE}@v{cli._version()}",
+                    "ach-memory",
+                    "mcp",
+                    "--url",
+                    "https://host/next/mcp/",
                 ],
             },
             [
@@ -452,7 +476,9 @@ def test_config_install_upserts_only_ach_memory_and_refreshes_owned_files(
         monkeypatch.setenv("PI_CODING_AGENT_DIR", str(root))
     root.mkdir(parents=True)
     config = root / config_name
-    config.write_text(json.dumps({"unrelated": {"keep": True}, server_key: {"other": {"url": "x"}}}))
+    config.write_text(
+        json.dumps({"unrelated": {"keep": True}, server_key: {"other": {"url": "x"}}})
+    )
     for relative in owned_paths:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -529,17 +555,25 @@ class _NativeRunner:
         self.commands.append(command)
         if command[-3:] == ["marketplace", "list", "--json"]:
             payload: object = (
-                {"marketplaces": [{"name": "ach-memory", "root": self.marketplace_location}]}
-                if self.target == "codex"
-                else [{"name": "ach-memory", "installLocation": self.marketplace_location}]
-            ) if self.marketplace_present else ({"marketplaces": []} if self.target == "codex" else [])
+                (
+                    {"marketplaces": [{"name": "ach-memory", "root": self.marketplace_location}]}
+                    if self.target == "codex"
+                    else [{"name": "ach-memory", "installLocation": self.marketplace_location}]
+                )
+                if self.marketplace_present
+                else ({"marketplaces": []} if self.target == "codex" else [])
+            )
             return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
         if command[-2:] == ["list", "--json"]:
             payload = (
-                {"installed": [{"pluginId": "ach-memory@ach-memory"}]}
-                if self.target == "codex"
-                else [{"id": "ach-memory@ach-memory"}]
-            ) if self.installed else ({"installed": []} if self.target == "codex" else [])
+                (
+                    {"installed": [{"pluginId": "ach-memory@ach-memory"}]}
+                    if self.target == "codex"
+                    else [{"id": "ach-memory@ach-memory"}]
+                )
+                if self.installed
+                else ({"installed": []} if self.target == "codex" else [])
+            )
             return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
         if "marketplace" in command and "add" in command:
             self.marketplace_present = True
@@ -549,8 +583,6 @@ class _NativeRunner:
             # make the fake claim a relative path a real host never returns.
             self.marketplace_location = f"/home/tester/.{self.target}/marketplaces/ach-memory"
         return subprocess.CompletedProcess(command, 0, "", "")
-
-
 
 
 def test_native_install_rejects_bare_list_codex_marketplace_json(
@@ -614,18 +646,21 @@ def test_installed_plugins_accepts_codex_available_catalog() -> None:
     ("target", "install_command"),
     [
         ("codex", ["codex", "plugin", "add", "ach-memory@ach-memory", "--json"]),
-        ("claude", ["claude", "plugin", "install", "-y", "--scope", "user", "ach-memory@ach-memory"]),
+        (
+            "claude",
+            ["claude", "plugin", "install", "-y", "--scope", "user", "ach-memory@ach-memory"],
+        ),
     ],
 )
-def test_native_install_registers_the_repository_and_writes_nothing_itself(
+def test_native_install_registers_the_repository_without_rendering_marketplace_files(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str, install_command: list[str]
 ) -> None:
     """The architectural guard, from the installer's side.
 
     This used to assert that a marketplace was rendered under XDG_DATA_HOME
     with the endpoint baked into its .mcp.json. It now asserts the opposite:
-    the installer hands the host a repository slug and creates no files at all.
-    A native install that touches the filesystem has reintroduced rendering.
+    the installer hands the host a repository slug and renders no marketplace
+    files. Codex's one config-field update is covered by its focused test.
     """
     runner = _NativeRunner(target, marketplace_present=False, installed=False)
     home = tmp_path / "data"
@@ -634,6 +669,8 @@ def test_native_install_registers_the_repository_and_writes_nothing_itself(
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "user-secret")
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
+    if target == "codex":
+        monkeypatch.setattr(cli, "_whitelist_codex_api_key", lambda: None)
 
     assert cli._install_native(target, MCP_URL) == f"plugin installed from {cli.MARKETPLACE}"
 
@@ -670,6 +707,8 @@ def test_native_install_refreshes_only_an_existing_ach_memory_plugin(
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
+    if target == "codex":
+        monkeypatch.setattr(cli, "_whitelist_codex_api_key", lambda: None)
 
     cli._install_native(target, MCP_URL)
 
@@ -691,12 +730,20 @@ def _stub_installers(monkeypatch: pytest.MonkeyPatch, installed: list[str]) -> N
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_native", lambda name, _url, _plan, _mode: installed.append(name) or "plugin installed"
+        cli,
+        "_install_native",
+        lambda name, _url, _plan, _mode: installed.append(name) or "plugin installed",
     )
     monkeypatch.setattr(
-        cli, "_install_opencode", lambda _url, _plan, _mode: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),)
+        cli,
+        "_install_opencode",
+        lambda _url, _plan, _mode: installed.append("opencode") or (Path("/tmp/oc/opencode.json"),),
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: installed.append("pi") or (Path("/tmp/pi/mcp.json"),))
+    monkeypatch.setattr(
+        cli,
+        "_install_pi",
+        lambda _url, _plan, _mode: installed.append("pi") or (Path("/tmp/pi/mcp.json"),),
+    )
 
 
 def test_main_all_installs_what_is_present_and_names_what_it_skipped(
@@ -759,14 +806,23 @@ def _init_stubs(monkeypatch: pytest.MonkeyPatch, present: set[str]) -> None:
     monkeypatch.setattr(cli, "_is_installed", lambda target: target in present)
     monkeypatch.setattr(cli, "_require_executable", lambda _target: None)
     monkeypatch.setattr(cli, "_native_plan", lambda _target: ({}, set()))
-    monkeypatch.setattr(cli, "_install_native", lambda target, _url, _plan, _mode: f"plugin installed from {cli.MARKETPLACE}")
+    monkeypatch.setattr(
+        cli,
+        "_install_native",
+        lambda target, _url, _plan, _mode: f"plugin installed from {cli.MARKETPLACE}",
+    )
     monkeypatch.setattr(cli, "_config_plan", lambda _target, _url, _mode: (Path("config"), {}, ()))
     monkeypatch.setattr(
-        cli, "_install_opencode",
-        lambda _url, _plan, _mode: (Path.home() / ".config/opencode/opencode.json",
-                             Path.home() / ".config/opencode/plugins/ach-memory.js"),
+        cli,
+        "_install_opencode",
+        lambda _url, _plan, _mode: (
+            Path.home() / ".config/opencode/opencode.json",
+            Path.home() / ".config/opencode/plugins/ach-memory.js",
+        ),
     )
-    monkeypatch.setattr(cli, "_install_pi", lambda _url, _plan, _mode: (Path.home() / ".pi/agent/mcp.json",))
+    monkeypatch.setattr(
+        cli, "_install_pi", lambda _url, _plan, _mode: (Path.home() / ".pi/agent/mcp.json",)
+    )
 
 
 def test_init_reports_every_agent_including_the_ones_that_write_no_files(
@@ -867,6 +923,7 @@ def test_a_failure_without_ach_memory_url_names_the_missing_variable(
     against a localhost nobody asked for, which reads as the service being down
     rather than the variable being absent.
     """
+
     async def preflight(_url: str, _api_key: str) -> None:
         raise cli.CLIError("MCP preflight failed")
 
@@ -888,6 +945,7 @@ def test_a_failure_with_ach_memory_url_set_does_not_blame_the_variable(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A real outage must not be reported as a configuration mistake."""
+
     async def preflight(_url: str, _api_key: str) -> None:
         raise cli.CLIError("MCP preflight failed")
 
@@ -925,7 +983,7 @@ def test_config_roots_follow_each_host_own_relocation_variable(
 
 
 def test_config_roots_fall_back_to_each_host_documented_default(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for name in ("XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"):
         monkeypatch.delenv(name, raising=False)
@@ -951,6 +1009,7 @@ def test_codex_install_registers_the_server_from_the_current_environment(
     )
     monkeypatch.setattr(cli.shutil, "which", lambda command: f"/bin/{command}")
     monkeypatch.setattr(cli.subprocess, "run", runner)
+    monkeypatch.setattr(cli, "_whitelist_codex_api_key", lambda: None)
 
     cli._install_native("codex", MCP_URL)
 
@@ -958,9 +1017,18 @@ def test_codex_install_registers_the_server_from_the_current_environment(
     assert [c[2] for c in mcp] == ["remove", "add"]
     add = mcp[1]
     assert add == [
-        "codex", "mcp", "add", "ach-memory", "--",
-        "uvx", "--from", f"{cli.GIT_SOURCE}@v{cli._version()}",
-        "ach-memory", "mcp", "--url", MCP_URL,
+        "codex",
+        "mcp",
+        "add",
+        "ach-memory",
+        "--",
+        "uvx",
+        "--from",
+        f"{cli.GIT_SOURCE}@v{cli._version()}",
+        "ach-memory",
+        "mcp",
+        "--url",
+        MCP_URL,
     ]
     # The endpoint travels as the proxy's own --url argument, never as codex's
     # remote-server --url plus a bearer env var name: that is the --http shape.
@@ -1014,66 +1082,55 @@ def test_mcp_requires_api_key(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     assert "ACH_MEMORY_API_KEY" in capsys.readouterr().err
 
 
-def test_mcp_builds_proxy_from_env_and_runs_stdio(
+def test_mcp_runs_stdio_http_bridge_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
-    calls: list[tuple[str, str]] = []
-    built = []
-
-    class FakeProxy:
-        instructions = None
-
-        def run(self) -> None:
-            calls.append(("run", "stdio"))
-
-    def fake_build(url: str, key: str) -> FakeProxy:
-        calls.append((url, key))
-        proxy = FakeProxy()
-        built.append(proxy)
-        return proxy
-
-    monkeypatch.setattr("memory.mcp.proxy.build_proxy", fake_build)
+    calls = []
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_project_context",
+        lambda: ("acme-api", "git@github.com:acme/api.git"),
+    )
     monkeypatch.setattr(
         "memory.mcp.proxy.startup_instructions",
         lambda base, key, slug, locator: "POLICY + BRIEF",
     )
+    monkeypatch.setattr(
+        "memory.mcp.proxy.run_stdio_bridge",
+        lambda *args: calls.append(args),
+    )
     assert cli.main(["mcp"]) == 0
     # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
-    assert calls == [("https://mem.example.com/mcp/", "mem_secret"), ("run", "stdio")]
-    assert built[0].instructions == "POLICY + BRIEF"
+    assert calls == [
+        (
+            "https://mem.example.com/mcp/",
+            "mem_secret",
+            "acme-api",
+            "git@github.com:acme/api.git",
+            "POLICY + BRIEF",
+        )
+    ]
 
 
 def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A memory service that cannot answer costs the session its brief and
-    nothing else -- the proxy then advertises no instructions of its own and
-    FastMCP forwards the server's policy text."""
+    """A failed brief fetch costs the session its brief, not its MCP tools."""
     monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
-    ran = []
-    built = []
-
-    class FakeProxy:
-        instructions = None
-
-        def run(self) -> None:
-            ran.append(True)
-
-    def fake_build(_url, _key):
-        proxy = FakeProxy()
-        built.append(proxy)
-        return proxy
-
-    monkeypatch.setattr("memory.mcp.proxy.build_proxy", fake_build)
+    calls = []
+    monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
     monkeypatch.setattr(
         "memory.mcp.proxy.startup_instructions",
         lambda *_a, **_k: "[ach-memory] Session brief unavailable; recall still works.",
     )
+    monkeypatch.setattr(
+        "memory.mcp.proxy.run_stdio_bridge",
+        lambda *args: calls.append(args),
+    )
 
     assert cli.main(["mcp"]) == 0
-    assert ran == [True]
-    assert "unavailable" in built[0].instructions.lower()
+    assert len(calls) == 1
+    assert "unavailable" in calls[0][-1].lower()
 
 
 def test_config_plan_modes_pick_the_server_shape(
@@ -1118,11 +1175,51 @@ def test_register_codex_server_http_pins_url_and_env_var_name(
     assert commands == [
         ["codex", "mcp", "remove", "ach-memory"],
         [
-            "codex", "mcp", "add", "ach-memory",
-            "--url", "https://memory.example.com/mcp/",
-            "--bearer-token-env-var", "ACH_MEMORY_API_KEY",
+            "codex",
+            "mcp",
+            "add",
+            "ach-memory",
+            "--url",
+            "https://memory.example.com/mcp/",
+            "--bearer-token-env-var",
+            "ACH_MEMORY_API_KEY",
         ],
     ]
+
+
+def test_register_codex_server_stdio_whitelists_key_name_without_storing_secret(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Breaks if Codex starts the proxy without forwarding its credential."""
+    config = tmp_path / "config.toml"
+    secret = "must-not-land-in-config"
+    commands: list[list[str]] = []
+
+    def run(command: list[str]) -> None:
+        commands.append(command)
+        if command[:3] == ["codex", "mcp", "add"]:
+            config.write_text(
+                'model = "keep"\n\n'
+                "[mcp_servers.other]\n"
+                'command = "other"\n\n'
+                "[mcp_servers.ach-memory]\n"
+                'command = "uvx"\n'
+                'args = ["ach-memory", "mcp"]\n'
+            )
+
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", secret)
+    monkeypatch.setattr(cli, "_run", run)
+    monkeypatch.setattr(cli, "_codex_config_path", lambda: config, raising=False)
+
+    cli._register_codex_server("https://memory.example.com/mcp/")
+
+    text = config.read_text()
+    parsed = tomllib.loads(text)
+    assert parsed["model"] == "keep"
+    assert parsed["mcp_servers"]["other"] == {"command": "other"}
+    assert parsed["mcp_servers"]["ach-memory"]["env_vars"] == ["ACH_MEMORY_API_KEY"]
+    assert secret not in text
+    assert all(secret not in " ".join(command) for command in commands)
 
 
 def test_brief_prints_what_would_be_injected(monkeypatch, capsys):
@@ -1132,9 +1229,7 @@ def test_brief_prints_what_would_be_injected(monkeypatch, capsys):
     from memory import cli
 
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "k")
-    monkeypatch.setattr(
-        "memory.mcp.proxy.resolve_project_context", lambda: ("acme", None)
-    )
+    monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: ("acme", None))
     monkeypatch.setattr(
         "memory.mcp.proxy.fetch_brief",
         lambda *_args, **_kwargs: {
@@ -1156,9 +1251,7 @@ def test_brief_says_so_when_there_is_none(monkeypatch, capsys):
     from memory import cli
 
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "k")
-    monkeypatch.setattr(
-        "memory.mcp.proxy.resolve_project_context", lambda: (None, None)
-    )
+    monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
     monkeypatch.setattr("memory.mcp.proxy.fetch_brief", lambda *_a, **_k: None)
 
     assert cli.main(["brief", "--url", "https://memory.test"]) == 1
