@@ -32,12 +32,13 @@ READONLY = {
     "list_memories": True, "get_memory": True, "forget": False, "correct": False,
     "restore": False, "list_documents": True, "get_document": True,
     "delete_document": False, "get_operation": True, "list_operations": True,
-    "cancel_operation": False,
+    "cancel_operation": False, "start_working_session": False,
+    "set_working_state": False,
 }
 
 
 def test_the_readonly_table_covers_every_registered_tool():
-    """A sixteenth tool landing without a row here must fail loudly."""
+    """An eighteenth tool landing without a row here must fail loudly."""
     from memory.mcp.tools import REGISTRY
 
     _manager()  # registers the tools, which is what populates REGISTRY

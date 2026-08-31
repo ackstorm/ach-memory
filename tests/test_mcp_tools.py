@@ -286,6 +286,7 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
     "correct": True, "restore": True, "list_documents": False,
     "get_document": False, "delete_document": True, "get_operation": False,
     "list_operations": False, "cancel_operation": True,
+    "start_working_session": True, "set_working_state": True,
 }
 
 MCP_CREATE_TABLE: dict[str, bool] = {
@@ -294,11 +295,25 @@ MCP_CREATE_TABLE: dict[str, bool] = {
     "correct": False, "restore": False, "list_documents": False,
     "get_document": False, "delete_document": False, "get_operation": False,
     "list_operations": False, "cancel_operation": False,
+    "start_working_session": False, "set_working_state": False,
+}
+
+# Working State tools take no `scope`/generic project kwargs at all -- their
+# shape is entirely different from every Hindsight-routed tool -- so the two
+# security-table tests below use this as a COMPLETE kwargs override rather
+# than merging onto the generic {"scope": ...} base the way GHOST_EXTRA_KWARGS
+# merges on top of it for everything else.
+WORKING_STATE_KWARGS: dict[str, dict] = {
+    "start_working_session": {"workspace_id": "ws_" + "0" * 32, "session_id": "s1"},
+    "set_working_state": {
+        "workspace_id": "ws_" + "0" * 32, "session_id": "s1",
+        "session_epoch": 0, "checkpoint_seq": 0, "objective": "x",
+    },
 }
 
 
 def test_the_security_tables_cover_every_registered_tool():
-    """A sixteenth tool landing in REGISTRY without an entry in both tables
+    """An eighteenth tool landing in REGISTRY without an entry in both tables
     must fail loudly here, not be silently unverified by the two tests
     below."""
     from memory.mcp.tools import REGISTRY
@@ -332,7 +347,12 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
     call_tool("retain", key, scope="user", content="warmup")  # consumes the slot
 
     for name, expect_write in MCP_IS_WRITE_TABLE.items():
-        kwargs = {"scope": "user", **GHOST_EXTRA_KWARGS.get(name, {})}
+        if name in WORKING_STATE_KWARGS:
+            # project_slug need not exist: ratelimit.check() runs before any
+            # project resolution, so RATE_LIMITED fires first regardless.
+            kwargs = {"project_slug": "wst-ratelimit", **WORKING_STATE_KWARGS[name]}
+        else:
+            kwargs = {"scope": "user", **GHOST_EXTRA_KWARGS.get(name, {})}
         if expect_write:
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
@@ -359,10 +379,13 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
 
     for name, expect_create in MCP_CREATE_TABLE.items():
         slug = f"tbl-{uuid.uuid4().hex[:12]}"
-        kwargs = {
-            "scope": "project", "project_slug": slug,
-            **GHOST_EXTRA_KWARGS.get(name, {}),
-        }
+        if name in WORKING_STATE_KWARGS:
+            kwargs = {"project_slug": slug, **WORKING_STATE_KWARGS[name]}
+        else:
+            kwargs = {
+                "scope": "project", "project_slug": slug,
+                **GHOST_EXTRA_KWARGS.get(name, {}),
+            }
         if expect_create:
             call_tool(name, key, **kwargs)
         else:
@@ -1084,6 +1107,7 @@ EXPECTED_TOOLS = {
     "list_memories", "get_memory", "forget", "correct", "restore",
     "list_documents", "get_document", "delete_document",
     "get_operation", "list_operations", "cancel_operation",
+    "start_working_session", "set_working_state",
 }
 
 # SPEC §11.6 and §11.7. Each is excluded for a stated reason: whole-bank
@@ -1449,3 +1473,165 @@ def test_the_mcp_mount_issues_no_session(app):
 
     assert response.status_code == 200
     assert "mcp-session-id" not in {k.lower() for k in response.headers}
+
+
+# ---------------------------------------------------------------------------
+# start_working_session / set_working_state
+# ---------------------------------------------------------------------------
+
+WST_WS = "ws_" + "a" * 32
+
+
+def _wst_project(client, headers, slug: str = "acme-api") -> None:
+    client.post("/v1/projects", json={"project_slug": slug}, headers=headers)
+
+
+@pytest.mark.anyio
+async def test_working_state_tool_descriptions_state_their_constraints():
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    tools = {t.name: t for t in await mcp.list_tools()}
+
+    start_description = tools["start_working_session"].description.lower()
+    assert "ordering" in start_description
+    assert "handoff" in start_description
+
+    set_description = tools["set_working_state"].description.lower()
+    assert "ephemeral" in set_description
+    assert "no durable memory" in set_description or "never durable memory" in set_description
+    assert "must not call it proactively" in set_description
+
+
+def test_start_working_session_allocates_a_positive_epoch(call_tool, client, master_headers):
+    key = call_tool.make_user()
+    headers = {"authorization": f"Bearer {key}"}
+    _wst_project(client, headers)
+
+    result = call_tool(
+        "start_working_session", key,
+        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+    )
+
+    assert result.result["session_epoch"] > 0
+    assert result.result["session_id"] == "sess-1"
+    assert result.result["workspace_id"] == WST_WS
+    assert result.result["project_slug"] == "acme-api"
+
+
+def test_starting_the_same_session_twice_over_mcp_is_idempotent(call_tool, client, master_headers):
+    key = call_tool.make_user()
+    headers = {"authorization": f"Bearer {key}"}
+    _wst_project(client, headers)
+
+    first = call_tool(
+        "start_working_session", key,
+        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+    )
+    second = call_tool(
+        "start_working_session", key,
+        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+    )
+
+    assert first.result["session_epoch"] == second.result["session_epoch"]
+
+
+def test_set_working_state_returns_its_stored_fields(call_tool, client, master_headers):
+    key = call_tool.make_user()
+    headers = {"authorization": f"Bearer {key}"}
+    _wst_project(client, headers)
+    epoch = call_tool(
+        "start_working_session", key,
+        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+    ).result["session_epoch"]
+
+    result = call_tool(
+        "set_working_state", key,
+        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        session_epoch=epoch, checkpoint_seq=1, objective="ship the feature",
+    )
+
+    assert result.result["objective"] == "ship the feature"
+    assert result.result["session_epoch"] == epoch
+    assert result.result["checkpoint_seq"] == 1
+    assert result.result["changed"] is True
+
+
+def test_set_working_state_rejects_a_stale_pair(call_tool, client, master_headers):
+    key = call_tool.make_user()
+    headers = {"authorization": f"Bearer {key}"}
+    _wst_project(client, headers)
+    epoch = call_tool(
+        "start_working_session", key,
+        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+    ).result["session_epoch"]
+    call_tool(
+        "set_working_state", key,
+        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        session_epoch=epoch, checkpoint_seq=2, objective="second",
+    )
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "set_working_state", key,
+            project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+            session_epoch=epoch, checkpoint_seq=1, objective="first",
+        )
+
+    assert exc_info.value.code == "WORKING_STATE_STALE"
+
+
+def test_set_working_state_for_a_missing_project_creates_no_project(
+    call_tool, client, master_headers, session
+):
+    from memory.models import Project
+
+    key = call_tool.make_user()
+    before = session.query(Project).count()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "start_working_session", key,
+            project_slug="no-such-project", workspace_id=WST_WS, session_id="sess-1",
+        )
+
+    assert exc_info.value.code == "PROJECT_NOT_FOUND"
+    assert session.query(Project).count() == before
+
+
+def test_another_user_is_denied_writing_this_project(call_tool, client, master_headers):
+    owner_key = call_tool.make_user()
+    _wst_project(client, {"authorization": f"Bearer {owner_key}"})
+    stranger_key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "start_working_session", stranger_key,
+            project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        )
+
+    assert exc_info.value.code == "PROJECT_ACCESS_DENIED"
+
+
+def test_set_working_state_rejects_a_blank_objective_over_mcp(call_tool, client, master_headers):
+    """The MCP tool takes bare scalar arguments, not a pre-validated
+    WorkingStateWrite -- confirms the shared model's bounds still apply at
+    this boundary, not just over REST."""
+    key = call_tool.make_user()
+    headers = {"authorization": f"Bearer {key}"}
+    _wst_project(client, headers)
+    epoch = call_tool(
+        "start_working_session", key,
+        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+    ).result["session_epoch"]
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "set_working_state", key,
+            project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+            session_epoch=epoch, checkpoint_seq=1, objective="   ",
+        )
+
+    assert exc_info.value.code == "INVALID_REQUEST"
