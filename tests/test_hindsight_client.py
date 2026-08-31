@@ -804,3 +804,149 @@ def test_transport_failure_is_timed_as_error(client):
         "memory_hindsight_request_seconds_count", {"method": "POST", "status": "error"}
     )
     assert after == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Task 4: dry_run_extract, get_bank_config, retain_items
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_dry_run_extract_posts_content_and_overrides(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/dry-run-extract").mock(
+        return_value=httpx.Response(200, json={"facts": [{"text": "we use uv"}]})
+    )
+
+    result = client.dry_run_extract(
+        BANK, "we use uv", retain_extraction_mode="verbatim", retain_mission="keep as-is"
+    )
+
+    assert result["facts"][0]["text"] == "we use uv"
+    import json
+
+    payload = json.loads(route.calls.last.request.read())
+    assert payload == {
+        "content": "we use uv",
+        "retain_extraction_mode": "verbatim",
+        "retain_mission": "keep as-is",
+    }
+
+
+@respx.mock
+def test_dry_run_extract_omits_absent_overrides(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/dry-run-extract").mock(
+        return_value=httpx.Response(200, json={"facts": []})
+    )
+
+    client.dry_run_extract(BANK, "we use uv")
+
+    import json
+
+    payload = json.loads(route.calls.last.request.read())
+    assert payload == {"content": "we use uv"}
+
+
+@respx.mock
+def test_dry_run_extract_never_retains(client):
+    """No route is mocked for POST .../memories (only .../dry-run-extract):
+    if dry_run_extract ever fell through to the real retain path, respx
+    would raise on the unmocked request and this test would fail."""
+    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/dry-run-extract").mock(
+        return_value=httpx.Response(200, json={"facts": []})
+    )
+
+    client.dry_run_extract(BANK, "we use uv")
+
+
+@respx.mock
+def test_dry_run_extract_error_does_not_carry_the_bank_id(client):
+    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/dry-run-extract").mock(
+        return_value=httpx.Response(500, text=f"bank {BANK} exploded")
+    )
+
+    with pytest.raises(HindsightError) as caught:
+        client.dry_run_extract(BANK, "x")
+
+    assert BANK not in str(caught.value)
+    assert BANK not in str(caught.value.details)
+
+
+@respx.mock
+def test_get_bank_config_is_a_plain_get(client):
+    route = respx.get(f"{BASE}/v1/default/banks/{BANK}/config").mock(
+        return_value=httpx.Response(200, json={"retain_default_strategy": "concise"})
+    )
+
+    result = client.get_bank_config(BANK)
+
+    assert result == {"retain_default_strategy": "concise"}
+    assert route.calls.last.request.method == "GET"
+
+
+@respx.mock
+def test_no_client_method_ever_patches_the_config_path(client):
+    """The route exists in the client's vocabulary (get_bank_config reads
+    it) but nothing here ever writes it -- this phase's config PATCH stays
+    undeployed until a later, separately-approved rollout."""
+    patch_route = respx.patch(f"{BASE}/v1/default/banks/{BANK}/config").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(f"{BASE}/v1/default/banks/{BANK}/config").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    client.get_bank_config(BANK)
+
+    assert not patch_route.called
+
+
+@respx.mock
+def test_retain_items_sends_one_operation_id_and_item_level_fields(client):
+    from memory.hindsight.client import RetainItem
+
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories").mock(
+        return_value=httpx.Response(200, json={"operation_id": OP_ID})
+    )
+    items = [
+        RetainItem(
+            content="we use uv",
+            document_id="doc-1",
+            metadata={"host": "claude-code"},
+            tags=["kind:convention", "profile_eligible"],
+            observation_scopes=[["profile_eligible"]],
+            strategy="candidate_verbatim",
+        ),
+        RetainItem(
+            content="ci runs on every push",
+            document_id="doc-1",
+            metadata={"host": "claude-code"},
+            tags=["kind:convention", "evidence_only"],
+            observation_scopes=[["evidence_only"]],
+            strategy="candidate_verbatim",
+        ),
+    ]
+
+    client.retain_items(BANK, items, operation_id=OP_ID)
+
+    import json
+
+    payload = json.loads(route.calls.last.request.read())
+    assert payload["operation_id"] == OP_ID
+    assert payload["async"] is True
+    assert len(payload["items"]) == 2
+    assert payload["items"][0]["tags"] == ["kind:convention", "profile_eligible"]
+    assert payload["items"][0]["observation_scopes"] == [["profile_eligible"]]
+    assert payload["items"][0]["strategy"] == "candidate_verbatim"
+    assert payload["items"][0]["document_id"] == "doc-1"
+
+
+def test_retain_items_rejects_a_non_uuid_operation_id_with_no_http_call(client):
+    from memory.hindsight.client import RetainItem
+
+    item = RetainItem(
+        content="x", document_id="doc-1", metadata={}, tags=[], observation_scopes=[],
+        strategy="candidate_verbatim",
+    )
+
+    with pytest.raises(ValueError, match="operation_id"):
+        client.retain_items(BANK, [item], operation_id="not-a-uuid")

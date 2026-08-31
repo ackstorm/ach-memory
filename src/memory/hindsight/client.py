@@ -1,6 +1,7 @@
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
@@ -87,6 +88,33 @@ def _require_uuid(value: str, not_found: type[DomainError]) -> None:
         # exception raised inside one keeps the original on __context__, and
         # this file's rule is that nothing walks out of here with a chain.
         raise not_found("no such object in this memory")
+
+
+@dataclass(frozen=True)
+class RetainItem:
+    """One already-classified capture candidate, ready to retain. Trusted
+    and server-owned: every field here came from
+    memory.capture.classifier.NormalizedCandidate, never from arbitrary
+    caller-supplied metadata."""
+
+    content: str
+    document_id: str
+    metadata: dict[str, Any]
+    tags: list[str]
+    observation_scopes: list[list[str]]
+    strategy: str
+    update_mode: str = "append"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "content": self.content,
+            "document_id": self.document_id,
+            "update_mode": self.update_mode,
+            "metadata": self.metadata,
+            "tags": self.tags,
+            "observation_scopes": self.observation_scopes,
+            "strategy": self.strategy,
+        }
 
 
 class HindsightClient:
@@ -259,6 +287,69 @@ class HindsightClient:
             # Synchronous retain blocks on the extraction LLM; the async form
             # returns an operation immediately and needs no extra headroom.
             timeout=None if is_async else self._llm_timeout,
+        )
+
+    def dry_run_extract(
+        self,
+        bank_id: str,
+        content: str,
+        *,
+        retain_extraction_mode: str | None = None,
+        retain_mission: str | None = None,
+    ) -> dict:
+        """Extract as if retaining, store nothing (SPEC Phase 3 §9). Used by
+        the Task 5 extractor's custom-prompt pass and by capture-check's
+        read-only verbatim-strategy safety probe.
+
+        `retain_extraction_mode`/`retain_mission` are per-call overrides of
+        the bank's configured retain strategy -- how a caller previews a
+        strategy before ever PATCHing the bank config to make it default.
+        """
+        body: dict[str, Any] = {"content": content}
+        body.update(
+            _present(
+                {
+                    "retain_extraction_mode": retain_extraction_mode,
+                    "retain_mission": retain_mission,
+                }
+            )
+        )
+        return self._request(
+            "POST", paths.dry_run_extract(self._tenant, bank_id), body,
+            timeout=self._llm_timeout,
+        )
+
+    def get_bank_config(self, bank_id: str) -> dict:
+        """Read-only. No method in this client ever PATCHes this path --
+        see paths.config()."""
+        return self._request("GET", paths.config(self._tenant, bank_id))
+
+    def retain_items(
+        self, bank_id: str, items: list[RetainItem], *, operation_id: str
+    ) -> dict:
+        """One async retain call for several already-classified candidates
+        sharing one resolved bank (SPEC Phase 3 §6). `operation_id` is the
+        caller's deterministic UUIDv5 (one per (capture_id, bank_kind)),
+        validated here so a caller bug surfaces before the network call
+        rather than as an opaque upstream 422.
+
+        Each item carries its own metadata/tags/observation_scopes/strategy
+        through the trusted `RetainItem` shape -- never a bare dict, which
+        would let arbitrary MCP-supplied metadata smuggle in fields only
+        server-side classification may set (SPEC non-negotiable contract).
+        """
+        try:
+            uuid.UUID(operation_id)
+        except ValueError:
+            raise ValueError("operation_id must be a UUID") from None
+
+        body: dict[str, Any] = {
+            "items": [item.to_payload() for item in items],
+            "async": True,
+            "operation_id": operation_id,
+        }
+        return self._request(
+            "POST", paths.retain(self._tenant, bank_id), body, timeout=None
         )
 
     def recall(self, bank_id: str, query: str, with_entities: bool = True) -> dict:

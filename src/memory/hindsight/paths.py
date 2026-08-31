@@ -131,6 +131,22 @@ def retain(tenant: str, bank_id: str) -> str:
     return f"{bank(tenant, bank_id)}/memories"
 
 
+def dry_run_extract(tenant: str, bank_id: str) -> str:
+    """Read-only: Hindsight extracts as if retaining but stores nothing.
+    Used both by the Task 5 extractor (a strict custom-prompt extraction
+    pass over one sanitized slice) and by capture-check's read-only
+    verbatim-strategy safety probe -- neither ever calls retain() on
+    unclassified model output."""
+    return f"{bank(tenant, bank_id)}/memories/dry-run-extract"
+
+
+def config(tenant: str, bank_id: str) -> str:
+    """GET only in this phase. A PATCH to this same path is the production
+    enablement lever SPEC Phase 3 explicitly defers to Phase 0 -- this
+    module deliberately implements no client method that sends one."""
+    return f"{bank(tenant, bank_id)}/config"
+
+
 def clear_memories(tenant: str, bank_id: str) -> str:
     """Same path as retain(), opposite verb: DELETE wipes the bank (or one
     fact type via `?type=`), POST retains. Admin API + master key only
