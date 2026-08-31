@@ -260,6 +260,152 @@ done
     assert values[position - 1] == "--data-urlencode"
 
 
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.invalid"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "README.md").write_text("x")
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=path, check=True)
+
+
+def _capture_curl_args(tmp_path: Path, fail: bool = True) -> Path:
+    fake_curl = tmp_path / "bin" / "curl"
+    fake_curl.parent.mkdir(exist_ok=True)
+    exit_line = "exit 1" if fail else "exit 0"
+    fake_curl.write_text(
+        f'#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$CURL_ARGS"\n{exit_line}\n'
+    )
+    fake_curl.chmod(0o755)
+    return fake_curl
+
+
+def test_the_full_tier_hook_passes_the_resolved_workspace_id(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    fake_curl = _capture_curl_args(tmp_path)
+    args = tmp_path / "curl-args"
+    environment = _hook_env()
+    environment.update(
+        {
+            "ACH_MEMORY_API_KEY": "test-key",
+            "ACH_MEMORY_URL": "https://memory.test",
+            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
+            "CURL_ARGS": str(args),
+            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
+        }
+    )
+
+    result = subprocess.run(
+        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
+        capture_output=True, text=True, check=False, env=environment, cwd=repo,
+    )
+
+    values = args.read_text().splitlines()
+    workspace_value = next(v for v in values if v.startswith("workspace_id="))
+    position = values.index(workspace_value)
+    assert result.returncode == 0
+    assert re.fullmatch(r"workspace_id=ws_[0-9a-f]{32}", workspace_value)
+    assert values[position - 1] == "--data-urlencode"
+
+
+def test_the_full_tier_hook_omits_workspace_id_outside_a_worktree(tmp_path: Path) -> None:
+    fake_curl = _capture_curl_args(tmp_path)
+    args = tmp_path / "curl-args"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    environment = _hook_env()
+    environment.update(
+        {
+            "ACH_MEMORY_API_KEY": "test-key",
+            "ACH_MEMORY_URL": "https://memory.test",
+            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
+            "CURL_ARGS": str(args),
+            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
+        }
+    )
+
+    result = subprocess.run(
+        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
+        capture_output=True, text=True, check=False, env=environment, cwd=outside,
+    )
+
+    assert result.returncode == 0
+    assert "workspace_id=" not in args.read_text()
+
+
+def test_repeated_resolution_of_one_worktree_is_a_stable_workspace_id(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    fake_curl = _capture_curl_args(tmp_path)
+    args = tmp_path / "curl-args"
+    environment = _hook_env()
+    environment.update(
+        {
+            "ACH_MEMORY_API_KEY": "test-key",
+            "ACH_MEMORY_URL": "https://memory.test",
+            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
+            "CURL_ARGS": str(args),
+            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
+        }
+    )
+    script = [str(ROOT / "plugins/claude-code/scripts/session-start.sh")]
+
+    subprocess.run(script, capture_output=True, text=True, check=False, env=environment, cwd=repo)
+    first = next(v for v in args.read_text().splitlines() if v.startswith("workspace_id="))
+    subprocess.run(script, capture_output=True, text=True, check=False, env=environment, cwd=repo)
+    second = next(v for v in args.read_text().splitlines() if v.startswith("workspace_id="))
+
+    assert first == second
+
+
+def test_the_full_tier_cache_differs_across_worktrees(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    worktree = tmp_path / "worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(worktree), "-b", "feature"], cwd=repo, check=True
+    )
+    fake_curl = tmp_path / "bin" / "curl"
+    fake_curl.parent.mkdir()
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    printf '%s\\n' '-- ach-memory brief rev 1 / protocol 1 / no project --' > "$2"
+    exit 0
+  fi
+  shift
+done
+exit 1
+"""
+    )
+    fake_curl.chmod(0o755)
+    cache_dir = tmp_path / "cache"
+    environment = _hook_env()
+    environment.update(
+        {
+            "ACH_MEMORY_API_KEY": "test-key",
+            "ACH_MEMORY_URL": "https://memory.test",
+            "ACH_MEMORY_CACHE_DIR": str(cache_dir),
+            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
+        }
+    )
+    script = [str(ROOT / "plugins/claude-code/scripts/session-start.sh")]
+
+    root_result = subprocess.run(
+        script, capture_output=True, text=True, check=False, env=environment, cwd=repo
+    )
+    worktree_result = subprocess.run(
+        script, capture_output=True, text=True, check=False, env=environment, cwd=worktree
+    )
+
+    assert root_result.returncode == 0
+    assert worktree_result.returncode == 0
+    assert len(list(cache_dir.glob("full-*.txt"))) == 2
+
+
 def test_the_full_tier_hook_fails_open_without_home_or_xdg_cache(tmp_path: Path) -> None:
     """SessionStart must still exit zero in a minimal inherited environment."""
     fake_curl = tmp_path / "bin" / "curl"

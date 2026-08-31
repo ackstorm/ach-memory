@@ -17,9 +17,26 @@ url="${ACH_MEMORY_URL:-http://localhost:8000}"
 locator="$(git remote get-url origin 2>/dev/null || true)"
 cache_dir="${ACH_MEMORY_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/ach-memory}"
 mkdir -p "$cache_dir" 2>/dev/null || true
+
+# ws_ + first 32 hex chars of SHA-256 over the canonical absolute worktree
+# root -- never the raw path, which must not cross the network or land in a
+# cache filename. Fails open (empty) on missing git or a non-worktree cwd:
+# Working State is simply omitted rather than guessed.
+workspace_id=""
+if worktree_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  canonical_root="$(cd "$worktree_root" 2>/dev/null && pwd -P)"
+  if [ -n "$canonical_root" ]; then
+    workspace_id="ws_$(printf '%s' "$canonical_root" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-32)"
+  fi
+fi
+
 # Keyed on service and repository, never on the credential: a filename is
-# observable metadata.
-digest="$(printf '%s|%s' "$url" "$locator" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"
+# observable metadata. workspace_id joins the digest only when resolved, so
+# the existing no-workspace cache file stays readable unchanged and two git
+# worktrees of the same repository never share one.
+digest_key="$url|$locator"
+[ -n "$workspace_id" ] && digest_key="$digest_key|$workspace_id"
+digest="$(printf '%s' "$digest_key" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"
 cache="$cache_dir/full-$digest.txt"
 tmp="$cache.$$"
 cache_tmp="$cache.cache.$$"
@@ -62,6 +79,9 @@ curl_args=(
 )
 if [ -n "$locator" ]; then
   curl_args+=(--data-urlencode "git_locator=$locator")
+fi
+if [ -n "$workspace_id" ]; then
+  curl_args+=(--data-urlencode "workspace_id=$workspace_id")
 fi
 
 if curl "${curl_args[@]}" 2>/dev/null; then

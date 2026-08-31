@@ -89,6 +89,64 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
         return None, None
 
 
+def resolve_workspace_context(cwd: str | None = None) -> str | None:
+    """The opaque workspace id for the git worktree at cwd, or None outside one.
+
+    `ws_` plus the first 32 hex characters of SHA-256 over the canonical
+    absolute worktree root -- never the raw path, which must not cross the
+    network or land in a cache filename (SPEC Working State). Branch names
+    and remotes do not participate: two worktrees of the same project at the
+    same commit still resolve to different ids, and a branch change in one
+    leaves its id unchanged.
+
+    Fails open (None) on missing git, a timeout, non-worktree output or a
+    filesystem error resolving the root -- Working State is simply omitted
+    rather than guessed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    root = result.stdout.strip()
+    if result.returncode != 0 or not root:
+        return None
+    try:
+        canonical = str(Path(root).resolve())
+    except OSError:
+        return None
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+    return f"ws_{digest}"
+
+
+_WORKING_STATE_TOOLS = frozenset({"start_working_session", "set_working_state"})
+
+
+def fill_working_state_arguments(
+    arguments: dict,
+    slug: str | None,
+    locator: str | None,
+    workspace_id: str | None,
+) -> None:
+    """Inject project/locator/workspace into a bare working-state call, in
+    place. Explicit values from the model always win -- same reasoning as
+    fill_project_arguments, just with no `scope` gate: these two tools carry
+    no `scope` argument at all.
+    """
+    if not arguments.get("project_slug") and slug:
+        arguments["project_slug"] = slug
+    if not arguments.get("git_locator") and locator:
+        arguments["git_locator"] = locator
+    if not arguments.get("workspace_id") and workspace_id:
+        arguments["workspace_id"] = workspace_id
+
+
 def fill_project_arguments(
     arguments: dict, slug: str | None, locator: str | None
 ) -> None:
@@ -120,11 +178,17 @@ class ProjectContextMiddleware(Middleware):
 
     def __init__(self) -> None:
         self._slug, self._locator = resolve_project_context()
+        self._workspace_id = resolve_workspace_context()
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         arguments = context.message.arguments
         if isinstance(arguments, dict):
-            fill_project_arguments(arguments, self._slug, self._locator)
+            if context.message.name in _WORKING_STATE_TOOLS:
+                fill_working_state_arguments(
+                    arguments, self._slug, self._locator, self._workspace_id
+                )
+            else:
+                fill_project_arguments(arguments, self._slug, self._locator)
         return await call_next(context)
 
 
@@ -137,6 +201,7 @@ def fetch_brief(
     *,
     tier: str = "index",
     host: str | None = None,
+    workspace_id: str | None = None,
 ) -> dict | None:
     """The session brief, or None -- never an exception.
 
@@ -152,6 +217,8 @@ def fetch_brief(
         params["git_locator"] = locator
     if host:
         params["host"] = host
+    if workspace_id:
+        params["workspace_id"] = workspace_id
     try:
         response = httpx.get(
             f"{base_url.rstrip('/')}/v1/session-brief",
@@ -167,21 +234,29 @@ def fetch_brief(
     return body if isinstance(body, dict) and body.get("instructions") else None
 
 
-def _cache_path(base_url: str, slug: str | None, locator: str | None) -> Path:
-    """One private cache file per memory service and project context.
+def _cache_path(
+    base_url: str, slug: str | None, locator: str | None, workspace_id: str | None = None
+) -> Path:
+    """One private cache file per memory service, project and workspace.
 
     A credential never contributes to a filename: filenames are observable
     metadata, while the cache content itself is protected because it holds the
-    current user's memory.
+    current user's memory. workspace_id joins the digest only when resolved,
+    so two git worktrees of the same project never share a cache file, while
+    the existing no-workspace digest is unchanged -- a resolved workspace
+    must never read or overwrite that cache, which could replay another
+    worktree's state, but a session outside any worktree still finds the
+    cache file it always has.
     """
     root = Path(
         os.environ.get("ACH_MEMORY_CACHE_DIR")
         or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
         / "ach-memory"
     )
-    digest = hashlib.sha256(
-        f"{base_url}|{slug or ''}|{locator or ''}".encode()
-    ).hexdigest()[:16]
+    key = f"{base_url}|{slug or ''}|{locator or ''}"
+    if workspace_id:
+        key = f"{key}|{workspace_id}"
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
     return root / f"index-{digest}.txt"
 
 
@@ -197,11 +272,15 @@ class CachedIndex:
 
 
 def load_cached_index(
-    base_url: str, api_key: str, slug: str | None, locator: str | None
+    base_url: str,
+    api_key: str,
+    slug: str | None,
+    locator: str | None,
+    workspace_id: str | None = None,
 ) -> CachedIndex | None:
     """Return a last-good index, if this host can safely read one."""
     try:
-        record = json.loads(_cache_path(base_url, slug, locator).read_text())
+        record = json.loads(_cache_path(base_url, slug, locator, workspace_id).read_text())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(record, dict):
@@ -227,7 +306,7 @@ def load_cached_index(
     if stored_at is None:
         try:
             stored_at = datetime.fromtimestamp(
-                _cache_path(base_url, slug, locator).stat().st_mtime, UTC
+                _cache_path(base_url, slug, locator, workspace_id).stat().st_mtime, UTC
             )
         except (OSError, ValueError, OverflowError):
             return None
@@ -242,9 +321,10 @@ def store_cached_index(
     instructions: str,
     *,
     stored_at: datetime | None = None,
+    workspace_id: str | None = None,
 ) -> None:
     """Atomically replace the private last-good index, or quietly give up."""
-    path = _cache_path(base_url, slug, locator)
+    path = _cache_path(base_url, slug, locator, workspace_id)
     temporary: str | None = None
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -273,11 +353,17 @@ def store_cached_index(
 
 
 def _refresh_cached_index(
-    base_url: str, api_key: str, slug: str | None, locator: str | None
+    base_url: str,
+    api_key: str,
+    slug: str | None,
+    locator: str | None,
+    workspace_id: str | None = None,
 ) -> None:
-    brief = fetch_brief(base_url, api_key, slug, locator, tier="index")
+    brief = fetch_brief(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
     if brief:
-        store_cached_index(base_url, api_key, slug, locator, brief["instructions"])
+        store_cached_index(
+            base_url, api_key, slug, locator, brief["instructions"], workspace_id=workspace_id
+        )
 
 
 def _stamp_or_append_cache_age(instructions: str, age_seconds: int) -> str:
@@ -308,6 +394,7 @@ def startup_instructions(
     *,
     refresh: bool = True,
     now: datetime | None = None,
+    workspace_id: str | None = None,
 ) -> str:
     """Return a cached index immediately and refresh it for the next session.
 
@@ -315,22 +402,22 @@ def startup_instructions(
     A total failure returns an explicit stub so the agent knows memory may
     exist and can use ``recall`` after startup.
     """
-    cached = load_cached_index(base_url, api_key, slug, locator)
+    cached = load_cached_index(base_url, api_key, slug, locator, workspace_id)
     if cached:
         if refresh:
             threading.Thread(
                 target=_refresh_cached_index,
-                args=(base_url, api_key, slug, locator),
+                args=(base_url, api_key, slug, locator, workspace_id),
                 daemon=True,
             ).start()
         instant = (now or datetime.now(UTC)).astimezone(UTC)
         age_seconds = int(max((instant - cached.stored_at).total_seconds(), 0))
         return _stamp_or_append_cache_age(cached.instructions, age_seconds)
 
-    fetched = fetch_brief(base_url, api_key, slug, locator, tier="index")
+    fetched = fetch_brief(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
     if fetched:
         instructions = fetched["instructions"]
-        store_cached_index(base_url, api_key, slug, locator, instructions)
+        store_cached_index(base_url, api_key, slug, locator, instructions, workspace_id=workspace_id)
         return instructions
     return "[ach-memory] Session brief unavailable; recall still works."
 

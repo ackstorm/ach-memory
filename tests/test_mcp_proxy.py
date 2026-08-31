@@ -16,7 +16,9 @@ import pytest
 from memory.mcp.proxy import (
     ProjectContextMiddleware,
     fill_project_arguments,
+    fill_working_state_arguments,
     resolve_project_context,
+    resolve_workspace_context,
 )
 
 
@@ -80,6 +82,51 @@ def test_no_repo_resolves_nothing(tmp_path, monkeypatch):
     assert resolve_project_context(str(tmp_path)) == (None, None)
 
 
+def _committed_repo(path):
+    path.mkdir(exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t.invalid"], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "t"], check=True)
+    (path / "README.md").write_text("x")
+    subprocess.run(["git", "-C", str(path), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "initial"], check=True)
+    return path
+
+
+def test_repeated_resolution_of_one_worktree_is_stable(tmp_path):
+    repo = _committed_repo(tmp_path / "repo")
+    assert resolve_workspace_context(str(repo)) == resolve_workspace_context(str(repo))
+
+
+def test_two_worktree_roots_at_the_same_commit_get_different_ids(tmp_path):
+    repo = _committed_repo(tmp_path / "repo")
+    worktree = tmp_path / "worktree"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", str(worktree), "-b", "feature"],
+        check=True,
+    )
+    assert resolve_workspace_context(str(repo)) != resolve_workspace_context(str(worktree))
+
+
+def test_a_branch_change_does_not_change_the_workspace_id(tmp_path):
+    repo = _committed_repo(tmp_path / "repo")
+    before = resolve_workspace_context(str(repo))
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "other-branch"], check=True)
+    after = resolve_workspace_context(str(repo))
+    assert before == after
+
+
+def test_a_symlinked_cwd_resolves_to_the_same_id_as_the_real_root(tmp_path):
+    repo = _committed_repo(tmp_path / "repo")
+    link = tmp_path / "link"
+    link.symlink_to(repo)
+    assert resolve_workspace_context(str(link)) == resolve_workspace_context(str(repo))
+
+
+def test_a_non_worktree_returns_none(tmp_path):
+    assert resolve_workspace_context(str(tmp_path)) is None
+
+
 @pytest.mark.parametrize(
     ("arguments", "expected"),
     [
@@ -106,6 +153,33 @@ def test_no_repo_resolves_nothing(tmp_path, monkeypatch):
 )
 def test_fill_project_arguments_locator(arguments, expected):
     fill_project_arguments(arguments, None, "L")
+    assert arguments == expected
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (
+            {"session_id": "s1"},
+            {"session_id": "s1", "project_slug": "acme-api", "git_locator": "L", "workspace_id": "W"},
+        ),
+        # Explicit values from the model are never overridden.
+        (
+            {"session_id": "s1", "project_slug": "theirs"},
+            {"session_id": "s1", "project_slug": "theirs", "git_locator": "L", "workspace_id": "W"},
+        ),
+        (
+            {"session_id": "s1", "workspace_id": "theirs"},
+            {"session_id": "s1", "project_slug": "acme-api", "git_locator": "L", "workspace_id": "theirs"},
+        ),
+        (
+            {"session_id": "s1", "git_locator": "theirs"},
+            {"session_id": "s1", "project_slug": "acme-api", "git_locator": "theirs", "workspace_id": "W"},
+        ),
+    ],
+)
+def test_fill_working_state_arguments(arguments, expected):
+    fill_working_state_arguments(arguments, "acme-api", "L", "W")
     assert arguments == expected
 
 
@@ -144,6 +218,81 @@ async def test_middleware_injects_into_call_tool(tmp_path, monkeypatch):
     assert seen == {"scope": "project", "project_slug": "payments-api"}
 
 
+@pytest.mark.anyio
+async def test_middleware_injects_project_locator_and_workspace_into_working_state_tools(
+    monkeypatch,
+):
+    monkeypatch.setattr(proxy, "resolve_project_context", lambda: ("acme-api", "L"))
+    monkeypatch.setattr(proxy, "resolve_workspace_context", lambda: "ws_" + "a" * 32)
+    middleware = ProjectContextMiddleware()
+
+    class Message:
+        name = "start_working_session"
+        arguments: ClassVar = {"session_id": "sess-1"}
+
+    class Context:
+        message = Message()
+
+    async def call_next(context):
+        return context.message.arguments
+
+    result = await middleware.on_call_tool(Context(), call_next)
+
+    assert result == {
+        "session_id": "sess-1",
+        "project_slug": "acme-api",
+        "git_locator": "L",
+        "workspace_id": "ws_" + "a" * 32,
+    }
+
+
+@pytest.mark.anyio
+async def test_middleware_preserves_explicit_values_for_working_state_tools(monkeypatch):
+    monkeypatch.setattr(proxy, "resolve_project_context", lambda: ("acme-api", "L"))
+    monkeypatch.setattr(proxy, "resolve_workspace_context", lambda: "ws_" + "a" * 32)
+    middleware = ProjectContextMiddleware()
+
+    class Message:
+        name = "set_working_state"
+        arguments: ClassVar = {
+            "project_slug": "explicit-project",
+            "workspace_id": "ws_" + "c" * 32,
+        }
+
+    class Context:
+        message = Message()
+
+    async def call_next(context):
+        return context.message.arguments
+
+    result = await middleware.on_call_tool(Context(), call_next)
+
+    assert result["project_slug"] == "explicit-project"
+    assert result["workspace_id"] == "ws_" + "c" * 32
+    assert result["git_locator"] == "L"
+
+
+@pytest.mark.anyio
+async def test_middleware_does_not_inject_workspace_into_other_tools(monkeypatch):
+    monkeypatch.setattr(proxy, "resolve_project_context", lambda: ("acme-api", "L"))
+    monkeypatch.setattr(proxy, "resolve_workspace_context", lambda: "ws_" + "a" * 32)
+    middleware = ProjectContextMiddleware()
+
+    class Message:
+        name = "list_memories"
+        arguments: ClassVar = {"scope": "project"}
+
+    class Context:
+        message = Message()
+
+    async def call_next(context):
+        return context.message.arguments
+
+    result = await middleware.on_call_tool(Context(), call_next)
+
+    assert "workspace_id" not in result
+
+
 import httpx
 import respx
 
@@ -171,6 +320,34 @@ def test_fetch_brief_sends_the_resolved_project_context():
     assert request.url.params["project_slug"] == "acme-api"
     assert request.url.params["git_locator"] == "git@host:acme/api.git"
     assert request.headers["authorization"] == "Bearer k"
+    assert "workspace_id" not in request.url.params
+
+
+@respx.mock
+def test_fetch_brief_includes_workspace_id_only_when_resolved():
+    route = respx.get("https://memory.test/v1/session-brief").mock(
+        return_value=httpx.Response(
+            200, json={"instructions": "BRIEF", "generated_at": None, "sections": {}}
+        )
+    )
+
+    fetch_brief("https://memory.test", "k", None, None, workspace_id="ws_" + "a" * 32)
+
+    assert route.calls.last.request.url.params["workspace_id"] == "ws_" + "a" * 32
+
+
+def test_cache_paths_differ_by_workspace_with_no_credential_or_raw_path():
+    workspace_a = "ws_" + "a" * 32
+    workspace_b = "ws_" + "b" * 32
+    no_workspace = proxy._cache_path("https://memory.test", "acme-api", None)
+    path_a = proxy._cache_path("https://memory.test", "acme-api", None, workspace_a)
+    path_b = proxy._cache_path("https://memory.test", "acme-api", None, workspace_b)
+
+    assert len({no_workspace, path_a, path_b}) == 3
+    for path in (no_workspace, path_a, path_b):
+        assert "acme-api" not in path.name
+        assert workspace_a not in path.name
+        assert workspace_b not in path.name
 
 
 @respx.mock
@@ -350,5 +527,5 @@ def test_a_cache_hit_refreshes_the_index_for_the_next_session(tmp_path, monkeypa
     monkeypatch.setattr(proxy.threading, "Thread", ImmediateThread)
 
     assert "OLD INDEX" in proxy.startup_instructions("https://memory.test", "k", None, None)
-    assert calls == [{"tier": "index"}]
+    assert calls == [{"tier": "index", "workspace_id": None}]
     assert proxy.load_cached_index("https://memory.test", "k", None, None).instructions == "NEW INDEX"
