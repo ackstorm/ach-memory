@@ -1450,3 +1450,141 @@ def test_old_working_state_age_is_visible_with_no_staleness_label(client, two_us
     assert "age: 2d" in full["instructions"]
     for forbidden in ("stale", "expired", "outdated"):
         assert forbidden not in full["instructions"].lower()
+
+
+@respx.mock
+def test_phase_2_delivered_payload_gate(client, two_users, tmp_path, monkeypatch):
+    """The Phase 2 acceptance test, entirely through host-facing paths: REST
+    project/session/handoff, the delivered Index and Full for the right
+    workspace only, and the MCP proxy's last-good cache serving that
+    workspace's content -- never another workspace's -- when the live
+    fetch is down."""
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    ws_a = "ws_" + "a" * 32
+    ws_b = "ws_" + "b" * 32
+
+    # 1. create an authorized project
+    created = client.post("/v1/projects", json={"project_slug": "acme-api"}, headers=headers)
+    assert created.status_code == 201
+
+    # 2. derive/select workspace A and start session A (plus an older sibling
+    # session, started first, for step 4's "older session" case)
+    older_epoch = client.post(
+        "/v1/working-state/sessions",
+        json={"project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-older"},
+        headers=headers,
+    ).json()["session_epoch"]
+    epoch = client.post(
+        "/v1/working-state/sessions",
+        json={"project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-A"},
+        headers=headers,
+    ).json()["session_epoch"]
+    assert epoch > older_epoch
+
+    # 3. write checkpoint 2 as an explicit handoff
+    write_two = client.put(
+        "/v1/working-state",
+        json={
+            "project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-A",
+            "session_epoch": epoch, "checkpoint_seq": 2, "objective": "ship the feature",
+            "next_steps": ["write tests"],
+        },
+        headers=headers,
+    )
+    assert write_two.status_code == 200
+
+    # 4. checkpoint 1 (same session) and the older session cannot overwrite it
+    same_session_stale = client.put(
+        "/v1/working-state",
+        json={
+            "project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-A",
+            "session_epoch": epoch, "checkpoint_seq": 1, "objective": "should not land",
+        },
+        headers=headers,
+    )
+    assert same_session_stale.status_code == 409
+    assert same_session_stale.json()["error"]["code"] == "WORKING_STATE_STALE"
+
+    older_session_stale = client.put(
+        "/v1/working-state",
+        json={
+            "project_slug": "acme-api", "workspace_id": ws_a, "session_id": "sess-older",
+            "session_epoch": older_epoch, "checkpoint_seq": 999, "objective": "should not land",
+        },
+        headers=headers,
+    )
+    assert older_session_stale.status_code == 409
+    assert older_session_stale.json()["error"]["code"] == "WORKING_STATE_STALE"
+
+    # 5. fetch delivered Index and Full for workspace A
+    index = client.get(
+        "/v1/session-brief",
+        params={
+            "scope": "user", "project_slug": "acme-api", "workspace_id": ws_a,
+            "tier": "index", "host": "claude-code",
+        },
+        headers=headers,
+    ).json()
+    full = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": ws_a, "tier": "full"},
+        headers=headers,
+    ).json()
+
+    assert "objective: ship the feature" in index["instructions"]
+    assert "next: write tests" in index["instructions"]
+    assert re.search(r"age: \d+s", index["instructions"])
+    assert len(index["instructions"]) <= 1800
+
+    assert "objective: ship the feature" in full["instructions"]
+    assert "next step: write tests" in full["instructions"]
+    assert re.search(r"age: \d+s", full["instructions"])
+    assert "source session: sess-A (epoch" in full["instructions"]
+    assert brief.token_upper_bound(full["instructions"]) <= brief.FULL_MAX_TOKENS
+    assert index["brief_revision"] == full["brief_revision"]
+
+    # 6. fetch workspace B: A's state is absent
+    other = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": ws_b},
+        headers=headers,
+    ).json()
+    assert "ship the feature" not in other["instructions"]
+    assert other["sections"]["working_state"] is False
+
+    # 7. the MCP proxy's last-good cache serves A's content, with a visible
+    # cache age, when the live Full fetch fails -- and B, never cached,
+    # cannot read A's cache.
+    from memory.mcp import proxy
+
+    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path / "cache"))
+    live_content = (
+        "-- ach-memory brief rev 1 / protocol 2 / cache-age 0000000000s / "
+        "project acme-api --\n\n"
+        "-- Where the work was left --\n"
+        "objective: ship the feature; next: write tests; age: 0s"
+    )
+    route = respx.get("https://memory.test/v1/session-brief").mock(
+        return_value=httpx.Response(
+            200, json={"instructions": live_content, "generated_at": None, "sections": {}}
+        )
+    )
+    warm = proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=False, workspace_id=ws_a
+    )
+    assert "ship the feature" in warm
+
+    route.mock(side_effect=httpx.ConnectError("memory service unreachable"))
+
+    cached_a = proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=False, workspace_id=ws_a
+    )
+    assert "ship the feature" in cached_a
+    assert re.search(r"cache-age \d+s", cached_a)
+
+    unavailable_b = proxy.startup_instructions(
+        "https://memory.test", "k", "acme-api", None, refresh=False, workspace_id=ws_b
+    )
+    assert "ship the feature" not in unavailable_b
+    assert "unavailable" in unavailable_b.lower()
