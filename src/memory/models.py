@@ -269,7 +269,11 @@ class ContextRevision(Base):
     # "" rather than NULL: this is a primary key, and NULL never equals NULL.
     project_slug: Mapped[str] = mapped_column(String(128), primary_key=True)
     # "" for a snapshot with no workspace, same reasoning as project_slug.
-    workspace_id: Mapped[str] = mapped_column(String(35), primary_key=True)
+    # A Python-side default (not server_default, deliberately dropped in the
+    # migration): revisions.current() does not thread workspace_id through
+    # until the brief compiler is made workspace-aware, and every existing
+    # caller must keep inserting the no-workspace row unchanged until then.
+    workspace_id: Mapped[str] = mapped_column(String(35), primary_key=True, default="")
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     # sha256 of the compiler inputs; 64 hex characters.
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)

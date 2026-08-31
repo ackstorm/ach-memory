@@ -1531,6 +1531,9 @@ HINDSIGHT_ERROR
 AUTH_BACKEND_UNAVAILABLE
 UPSTREAM_REJECTED
 RATE_LIMITED
+WORKING_SESSION_NOT_FOUND
+WORKING_STATE_STALE
+WORKING_STATE_CONFLICT
 INVALID_REQUEST
 INTERNAL_ERROR
 ```
@@ -1579,6 +1582,24 @@ rotating a key that was never the problem.
 
 `RATE_LIMITED`: the credential exceeded its per-credential write-rate quota
 (§20); the response `details` carries `retry_after_seconds`.
+
+`WORKING_SESSION_NOT_FOUND` (404): a Working State write named a
+`(session_id, session_epoch)` pair that does not resolve to a session this
+principal, project and workspace own. Covers both an invented epoch and a
+real epoch borrowed from someone else's session with the same answer, so a
+caller cannot probe which case it is -- the server verifies the pair, and a
+caller cannot win by inventing a large one.
+
+`WORKING_STATE_STALE` (409): a Working State write's
+`(session_epoch, checkpoint_seq)` pair is lexicographically behind the pair
+already stored. Working State keeps no payload history, so a stale write is
+refused outright rather than merged or queued.
+
+`WORKING_STATE_CONFLICT` (409): a Working State write's
+`(session_epoch, checkpoint_seq)` pair matches the one already stored exactly
+but the payload differs. An identical retry at the same pair is idempotent
+and returns 200 unchanged; a different payload at the same pair is a caller
+error, never resolved by last-write-wins.
 
 `INVALID_REQUEST`: the MCP surface's mapping for a tool call whose input
 failed validation before anything was resolved or written -- a bad `state`, a
