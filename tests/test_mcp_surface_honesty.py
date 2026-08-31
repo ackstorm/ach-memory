@@ -75,6 +75,19 @@ def test_the_advertised_schema_carries_the_vocabulary_the_models_enforce():
         assert "500" in str(limit), (tool, limit)
 
 
+@pytest.mark.parametrize("name", ["retain", "sync_retain"])
+def test_retain_tools_advertise_that_they_capture_evidence_not_profile_truth(name):
+    """SPEC Phase 3: explicit retain is for an explicit human "remember
+    this" request and captures evidence, not guaranteed profile truth --
+    only the automatic capture pipeline classifies and promotes candidates.
+    The advertised description is the only place a calling model learns
+    that distinction."""
+    mgr = _manager()
+    description = (mgr.get_tool(name).description or "").lower()
+
+    assert "evidence" in description
+
+
 def test_working_state_schemas_advertise_the_bounds_the_models_enforce():
     """Phase 2 review finding #2: WorkingStateWrite/StartSessionRequest
     enforced these bounds at runtime already, but the two tool functions took

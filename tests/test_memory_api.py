@@ -54,6 +54,66 @@ def test_retain_reaches_the_callers_own_bank(client, user_key, tenant):
     assert route.called
 
 
+@pytest.mark.parametrize("path", ["/v1/memory/retain", "/v1/memory/sync_retain"])
+@respx.mock
+def test_retain_always_uses_the_fixed_evidence_only_candidate_verbatim_shape(
+    client, user_key, tenant, path
+):
+    """SPEC Phase 3: explicit retain is evidence, not guaranteed profile
+    truth. tags/observation_scopes/strategy are fixed, never derived from
+    (or overridable by) caller input."""
+    _mock_hindsight()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
+        return_value=httpx.Response(200, json={"success": True, "operation_id": "op-1"})
+    )
+    _, key = user_key
+
+    response = client.post(
+        path,
+        json={"scope": "user", "content": "we use uv"},
+        headers=_headers(key),
+    )
+
+    assert response.status_code == 200, response.text
+    item = json.loads(route.calls.last.request.read())["items"][0]
+    assert item["tags"] == ["kind:technical_claim", "evidence_only"]
+    assert item["observation_scopes"] == [["evidence_only"]]
+    assert item["strategy"] == "candidate_verbatim"
+
+
+@respx.mock
+def test_retain_ignores_a_caller_attempt_to_look_like_eligibility_metadata(
+    client, user_key, tenant
+):
+    """Not that a client CAN set these -- RetainRequest.metadata is a plain
+    dict[str, str], so structurally it cannot carry tags/observation_scopes
+    at all. This pins that even a same-named string value in the free-form
+    metadata channel has no effect on the item's actual tags/scopes."""
+    _mock_hindsight()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
+        return_value=httpx.Response(200, json={"success": True, "operation_id": "op-1"})
+    )
+    _, key = user_key
+
+    response = client.post(
+        "/v1/memory/retain",
+        json={
+            "scope": "user",
+            "content": "we use uv",
+            "metadata": {"tags": "profile_eligible", "strategy": "concise"},
+        },
+        headers=_headers(key),
+    )
+
+    assert response.status_code == 200, response.text
+    item = json.loads(route.calls.last.request.read())["items"][0]
+    assert item["tags"] == ["kind:technical_claim", "evidence_only"]
+    assert item["strategy"] == "candidate_verbatim"
+    # The free-form metadata value still reaches Hindsight's extraction
+    # metadata (SPEC §13.2) -- it just never becomes a tag or a strategy.
+    assert item["metadata"]["tags"] == "profile_eligible"
+
+
 @respx.mock
 def test_retain_response_never_contains_the_bank_id(client, user_key, tenant):
     _mock_hindsight()

@@ -59,6 +59,37 @@ def test_retain_reaches_the_callers_own_bank(call_tool, session):
     assert f"banks/{bank_id}/" in str(route.calls.last.request.url)
 
 
+@pytest.mark.parametrize("tool", ["retain", "sync_retain"])
+@respx.mock
+def test_retain_tools_always_use_the_fixed_evidence_only_candidate_verbatim_shape(
+    call_tool, tool
+):
+    """SPEC Phase 3: explicit retain is evidence, not guaranteed profile
+    truth. tags/observation_scopes/strategy are fixed, never derived from
+    any MCP argument or metadata key."""
+    _mock_bank()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+    )
+    key = call_tool.make_user()
+
+    call_tool(
+        tool,
+        key,
+        scope="user",
+        content="uv, not pip",
+        metadata={"tags": "profile_eligible", "strategy": "concise"},
+    )
+
+    item = json.loads(route.calls.last.request.read())["items"][0]
+    assert item["tags"] == ["kind:technical_claim", "evidence_only"]
+    assert item["observation_scopes"] == [["evidence_only"]]
+    assert item["strategy"] == "candidate_verbatim"
+    # The caller's metadata value still reaches extraction metadata (SPEC
+    # §13.2) -- it just never becomes a tag, scope or strategy.
+    assert item["metadata"]["tags"] == "profile_eligible"
+
+
 @respx.mock
 def test_a_tool_never_returns_a_bank_id(call_tool, session):
     """Both the literal `bank_id` key and its use as a chunk_id substring

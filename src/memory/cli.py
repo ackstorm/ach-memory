@@ -671,6 +671,34 @@ def _parser() -> argparse.ArgumentParser:
         "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
         "because argv is world-readable",
     )
+    checkpoint = commands.add_parser(
+        "capture-checkpoint",
+        help="silent transcript checkpoint for a Claude Code Stop/PreCompact hook "
+        "(reads one hook JSON object from stdin)",
+    )
+    checkpoint.add_argument(
+        "--url",
+        default=None,
+        help="memory service base URL (default: $ACH_MEMORY_URL)",
+    )
+    worker = commands.add_parser(
+        "capture-worker", help="run the durable capture queue worker"
+    )
+    worker.add_argument(
+        "--once",
+        action="store_true",
+        help="process one batch and exit, for tests and one-off operational runs",
+    )
+    check = commands.add_parser(
+        "capture-check",
+        help="read-only dry-run verification of the candidate_verbatim contract; "
+        "never mutates config or memory",
+    )
+    check.add_argument("--scope", choices=("user", "project"), required=True)
+    check.add_argument(
+        "--project", required=True, help="project slug (identifies the bank to check; "
+        "for --scope user, the project's owning user)"
+    )
     return parser
 
 
@@ -740,6 +768,116 @@ def _print_brief(url_argument: str | None) -> int:
     return 0
 
 
+def _capture_checkpoint(url_argument: str | None) -> int:
+    """Silent by design: Claude interprets Stop hook output as feedback and
+    can re-enter the loop (SPEC Phase 3 non-negotiable contract), so this
+    command must never print anything or fail loudly, on any input.
+    `memory.capture.local.checkpoint` already fails closed on every missing
+    prerequisite or transport error; this wrapper only makes sure a
+    malformed or unreadable stdin can't escape that same contract.
+    """
+    from memory.capture import local as capture_local
+
+    env = dict(os.environ)
+    if url_argument:
+        env["ACH_MEMORY_URL"] = url_argument
+
+    try:
+        raw = sys.stdin.read()
+        hook_event = json.loads(raw) if raw.strip() else {}
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return 0
+    if not isinstance(hook_event, dict):
+        return 0
+
+    capture_local.checkpoint(hook_event, env=env)
+    return 0
+
+
+def _capture_worker(*, once: bool) -> int:
+    """`--once` for deterministic tests and one-off operational runs; the
+    loop form polls with interruptible waits (SIGINT/SIGTERM) rather than a
+    tight loop or an unbounded sleep."""
+    import signal
+    import threading
+
+    from memory.capture import worker as capture_worker
+    from memory.db import session_scope
+    from memory.hindsight.client import get_client
+
+    client = get_client()
+
+    if once:
+        with session_scope() as db:
+            capture_worker.run_once(db, client)
+        return 0
+
+    stop = threading.Event()
+
+    def _request_stop(signum: int, frame: object) -> None:
+        stop.set()
+
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+    capture_worker.run_forever(session_scope, client, stop=stop)
+    return 0
+
+
+def _capture_check(*, scope: str, project_slug: str) -> int:
+    """Read-only dry-run verification; no config or memory mutation (SPEC
+    Phase 3 §9). `--scope project` checks the named project's own bank;
+    `--scope user` checks that project's owning user's bank -- there is no
+    separate --user flag, so a user-owned project is how this command
+    identifies which user bank to check.
+    """
+    from memory.capture import configuration
+    from memory.config import get_settings
+    from memory.db import session_scope
+    from memory.hindsight.client import get_client
+    from memory.models import Project, User
+
+    with session_scope() as db:
+        project = (
+            db.query(Project)
+            .filter_by(tenant_id=get_settings().tenant_id, project_slug=project_slug)
+            .first()
+        )
+        if project is None:
+            print(f"ach-memory: no such project {project_slug!r}", file=sys.stderr)
+            return 2
+        if scope == "project":
+            bank_id = project.bank_id
+            desired = configuration.desired_project_config()
+        else:
+            if project.owner_type != "user":
+                print(
+                    "ach-memory: --scope user needs a user-owned project", file=sys.stderr
+                )
+                return 2
+            owner = db.get(User, project.owner_id)
+            bank_id = owner.bank_id
+            desired = configuration.desired_user_config()
+
+    client = get_client()
+    result = configuration.verify_bank(client, bank_id, desired)
+
+    if not result.extraction_ok:
+        print(
+            "ach-memory: candidate_verbatim did not return the exact claim once:",
+            file=sys.stderr,
+        )
+        for fact in result.facts:
+            print(f"  - {fact!r}", file=sys.stderr)
+    if result.config_drift:
+        print("ach-memory: config drift from desired:", file=sys.stderr)
+        redacted = configuration.redact_for_display(result.config_drift, bank_id)
+        print(json.dumps(redacted, indent=2), file=sys.stderr)
+    if result.ok:
+        print(f"ach-memory: capture-check OK ({scope} {project_slug})", file=sys.stderr)
+        return 0
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -751,6 +889,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "brief":
         return _print_brief(args.url)
+
+    if args.command == "capture-checkpoint":
+        return _capture_checkpoint(args.url)
+
+    if args.command == "capture-worker":
+        return _capture_worker(once=args.once)
+
+    if args.command == "capture-check":
+        return _capture_check(scope=args.scope, project_slug=args.project)
 
     base = os.environ.get("ACH_MEMORY_URL")
     mode = "http" if args.http else ("local" if args.local else "stdio")

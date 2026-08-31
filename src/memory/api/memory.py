@@ -20,7 +20,7 @@ from memory.banks import resolve_project_bank, resolve_user_bank
 from memory.config import get_settings
 from memory.db import get_session
 from memory.errors import ContentTooLarge
-from memory.hindsight.client import get_client
+from memory.hindsight.client import RetainItem, get_client
 from memory.identifiers import has_control_character
 
 router = APIRouter(prefix="/v1/memory", tags=["memory"])
@@ -119,7 +119,23 @@ def scoped_query_params(
     )
 
 
+# SPEC Phase 3: explicit retain (this route and the MCP `retain`/
+# `retain_sync` tools) is for an explicit human "remember this" request. It
+# captures evidence, not guaranteed profile truth -- kind/origin/eligibility
+# classification is the automatic capture pipeline's job. Fixed here, never
+# derived from caller input: no MCP argument or metadata key can override
+# any of these three.
+EXPLICIT_RETAIN_TAGS = ["kind:technical_claim", "evidence_only"]
+EXPLICIT_RETAIN_OBSERVATION_SCOPES = [["evidence_only"]]
+EXPLICIT_RETAIN_STRATEGY = "candidate_verbatim"
+
+
 class RetainRequest(ScopedRequest):
+    """An explicit human "remember this" request. Stored as one verbatim
+    evidence item -- see EXPLICIT_RETAIN_TAGS -- never as a guaranteed
+    profile-eligible truth; only the automatic capture pipeline classifies
+    and promotes candidates to that."""
+
     content: str
     document_id: str | None = None
     # Bound to Hindsight's own enum (confirmed against a live server's
@@ -359,15 +375,26 @@ def _retain(
 
     client = get_client()
 
-    result = client.retain(
-        bank_id,
-        body.content,
+    # SPEC Phase 3: explicit retain is evidence, not guaranteed profile
+    # truth -- fixed, not derived from any caller input. A human asked for
+    # this specific sentence to be remembered; classification (kind,
+    # origin, eligibility) is the automatic capture pipeline's job, never
+    # this route's.
+    item = RetainItem(
+        content=body.content,
         document_id=body.document_id,
         metadata=extraction,
         context=provenance.context_line(extraction),
+        tags=list(EXPLICIT_RETAIN_TAGS),
+        observation_scopes=[list(scope) for scope in EXPLICIT_RETAIN_OBSERVATION_SCOPES],
+        strategy=EXPLICIT_RETAIN_STRATEGY,
         update_mode=body.update_mode,
+    )
+    result = client.retain_items(
+        bank_id,
+        [item],
+        operation_id=body.operation_id or str(uuid.uuid4()),
         is_async=is_async,
-        operation_id=body.operation_id,
     )
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),

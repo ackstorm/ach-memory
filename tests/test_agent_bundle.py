@@ -132,7 +132,9 @@ def test_the_repository_root_is_the_marketplace_for_both_hosts() -> None:
 
 @pytest.mark.parametrize("host", NATIVE)
 def test_hooks_register_only_the_two_activation_events(host: str) -> None:
-    """Pinned, and both absentees are deliberate.
+    """Pinned, and both absentees are deliberate for codex (claude-code
+    additionally registers Stop/PreCompact -- see
+    test_claude_code_registers_silent_capture_checkpoint_hooks below).
 
     UserPromptSubmit was paid on every message for a reminder actionable on
     few of them. Stop was tried in its place and is worse: Claude Code treats
@@ -143,13 +145,18 @@ def test_hooks_register_only_the_two_activation_events(host: str) -> None:
     which is still a whole turn to say nothing.
 
     The retain guidance lives in activation.txt, where it costs one injection
-    per session.
+    per session. Phase 3's Stop/PreCompact hooks are a categorically
+    different thing from the abandoned reminder: they never print anything
+    at all, so there is no feedback for Claude Code to act on -- see the
+    silence test below, not "no output happened to be visible this time."
     """
     hooks = _json(ROOT / "plugins" / host / "hooks" / "hooks.json")["hooks"]
 
-    assert set(hooks) == {"SessionStart", "SubagentStart"}
-    for event, registrations in hooks.items():
-        hook = registrations[0]["hooks"][0]
+    assert {"SessionStart", "SubagentStart"} <= set(hooks)
+    if host == "codex":
+        assert set(hooks) == {"SessionStart", "SubagentStart"}
+    for event in ("SessionStart", "SubagentStart"):
+        hook = hooks[event][0]["hooks"][0]
         assert hook["type"] == "command"
         name = {"SessionStart": "session-start.sh", "SubagentStart": "subagent-start.sh"}[event]
         # Each host expands its OWN variable. `${PLUGIN_ROOT}` is the Agent
@@ -159,6 +166,32 @@ def test_hooks_register_only_the_two_activation_events(host: str) -> None:
         # codex leaves the path unexpanded and codex reports nothing at all.
         root = "CLAUDE_PLUGIN_ROOT" if host == "claude-code" else "PLUGIN_ROOT"
         assert hook["command"] == f'"${{{root}}}/scripts/{name}"'
+
+
+def test_claude_code_registers_silent_capture_checkpoint_hooks() -> None:
+    """SPEC Phase 3: Stop/PreCompact checkpoint the transcript, silently, on
+    the same script -- no statusMessage, which is a visible loading
+    indicator inappropriate for a background operation the user is not
+    meant to notice at all."""
+    hooks = _json(ROOT / "plugins" / "claude-code" / "hooks" / "hooks.json")["hooks"]
+
+    assert set(hooks) == {"SessionStart", "SubagentStart", "Stop", "PreCompact"}
+    for event in ("Stop", "PreCompact"):
+        hook = hooks[event][0]["hooks"][0]
+        assert hook["type"] == "command"
+        assert hook["command"] == '"${CLAUDE_PLUGIN_ROOT}/scripts/capture-checkpoint.sh"'
+        assert "statusMessage" not in hook
+
+
+def test_capture_checkpoint_hook_is_silent_and_exits_zero_without_an_api_key() -> None:
+    """The fast, deterministic half of the silence guarantee: no key means
+    the script must exit before ever reaching uvx/the network, with zero
+    stdout/stderr regardless."""
+    result = _script("claude-code", "capture-checkpoint.sh")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
 
 
 @pytest.mark.parametrize("host", NATIVE)

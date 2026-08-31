@@ -98,23 +98,37 @@ class RetainItem:
     caller-supplied metadata."""
 
     content: str
-    document_id: str
-    metadata: dict[str, Any]
-    tags: list[str]
-    observation_scopes: list[list[str]]
-    strategy: str
+    # None lets Hindsight assign a fresh document -- the explicit
+    # human-request surface's normal case. The capture pipeline always
+    # supplies its deterministic content-addressed slice key instead.
+    document_id: str | None = None
+    metadata: dict[str, Any] | None = None
+    context: str | None = None
+    tags: list[str] | None = None
+    observation_scopes: list[list[str]] | None = None
+    strategy: str | None = None
     update_mode: str = "append"
 
     def to_payload(self) -> dict[str, Any]:
-        return {
-            "content": self.content,
-            "document_id": self.document_id,
-            "update_mode": self.update_mode,
-            "metadata": self.metadata,
-            "tags": self.tags,
-            "observation_scopes": self.observation_scopes,
-            "strategy": self.strategy,
-        }
+        item: dict[str, Any] = {"content": self.content, "update_mode": self.update_mode}
+        if self.document_id is not None:
+            # Same guard retain() applies (SPEC §12.2): a document_id this
+            # service would refuse to read/delete later must not be
+            # writable either, or the document it names is unreachable the
+            # moment it exists.
+            paths.reject_document_traversal(self.document_id)
+            item["document_id"] = self.document_id
+        if self.metadata:
+            item["metadata"] = self.metadata
+        if self.context is not None:
+            item["context"] = self.context
+        if self.tags is not None:
+            item["tags"] = self.tags
+        if self.observation_scopes is not None:
+            item["observation_scopes"] = self.observation_scopes
+        if self.strategy is not None:
+            item["strategy"] = self.strategy
+        return item
 
 
 class HindsightClient:
@@ -325,18 +339,31 @@ class HindsightClient:
         return self._request("GET", paths.config(self._tenant, bank_id))
 
     def retain_items(
-        self, bank_id: str, items: list[RetainItem], *, operation_id: str
+        self,
+        bank_id: str,
+        items: list[RetainItem],
+        *,
+        operation_id: str,
+        is_async: bool = True,
     ) -> dict:
-        """One async retain call for several already-classified candidates
-        sharing one resolved bank (SPEC Phase 3 §6). `operation_id` is the
-        caller's deterministic UUIDv5 (one per (capture_id, bank_kind)),
-        validated here so a caller bug surfaces before the network call
-        rather than as an opaque upstream 422.
+        """A retain call for several already-classified candidates sharing
+        one resolved bank (SPEC Phase 3 §6), or the explicit human-request
+        surface's single trusted item. `operation_id` is validated here so a
+        caller bug surfaces before the network call rather than as an
+        opaque upstream 422 -- the capture pipeline's is a deterministic
+        UUIDv5 (one per (capture_id, bank_kind)); the explicit surface's is
+        caller-supplied or freshly generated, exactly as retain()'s already
+        was.
 
         Each item carries its own metadata/tags/observation_scopes/strategy
         through the trusted `RetainItem` shape -- never a bare dict, which
         would let arbitrary MCP-supplied metadata smuggle in fields only
         server-side classification may set (SPEC non-negotiable contract).
+
+        `is_async` mirrors retain()'s own toggle exactly, timeout included:
+        sync_retain's caller blocks on Hindsight's extraction LLM and needs
+        the long read timeout; async returns the moment Hindsight accepts
+        the operation.
         """
         try:
             uuid.UUID(operation_id)
@@ -345,11 +372,14 @@ class HindsightClient:
 
         body: dict[str, Any] = {
             "items": [item.to_payload() for item in items],
-            "async": True,
+            "async": is_async,
             "operation_id": operation_id,
         }
         return self._request(
-            "POST", paths.retain(self._tenant, bank_id), body, timeout=None
+            "POST",
+            paths.retain(self._tenant, bank_id),
+            body,
+            timeout=None if is_async else self._llm_timeout,
         )
 
     def recall(self, bank_id: str, query: str, with_entities: bool = True) -> dict:

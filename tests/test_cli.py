@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import subprocess
 import tomllib
@@ -1313,3 +1314,272 @@ def test_brief_says_so_when_there_is_none(monkeypatch, capsys):
 
     assert cli.main(["brief", "--url", "https://memory.test"]) == 1
     assert "no brief" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Task 7: capture-checkpoint / capture-worker / capture-check dispatch
+# ---------------------------------------------------------------------------
+
+
+def _real_stop_hook_event() -> dict:
+    return {
+        "session_id": "sess-1",
+        "transcript_path": "/home/user/.claude/projects/-repo/sess-1.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "Stop",
+        "stop_hook_active": False,
+    }
+
+
+def _real_precompact_hook_event() -> dict:
+    return {
+        "session_id": "sess-1",
+        "transcript_path": "/home/user/.claude/projects/-repo/sess-1.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreCompact",
+        "trigger": "auto",
+    }
+
+
+@pytest.mark.parametrize(
+    "hook_event", [_real_stop_hook_event(), _real_precompact_hook_event()], ids=["Stop", "PreCompact"]
+)
+def test_capture_checkpoint_calls_the_same_command_for_stop_and_precompact(
+    monkeypatch, capsys, hook_event
+):
+    """Both hook events funnel through the identical checkpoint command with
+    transcript/session/cwd fields intact, produce zero stdout/stderr, and
+    exit 0."""
+    seen = {}
+
+    def fake_checkpoint(event, *, env):
+        seen["event"] = event
+        seen["env"] = env
+
+    monkeypatch.setattr("memory.capture.local.checkpoint", fake_checkpoint)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(hook_event)))
+
+    exit_code = cli.main(["capture-checkpoint"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert seen["event"]["transcript_path"] == hook_event["transcript_path"]
+    assert seen["event"]["session_id"] == hook_event["session_id"]
+    assert seen["event"]["cwd"] == hook_event["cwd"]
+
+
+def test_capture_checkpoint_url_argument_overrides_the_environment(monkeypatch, capsys):
+    seen = {}
+
+    def fake_checkpoint(event, *, env):
+        seen["url"] = env.get("ACH_MEMORY_URL")
+
+    monkeypatch.setattr("memory.capture.local.checkpoint", fake_checkpoint)
+    monkeypatch.setenv("ACH_MEMORY_URL", "http://env-default.test")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_real_stop_hook_event())))
+
+    exit_code = cli.main(["capture-checkpoint", "--url", "http://from-argument.test"])
+
+    assert exit_code == 0
+    assert seen["url"] == "http://from-argument.test"
+
+
+@pytest.mark.parametrize(
+    "stdin_text", ["not json at all", "[]", "42", '{"unterminated'], ids=repr
+)
+def test_capture_checkpoint_never_fails_on_malformed_stdin(monkeypatch, capsys, stdin_text):
+    called = []
+    monkeypatch.setattr(
+        "memory.capture.local.checkpoint", lambda *a, **k: called.append(True)
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin_text))
+
+    exit_code = cli.main(["capture-checkpoint"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert called == []
+
+
+def test_capture_checkpoint_treats_empty_stdin_as_an_empty_hook_event(monkeypatch, capsys):
+    """Empty stdin is not malformed JSON -- it safely reaches checkpoint()
+    as {}, which local.checkpoint's own contract already no-ops on (missing
+    transcript_path/session_id/cwd)."""
+    seen = []
+    monkeypatch.setattr(
+        "memory.capture.local.checkpoint", lambda event, **k: seen.append(event)
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+
+    exit_code = cli.main(["capture-checkpoint"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert seen == [{}]
+
+
+def test_capture_checkpoint_returns_zero_even_when_checkpoint_itself_blows_up(
+    monkeypatch, capsys
+):
+    """checkpoint() already never raises (its own docstring), but the CLI
+    wrapper's contract does not depend on that -- nothing here may block
+    Stop regardless of what capture.local does."""
+
+    def boom(*a, **k):
+        raise RuntimeError("simulated capture failure")
+
+    monkeypatch.setattr("memory.capture.local.checkpoint", boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_real_stop_hook_event())))
+
+    with pytest.raises(RuntimeError):
+        cli.main(["capture-checkpoint"])
+
+
+def test_capture_worker_once_calls_run_once_and_exits_zero(monkeypatch, configured_env):
+    calls = []
+
+    class _FakeDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("memory.db.session_scope", lambda: _FakeDB())
+    monkeypatch.setattr(
+        "memory.capture.worker.run_once", lambda db, client: calls.append((db, client)) or True
+    )
+
+    exit_code = cli.main(["capture-worker", "--once"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_capture_check_reports_ok_and_exits_zero(monkeypatch, configured_env):
+    from memory.capture.configuration import VerifyResult
+
+    monkeypatch.setattr(
+        "memory.capture.configuration.verify_bank",
+        lambda client, bank_id, desired: VerifyResult(
+            extraction_ok=True, facts=["x"], config_drift={}
+        ),
+    )
+
+    class _FakeProject:
+        bank_id = "project_x"
+        owner_type = "user"
+        owner_id = "usr_1"
+
+    class _FakeQuery:
+        def filter_by(self, **kwargs):
+            return self
+
+        def first(self):
+            return _FakeProject()
+
+    class _FakeDB:
+        def query(self, model):
+            return _FakeQuery()
+
+        def get(self, model, id_):
+            return SimpleNamespace(bank_id="user_x")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("memory.db.session_scope", lambda: _FakeDB())
+
+    exit_code = cli.main(["capture-check", "--scope", "project", "--project", "acme-api"])
+
+    assert exit_code == 0
+
+
+def test_capture_check_reports_failure_and_exits_nonzero_on_drift(monkeypatch, configured_env):
+    from memory.capture.configuration import VerifyResult
+
+    monkeypatch.setattr(
+        "memory.capture.configuration.verify_bank",
+        lambda client, bank_id, desired: VerifyResult(
+            extraction_ok=True, facts=["x"], config_drift={"retain_default_strategy": {}}
+        ),
+    )
+
+    class _FakeProject:
+        bank_id = "project_x"
+        owner_type = "user"
+        owner_id = "usr_1"
+
+    class _FakeQuery:
+        def filter_by(self, **kwargs):
+            return self
+
+        def first(self):
+            return _FakeProject()
+
+    class _FakeDB:
+        def query(self, model):
+            return _FakeQuery()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("memory.db.session_scope", lambda: _FakeDB())
+
+    exit_code = cli.main(["capture-check", "--scope", "project", "--project", "acme-api"])
+
+    assert exit_code == 1
+
+
+def test_capture_check_never_calls_a_patch_or_retain_endpoint(monkeypatch, configured_env):
+    """verify_bank() itself only reads (dry-run-extract, GET config); this
+    pins that the CLI layer adds no write of its own on top."""
+    from memory.capture.configuration import VerifyResult
+
+    calls = []
+    monkeypatch.setattr(
+        "memory.capture.configuration.verify_bank",
+        lambda client, bank_id, desired: calls.append((bank_id, desired))
+        or VerifyResult(extraction_ok=True, facts=["x"], config_drift={}),
+    )
+
+    class _FakeProject:
+        bank_id = "project_x"
+        owner_type = "user"
+        owner_id = "usr_1"
+
+    class _FakeQuery:
+        def filter_by(self, **kwargs):
+            return self
+
+        def first(self):
+            return _FakeProject()
+
+    class _FakeDB:
+        def query(self, model):
+            return _FakeQuery()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("memory.db.session_scope", lambda: _FakeDB())
+
+    cli.main(["capture-check", "--scope", "project", "--project", "acme-api"])
+
+    assert len(calls) == 1
+    assert calls[0][0] == "project_x"

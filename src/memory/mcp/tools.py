@@ -22,6 +22,7 @@ its safe, caller-authored message, and anything else becomes a fixed
 """
 
 import logging
+import uuid
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -33,6 +34,9 @@ from memory import working_state as working_state_domain
 from memory.api.curation import CorrectRequest, ListMemoriesRequest
 from memory.api.documents import ListDocumentsRequest
 from memory.api.memory import (
+    EXPLICIT_RETAIN_OBSERVATION_SCOPES,
+    EXPLICIT_RETAIN_STRATEGY,
+    EXPLICIT_RETAIN_TAGS,
     MAX_PAGE_SIZE,
     RetainRequest,
     ScopedRequest,
@@ -51,7 +55,7 @@ from memory.contracts import (
     WorkspaceId,
 )
 from memory.errors import DomainError
-from memory.hindsight.client import get_client
+from memory.hindsight.client import RetainItem, get_client
 from memory.mcp.compact import compact as compact_payload
 from memory.mcp.server import tool_session
 from memory.working_state import WorkingStateWrite
@@ -414,12 +418,16 @@ def _set_working_state(db, principal, body: WorkingStateWrite) -> ToolResult:
 def register(mcp: MCPServer) -> None:
     @mcp.tool(
         description=(
-            "Store something worth remembering. Write the content in English "
-            "whatever language the conversation is in: retrieval reranks in "
-            "English only, so a fact stored in another language is not found "
-            "by an English query. Returns immediately with an operation you "
-            "can follow with get_operation; use sync_retain when you need to "
-            "read it back straight away."
+            "Store something worth remembering, for an explicit human "
+            "'remember this' request. Captures it as evidence, not "
+            "guaranteed profile truth -- an automatic background pass is "
+            "what promotes routine observations to standing preferences or "
+            "conventions. Write the content in English whatever language "
+            "the conversation is in: retrieval reranks in English only, so "
+            "a fact stored in another language is not found by an English "
+            "query. Returns immediately with an operation you can follow "
+            "with get_operation; use sync_retain when you need to read it "
+            "back straight away."
         ),
     )
     def retain(
@@ -440,9 +448,11 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Store something and wait until it is searchable. Write the "
-            "content in English whatever language the conversation is in: "
-            "retrieval reranks in English only."
+            "Store something and wait until it is searchable, for an "
+            "explicit human 'remember this' request. Captures it as "
+            "evidence, not guaranteed profile truth. Write the content in "
+            "English whatever language the conversation is in: retrieval "
+            "reranks in English only."
         ),
     )
     def sync_retain(
@@ -1023,10 +1033,22 @@ def _retain(ctx, scope, content, project_slug, git_locator, document_id,
         # even when the caller named a retired one.
         extraction = provenance.build(metadata, project_slug=slug)
         client = get_client()
-        return client.retain(
-            bank_id, content, document_id=document_id,
-            metadata=extraction or None, context=provenance.context_line(extraction),
-            update_mode=update_mode, is_async=is_async, operation_id=operation_id,
+        # SPEC Phase 3: explicit retain is evidence, not guaranteed profile
+        # truth -- tags/observation_scopes/strategy are fixed, never taken
+        # from `metadata` or any other MCP argument. Classification (kind,
+        # origin, eligibility) is the automatic capture pipeline's job.
+        item = RetainItem(
+            content=content,
+            document_id=document_id,
+            metadata=extraction or None,
+            context=provenance.context_line(extraction),
+            tags=list(EXPLICIT_RETAIN_TAGS),
+            observation_scopes=[list(scope) for scope in EXPLICIT_RETAIN_OBSERVATION_SCOPES],
+            strategy=EXPLICIT_RETAIN_STRATEGY,
+            update_mode=update_mode,
+        )
+        return client.retain_items(
+            bank_id, [item], operation_id=operation_id or str(uuid.uuid4()), is_async=is_async
         )
 
     return _run(ctx, body_factory, "memory.retain", call, create=True, is_write=True)
