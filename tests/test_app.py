@@ -70,6 +70,8 @@ EXPECTED_ROUTES = {
     ("POST", "/v1/mental-models/{mental_model_id}/refresh"),
     ("POST", "/v1/mental-models/{mental_model_id}/clear"),
     ("GET", "/v1/session-brief"),
+    ("POST", "/v1/working-state/sessions"),
+    ("PUT", "/v1/working-state"),
 }
 
 
