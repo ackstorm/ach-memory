@@ -20,7 +20,14 @@ revision omitted: a cost guardrail and a content-level threat model. Rev. 6
 codifies two closed-list additions to §18 that landed in code without a
 matching revision bump at the time — `RATE_LIMITED` (Plan 4's write limiter)
 and `INVALID_REQUEST` (the MCP tool-input validation boundary) — recorded here
-retroactively by the Plan 4 final review.
+retroactively by the Plan 4 final review. Rev. 7 codifies a third closed-list
+addition landed by the memory-quality program's Phase 3 (capture and write
+quality; see `docs/plans/2026-08-29-memory-quality-program.md`): two new §18
+codes for `POST /v1/capture/checkpoints`, `CAPTURE_INTEGRITY_ERROR` and
+`CAPTURE_CONFLICT`. That program's Working State and capture-pipeline surfaces
+are otherwise specified in `docs/specs/2026-08-29-memory-quality-v1.4.md`, not
+here; this file gains only the closed-list entries every caller-facing error
+code must appear in.
 
 Everything below is settled unless explicitly listed in §25.
 

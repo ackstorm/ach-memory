@@ -58,6 +58,8 @@ Phase 0 is last by explicit product decision. This overrides only the execution 
 
 ## Phase 2 — Working State
 
+**Status:** Implemented and integrated at `8a081ba`. The follow-up implementation review's seven bounded contract gaps were closed in Phase 3 Task 0 (`99c391f`) before any automatic writer depended on this boundary.
+
 **Purpose:** Add explicit, ephemeral continuity without letting current task state become durable memory.
 
 **Detailed plan must cover:**
@@ -74,6 +76,8 @@ Phase 0 is last by explicit product decision. This overrides only the execution 
 **Out of scope:** automatic transcript capture and concurrent merge semantics for a shared workspace.
 
 ## Phase 3 — Capture and Write Quality
+
+**Status:** Implementation and its focused delivery gate are complete (Tasks 0–9; `test_capture_e2e.py`'s replay scenario is the gate's proof). All production mutation/activation flags remain off: `MEMORY_CAPTURE_ENABLED` (local hook), `MEMORY_CAPTURE_WORKER_ENABLED` and `MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED` (server) all default `false`, no code path PATCHes Hindsight bank config, and mental-model input configuration is unchanged. This is implementation-complete, not production-enabled -- the deferred switch below and the rollout order in `deploy/helm/README.md` are still gated on Phase 0.
 
 **Purpose:** Replace unstructured mid-task fact drip with a single, idempotent pipeline that emits classified, one-claim candidates and Working State.
 
