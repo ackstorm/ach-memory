@@ -28,7 +28,7 @@ The following delivery gaps remain and are the first detailed-plan scope:
 1. Bound the full tier to the SPEC's provisional context budget rather than composing every available profile line.
 2. Make cache age visible for every cached tier, not only the hook's offline fallback.
 3. State unambiguously in delivered context when the full tier is unavailable and the session has only the MCP index.
-4. Preserve the existing design decision that host policy is outside dynamic memory; record that as the intended interpretation of SPEC §11.4 rather than moving policy back into the brief.
+4. Preserve the existing design decision that host policy is outside dynamic memory: the SessionStart-delivered Full payload includes the static consumer contract from host activation plus the dynamic brief from `/v1/session-brief`; the compiler does not synthesize or duplicate that policy.
 
 ## Program Order
 
@@ -38,7 +38,7 @@ Phase 1 closure → Phase 2 Working State → Phase 3 capture quality
         → Phase 0 production hygiene and final profile-input gate
 ```
 
-Phase 0 is last by explicit product decision. Nothing in this program authorizes a mutation of production memory before that final phase receives a separate, explicit approval.
+Phase 0 is last by explicit product decision. This overrides only the execution order shown in SPEC §17; its operations, lifecycle probe and gate remain unchanged. Nothing in this program authorizes a mutation of production memory before that final phase receives a separate, explicit approval.
 
 ## Phase 1 Closure — Delivery Conformance
 
