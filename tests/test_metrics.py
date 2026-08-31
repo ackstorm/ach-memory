@@ -27,6 +27,8 @@ def test_metrics_declares_every_collector(client):
         "memory_errors_total",
         "memory_hindsight_request_seconds",
         "memory_http_requests_total",
+        "memory_capture_stage_total",
+        "memory_capture_stage_duration_seconds",
     ):
         assert name in body, name
 
@@ -119,4 +121,77 @@ async def test_an_mcp_request_gets_its_own_route_label_not_unmatched(app):
 
     assert response.status_code == 200
     after = _sample("memory_http_requests_total", route="/mcp", method="POST", status="200")
+    assert after == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Task 8: capture worker stage/outcome/duration -- content-free by
+# construction (label values are a closed set the source code chooses, never
+# a caller-supplied session/project id, hash or bank id).
+# ---------------------------------------------------------------------------
+
+
+def test_capture_stage_labels_are_a_closed_set_with_no_identity_in_them():
+    """The metric declaration itself, not a live increment: proves the
+    label SET is exactly stage/outcome -- never a session id, project slug,
+    content hash or bank id, regardless of what any future caller does."""
+    from memory import metrics
+
+    assert metrics.CAPTURE_STAGE._labelnames == ("stage", "outcome")
+    assert metrics.CAPTURE_STAGE_DURATION._labelnames == ("stage",)
+
+
+def test_a_capture_extraction_stage_increments_the_stage_counter(session, tenant):
+    import respx
+    from httpx import Response
+
+    from memory import ids
+    from memory.auth.principal import Principal
+    from memory.capture import repository, worker
+    from memory.hindsight.client import HindsightClient
+    from memory.models import Project, User
+
+    user = User(id="usr_cap_m", tenant_id=tenant, bank_id=ids.new_user_bank_id())
+    project = Project(
+        internal_id=ids.new_project_internal_id(),
+        tenant_id=tenant,
+        project_slug="acme-metrics",
+        owner_type="user",
+        owner_id="usr_cap_m",
+        bank_id=ids.new_project_bank_id(),
+    )
+    session.add_all([user, project])
+    session.flush()
+    principal = Principal(
+        tenant_id=tenant, user_id="usr_cap_m", is_master=False, key_id="k", credential_id="k"
+    )
+    result = repository.accept_checkpoint(
+        session,
+        principal,
+        host="claude-code",
+        session_id="sess-metrics",
+        project_slug="acme-metrics",
+        git_locator=None,
+        workspace_id="ws_" + "a" * 32,
+        start_offset=0,
+        end_offset=100,
+        content_hash="a" * 64,
+        sanitized_hash="b" * 64,
+        content="user: hello",
+    )
+    session.commit()
+
+    before = _sample("memory_capture_stage_total", stage="extract", outcome="advanced")
+
+    client = HindsightClient(base_url="http://hindsight.test", api_key="k", tenant_id="default")
+    with respx.mock:
+        respx.post(
+            f"http://hindsight.test/v1/default/banks/{project.bank_id}/memories/dry-run-extract"
+        ).mock(return_value=Response(200, json={"facts": []}))
+        worker.process_row(
+            session, client, result.row, max_attempts=8, correction_refresh_enabled=False
+        )
+    session.commit()
+
+    after = _sample("memory_capture_stage_total", stage="extract", outcome="advanced")
     assert after == before + 1

@@ -252,3 +252,40 @@ metrics:
     labels: {}
     relabelings: []
     metricRelabelings: []
+
+# SPEC Phase 3's durable capture-queue worker: a separate Deployment (no
+# Service, no Ingress -- it serves nothing, only leases rows and calls
+# Hindsight/the database) running `ach-memory capture-worker`.
+#
+# Two independent gates, both off by default:
+#   - enabled:       whether this Deployment renders at all.
+#   - workerEnabled: MEMORY_CAPTURE_WORKER_ENABLED -- whether the process
+#                     inside it ever calls acquire_lease(). Disabled means no
+#                     lease acquisition, not "lease then skip".
+# Turning enabled on with workerEnabled still false stages the rollout (image
+# pulled, config wired, pod healthy) without leasing anything -- useful for
+# an isolated canary before the real switch. Enabling this chart is not
+# production enablement by itself: it is one step in the order documented in
+# deploy/helm/README.md (migration, read-only capture-check, reviewed config
+# diff/PATCH, isolated canary worker, replay test, then hook rollout) --
+# Phase 0 supplies the separate approval for that whole sequence.
+captureWorker:
+  enabled: false
+  workerEnabled: false
+  replicaCount: 1
+  # MEMORY_CAPTURE_WORKER_POLL_INTERVAL_SECONDS / _LEASE_SECONDS /
+  # _MAX_ATTEMPTS / _BATCH_SIZE.
+  pollIntervalSeconds: 5
+  leaseSeconds: 60
+  maxAttempts: 8
+  batchSize: 5
+  # MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED. Off until the Phase 0
+  # invalidation/delta-refresh probe passes -- this flag is Phase 3's
+  # plumbing for that later switch, not the switch itself.
+  correctionRefreshEnabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi

@@ -1,0 +1,97 @@
+{{- if .Values.captureWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ach-memory.fullname" . }}-capture-worker
+  labels:
+    {{- include "ach-memory.labels" . | nindent 4 }}
+    app.kubernetes.io/component: capture-worker
+spec:
+  replicas: {{ .Values.captureWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ach-memory.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: capture-worker
+  template:
+    metadata:
+      labels:
+        {{- include "ach-memory.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: capture-worker
+    spec:
+      # Longer than leaseSeconds below: SIGTERM sets run_forever()'s stop
+      # Event, which finishes whatever single externally-visible stage is in
+      # flight (never longer than one Hindsight/database call) before
+      # exiting. A grace period shorter than the lease this pod is mid-using
+      # would force-kill it while another worker still sees the row as
+      # leased and skips it too.
+      terminationGracePeriodSeconds: {{ add .Values.captureWorker.leaseSeconds 30 }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: capture-worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["ach-memory", "capture-worker"]
+          env:
+            # Same database/Hindsight configuration the API Deployment gets
+            # -- the worker reads and writes the exact same tables and calls
+            # the exact same Hindsight banks, just out of band from any
+            # request.
+            - name: MEMORY_DATABASE_URL
+              value: {{ required "config.databaseUrl is required (MEMORY_DATABASE_URL)" .Values.config.databaseUrl | quote }}
+            - name: MEMORY_HINDSIGHT_URL
+              value: {{ required "config.hindsight.url is required (MEMORY_HINDSIGHT_URL)" .Values.config.hindsight.url | quote }}
+            {{- if .Values.config.hindsight.apiKeySecret.name }}
+            - name: MEMORY_HINDSIGHT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.hindsight.apiKeySecret.name }}
+                  key: {{ .Values.config.hindsight.apiKeySecret.key }}
+            {{- else }}
+            - name: MEMORY_HINDSIGHT_API_KEY
+              value: {{ .Values.config.hindsight.apiKey | quote }}
+            {{- end }}
+            - name: MEMORY_MASTER_KEY_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ach-memory.masterKeySecretName" . }}
+                  key: {{ .Values.masterKeySecret.key }}
+            - name: MEMORY_TENANT_ID
+              value: {{ .Values.config.tenantId | quote }}
+            - name: MEMORY_HINDSIGHT_TIMEOUT_SECONDS
+              value: {{ .Values.config.timeoutSeconds | quote }}
+            - name: MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS
+              value: {{ .Values.config.llmTimeoutSeconds | quote }}
+            - name: MEMORY_CAPTURE_WORKER_ENABLED
+              value: {{ .Values.captureWorker.workerEnabled | quote }}
+            - name: MEMORY_CAPTURE_WORKER_POLL_INTERVAL_SECONDS
+              value: {{ .Values.captureWorker.pollIntervalSeconds | quote }}
+            - name: MEMORY_CAPTURE_WORKER_LEASE_SECONDS
+              value: {{ .Values.captureWorker.leaseSeconds | quote }}
+            - name: MEMORY_CAPTURE_WORKER_MAX_ATTEMPTS
+              value: {{ .Values.captureWorker.maxAttempts | quote }}
+            - name: MEMORY_CAPTURE_WORKER_BATCH_SIZE
+              value: {{ .Values.captureWorker.batchSize | quote }}
+            - name: MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED
+              value: {{ .Values.captureWorker.correctionRefreshEnabled | quote }}
+          resources:
+            {{- toYaml .Values.captureWorker.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

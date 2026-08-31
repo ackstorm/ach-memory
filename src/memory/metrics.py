@@ -66,6 +66,28 @@ HTTP = Counter(
 
 BUILD = Gauge("memory_build_info", "Deployed version.", ["version"])
 
+# The capture worker (memory/capture/worker.py) has no per-request edge to
+# report through activity.py's ContextVar-based CALLS/CALL_DURATION (see
+# that module's docstring) -- these are its equivalent, Prometheus-only.
+# `stage` is the closed set {"extract", "retain", "apply"} and `outcome` is
+# the closed set {"advanced", "waiting", "failed"} ("waiting" is not a
+# failure: it means an operation Hindsight is still working on, checked
+# again next poll). Never a session id, a project slug, a content hash or a
+# bank id -- exactly the same discipline as every other label in this file.
+CAPTURE_STAGE = Counter(
+    "memory_capture_stage_total",
+    "Capture queue worker stage transitions.",
+    ["stage", "outcome"],
+)
+
+CAPTURE_STAGE_DURATION = Histogram(
+    "memory_capture_stage_duration_seconds",
+    "Wall time of one capture worker stage (one externally visible action: "
+    "an extraction call, a retain call, an operation poll, or a Working "
+    "State write).",
+    ["stage"],
+)
+
 
 def _version() -> str:
     try:

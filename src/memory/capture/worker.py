@@ -22,12 +22,13 @@ at an unchanged checkpoint).
 """
 
 import threading
+import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
-from memory import working_state
+from memory import metrics, working_state
 from memory.auth.principal import Principal
 from memory.capture import filer, repository
 from memory.capture.contracts import NormalizedCandidate, WorkingStateEnvelope
@@ -39,6 +40,8 @@ from memory.models import CaptureSlice, Project, User
 from memory.working_state import WorkingStateWrite
 
 _WORKER_PRINCIPAL_KEY_ID = "capture-worker"
+
+StageOutcome = Literal["advanced", "waiting", "failed"]
 
 
 def _serialize_extraction(result: ExtractionResult) -> dict[str, Any]:
@@ -86,7 +89,7 @@ def _worker_principal(row: CaptureSlice) -> Principal:
 
 def _extract_stage(
     db: Session, client: HindsightClient, row: CaptureSlice, *, max_attempts: int
-) -> None:
+) -> StageOutcome:
     project = db.get(Project, row.project_internal_id)
     try:
         result = extract(client, project.bank_id, row.sanitized_content or "")
@@ -94,23 +97,24 @@ def _extract_stage(
         code = "EXTRACTION_FAILED" if isinstance(exc, ExtractionFailed) else "HINDSIGHT_UNAVAILABLE"
         repository.record_failure(db, row, error_code=code, max_attempts=max_attempts)
         db.commit()
-        return
+        return "failed"
 
     repository.advance_stage(
         db, row, status="retaining", extraction=_serialize_extraction(result)
     )
     db.commit()
+    return "advanced"
 
 
 def _retain_stage(
     db: Session, client: HindsightClient, row: CaptureSlice, *, max_attempts: int
-) -> None:
+) -> StageOutcome:
     extraction = _deserialize_extraction(row.extraction)
 
     if not extraction.candidates:
         repository.advance_stage(db, row, status="applying")
         db.commit()
-        return
+        return "advanced"
 
     if row.hindsight_operations is None:
         # Sub-stage 1: persist deterministic operation IDs before ever
@@ -126,7 +130,7 @@ def _retain_stage(
         }
         repository.advance_stage(db, row, status="retaining", hindsight_operations=operations)
         db.commit()
-        return
+        return "advanced"
 
     # Sub-stage 2: retain exactly one not-yet-acknowledged bank's items,
     # using the operation ID already persisted for it.
@@ -135,7 +139,7 @@ def _retain_stage(
     if pending_bank is None:
         repository.advance_stage(db, row, status="applying")
         db.commit()
-        return
+        return "advanced"
 
     doc_id = filer.document_id(row.session_id, row.start_offset, row.end_offset, row.content_hash)
     items_by_bank = filer.build_items(
@@ -157,7 +161,7 @@ def _retain_stage(
     except HindsightError:
         repository.record_failure(db, row, error_code="RETAIN_FAILED", max_attempts=max_attempts)
         db.commit()
-        return
+        return "failed"
 
     operations[pending_bank] = {**operations[pending_bank], "acknowledged": True}
     all_acknowledged = all(op["acknowledged"] for op in operations.values())
@@ -168,6 +172,7 @@ def _retain_stage(
         hindsight_operations=operations,
     )
     db.commit()
+    return "advanced"
 
 
 def _applying_stage(
@@ -177,7 +182,7 @@ def _applying_stage(
     *,
     max_attempts: int,
     correction_refresh_enabled: bool,
-) -> None:
+) -> StageOutcome:
     operations = row.hindsight_operations or {}
 
     for bank_kind, op in operations.items():
@@ -189,13 +194,13 @@ def _applying_stage(
                 db, row, error_code="OPERATION_POLL_FAILED", max_attempts=max_attempts
             )
             db.commit()
-            return
+            return "failed"
         if not filer.is_complete(status_result):
             # Not ready. Not a failure either -- release the lease and let
             # the next poll cycle check again.
             repository.release_lease(db, row)
             db.commit()
-            return
+            return "waiting"
 
     extraction = _deserialize_extraction(row.extraction)
     principal = _worker_principal(row)
@@ -227,13 +232,14 @@ def _applying_stage(
                 db, row, error_code="WORKING_STATE_CONFLICT", max_attempts=max_attempts
             )
             db.commit()
-            return
+            return "failed"
 
     if correction_refresh_enabled:
         _refresh_corrected_banks(db, client, row, extraction.candidates)
 
     repository.complete(db, row)
     db.commit()
+    return "advanced"
 
 
 def _refresh_corrected_banks(
@@ -261,20 +267,30 @@ def process_row(
     max_attempts: int,
     correction_refresh_enabled: bool,
 ) -> None:
+    stage_name = {"pending": "extract", "retaining": "retain", "applying": "apply"}.get(
+        row.status
+    )
+    if stage_name is None:
+        # "completed"/"failed" rows are never leased
+        # (repository.acquire_lease); nothing to do if one somehow reaches
+        # here, and nothing worth a metric either -- there was no stage.
+        return
+
+    started = time.monotonic()
     if row.status == "pending":
-        _extract_stage(db, client, row, max_attempts=max_attempts)
+        outcome = _extract_stage(db, client, row, max_attempts=max_attempts)
     elif row.status == "retaining":
-        _retain_stage(db, client, row, max_attempts=max_attempts)
-    elif row.status == "applying":
-        _applying_stage(
+        outcome = _retain_stage(db, client, row, max_attempts=max_attempts)
+    else:
+        outcome = _applying_stage(
             db,
             client,
             row,
             max_attempts=max_attempts,
             correction_refresh_enabled=correction_refresh_enabled,
         )
-    # "completed"/"failed" rows are never leased (repository.acquire_lease);
-    # nothing to do if one somehow reaches here.
+    metrics.CAPTURE_STAGE_DURATION.labels(stage=stage_name).observe(time.monotonic() - started)
+    metrics.CAPTURE_STAGE.labels(stage=stage_name, outcome=outcome).inc()
 
 
 def run_once(
