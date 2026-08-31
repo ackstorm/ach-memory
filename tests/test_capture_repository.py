@@ -206,7 +206,9 @@ def test_record_failure_increments_attempts_and_backs_off(session, tenant):
     session.commit()
 
     assert result.row.attempt_count == 1
-    assert result.row.status == "failed"
+    # Stays at the stage that failed (still "pending") -- only max_attempts
+    # failures make it the terminal "failed"; see the dedicated test below.
+    assert result.row.status == "pending"
     assert result.row.last_error_code == "HINDSIGHT_UNAVAILABLE"
     assert result.row.available_at > result.row.updated_at - timedelta(seconds=1)
     assert result.row.lease_owner is None
@@ -239,6 +241,8 @@ def test_a_row_past_max_attempts_is_not_auto_leased(session, tenant):
     session.commit()
     result.row.available_at = result.row.available_at - timedelta(days=1)
     session.commit()
+
+    assert result.row.status == "failed"
 
     leased = repository.acquire_lease(session, owner="worker-a", lease_seconds=60, max_attempts=8)
 

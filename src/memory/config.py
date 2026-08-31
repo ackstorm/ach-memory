@@ -132,6 +132,26 @@ class Settings(BaseSettings):
     # out. 0 disables pruning entirely.
     activity_retention_days: int = Field(default=30, ge=0)
 
+    # Server-side capture worker (SPEC Phase 3). Off by default: disabled
+    # means no lease acquisition at all, not "lease then skip" -- a worker
+    # that leases and no-ops still holds rows other workers could otherwise
+    # claim. Separate from MEMORY_CAPTURE_ENABLED, which gates the local
+    # hook client and is read directly from the environment (the hook has no
+    # database, so it never goes through this Settings object at all) --
+    # the client-side and server-side rollouts are deliberately independent
+    # steps.
+    capture_worker_enabled: bool = False
+    capture_worker_poll_interval_seconds: float = Field(default=5.0, gt=0)
+    capture_worker_lease_seconds: int = Field(default=60, gt=0)
+    capture_worker_max_attempts: int = Field(default=8, ge=1)
+    capture_worker_batch_size: int = Field(default=5, ge=1)
+    # Mental-model refresh on an explicit human correction. Default off:
+    # observation-only mental-model inputs stay disabled until the Phase 0
+    # invalidation/delta-refresh probe passes (SPEC Phase 3 non-negotiable
+    # contract) -- this flag is Phase 3's plumbing for that later switch,
+    # not the switch itself.
+    capture_correction_refresh_enabled: bool = False
+
     @field_validator("master_key_hash")
     @classmethod
     def _normalize_hash(cls, value: str) -> str:

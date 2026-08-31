@@ -153,16 +153,18 @@ def acquire_lease(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> list[CaptureSlice]:
     """Claim up to `batch_size` rows ready to run, skipping any another
-    worker already holds. A `failed` row is claimable again only below
-    `max_attempts` -- past that it stays put for a master-only reset."""
+    worker already holds. `status` names the stage still to run (pending,
+    retaining, applying, ...) and never resets to a generic "failed" below
+    `max_attempts` -- see record_failure() -- so a retried row resumes at
+    the exact stage that failed rather than restarting from pending. Only
+    once a row reaches `max_attempts` does it become the terminal `failed`
+    and stop being claimable here at all."""
     now = db.execute(select(func.now())).scalar_one()
     rows = db.scalars(
         select(CaptureSlice)
         .where(
-            or_(
-                CaptureSlice.status.in_(_ACTIVE_STATUSES),
-                (CaptureSlice.status == "failed") & (CaptureSlice.attempt_count < max_attempts),
-            ),
+            CaptureSlice.status.in_(_ACTIVE_STATUSES),
+            CaptureSlice.attempt_count < max_attempts,
             CaptureSlice.available_at <= now,
             or_(CaptureSlice.lease_until.is_(None), CaptureSlice.lease_until <= now),
         )
@@ -191,14 +193,24 @@ def advance_stage(
     extraction: dict | list | None = None,
     hindsight_operations: dict | list | None = None,
 ) -> None:
-    """Persist one stage's result. A retry never reruns a successful stage:
-    the caller checks `row.extraction`/`row.hindsight_operations` before
-    redoing the work that would populate them."""
+    """Persist one stage's result and relinquish the lease. A retry never
+    reruns a successful stage: the caller checks
+    `row.extraction`/`row.hindsight_operations` before redoing the work
+    that would populate them.
+
+    Always releases the lease: every call site is the end of one lease
+    invocation's single externally-visible stage (worker.process_row's
+    docstring), so the row must be immediately re-leasable for its next
+    stage rather than sitting locked until the lease it already used
+    expires.
+    """
     row.status = status
     if extraction is not None:
         row.extraction = extraction
     if hindsight_operations is not None:
         row.hindsight_operations = hindsight_operations
+    row.lease_owner = None
+    row.lease_until = None
     db.flush()
 
 
@@ -207,16 +219,24 @@ def record_failure(
     row: CaptureSlice,
     *,
     error_code: str,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     backoff_cap_seconds: int = DEFAULT_BACKOFF_CAP_SECONDS,
 ) -> None:
+    """Bump attempts and back off, but leave `status` at whichever stage
+    just failed -- pending/retaining/applying -- so the next lease resumes
+    there instead of restarting from pending. Only past `max_attempts` does
+    the row become the terminal `failed`, at which point acquire_lease()
+    stops claiming it and a master-only operational reset is what's left.
+    """
     row.attempt_count += 1
-    row.status = "failed"
     row.last_error_code = error_code
     row.lease_owner = None
     row.lease_until = None
     now = db.execute(select(func.now())).scalar_one()
     delay = min(backoff_cap_seconds, 2**row.attempt_count)
     row.available_at = now + timedelta(seconds=delay)
+    if row.attempt_count >= max_attempts:
+        row.status = "failed"
     db.flush()
 
 

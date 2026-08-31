@@ -1483,6 +1483,78 @@ def test_old_working_state_age_is_visible_with_no_staleness_label(client, two_us
 
 
 @respx.mock
+def test_a_capture_worker_completed_slice_delivers_automatic_state_in_the_brief(
+    client, two_users, session, monkeypatch
+):
+    """SPEC Phase 3: the durable worker is the only *automatic* Working
+    State writer. This drives one checkpoint through POST /v1/capture/
+    checkpoints and memory.capture.worker.run_once() end to end, then
+    proves the next brief carries what it wrote -- objective, age and
+    source session, on both tiers."""
+    import hashlib
+    import json
+
+    from memory.capture import worker
+    from memory.config import get_settings
+    from memory.hindsight.client import HindsightClient
+    from memory.models import Project
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("MEMORY_CAPTURE_WORKER_ENABLED", "true")
+    get_settings.cache_clear()
+
+    _mock_user_model()
+    headers = two_users[0]["headers"]
+    client.post("/v1/projects", json={"project_slug": "acme-api"}, headers=headers)
+    project = session.query(Project).filter_by(project_slug="acme-api").one()
+
+    content = "assistant: next I'll wire the capture CLI"
+    body = {
+        "host": "claude-code",
+        "session_id": "sess-auto-1",
+        "project_slug": "acme-api",
+        "workspace_id": _WST_WS,
+        "start_offset": 0,
+        "end_offset": 100,
+        "content_hash": "a" * 64,
+        "sanitized_hash": hashlib.sha256(content.encode()).hexdigest(),
+        "content": content,
+    }
+    submitted = client.post("/v1/capture/checkpoints", json=body, headers=headers)
+    assert submitted.status_code == 202, submitted.text
+
+    envelope = {
+        "record": "working_state",
+        "objective": "Ship the capture worker",
+        "next_steps": ["Wire the capture CLI"],
+    }
+    respx.post(f"{BASE}/v1/default/banks/{project.bank_id}/memories/dry-run-extract").mock(
+        return_value=httpx.Response(200, json={"facts": [{"text": json.dumps(envelope)}]})
+    )
+
+    hindsight_client = HindsightClient(base_url=BASE, api_key="secret", tenant_id="default")
+    while worker.run_once(session, hindsight_client):
+        pass
+    get_settings.cache_clear()
+
+    full = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS, "tier": "full"},
+        headers=headers,
+    ).json()
+    index = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "project_slug": "acme-api", "workspace_id": _WST_WS, "tier": "index"},
+        headers=headers,
+    ).json()
+
+    assert "objective: Ship the capture worker" in full["instructions"]
+    assert re.search(r"age: \d+s", full["instructions"])
+    assert "source session: sess-auto-1 (epoch" in full["instructions"]
+    assert "Ship the capture worker" in index["instructions"]
+
+
+@respx.mock
 def test_phase_2_delivered_payload_gate(client, two_users, tmp_path, monkeypatch):
     """The Phase 2 acceptance test, entirely through host-facing paths: REST
     project/session/handoff, the delivered Index and Full for the right
