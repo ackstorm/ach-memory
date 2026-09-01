@@ -1,14 +1,16 @@
 """Phase 4 structured profile contracts (SPEC §4.2, §6.4, §10-§13, §17).
 
-Scope of this module *so far* (Task 1 only): the closed, bounded JSON
+Scope of this module *so far* (Tasks 1, 3 and 4): the closed, bounded JSON
 Schema/Pydantic contract a Hindsight mental model's structured output must
-match, plus structural validation of documents that could come back. This
-module does not query Hindsight, does not compute eligibility/ranking/
-displacement across a document (only the single-item durability check that
-belongs at the item boundary), and does not touch any HTTP route. Later
-Phase 4 tasks extend this same file with provisioning (Task 3), normalization/
-ranking/displacement (Task 4), brief compilation (Task 5), correction-refresh
-targeting (Task 6) and evaluation (Task 7).
+match, structural validation of documents that could come back, explicit
+provisioning of the one target mental model per bank, and the pure
+`compile_profile` pass that turns one already-fetched `reflect_response`
+into the deterministically ranked, budget-truncated active profile. This
+module still does not query Hindsight itself (`provision_profile` acts on a
+client its caller supplies; `compile_profile` takes no client at all) and
+touches no HTTP route. Later Phase 4 tasks extend this same file with brief
+compilation (Task 5), correction-refresh targeting (Task 6) and evaluation
+(Task 7).
 
 Non-negotiable contracts this module enforces (plan "Structured contracts" /
 "Non-negotiable contracts"):
@@ -29,9 +31,21 @@ Non-negotiable contracts this module enforces (plan "Structured contracts" /
   those three optional fields.
 """
 
+import hashlib
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from memory.identifiers import has_control_character
 
@@ -65,7 +79,8 @@ ProfileClaim = Annotated[str, Field(min_length=1, max_length=320), AfterValidato
 ProfileLine = Annotated[str, Field(min_length=1, max_length=240), AfterValidator(_single_line)]
 
 # Evidence IDs are opaque Hindsight memory IDs (grounding them against
-# `reflect_response.based_on.memories` is Task 4's job). No format is
+# `reflect_response.based_on.memories` is `compile_profile`'s job, below;
+# nothing at the item boundary can know which IDs are real). No format is
 # assumed beyond non-empty and defensively bounded; 200 chars comfortably
 # covers any realistic Hindsight ID while still rejecting pathological
 # payloads. Control characters are rejected for the same reason as any
@@ -714,3 +729,322 @@ def desired_phase0_trigger(scope: ProfileScope) -> dict[str, Any]:
         "response_schema": _schema_for(scope),
         "keep_trace": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Normalization, ranking and displacement (Task 4; plan "Eligibility,
+# ordering and displacement").
+#
+# `compile_profile` is the whole read path from one already-fetched
+# `reflect_response` to the active profile. Three properties shape every
+# decision below.
+#
+# 1. It works on RAW, UNTYPED dicts, not on `UserProfileDocument` /
+#    `ProjectProfileDocument`. Those models are all-or-nothing by design: a
+#    single bad item anywhere raises and takes every other item with it.
+#    That is right when validating a document we are about to send or that
+#    must be internally self-consistent as a whole, and wrong here, where
+#    the plan's eligibility table ends in "everything else -> reject from
+#    active profile" -- one item, not the response. So each raw item is
+#    validated on its own inside a try/except, which reuses every
+#    `ProfileItem` validator (durability matrix, gotcha shape, unique
+#    evidence IDs, bounded single lines, `extra="forbid"`) at exactly the
+#    per-item granularity the plan asks for. `_check_user_category` /
+#    `_check_project_category` are then applied per item for the same
+#    reason. `_reject_duplicates` is deliberately not used: duplicates here
+#    must MERGE, and it can only reject.
+#
+# 2. It is pure. No Hindsight client, no I/O, no persisted state between
+#    calls: "reads never write". The whole profile is recomputed from one
+#    snapshot every time, which is also what "profiles represent current
+#    truth" means -- displacement is simply the sorted prefix, not a
+#    stateful eviction protocol.
+#
+# 3. Nothing the model supplies decides delivery. Support is counted from
+#    grounded evidence IDs this module intersects itself; order comes from
+#    `kind_rank`/`support_count`/`claim_key` only. Array position,
+#    timestamps and any count-shaped field are never read (a count-shaped
+#    key cannot even survive `extra="forbid"`).
+# ---------------------------------------------------------------------------
+
+
+_ROOT_KEY: dict[ProfileScope, str] = {
+    "user": "user_profile",
+    "project": "project_profile",
+}
+
+# The categories each scope actually owns. Iterating this fixed tuple --
+# rather than whatever keys the response happens to carry -- means an
+# invented category contributes nothing instead of being trusted.
+_SCOPE_CATEGORIES: dict[ProfileScope, tuple[str, ...]] = {
+    "user": tuple(_USER_CATEGORY_KINDS),
+    "project": tuple(_PROJECT_CATEGORY_KINDS),
+}
+
+_SCOPE_BUDGET: dict[ProfileScope, int] = {
+    "user": USER_PROFILE_BUDGET,
+    "project": PROJECT_PROFILE_BUDGET,
+}
+
+_CATEGORY_CHECK: dict[ProfileScope, Callable[[Any, ProfileItem], None]] = {
+    "user": _check_user_category,
+    "project": _check_project_category,
+}
+
+# The plan's ranking table, spelled out cell by cell for the same reason
+# `_DURABILITY` is: the rule is short enough to state exactly, and a
+# derived shortcut would hide the one part that is easy to get wrong --
+# `negative=True` pulls ANY kind up to tier 0, because an explicit negative
+# constraint is the same class of "prevents a mistake" material as a
+# gotcha. Every (kind, negative) pair in the closed enum appears here, so a
+# lookup can never fall through.
+#
+#   0  valid gotcha or explicit negative constraint
+#   1  decision
+#   2  convention
+#   3  stated/confirmed preference
+_KIND_RANK: dict[tuple[ProfileKind, bool], int] = {
+    ("gotcha", False): 0,
+    ("gotcha", True): 0,
+    ("decision", True): 0,
+    ("convention", True): 0,
+    ("preference", True): 0,
+    ("decision", False): 1,
+    ("convention", False): 2,
+    ("preference", False): 3,
+}
+
+
+@dataclass(frozen=True)
+class CompiledProfileItem:
+    """One delivered item plus the compiler metadata the plan requires.
+
+    Deliberately a plain frozen dataclass and not a Pydantic model: every
+    value here is computed by this module from an already-validated
+    `ProfileItem`, so there is nothing left to validate and nothing that is
+    ever serialized back to Hindsight.
+
+    `evidence_ids`, `support_count` and `claim` are the authoritative
+    compiled values and are what rendering and fingerprinting must use.
+    `item` is the representative exactly as upstream sent it, kept for its
+    typed fields (`kind`, `origin`, `negative`, gotcha detail, provenance);
+    `item.evidence_ids` is that one representative's raw, ungrounded list
+    and must NOT be used as support -- it is neither grounded nor merged.
+    """
+
+    category: str
+    # Whitespace-collapsed, case-preserving claim text: the plan's
+    # "normalize whitespace without rephrasing". Two upstream spellings of
+    # one claim merge into a single item, so the delivered text must not
+    # depend on which spelling won.
+    claim: str
+    claim_key: str
+    kind_rank: int
+    support_count: int
+    evidence_ids: tuple[str, ...]
+    item: ProfileItem
+
+
+def _collapse_whitespace(value: str) -> str:
+    """Collapse runs of whitespace without touching anything else. Case and
+    wording are preserved: normalization here never rephrases."""
+    return " ".join(value.split())
+
+
+def _based_on_memory_ids(reflect_response: Any) -> frozenset[str]:
+    """The set of Hindsight memory IDs this reflection was actually built
+    from, read defensively out of `reflect_response.based_on.memories`.
+
+    No live Hindsight instance is available to pin the exact shape, so both
+    shapes seen in this repository's fixtures are accepted: a bare ID
+    string, or an object carrying an `id` string (the shape every other
+    Hindsight list endpoint uses). Anything else contributes nothing.
+
+    A missing or malformed block yields an empty set, which is the correct
+    fail-closed outcome: with nothing to ground against, every item loses
+    all of its evidence and the section degrades to empty rather than
+    delivering ungrounded claims.
+    """
+    if not isinstance(reflect_response, dict):
+        return frozenset()
+    based_on = reflect_response.get("based_on")
+    if not isinstance(based_on, dict):
+        return frozenset()
+    memories = based_on.get("memories")
+    if not isinstance(memories, list):
+        return frozenset()
+
+    memory_ids: set[str] = set()
+    for memory in memories:
+        if isinstance(memory, str):
+            candidate: Any = memory
+        elif isinstance(memory, dict):
+            candidate = memory.get("id")
+        else:
+            continue
+        if isinstance(candidate, str) and candidate:
+            memory_ids.add(candidate)
+    return frozenset(memory_ids)
+
+
+def _structured_document(scope: ProfileScope, reflect_response: Any) -> dict[str, Any]:
+    """The scope's profile document out of `reflect_response.structured_output`,
+    or `{}` when anything on the way there is missing or the wrong type.
+
+    The other scope's root key is never read: a project document handed to
+    a user compile is not partially salvaged, it is empty.
+    """
+    if not isinstance(reflect_response, dict):
+        return {}
+    structured_output = reflect_response.get("structured_output")
+    if not isinstance(structured_output, dict):
+        return {}
+    document = structured_output.get(_ROOT_KEY[scope])
+    if not isinstance(document, dict):
+        return {}
+    return document
+
+
+def _claim_key(category: str, item: ProfileItem) -> str:
+    """`sha256(normalized category + claim + negative flag)`.
+
+    The three components are JSON-encoded as a list before hashing so the
+    encoding is unambiguous: JSON quotes and escapes each string, so no
+    claim text can impersonate a category boundary the way a bare
+    concatenation would allow (`"ab" + "c"` vs `"a" + "bc"`).
+
+    `_normalized_claim` is reused verbatim rather than reimplemented, so
+    the identity this key expresses is exactly the identity Task 1's
+    `_reject_duplicates` already uses. `kind` and `origin` are excluded for
+    the same reason they are excluded there: one claim restated as a
+    different kind is still one claim.
+    """
+    payload = json.dumps([category, _normalized_claim(item.claim), item.negative])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _item_fingerprint(item: ProfileItem) -> str:
+    """A content-only digest of a whole item, used solely to break merge
+    ties deterministically. It depends on the item's fields and nothing
+    else -- never on array position, arrival order or a timestamp."""
+    payload = json.dumps(item.model_dump(mode="json"), sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _compile_item(
+    scope: ProfileScope,
+    category: str,
+    raw_item: Any,
+    grounded: frozenset[str],
+) -> CompiledProfileItem | None:
+    """One raw upstream item, or `None` if it may not reach the profile.
+
+    Every rejection here is scoped to this item alone; the caller keeps
+    going. The four gates, in order: structural/durability validity,
+    category compatibility, grounded evidence, and non-empty support.
+    """
+    try:
+        item = ProfileItem.model_validate(raw_item)
+    except ValidationError:
+        return None
+
+    try:
+        _CATEGORY_CHECK[scope](category, item)
+    except ValueError:
+        return None
+
+    # Intersecting with the grounded set both rejects references outside
+    # `based_on` and deduplicates, before support is counted. An item left
+    # with no grounded reference has no support at all and must not reach
+    # the active profile: delivering it would break the invariant that
+    # every delivered claim is backed by evidence this reflection actually
+    # saw.
+    evidence_ids = tuple(sorted(grounded.intersection(item.evidence_ids)))
+    if not evidence_ids:
+        return None
+
+    return CompiledProfileItem(
+        category=category,
+        claim=_collapse_whitespace(item.claim),
+        claim_key=_claim_key(category, item),
+        kind_rank=_KIND_RANK[(item.kind, item.negative)],
+        support_count=len(evidence_ids),
+        evidence_ids=evidence_ids,
+        item=item,
+    )
+
+
+def _merge_duplicates(candidates: list[CompiledProfileItem]) -> list[CompiledProfileItem]:
+    """Collapse equal `claim_key`s into one item holding the union of every
+    member's valid evidence references.
+
+    Support is the size of that union, never the sum of the members'
+    counts: an evidence ID cited by two restatements of one claim is one
+    piece of support, not two.
+
+    `claim_key` covers category, normalized claim and the negative flag
+    only, so members of a group can still differ in `kind`, `origin` and
+    gotcha detail. The representative that supplies those fields is chosen
+    by lowest `kind_rank` first -- the most risk-forward member wins, so
+    merging a gotcha with a bare convention keeps the failure/cause/
+    provenance detail rather than discarding it -- and ties are broken by
+    ascending `_item_fingerprint`, a function of content alone. Nothing
+    positional is consulted, so a permuted upstream array produces the same
+    representative.
+    """
+    groups: dict[str, list[CompiledProfileItem]] = {}
+    for candidate in candidates:
+        groups.setdefault(candidate.claim_key, []).append(candidate)
+
+    # Group iteration order is insertion order, but it cannot leak into the
+    # result: `claim_key` is unique after merging, so the final sort is a
+    # total order.
+    merged: list[CompiledProfileItem] = []
+    for group in groups.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        representative = min(
+            group, key=lambda entry: (entry.kind_rank, _item_fingerprint(entry.item))
+        )
+        evidence_ids = tuple(sorted({ref for entry in group for ref in entry.evidence_ids}))
+        merged.append(
+            replace(representative, evidence_ids=evidence_ids, support_count=len(evidence_ids))
+        )
+    return merged
+
+
+def compile_profile(
+    scope: ProfileScope, reflect_response: Any
+) -> tuple[CompiledProfileItem, ...]:
+    """The active profile for `scope`, compiled from one `reflect_response`.
+
+    Takes the response already fetched by the caller (Task 5 reads it off a
+    `detail=full` mental model); this function performs no I/O and mutates
+    nothing. Returns items sorted by ascending `kind_rank`, descending
+    `support_count`, then ascending `claim_key`, truncated to the scope's
+    15/25 budget -- the sorted prefix *is* the active profile, so a
+    higher-ranked item enters exactly by displacing the current last one.
+
+    Anything invalid fails closed at the smallest possible granularity: a
+    bad item drops alone, a bad category drops alone, and an unusable
+    response yields an empty profile.
+    """
+    grounded = _based_on_memory_ids(reflect_response)
+    document = _structured_document(scope, reflect_response)
+
+    candidates: list[CompiledProfileItem] = []
+    for category in _SCOPE_CATEGORIES[scope]:
+        raw_items = document.get(category)
+        if not isinstance(raw_items, list):
+            continue
+        for raw_item in raw_items:
+            compiled = _compile_item(scope, category, raw_item, grounded)
+            if compiled is not None:
+                candidates.append(compiled)
+
+    ranked = sorted(
+        _merge_duplicates(candidates),
+        key=lambda entry: (entry.kind_rank, -entry.support_count, entry.claim_key),
+    )
+    return tuple(ranked[: _SCOPE_BUDGET[scope]])
