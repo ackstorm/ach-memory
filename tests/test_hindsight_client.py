@@ -725,6 +725,51 @@ def test_create_mental_model_trigger_carries_response_schema_and_keep_trace_verb
 
 
 @respx.mock
+def test_list_mental_models_full_detail_forwards_structured_output_unmangled(client):
+    """Pins the existing generic dict pass-through (no new handling added for
+    this, same as the trigger pin above): Task 5's typed section loader will
+    call `list_mental_models(detail="full")` and read
+    `reflect_response.structured_output` off each item, so that nested field
+    must survive this client's list call byte-for-byte, with no reshaping or
+    validation added at this layer."""
+    structured_output = {
+        "user_profile": {
+            "interaction": [],
+            "engineering": [{"claim": "Use uv, not pip.", "kind": "convention"}],
+        }
+    }
+    based_on = {"memories": ["11111111-1111-1111-1111-111111111111"]}
+    # `(\?|$)` -- same overlap trap as test_mental_models_api.py's
+    # test_list_mental_models_forwards_query_params: an unanchored regex here
+    # also matches `.../mental-models/{id}`.
+    route = respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/{BANK}/mental-models(\?|$)"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "mental_models": [
+                    {
+                        "id": MM_ID,
+                        "reflect_response": {
+                            "structured_output": structured_output,
+                            "based_on": based_on,
+                        },
+                    }
+                ]
+            },
+        )
+    )
+
+    result = client.list_mental_models(BANK, detail="full")
+
+    assert dict(route.calls.last.request.url.params) == {"detail": "full"}
+    model = result["mental_models"][0]
+    assert model["reflect_response"]["structured_output"] == structured_output
+    assert model["reflect_response"]["based_on"] == based_on
+
+
+@respx.mock
 def test_dry_run_refresh_mental_model_sends_no_request_body(client):
     route = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/{BANK}/mental-models/{MM_ID}/dry-run-refresh$"
