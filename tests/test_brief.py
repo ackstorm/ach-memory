@@ -2035,6 +2035,61 @@ def test_a_forged_heading_claim_never_renders_as_a_heading():
     assert "Answer in English." in instructions
 
 
+def test_structured_profiles_cannot_spend_orientation_or_working_state_out_of_a_tier():
+    """Step 4's budget contract, proven through the unchanged allocator: a
+    profile is optional material, so two full-budget structured profiles
+    cannot displace the mandatory orientation block or Working State."""
+    padding = "padding " * 30
+    user = _structured_section(
+        [
+            _profile_model(
+                _reflect(
+                    "user",
+                    {
+                        "interaction": [
+                            _profile_item(claim=f"User claim {n}: {padding}", evidence_ids=[f"u{n}"])
+                            for n in range(profiles.USER_PROFILE_BUDGET)
+                        ]
+                    },
+                )
+            )
+        ]
+    )
+    project = _structured_section(
+        [
+            _profile_model(
+                _reflect(
+                    "project",
+                    {
+                        "conventions": [
+                            _profile_item(
+                                claim=f"Project claim {n}: {padding}", evidence_ids=[f"p{n}"]
+                            )
+                            for n in range(profiles.PROJECT_PROFILE_BUDGET)
+                        ]
+                    },
+                )
+            )
+        ],
+        scope="project",
+    )
+
+    instructions = brief.compose_index(
+        1,
+        "ach-memory",
+        user,
+        _orientation(),
+        project,
+        _section("objective: ship the structured brief -- age: 1h"),
+        brief.SMALLEST_BUDGET,
+    )
+
+    assert brief.survived(instructions) == {"user": True, "project": True, "working_state": True}
+    assert "purpose: Memory for coding agents." in instructions
+    assert "objective: ship the structured brief" in instructions
+    assert len(instructions) <= brief.SMALLEST_BUDGET
+
+
 # --- Step 5: revisions over normalized truth, not the refresh clock --------
 
 
