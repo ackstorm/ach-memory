@@ -19,6 +19,7 @@ from memory import working_state as working_state_domain
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import ScopedRequest, _resolve_bank, scoped_query_params
 from memory.auth.principal import Principal
+from memory.config import get_settings
 from memory.db import get_session
 from memory.errors import DomainError
 from memory.hindsight.client import get_client
@@ -53,6 +54,27 @@ def _oldest(*sections: brief.Section | None) -> str | None:
     return min(stamps) if stamps else None
 
 
+def _revision_stamp(section: brief.Section | None) -> str | None:
+    """What this section contributes to the revision digest.
+
+    A structured section carries a digest of what it SAYS, so a refresh that
+    re-derived an identical profile -- or an upstream array that came back
+    permuted -- keeps the revision and leaves every consumer's cache valid. A
+    legacy prose section has no normalized form to hash, only whatever
+    markdown the refresh happened to emit, so it keeps contributing its
+    refresh timestamp as before.
+
+    Branching on the field rather than on the delivery mode: whichever loader
+    built the section already answered the question, and reading the flag
+    again here would let the two disagree.
+    """
+    if section is None:
+        return None
+    if section.content_fingerprint is not None:
+        return section.content_fingerprint
+    return section.refreshed_at
+
+
 @router.get(
     "",
     response_model=BriefResponse,
@@ -84,6 +106,16 @@ def session_brief(
 ) -> BriefResponse | PlainTextResponse:
     now = datetime.now(UTC)
     client = get_client()
+    # The one thing MEMORY_PROFILE_DELIVERY_MODE changes: which function
+    # builds a scope's Section. Both loaders return the same shape, so the
+    # allocator below composes structured and prose sections identically --
+    # mandatory orientation and Working State keep their reservations either
+    # way, and a profile is still the optional material dropped first.
+    #
+    # There is deliberately no fallback between them: a structured read that
+    # finds nothing serves no section, rather than a prose item the structured
+    # synthesis may already have superseded.
+    structured = get_settings().profile_delivery_mode == "structured"
 
     # `on_behalf_of` is the only identity a master key has here: the route is
     # read-on-behalf-of by construction (§16.5), and `_resolve_bank` uses the
@@ -96,7 +128,11 @@ def session_brief(
         db, principal, on_behalf_of, "brief.get",
         create=False,
     )
-    user_section = brief.get_section(client, user_bank, now)
+    user_section = (
+        brief.get_structured_section(client, user_bank, "user", now)
+        if structured
+        else brief.get_section(client, user_bank, now)
+    )
 
     project_section = None
     project_slug = None
@@ -124,7 +160,14 @@ def session_brief(
             # wrong.
             project_slug = None
         else:
-            project_section = brief.get_section(client, project_bank, now)
+            project_section = (
+                brief.get_structured_section(client, project_bank, "project", now)
+                if structured
+                else brief.get_section(client, project_bank, now)
+            )
+            # Orientation is unaffected by the delivery mode on purpose: it is
+            # Project Metadata, a record compiled from the row below, and no
+            # learned profile -- structured or prose -- may supply it.
             orientation = brief.Orientation(
                 # Nothing seeds `name`: the metadata columns landed unset
                 # rather than storing a copy of the slug, so the slug names the
@@ -161,8 +204,8 @@ def session_brief(
         on_behalf_of or scoped.user_id or principal.user_id,
         project_slug or "",
         revisions.fingerprint(
-            user_section.refreshed_at if user_section else None,
-            project_section.refreshed_at if project_section else None,
+            _revision_stamp(user_section),
+            _revision_stamp(project_section),
             project_stamp,
             working_state_stamp,
         ),

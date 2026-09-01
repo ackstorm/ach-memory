@@ -389,6 +389,7 @@ its server registration's `extra_headers`.
 | `MEMORY_CAPTURE_WORKER_MAX_ATTEMPTS` | `8` |
 | `MEMORY_CAPTURE_WORKER_BATCH_SIZE` | `5` |
 | `MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED` | `false` |
+| `MEMORY_PROFILE_DELIVERY_MODE` | `legacy` (`legacy` or `structured`) |
 
 The three required variables are supplied by Compose for local setup; deployed
 service operators configure them separately. See

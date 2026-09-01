@@ -19,9 +19,12 @@ read is the same mechanism that spent an LLM generation minting a model on a
 bank one exploratory GET happened to name.
 """
 
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+from memory import profiles
 
 BRIEF_MODEL_NAME = "ach-memory-session-brief"
 MAX_TOKENS = 400
@@ -134,6 +137,18 @@ class Section:
 
     text: str
     refreshed_at: str | None
+    # A digest of what this section SAYS, set only by the structured loader
+    # (`get_structured_section`). `refreshed_at` is a wall clock: it moves on
+    # every refresh, including one that re-derived a byte-identical profile,
+    # so keying a revision on it invalidates a consumer's cache for no
+    # change. The content digest moves only when the compiled, rendered
+    # profile does.
+    #
+    # Defaulted to None so the legacy prose path -- which has no normalized
+    # form to hash, only the markdown Hindsight happened to emit -- keeps
+    # constructing a Section unchanged, and so `api/brief.py` can tell the
+    # two apart without threading the delivery mode down to every call site.
+    content_fingerprint: str | None = None
 
 
 def _find(client, bank_id: str) -> dict | None:
@@ -239,6 +254,147 @@ def _older_than(timestamp: str | None, now: datetime) -> bool:
     return now - refreshed > STALE_AFTER
 
 
+# ---------------------------------------------------------------------------
+# The structured section loader (SPEC Phase 4; MEMORY_PROFILE_DELIVERY_MODE=
+# structured).
+#
+# This is a second way to BUILD a Section, not a second way to compose a tier.
+# It ends where `get_section` ends -- one `Section` of already-rendered lines
+# -- and everything after it (`_lines`, `_fit`, `INDEX_CAPS`, `compose_index`,
+# `compose_full`) is the same code the prose path runs, so mandatory
+# orientation and Working State keep their reservations and a profile item is
+# still the optional material that gets dropped first.
+#
+# One rendered line per compiled item is deliberate: a line is the unit the
+# allocator counts, so an item that does not fit is dropped whole instead of
+# cut mid-claim -- the same reason the legacy digest is served whole rather
+# than hard-cut.
+# ---------------------------------------------------------------------------
+
+# Bumped by hand when the rendering below changes shape. It is mixed into
+# every content fingerprint so a deploy that renders the same items
+# differently invalidates consumer caches on purpose, instead of leaving them
+# holding a tier that no longer matches what this code would produce. Not
+# derived from the Pydantic schema: what a cache has to notice is a change to
+# the TEXT, and two different schemas can render identically while one
+# rendering change can alter every line.
+PROFILE_RENDER_VERSION = "profile-v1-render-1"
+
+
+def _find_profile(client, bank_id: str) -> dict | None:
+    """Same list-and-match shape as `_find` above, for the profile model.
+
+    A local finder per model name rather than a shared one: each loader owns
+    the name it reads, and `get_structured_section` must be unable to answer
+    with `ach-memory-session-brief`'s document by accident.
+    """
+    listed = client.list_mental_models(bank_id, detail="full")
+    models = listed.get("mental_models") or listed.get("items") or []
+    for model in models:
+        if model.get("name") == profiles.PROFILE_MODEL_NAME:
+            return model
+    return None
+
+
+def _profile_line(compiled: profiles.CompiledProfileItem) -> str:
+    """One compiled item as one line.
+
+    The claim comes from the compiled wrapper, which is whitespace-normalized
+    and merge-stable; `representative.claim` is one group member's raw text
+    and would make the delivered line depend on which spelling won.
+
+    What else the line carries:
+
+    - A gotcha's `cause`/`reproduction`. A bare warning is not actionable --
+      "deploys sometimes fail" tells an agent nothing it can avoid -- and the
+      schema already guarantees at least one of the two is present.
+    - `failure` is NOT rendered. The schema requires it, but `claim` is
+      already the failure stated as the claim ("Deploy fails when
+      DATABASE_URL is unset"), so rendering both spends a scarce line twice
+      on one fact.
+    - `provenance`, for a gotcha or for an explicit negative constraint only.
+      Those are the items an agent is most likely to reason its way past --
+      "never do X" with no reason attached invites exactly that -- so the
+      "why it exists" is what keeps them from being misused. On a plain
+      positive preference or convention the provenance changes no behaviour
+      and would tax every line's budget to say so.
+
+    Category is not rendered: it routes nothing here. A `Section` is a flat
+    ordered list of lines per scope, and re-introducing category subheadings
+    would spend budget on structure while colliding with the compiler's own
+    heading rules. The order is `compile_profile`'s, unchanged.
+
+    Every upstream string goes through `inert` -- claim, cause, reproduction
+    and provenance alike -- and so does the assembled line. `ProfileLine`
+    already rejects C0 controls, but U+2028 is not one and `_lines` splits on
+    it: a cause could otherwise open a line the allocator never charged
+    budget for and forge a heading on it. Same defence, same reason, as
+    `_orientation_lines`.
+    """
+    item = compiled.representative
+    parts = [compiled.claim]
+    if item.kind == "gotcha":
+        if item.cause:
+            parts.append(f"cause: {item.cause}")
+        if item.reproduction:
+            parts.append(f"reproduction: {item.reproduction}")
+    if item.provenance and (item.kind == "gotcha" or item.negative):
+        parts.append(f"provenance: {item.provenance}")
+    return inert(" -- ".join(parts))
+
+
+def _content_fingerprint(text: str) -> str:
+    """A digest of the rendered profile plus the rendering version.
+
+    Over the rendered text, not the raw response: `compile_profile` already
+    puts the items in a canonical order, so this is stable under an upstream
+    permutation, and it also cannot be moved by anything the response carries
+    that never reaches a line.
+    """
+    payload = f"{PROFILE_RENDER_VERSION}\x1f{text}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_structured_section(
+    client, bank_id: str, scope: profiles.ProfileScope, now: datetime
+) -> Section | None:
+    """The bank's structured profile as a Section, or None.
+
+    Reads only, exactly like `get_section`: no create, no reconcile, no
+    refresh. The profile model exists solely because somebody called
+    `POST /v1/admin/profile/{scope}/provision`.
+
+    `content` is never read here, at any point, including as a fallback.
+    That field is the legacy model's contract; on a profile model it is at
+    best a rendering of an older synthesis a correction may already have
+    superseded. Anything wrong with the structured output -- absent,
+    malformed, the other scope's document, every item ungrounded -- fails
+    closed to None, and the caller does NOT then try the prose model.
+    """
+    model = _find_profile(client, bank_id)
+    if model is None:
+        return None
+
+    reflect_response = model.get("reflect_response")
+    if not isinstance(reflect_response, dict):
+        return None
+
+    refreshed_at = model.get("last_refreshed_at")
+    if model.get("is_stale") and _older_than(refreshed_at, now):
+        return None
+
+    items = profiles.compile_profile(scope, reflect_response)
+    if not items:
+        return None
+
+    text = "\n".join(_profile_line(item) for item in items)
+    return Section(
+        text=text,
+        refreshed_at=refreshed_at,
+        content_fingerprint=_content_fingerprint(text),
+    )
+
+
 @dataclass(frozen=True)
 class Orientation:
     """Deterministic project facts: a record, not memory.
@@ -341,10 +497,12 @@ def inert(value: str) -> str:
 def _lines(section: Section | None) -> list[str]:
     """Free text as the lines the budget is spent in.
 
-    The delivery contract describes both tiers in ITEMS ("at most 5"), but
-    item structure arrives with a response schema in a later phase: today
-    these profiles are free text, so a line is the smallest unit the compiler
-    can drop without cutting a sentence in half.
+    The delivery contract describes both tiers in ITEMS ("at most 5"), but a
+    legacy prose profile is free text, so a line is the smallest unit the
+    compiler can drop without cutting a sentence in half. Structured delivery
+    keeps that unit rather than replacing it: `get_structured_section` renders
+    exactly one line per compiled item, so here a line and an item are the
+    same thing and nothing below has to know which loader ran.
 
     Blank lines go: they cost budget and say nothing. Trailing whitespace goes
     with them -- a CRLF digest would otherwise pay for a carriage return on

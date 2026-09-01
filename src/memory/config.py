@@ -1,5 +1,6 @@
 import logging
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -151,6 +152,22 @@ class Settings(BaseSettings):
     # contract) -- this flag is Phase 3's plumbing for that later switch,
     # not the switch itself.
     capture_correction_refresh_enabled: bool = False
+
+    # Which mental model the session brief's user/project sections are
+    # compiled from (SPEC Phase 4). `legacy` reads the prose digest in
+    # `ach-memory-session-brief`; `structured` reads the typed
+    # `reflect_response.structured_output` of `ach-memory-profile-v1`
+    # instead, with no fallback between them -- a structured read that finds
+    # nothing serves no section rather than a prose item a correction may
+    # already have superseded.
+    #
+    # Default `legacy` everywhere. The structured model is provisioned by an
+    # explicit admin call and nothing refreshes it on its own yet, so a bank
+    # that has never been provisioned would deliver an empty brief the moment
+    # this flipped. Flipping it is a separately authorized rollout step, per
+    # deployment, after Task 7's evaluator has measured what the synthesis
+    # actually produces.
+    profile_delivery_mode: Literal["legacy", "structured"] = "legacy"
 
     @field_validator("master_key_hash")
     @classmethod
