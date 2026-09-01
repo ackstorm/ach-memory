@@ -521,6 +521,49 @@ def test_profile_check_reports_a_healthy_profile_and_exits_zero(
 
 
 @respx.mock
+def test_an_unverified_grounding_run_says_so_in_words(fake_bank, configured_env, capsys):
+    """A preview with no `based_on` still exits 0 and prints `outcome: ok` --
+    deliberately, since failing on it could fail every run there will ever
+    be. So the one thing an operator recording seven runs against the
+    rollout gate must not miss is that the grounding gate was a no-op, and
+    a bare NO_BASED_ON token on a warnings line does not communicate that.
+    """
+    from memory import cli
+
+    _mock_listing([_profile_model()])
+    _mock_dry_run(
+        _dry_run(_preview("user", {"preferences": [_item("we use uv", kind="preference")]}))
+    )
+
+    exit_code = cli.main(["profile-check", "--scope", "user", "--project", "acme-api"])
+
+    report = capsys.readouterr().out
+    assert exit_code == 0
+    assert "outcome: ok" in report
+    assert "grounding: NOT VERIFIED" in report
+    assert "based_on" in report
+
+
+@respx.mock
+def test_a_verified_grounding_run_says_that_too(fake_bank, configured_env, capsys):
+    from memory import cli
+
+    _mock_listing([_profile_model()])
+    _mock_dry_run(
+        _dry_run(
+            _preview("user", {"preferences": [_item("we use uv", kind="preference")]}),
+            based_on={"memories": ["m1"]},
+        )
+    )
+
+    cli.main(["profile-check", "--scope", "user", "--project", "acme-api"])
+
+    report = capsys.readouterr().out
+    assert "grounding: verified" in report
+    assert "NOT VERIFIED" not in report
+
+
+@respx.mock
 def test_profile_check_emits_the_result_as_json(fake_bank, configured_env, capsys):
     from memory import cli
 
@@ -807,6 +850,18 @@ def test_no_content_or_identifier_reaches_anything_profile_check_writes(
         )
     )
 
+    # Un-mute httpx first, or this asserts nothing. httpx logs the full
+    # request URL -- bank id and all -- at INFO, and `_profile_check` mutes
+    # that logger process-wide. So does `create_app()`, and in a full-suite
+    # run some earlier module has already built an app and left the level at
+    # WARNING, which would make the caplog assertion below pass even with
+    # the muting line in `_profile_check` deleted outright. Resetting to
+    # NOTSET (restored by monkeypatch afterwards) makes the leak reachable
+    # again, so the assertion depends only on the command's own muting.
+    # Done before `caplog.at_level`, whose own setLevel clears logging's
+    # per-logger effective-level cache.
+    monkeypatch.setattr(logging.getLogger("httpx"), "level", logging.NOTSET)
+
     with caplog.at_level(logging.DEBUG):
         for extra in ([], ["--json"]):
             cli.main(
@@ -1016,3 +1071,13 @@ def test_the_seven_run_minimum_is_recorded_where_the_evaluator_is_wired():
         text = path.read_text().lower()
         assert "seven" in text, path
         assert "token" in text, path
+
+
+def test_the_gate_comment_warns_that_grounding_may_be_unmeasured():
+    """The counting rule has to sit with the seven-run rule, or an operator
+    tallying `ok` runs never learns that some of them checked one gate
+    fewer than the rest."""
+    for path in (CHART / "values.yaml", ROOT / "docker-compose.yml"):
+        text = path.read_text()
+        assert "NO_BASED_ON" in text, path
+        assert "NOT VERIFIED" in text, path

@@ -792,6 +792,10 @@ def _capture_checkpoint(url_argument: str | None) -> int:
     `memory.capture.local.checkpoint` already fails closed on every missing
     prerequisite or transport error; this wrapper only makes sure a
     malformed or unreadable stdin can't escape that same contract.
+
+    Carries the same unmuted-httpx bank-id exposure `_profile_check` fixes
+    below -- see the comment there. Not fixed here to keep Phase 4 Task 7's
+    diff scoped to the command it added.
     """
     from memory.capture import local as capture_local
 
@@ -814,7 +818,14 @@ def _capture_checkpoint(url_argument: str | None) -> int:
 def _capture_worker(*, once: bool) -> int:
     """`--once` for deterministic tests and one-off operational runs; the
     loop form polls with interruptible waits (SIGINT/SIGTERM) rather than a
-    tight loop or an unbounded sleep."""
+    tight loop or an unbounded sleep.
+
+    Carries the same unmuted-httpx bank-id exposure `_profile_check` fixes
+    below -- see the comment there. It is the worst-placed of the three:
+    this one is a long-lived process making a Hindsight call per leased row.
+    Not fixed here to keep Phase 4 Task 7's diff scoped to the command it
+    added.
+    """
     import signal
     import threading
 
@@ -846,6 +857,10 @@ def _capture_check(*, scope: str, project_slug: str) -> int:
     `--scope user` checks that project's owning user's bank -- there is no
     separate --user flag, so a user-owned project is how this command
     identifies which user bank to check.
+
+    Carries the same unmuted-httpx bank-id exposure `_profile_check` fixes
+    below -- see the comment there. Not fixed here to keep Phase 4 Task 7's
+    diff scoped to the command it added.
     """
     from memory.capture import configuration
     from memory.config import get_settings
@@ -908,6 +923,25 @@ def _format_evaluation(result) -> str:
     def number(value) -> str:
         return "-" if value is None else str(value)
 
+    # Grounding gets a line of its own rather than a bare code on the
+    # `warnings:` line. When the upstream preview reports no `based_on`,
+    # `evaluate_dry_run` grounds against the IDs the preview itself cites,
+    # which makes that gate a no-op for the run: a model that fabricated
+    # evidence IDs would pass it invisibly, and the run can still print
+    # `outcome: ok` and exit 0. An operator recording seven runs against the
+    # rollout gate has to be able to see that at a glance, so the report
+    # states it in words -- NO_BASED_ON alone only means something to
+    # somebody who has read `evaluate_dry_run`'s docstring. It is
+    # deliberately not an error: with no live Hindsight instance to say
+    # whether a preview ever carries `based_on`, failing on it could fail
+    # every run there will ever be.
+    grounding = (
+        "NOT VERIFIED (upstream reported no based_on; a fabricated evidence "
+        "id would be invisible to this run)"
+        if "NO_BASED_ON" in result.warning_codes
+        else "verified against the preview's own based_on"
+    )
+
     lines = [
         f"profile-check {result.scope}",
         f"  outcome: {result.outcome}",
@@ -919,6 +953,7 @@ def _format_evaluation(result) -> str:
             f"{result.delivered_item_count} delivered "
             f"({result.displacement_count} displaced by budget)"
         ),
+        f"  grounding: {grounding}",
         (
             f"  facts: {number(result.retrieved_fact_count)} retrieved -> "
             f"{number(result.used_fact_count)} used"
@@ -972,6 +1007,13 @@ def _profile_check(*, scope: str, project_slug: str, as_json: bool) -> int:
     # whose entire stdout and stderr get collected, so one
     # basicConfig(level=INFO) anywhere upstream would put a bank id in every
     # collected line of an evaluation that is otherwise content-free.
+    #
+    # Every other Hindsight-calling command in this file has the same
+    # exposure and none of them mutes it (see the docstrings on
+    # _capture_checkpoint, _capture_worker and _capture_check above). It is
+    # latent today only because nothing configures the root logger. Muting
+    # it once for all subcommands belongs in a change that owns those three
+    # commands, not in the one that added this one.
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     with session_scope() as db:

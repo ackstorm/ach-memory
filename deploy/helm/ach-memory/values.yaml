@@ -324,6 +324,17 @@ captureWorker:
 # process requirement for the humans running this job. Nothing in the chart
 # or the CLI counts runs or blocks a seventh, and profile-check exiting 0 is
 # not by itself permission to enable structured delivery.
+#
+# Read the grounding line of every run before counting it. A run whose
+# report says `grounding: NOT VERIFIED` (equivalently, whose JSON carries
+# the NO_BASED_ON warning code and null fact counts) did NOT check that
+# delivered items cite evidence the synthesis actually read: the upstream
+# preview reported no `based_on`, so that one gate was a no-op and a model
+# fabricating evidence IDs would have passed it. Such a run measures schema
+# validity, budgets, dedup and cost honestly, but it cannot on its own
+# satisfy the quality half of the gate -- seven NOT VERIFIED runs are not
+# seven passes. It exits 0 deliberately: failing on it would fail every run
+# if previews never carry `based_on`.
 profileEvaluator:
   enabled: false
   evaluatorEnabled: false
