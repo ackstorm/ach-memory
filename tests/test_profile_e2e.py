@@ -106,6 +106,9 @@ P_GOTCHA_NO_CAUSE = "Report exports truncate on the sandbox ledger."
 P_GOTCHA_NO_PROVENANCE = "Ledger exports stall when the sandbox queue is full."
 P_TECHNICAL_CLAIM = "The sandbox ledger table carries 42 columns."
 P_INFERRED_CLAIM = "The invented team probably deploys on Fridays."
+# The durability matrix is scope-independent: an observed decision is evidence
+# in a project bank for the same reason it is in a user bank.
+P_OBSERVED_DECISION = "Started batching the sandbox reconciliation runs."
 
 # Project Metadata, as recorded on the Project row -- the only source
 # orientation may ever have.
@@ -290,7 +293,13 @@ def project_categories() -> dict[str, list[dict]]:
                 kind="decision",
                 origin="stated",
                 evidence_ids=["mem-p-01"],
-            )
+            ),
+            _item(
+                claim=P_OBSERVED_DECISION,
+                kind="decision",
+                origin="observed",
+                evidence_ids=["mem-p-10"],
+            ),
         ],
         "workflow": [
             # The project schema has no `constraints` bucket, so a negative
@@ -354,6 +363,7 @@ PROJECT_EXCLUDED = frozenset(
         P_GOTCHA_NO_PROVENANCE,
         P_TECHNICAL_CLAIM,
         P_INFERRED_CLAIM,
+        P_OBSERVED_DECISION,
     }
 )
 
@@ -497,6 +507,32 @@ def test_the_curated_user_profile_delivers_current_truth_and_nothing_else(
     assert len(_user_items(delivered)) == len(USER_DELIVERED)
     # No fallback: the structured loader never read the model's `content`.
     assert LEGACY_TRAP not in delivered
+
+
+@respx.mock
+def test_the_hooks_plain_text_tier_carries_the_same_curated_profile(
+    client, two_users, session, monkeypatch
+):
+    """`format=text` is what the SessionStart hook actually fetches -- a curl
+    and a cat, no JSON parser -- so it bypasses the response model entirely.
+    The gate has to hold on the bytes that path receives, not only on the
+    `instructions` field of the JSON one."""
+    _structured_mode(monkeypatch)
+    _curated_user_bank(session, two_users[0]["user_id"])
+
+    response = client.get(
+        "/v1/session-brief",
+        params={"scope": "user", "tier": "full", "format": "text"},
+        headers=two_users[0]["headers"],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/plain")
+    for claim in USER_DELIVERED:
+        assert claim in response.text, claim
+    for claim in USER_EXCLUDED:
+        assert claim not in response.text, claim
+    assert LEGACY_TRAP not in response.text
 
 
 @respx.mock
@@ -654,7 +690,7 @@ def test_a_user_profile_over_budget_delivers_fifteen_items(
     assert len(lines) == profiles.USER_PROFILE_BUDGET == 15
     # Every delivered line is one of the offered claims, and five were cut.
     claims = {item["claim"] for item in offered}
-    assert {line for line in lines} <= claims
+    assert set(lines) <= claims
     assert len([claim for claim in claims if claim in delivered]) == 15
 
 
@@ -675,7 +711,7 @@ def test_a_project_profile_over_budget_delivers_twenty_five_items(
     lines = _project_items(delivered)
     assert len(lines) == profiles.PROJECT_PROFILE_BUDGET == 25
     claims = {item["claim"] for item in offered}
-    assert {line for line in lines} <= claims
+    assert set(lines) <= claims
 
 
 @respx.mock
