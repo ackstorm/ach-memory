@@ -980,6 +980,7 @@ def test_a_stale_worker_stage_is_reported_as_lease_lost_not_as_success(session, 
             lease_seconds=60,
             max_attempts=8,
             correction_refresh_enabled=False,
+            profile_delivery_mode="legacy",
         )
 
     session.refresh(row)
@@ -1367,6 +1368,7 @@ def test_a_row_queued_behind_a_slow_sibling_is_not_stolen_mid_flight(
         lease_seconds=60,
         max_attempts=8,
         correction_refresh_enabled=False,
+        profile_delivery_mode="legacy",
     )
 
     assert queued.id not in {row.id for row in stolen}, "the row was stolen mid-extraction"
@@ -1410,6 +1412,7 @@ def test_the_lease_is_renewed_on_both_sides_of_the_external_call(session, tenant
         lease_seconds=60,
         max_attempts=8,
         correction_refresh_enabled=False,
+        profile_delivery_mode="legacy",
     )
 
     assert renewals == ["renew", "external-call", "renew"]

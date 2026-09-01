@@ -30,7 +30,7 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from memory import metrics, working_state
+from memory import brief, metrics, profiles, working_state
 from memory.auth.principal import Principal
 from memory.capture import filer, repository
 from memory.capture.contracts import NormalizedCandidate, WorkingStateEnvelope
@@ -227,6 +227,7 @@ def _applying_stage(
     lease_seconds: int,
     max_attempts: int,
     correction_refresh_enabled: bool,
+    profile_delivery_mode: Literal["legacy", "structured"],
 ) -> StageOutcome:
     operations = row.hindsight_operations or {}
 
@@ -296,7 +297,7 @@ def _applying_stage(
 
     if correction_refresh_enabled:
         _renew(db, row, owner=owner, lease_seconds=lease_seconds)
-        _refresh_corrected_banks(db, client, row, extraction.candidates)
+        _refresh_corrected_banks(db, client, row, extraction.candidates, profile_delivery_mode)
         _renew(db, row, owner=owner, lease_seconds=lease_seconds)
 
     repository.complete(db, row, owner=owner)
@@ -304,21 +305,70 @@ def _applying_stage(
     return "advanced"
 
 
+# The one fixed model each delivery mode actually serves. `legacy` reads
+# prose off `brief.BRIEF_MODEL_NAME`; `structured` reads
+# `profiles.PROFILE_MODEL_NAME`'s typed synthesis (Task 5). A bank can hold
+# both names at once (an in-flight mode migration, or simple leftover from
+# a prior deploy) plus any number of operator-created models -- this table
+# is what lets `_refresh_corrected_banks` name exactly one of them instead
+# of refreshing whatever the bank happens to contain.
+_TARGET_MODEL_NAME: dict[Literal["legacy", "structured"], str] = {
+    "legacy": brief.BRIEF_MODEL_NAME,
+    "structured": profiles.PROFILE_MODEL_NAME,
+}
+
+
 def _refresh_corrected_banks(
-    db: Session, client: HindsightClient, row: CaptureSlice, candidates: list[NormalizedCandidate]
+    db: Session,
+    client: HindsightClient,
+    row: CaptureSlice,
+    candidates: list[NormalizedCandidate],
+    profile_delivery_mode: Literal["legacy", "structured"],
 ) -> None:
     """Request a mental-model refresh only for a bank an explicit correction
-    actually touched -- fenced to that bank alone, never a blanket refresh.
-    Guarded by the caller on capture_correction_refresh_enabled; this
-    function assumes that gate already passed."""
+    actually touched -- fenced to that bank alone, never a blanket refresh --
+    and only for the single fixed model the active delivery mode actually
+    serves. Guarded by the caller on capture_correction_refresh_enabled; this
+    function assumes that gate already passed.
+
+    Bank scoping (`corrected_banks`) was already correct before this fix;
+    what was broken is what happened once a bank was chosen: every model
+    `list_mental_models` returned got refreshed, with no name filter at all.
+    That charged real Hindsight LLM cost against any operator-created model
+    sitting in the bank, and made no distinction between legacy's
+    `ach-memory-session-brief` and structured's `ach-memory-profile-v1` --
+    both got refreshed indiscriminately, and so would anything else. This
+    version lists the bank's models exactly once (same list-and-match shape
+    `brief._find`/`profiles._find_profile` use to locate their own model,
+    `detail="full"` so `name` is guaranteed present) and refreshes only the
+    single listed model whose `name` matches `_TARGET_MODEL_NAME` for the
+    CURRENT mode -- never the other mode's name, never an unrelated model,
+    never more than one call per corrected bank.
+
+    A bank with no model under that name is a bounded no-op: no exception,
+    no refresh call, nothing that could fail the capture or trigger a
+    retry-charging failure. No new metric is added for this case -- the
+    plan's metrics/logs contract forbids a claim, bank id or slug on any
+    new signal, and a dimensionless "missing" counter with none of those
+    would tell an operator nothing a direct check of the bank's provisioned
+    models does not already show more precisely.
+    """
     corrected_banks = sorted({c.bank_kind for c in candidates if c.correction})
+    target_name = _TARGET_MODEL_NAME[profile_delivery_mode]
     for bank_kind in corrected_banks:
         bank_id = _bank_id_for(db, row, bank_kind)
-        models = client.list_mental_models(bank_id)
-        for model in models.get("mental_models") or []:
+        listed = client.list_mental_models(bank_id, detail="full")
+        models = listed.get("mental_models") or listed.get("items") or []
+        for model in models:
+            if model.get("name") != target_name:
+                continue
             model_id = model.get("id")
             if model_id:
                 client.refresh_mental_model(bank_id, model_id)
+            # Exactly one model per corrected bank, even if the bank
+            # somehow lists the target name twice -- never fall through to
+            # a second match.
+            break
 
 
 def process_row(
@@ -330,6 +380,7 @@ def process_row(
     lease_seconds: int,
     max_attempts: int,
     correction_refresh_enabled: bool,
+    profile_delivery_mode: Literal["legacy", "structured"],
 ) -> None:
     stage_name = {"pending": "extract", "retaining": "retain", "applying": "apply"}.get(
         row.status
@@ -361,6 +412,7 @@ def process_row(
                 lease_seconds=lease_seconds,
                 max_attempts=max_attempts,
                 correction_refresh_enabled=correction_refresh_enabled,
+                profile_delivery_mode=profile_delivery_mode,
             )
     except repository.LeaseLost:
         # The lease expired during this stage's external call and another
@@ -452,6 +504,7 @@ def run_once(
                 lease_seconds=settings.capture_worker_lease_seconds,
                 max_attempts=settings.capture_worker_max_attempts,
                 correction_refresh_enabled=settings.capture_correction_refresh_enabled,
+                profile_delivery_mode=settings.profile_delivery_mode,
             )
         except Exception:  # noqa: BLE001 -- one row must not kill the loop
             # One malformed row must not take the queue down with it. Every

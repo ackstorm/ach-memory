@@ -202,6 +202,7 @@ def test_a_capture_extraction_stage_increments_the_stage_counter(session, tenant
             lease_seconds=60,
             max_attempts=8,
             correction_refresh_enabled=False,
+            profile_delivery_mode="legacy",
         )
     session.commit()
 

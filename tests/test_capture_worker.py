@@ -8,9 +8,10 @@ import httpx
 import pytest
 import respx
 
-from memory import ids, working_state
+from memory import brief, ids, profiles, working_state
 from memory.auth.principal import Principal
 from memory.capture import repository, worker
+from memory.errors import HindsightError
 from memory.hindsight.client import HindsightClient
 from memory.models import CaptureSlice, Project, User
 
@@ -99,6 +100,7 @@ def _process(session, rig, row, **kwargs):
     kwargs.setdefault("max_attempts", 8)
     kwargs.setdefault("lease_seconds", 60)
     kwargs.setdefault("correction_refresh_enabled", False)
+    kwargs.setdefault("profile_delivery_mode", "legacy")
     kwargs.setdefault("owner", _hold_lease(session, row))
     worker.process_row(session, rig.client, row, **kwargs)
     session.commit()
@@ -242,6 +244,7 @@ def test_crash_after_hindsight_completion_is_recoverable_via_re_poll(session, ri
                     lease_seconds=60,
                     max_attempts=8,
                     correction_refresh_enabled=False,
+                    profile_delivery_mode="legacy",
                 )
         session.rollback()
 
@@ -274,6 +277,7 @@ def test_crash_between_working_state_write_and_completion_mark_is_recoverable(se
                     lease_seconds=60,
                     max_attempts=8,
                     correction_refresh_enabled=False,
+                    profile_delivery_mode="legacy",
                 )
         session.rollback()
 
@@ -409,7 +413,9 @@ def test_correction_refresh_stays_off_by_default(session, rig):
 
 
 @respx.mock
-def test_correction_refresh_requests_only_the_affected_bank_when_enabled(session, rig):
+def test_correction_refresh_project_correction_never_touches_the_user_bank(session, rig):
+    """A project correction is fenced to the project bank alone -- the user
+    bank's mental-models list is never even requested."""
     row = _submit(session, rig)
     correction_envelope = {**CONVENTION, "correction": True}
     op_id = worker.filer.operation_id(str(row.id), "project")
@@ -418,7 +424,11 @@ def test_correction_refresh_requests_only_the_affected_bank_when_enabled(session
     _mock_operation(rig.project.bank_id, op_id)
     project_mm_route = respx.get(
         f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models"
-    ).mock(return_value=httpx.Response(200, json={"mental_models": [{"id": "mm-1"}]}))
+    ).mock(
+        return_value=httpx.Response(
+            200, json={"mental_models": [{"id": "mm-1", "name": brief.BRIEF_MODEL_NAME}]}
+        )
+    )
     refresh_route = respx.post(
         f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-1/refresh"
     ).mock(return_value=httpx.Response(200, json={}))
@@ -432,6 +442,245 @@ def test_correction_refresh_requests_only_the_affected_bank_when_enabled(session
     assert project_mm_route.called
     assert refresh_route.called
     assert not user_mm_route.called
+
+
+@respx.mock
+def test_correction_refresh_user_correction_never_touches_the_project_bank(session, rig):
+    """The reverse direction: a user correction is fenced to the user bank
+    alone -- the project bank's mental-models list is never requested."""
+    row = _submit(session, rig)
+    correction_envelope = {**PREFERENCE, "correction": True}
+    op_id = worker.filer.operation_id(str(row.id), "user")
+    _mock_extract(rig.project.bank_id, correction_envelope)
+    _mock_retain(rig.user.bank_id, op_id)
+    _mock_operation(rig.user.bank_id, op_id)
+    user_mm_route = respx.get(f"{BASE}/v1/default/banks/{rig.user.bank_id}/mental-models").mock(
+        return_value=httpx.Response(
+            200, json={"mental_models": [{"id": "mm-1", "name": brief.BRIEF_MODEL_NAME}]}
+        )
+    )
+    refresh_route = respx.post(
+        f"{BASE}/v1/default/banks/{rig.user.bank_id}/mental-models/mm-1/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+    project_mm_route = respx.get(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models"
+    ).mock(return_value=httpx.Response(200, json={"mental_models": []}))
+
+    while row.status != "completed":
+        _process(session, rig, row, correction_refresh_enabled=True)
+
+    assert user_mm_route.called
+    assert refresh_route.called
+    assert not project_mm_route.called
+
+
+@respx.mock
+def test_correction_refresh_legacy_mode_targets_only_the_brief_model(session, rig):
+    """`profile_delivery_mode="legacy"` refreshes only
+    `brief.BRIEF_MODEL_NAME` -- neither the structured profile model nor any
+    operator-created model in the same bank, even though all three are
+    listed side by side (the exact bug this task fixes: the old code
+    refreshed every model `list_mental_models` returned)."""
+    row = _submit(session, rig)
+    correction_envelope = {**CONVENTION, "correction": True}
+    op_id = worker.filer.operation_id(str(row.id), "project")
+    _mock_extract(rig.project.bank_id, correction_envelope)
+    _mock_retain(rig.project.bank_id, op_id)
+    _mock_operation(rig.project.bank_id, op_id)
+    respx.get(f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "mental_models": [
+                    {"id": "mm-brief", "name": brief.BRIEF_MODEL_NAME},
+                    {"id": "mm-profile", "name": profiles.PROFILE_MODEL_NAME},
+                    {"id": "mm-ops", "name": "operator-dashboard-digest"},
+                ]
+            },
+        )
+    )
+    brief_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-brief/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+    profile_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-profile/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+    ops_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-ops/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    while row.status != "completed":
+        _process(
+            session, rig, row, correction_refresh_enabled=True, profile_delivery_mode="legacy"
+        )
+
+    assert brief_refresh.called
+    assert not profile_refresh.called
+    assert not ops_refresh.called
+
+
+@respx.mock
+def test_correction_refresh_structured_mode_targets_only_the_profile_model(session, rig):
+    """The mirror of the legacy-mode test: `profile_delivery_mode="structured"`
+    refreshes only `profiles.PROFILE_MODEL_NAME` out of the same three-model
+    bank -- never the brief model, never the operator model."""
+    row = _submit(session, rig)
+    correction_envelope = {**CONVENTION, "correction": True}
+    op_id = worker.filer.operation_id(str(row.id), "project")
+    _mock_extract(rig.project.bank_id, correction_envelope)
+    _mock_retain(rig.project.bank_id, op_id)
+    _mock_operation(rig.project.bank_id, op_id)
+    respx.get(f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "mental_models": [
+                    {"id": "mm-brief", "name": brief.BRIEF_MODEL_NAME},
+                    {"id": "mm-profile", "name": profiles.PROFILE_MODEL_NAME},
+                    {"id": "mm-ops", "name": "operator-dashboard-digest"},
+                ]
+            },
+        )
+    )
+    brief_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-brief/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+    profile_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-profile/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+    ops_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-ops/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    while row.status != "completed":
+        _process(
+            session,
+            rig,
+            row,
+            correction_refresh_enabled=True,
+            profile_delivery_mode="structured",
+        )
+
+    assert profile_refresh.called
+    assert not brief_refresh.called
+    assert not ops_refresh.called
+
+
+@respx.mock
+def test_correction_refresh_missing_target_is_a_bounded_noop(session, rig):
+    """A bank that lists models but none named for the active mode's target
+    is a silent no-op: no exception, no refresh call -- and the capture
+    still completes normally rather than being charged a failure."""
+    row = _submit(session, rig)
+    correction_envelope = {**CONVENTION, "correction": True}
+    op_id = worker.filer.operation_id(str(row.id), "project")
+    _mock_extract(rig.project.bank_id, correction_envelope)
+    _mock_retain(rig.project.bank_id, op_id)
+    _mock_operation(rig.project.bank_id, op_id)
+    respx.get(f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models").mock(
+        return_value=httpx.Response(
+            200, json={"mental_models": [{"id": "mm-ops", "name": "operator-dashboard-digest"}]}
+        )
+    )
+    refresh_route = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-ops/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    while row.status != "completed":
+        _process(
+            session, rig, row, correction_refresh_enabled=True, profile_delivery_mode="legacy"
+        )
+
+    assert row.status == "completed"
+    assert not refresh_route.called
+
+
+@respx.mock
+def test_correction_refresh_retry_repeats_the_same_scope_not_a_widened_one(session, rig):
+    """A retried applying stage re-derives bank scope and target selection
+    from the same persisted candidates every time. Here the upstream
+    refresh call itself fails once (a 500), so the capture cannot complete;
+    retrying must land on the exact same single corrected bank and the same
+    single target model -- never additionally touch the user bank, never
+    refresh a second model."""
+    row = _submit(session, rig)
+    correction_envelope = {**CONVENTION, "correction": True}
+    op_id = worker.filer.operation_id(str(row.id), "project")
+    _mock_extract(rig.project.bank_id, correction_envelope)
+    _mock_retain(rig.project.bank_id, op_id)
+    _mock_operation(rig.project.bank_id, op_id)
+    project_mm_route = respx.get(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models"
+    ).mock(
+        return_value=httpx.Response(
+            200, json={"mental_models": [{"id": "mm-1", "name": brief.BRIEF_MODEL_NAME}]}
+        )
+    )
+    refresh_route = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-1/refresh"
+    ).mock(side_effect=[httpx.Response(500), httpx.Response(200, json={})])
+    user_mm_route = respx.get(f"{BASE}/v1/default/banks/{rig.user.bank_id}/mental-models").mock(
+        return_value=httpx.Response(200, json={"mental_models": []})
+    )
+
+    while row.status != "applying":
+        _process(session, rig, row, correction_refresh_enabled=False)
+
+    with pytest.raises(HindsightError):
+        _process(session, rig, row, correction_refresh_enabled=True)
+    session.rollback()
+    session.refresh(row)
+    assert row.status == "applying"
+
+    _process(session, rig, row, correction_refresh_enabled=True)
+
+    assert row.status == "completed"
+    assert project_mm_route.call_count == 2
+    assert refresh_route.call_count == 2
+    assert not user_mm_route.called
+
+
+@respx.mock
+def test_correction_refresh_ignores_unrelated_operator_models(session, rig):
+    """A bank holding the target model plus two unrelated operator-created
+    models refreshes only the target -- never the operator models, and
+    never more than one refresh call for this bank."""
+    row = _submit(session, rig)
+    correction_envelope = {**CONVENTION, "correction": True}
+    op_id = worker.filer.operation_id(str(row.id), "project")
+    _mock_extract(rig.project.bank_id, correction_envelope)
+    _mock_retain(rig.project.bank_id, op_id)
+    _mock_operation(rig.project.bank_id, op_id)
+    respx.get(f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "mental_models": [
+                    {"id": "mm-ops-1", "name": "operator-first"},
+                    {"id": "mm-1", "name": brief.BRIEF_MODEL_NAME},
+                    {"id": "mm-ops-2", "name": "operator-second"},
+                ]
+            },
+        )
+    )
+    target_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-1/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+    ops1_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-ops-1/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+    ops2_refresh = respx.post(
+        f"{BASE}/v1/default/banks/{rig.project.bank_id}/mental-models/mm-ops-2/refresh"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    while row.status != "completed":
+        _process(
+            session, rig, row, correction_refresh_enabled=True, profile_delivery_mode="legacy"
+        )
+
+    assert target_refresh.call_count == 1
+    assert not ops1_refresh.called
+    assert not ops2_refresh.called
 
 
 # ---------------------------------------------------------------------------
