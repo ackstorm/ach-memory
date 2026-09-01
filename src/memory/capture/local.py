@@ -47,7 +47,7 @@ _FILE_READING_TOOLS = frozenset({"Read", "NotebookRead", "Grep"})
 
 # Tools that run an arbitrary shell command. Their result is only as safe as
 # the command behind it, so the command is classified (see
-# `_shell_result_is_safe`) before its output is retained at all.
+# `shell_output_is_retainable`) before its output is retained at all.
 _SHELL_TOOLS = frozenset({"Bash", "BashOutput"})
 
 # Programs that exist to print file bodies. `Bash` running any of these is a

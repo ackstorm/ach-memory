@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Literal
 
+from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -339,14 +340,18 @@ def _record_unexpected_failure(
     committed when the row was leased -- so the fence still applies, and a
     row that has since moved to another worker is simply left alone.
     """
+    # The primary key straight off the identity map. Reading `row.id` here
+    # could touch a session the failure above may have left unusable; the
+    # identity key never does.
+    row_id = inspect(row).identity_key[1][0]
     db.rollback()
-    stage_name = {"pending": "extract", "retaining": "retain", "applying": "apply"}.get(
-        row.status, "extract"
-    )
     try:
-        current = db.get(CaptureSlice, row.id)
+        current = db.get(CaptureSlice, row_id)
         if current is None:
             return
+        stage_name = {"pending": "extract", "retaining": "retain", "applying": "apply"}.get(
+            current.status, "extract"
+        )
         repository.record_failure(
             db,
             current,
