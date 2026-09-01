@@ -97,6 +97,7 @@ def _hold_lease(session, row) -> str:
 
 def _process(session, rig, row, **kwargs):
     kwargs.setdefault("max_attempts", 8)
+    kwargs.setdefault("lease_seconds", 60)
     kwargs.setdefault("correction_refresh_enabled", False)
     kwargs.setdefault("owner", _hold_lease(session, row))
     worker.process_row(session, rig.client, row, **kwargs)
@@ -238,6 +239,7 @@ def test_crash_after_hindsight_completion_is_recoverable_via_re_poll(session, ri
                     rig.client,
                     row,
                     owner=_hold_lease(session, row),
+                    lease_seconds=60,
                     max_attempts=8,
                     correction_refresh_enabled=False,
                 )
@@ -269,6 +271,7 @@ def test_crash_between_working_state_write_and_completion_mark_is_recoverable(se
                     rig.client,
                     row,
                     owner=_hold_lease(session, row),
+                    lease_seconds=60,
                     max_attempts=8,
                     correction_refresh_enabled=False,
                 )

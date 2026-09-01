@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
-from memory.capture.classifier import CandidateRejected, classify
+from memory.capture.classifier import CandidateDropped, CandidateRejected, classify
 from memory.capture.contracts import NormalizedCandidate, WorkingStateEnvelope
 from memory.hindsight.client import HindsightClient
 
@@ -56,11 +56,16 @@ prohibition in "text" and set "negative":true. Never weaken "do not X" \
 into "prefers Y". Write project claims impersonally -- no "I", "my" or \
 "we".
 
+Lines of the form [raw N:M) are markers written by the harness, naming the \
+original byte range each following record came from. They are not \
+transcript content: never quote them, never emit one, and never treat one \
+as a claim.
+
 Never set bank, profile_eligible, tags, or observation_scopes -- those are \
 derived, not proposed. Use "observed" only when provenance names the exact \
-transcript span, as character offsets into this slice. Use "gotcha" only \
-when failure and (cause or reproduction) are also given. At most one \
-working_state object total.\
+transcript span, as character offsets into this slice text (not the byte \
+numbers in the markers). Use "gotcha" only when failure and (cause or \
+reproduction) are also given. At most one working_state object total.\
 """
 
 
@@ -74,6 +79,10 @@ class ExtractionFailed(Exception):
 class ExtractionResult:
     candidates: list[NormalizedCandidate] = field(default_factory=list)
     working_state: WorkingStateEnvelope | None = None
+    #: How many candidates a semantic rule dropped (CandidateDropped). A
+    #: count, never the claims themselves: this number is safe to log or
+    #: meter, the text behind it is not.
+    dropped: int = 0
 
 
 def extract(
@@ -94,6 +103,7 @@ def extract(
 
     candidates: list[NormalizedCandidate] = []
     working_state: WorkingStateEnvelope | None = None
+    dropped = 0
 
     for fact in facts:
         text = fact.get("text") if isinstance(fact, dict) else None
@@ -109,6 +119,13 @@ def extract(
 
         try:
             classified = classify(envelope)
+        except CandidateDropped:
+            # One claim this harness disagrees with, not a misread slice.
+            # Dropped alone: failing the whole extraction here would discard
+            # every good candidate beside it and then retry the identical
+            # prompt to the attempt limit, losing the slice for good.
+            dropped += 1
+            continue
         except (ValidationError, CandidateRejected) as exc:
             raise ExtractionFailed(str(exc)) from exc
 
@@ -120,7 +137,9 @@ def extract(
             _check_provenance_span(classified, len(sanitized_content))
             candidates.append(classified)
 
-    return ExtractionResult(candidates=candidates, working_state=working_state)
+    return ExtractionResult(
+        candidates=candidates, working_state=working_state, dropped=dropped
+    )
 
 
 def _check_provenance_span(candidate: NormalizedCandidate, slice_length: int) -> None:

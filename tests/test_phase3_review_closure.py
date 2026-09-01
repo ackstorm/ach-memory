@@ -977,6 +977,7 @@ def test_a_stale_worker_stage_is_reported_as_lease_lost_not_as_success(session, 
             mock.Mock(),
             row,
             owner=stale_owner,
+            lease_seconds=60,
             max_attempts=8,
             correction_refresh_enabled=False,
         )
@@ -1191,3 +1192,353 @@ def test_bank_ids_are_redacted_even_when_embedded_in_a_longer_string():
 
     assert bank_id not in json.dumps(redacted)
     assert redacted["exact"] == activity.fingerprint(bank_id)
+
+
+# ---------------------------------------------------------------------------
+# Review round 2, finding 3: a semantic rule drops one candidate, not the
+# whole slice.
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_a_semantically_dropped_candidate_leaves_its_siblings_intact():
+    """The blast radius of the two new semantic rules.
+
+    Failing the whole extraction would discard every good candidate beside
+    the offending one and then retry the identical prompt to the attempt
+    limit, losing the slice permanently.
+    """
+    client = _stub_extractor(
+        _envelope(text="The team uses trunk-based development."),
+        # Mislabelled: negative=true with no prohibition in the text.
+        _envelope(text="The team uses feature flags.", negative=True),
+        _envelope(text="Migrations run before deploys."),
+    )
+
+    result = extract(client, EXTRACT_BANK, "user: a slice about how the team works")
+
+    assert [c.text for c in result.candidates] == [
+        "The team uses trunk-based development.",
+        "Migrations run before deploys.",
+    ]
+    assert result.dropped == 1
+
+
+@respx.mock
+def test_local_scope_widening_drops_only_the_offending_candidate():
+    client = _stub_extractor(
+        _envelope(text="Prefers tabs over spaces.", kind="preference", subject="user"),
+        _envelope(
+            text="Always run make check here before pushing.",
+            kind="preference",
+            subject="user",
+        ),
+    )
+
+    result = extract(client, EXTRACT_BANK, "user: a slice about preferences")
+
+    assert [c.text for c in result.candidates] == ["Prefers tabs over spaces."]
+    assert result.dropped == 1
+
+
+@respx.mock
+def test_a_routing_error_still_fails_the_whole_slice():
+    """Drop-one is for semantic disagreement, not for a misread slice: a
+    preference aimed at the project bank means the model misunderstood which
+    bank it was writing to, and the rest of its output is not more
+    trustworthy for it."""
+    client = _stub_extractor(
+        _envelope(text="The team uses trunk-based development."),
+        _envelope(text="Prefers tabs over spaces.", kind="preference", subject="project"),
+    )
+
+    with pytest.raises(ExtractionFailed):
+        extract(client, EXTRACT_BANK, "user: a slice")
+
+
+@respx.mock
+def test_a_malformed_envelope_still_fails_the_whole_slice():
+    """Parse and schema failures keep their atomicity."""
+    respx.post(
+        f"{HINDSIGHT}/v1/default/banks/{EXTRACT_BANK}/memories/dry-run-extract"
+    ).mock(return_value=httpx.Response(200, json={"facts": [{"text": "{not json"}]}))
+    client = HindsightClient(base_url=HINDSIGHT, api_key="secret", tenant_id="default")
+
+    with pytest.raises(ExtractionFailed):
+        extract(client, EXTRACT_BANK, "user: a slice")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Refrain from force-pushing to main.",
+        "Skip the full suite on a docs-only change.",
+        "Omit the debug flag in production builds.",
+        "Never force-push to main.",
+        "Do not commit generated files.",
+        "Avoid global installs.",
+        "Exclude vendored code from coverage.",
+        "Leave out the timing logs.",
+    ],
+)
+def test_ordinary_prohibitions_are_recognized_as_negative_claims(text):
+    """A prohibition with no negation particle in it is still a prohibition."""
+    result = classify(_envelope(text=text, negative=True))
+
+    assert result.negative is True
+
+
+# ---------------------------------------------------------------------------
+# Review round 2, finding 1: the fence made an overrun safe; renewal makes it
+# live.
+# ---------------------------------------------------------------------------
+
+
+def test_renew_lease_extends_the_window_for_the_current_owner(session, tenant):
+    row = _capture_row(session, tenant)
+    owner = repository.new_lease_owner()
+    repository.acquire_lease(session, owner=owner, lease_seconds=60)
+    session.commit()
+    original = row.lease_until
+
+    repository.renew_lease(session, row, owner=owner, lease_seconds=600)
+    session.commit()
+
+    assert row.lease_until > original
+    assert row.lease_owner == owner
+
+
+def test_renew_lease_refuses_an_owner_that_no_longer_holds_the_row(session, tenant):
+    """There is nothing to renew, and the caller must not proceed."""
+    row = _capture_row(session, tenant)
+    stale = repository.new_lease_owner("slow")
+    repository.acquire_lease(session, owner=stale, lease_seconds=60)
+    session.commit()
+    row.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+    session.commit()
+    repository.acquire_lease(session, owner=repository.new_lease_owner("fast"), lease_seconds=60)
+    session.commit()
+
+    with pytest.raises(repository.LeaseLost):
+        repository.renew_lease(session, row, owner=stale, lease_seconds=60)
+
+
+def test_a_row_queued_behind_a_slow_sibling_is_not_stolen_mid_flight(
+    session, tenant, monkeypatch
+):
+    """The batch case the fence alone did not cover.
+
+    Five rows are leased at once but processed one at a time. If the first
+    row's extraction takes longer than the lease, every row behind it is
+    stealable before its own work even starts -- so it gets stolen, and the
+    LLM call this worker is about to make on it is thrown away. Renewing
+    immediately before the call gives the row a full window of its own.
+    """
+    slow = _capture_row(session, tenant)
+    queued = _capture_row_at(session, tenant, slow, start_offset=100)
+
+    owner = repository.new_lease_owner("worker-a")
+    leased = repository.acquire_lease(session, owner=owner, lease_seconds=60, batch_size=5)
+    assert len({row.id for row in leased}) == 2
+    session.commit()
+
+    # The lease window elapses while the first row is still extracting.
+    for row in leased:
+        row.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+    session.commit()
+
+    thief = repository.new_lease_owner("worker-b")
+    stolen: list = []
+
+    def _extract_that_a_rival_worker_races(client, bank_id, content):
+        stolen.extend(
+            repository.acquire_lease(session, owner=thief, lease_seconds=60, batch_size=5)
+        )
+        session.commit()
+        return ExtractionResult(candidates=[], working_state=None)
+
+    monkeypatch.setattr(worker, "extract", _extract_that_a_rival_worker_races)
+
+    worker.process_row(
+        session,
+        mock.Mock(),
+        queued,
+        owner=owner,
+        lease_seconds=60,
+        max_attempts=8,
+        correction_refresh_enabled=False,
+    )
+
+    assert queued.id not in {row.id for row in stolen}, "the row was stolen mid-extraction"
+    # The row this worker was NOT processing is still fair game -- renewal
+    # protects the row in flight, it does not hold the whole batch hostage.
+    assert slow.id in {row.id for row in stolen}
+    session.refresh(queued)
+    assert queued.status == "retaining", "the extraction result was kept"
+
+
+def test_the_lease_is_renewed_on_both_sides_of_the_external_call(session, tenant, monkeypatch):
+    """Before, so the call starts with a full window; after, so a call that
+    outran even a fresh lease is caught before its result is written."""
+    row = _capture_row(session, tenant)
+    owner = repository.new_lease_owner()
+    repository.acquire_lease(session, owner=owner, lease_seconds=60)
+    session.commit()
+
+    renewals: list[str] = []
+    real_renew = repository.renew_lease
+
+    def _counting_renew(db, target, *, owner, lease_seconds):
+        renewals.append("renew")
+        return real_renew(db, target, owner=owner, lease_seconds=lease_seconds)
+
+    monkeypatch.setattr(worker.repository, "renew_lease", _counting_renew)
+    monkeypatch.setattr(
+        worker,
+        "extract",
+        lambda client, bank_id, content: (
+            renewals.append("external-call"),
+            ExtractionResult(candidates=[], working_state=None),
+        )[1],
+    )
+
+    worker.process_row(
+        session,
+        mock.Mock(),
+        row,
+        owner=owner,
+        lease_seconds=60,
+        max_attempts=8,
+        correction_refresh_enabled=False,
+    )
+
+    assert renewals == ["renew", "external-call", "renew"]
+
+
+# ---------------------------------------------------------------------------
+# Review round 2, finding 4: per-record [raw_start, raw_end) markers.
+# ---------------------------------------------------------------------------
+
+
+def test_every_included_sanitized_record_carries_its_own_raw_span(tmp_path):
+    """Batch-level offsets say which bytes the batch covers; these say which
+    bytes each individual sanitized record came from.
+
+    The sanitized form is a lossy projection of the transcript, so without
+    the per-record mapping a claim is only traceable back to the whole
+    batch.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    lines = [
+        _user_line("Always run the linter before pushing."),
+        _user_line("Never force-push to main."),
+        _user_line("We decided to keep the importer."),
+    ]
+    transcript.write_bytes(b"".join(lines))
+
+    batch = local.build_batch(local.read_new_slice(transcript, 0))
+
+    # One span per record, each exactly the bytes of that record's line.
+    expected = []
+    start = 0
+    for line in lines:
+        expected.append((start, start + len(line)))
+        start += len(line)
+    assert batch.record_spans == expected
+
+    # And each span is written into the content ahead of the record it marks.
+    body = batch.content.splitlines()
+    assert body == [
+        local.raw_marker(0, expected[0][1]),
+        "user: Always run the linter before pushing.",
+        local.raw_marker(expected[0][1], expected[1][1]),
+        "user: Never force-push to main.",
+        local.raw_marker(expected[1][1], expected[2][1]),
+        "user: We decided to keep the importer.",
+    ]
+
+
+def test_a_raw_span_names_the_exact_bytes_of_its_record(tmp_path):
+    """The span is checkable against the file, not just internally consistent."""
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_bytes(
+        _user_line("first claim about the build") + _user_line("second claim about the tests")
+    )
+
+    batch = local.build_batch(local.read_new_slice(transcript, 0))
+    raw = transcript.read_bytes()
+
+    assert len(batch.record_spans) == 2
+    for (raw_start, raw_end), needle in zip(
+        batch.record_spans, ["first claim about the build", "second claim about the tests"]
+    ):
+        record = json.loads(raw[raw_start:raw_end])
+        assert record["message"]["content"] == needle
+
+
+def test_raw_spans_continue_across_checkpoints_in_absolute_file_offsets(tmp_path):
+    """A second checkpoint's markers are offsets into the file, not into its
+    own slice -- otherwise every batch would restart at zero and two records
+    would claim the same bytes."""
+    transcript = tmp_path / "transcript.jsonl"
+    first_line = _user_line("the first checkpoint")
+    transcript.write_bytes(first_line)
+    first = local.build_batch(local.read_new_slice(transcript, 0))
+
+    transcript.write_bytes(first_line + _user_line("the second checkpoint"))
+    second = local.build_batch(local.read_new_slice(transcript, first.end_offset))
+
+    assert first.record_spans == [(0, len(first_line))]
+    assert second.record_spans == [(len(first_line), transcript.stat().st_size)]
+    assert local.raw_marker(len(first_line), transcript.stat().st_size) in second.content
+
+
+def test_a_record_with_no_retained_text_gets_no_marker(tmp_path):
+    """There is no sanitized record for it to mark, and a marker announcing
+    an absence would spend bytes saying nothing."""
+    transcript = tmp_path / "transcript.jsonl"
+    summary = _line(type="summary", summary="Hi there!", leafUuid="u1")
+    kept = _user_line("Always run make check.")
+    transcript.write_bytes(summary + kept)
+
+    batch = local.build_batch(local.read_new_slice(transcript, 0))
+
+    assert batch.content.count("[raw ") == 1
+    # The marker names the marked record's OWN bytes, not the dropped
+    # summary's as well: a span that swallowed the summary would point at
+    # bytes the sanitized text beside it never came from.
+    assert batch.record_spans == [(len(summary), len(summary) + len(kept))]
+    # The cursor still crosses the summary -- it is acknowledged, just not
+    # marked.
+    assert batch.end_offset == transcript.stat().st_size
+
+
+def test_the_markers_are_code_owned_and_the_prompt_says_so():
+    """The model may not emit or alter one, and must not read the byte
+    numbers as provenance offsets."""
+    assert "[raw N:M)" in EXTRACTION_PROMPT
+    assert "never emit one" in EXTRACTION_PROMPT
+
+
+@respx.mock
+def test_the_submitted_body_carries_the_markers(tmp_path):
+    """They travel with the content, not just in a local dataclass."""
+    repo = _git_repo(tmp_path)
+    slug = slug_from_locator(ORIGIN)
+    transcript = repo / "transcript.jsonl"
+    transcript.write_bytes(_user_line("Always run the linter before pushing."))
+
+    route = respx.post(f"{HOOK_URL}/v1/capture/checkpoints").mock(
+        return_value=_accepted_response(transcript.stat().st_size, slug)
+    )
+    local.checkpoint(
+        {"transcript_path": str(transcript), "session_id": "s1", "cwd": str(repo)},
+        env=_hook_env(tmp_path),
+    )
+
+    body = json.loads(route.calls.last.request.read())
+    assert local.raw_marker(0, transcript.stat().st_size) in body["content"]
+    # And the hash still covers exactly what was sent.
+    assert (
+        hashlib.sha256(body["content"].encode()).hexdigest() == body["sanitized_hash"]
+    )

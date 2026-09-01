@@ -219,6 +219,28 @@ def _hold_lease(db: Session, row: CaptureSlice, owner: str) -> None:
         raise LeaseLost(f"lease on capture row {row.id} is no longer held by this worker")
 
 
+def renew_lease(db: Session, row: CaptureSlice, *, owner: str, lease_seconds: int) -> None:
+    """Push this worker's lease out by another `lease_seconds`.
+
+    Called on both sides of every external call (see
+    `memory.capture.worker`). The fence alone makes an overrun SAFE -- a
+    stale worker's write is refused -- but not LIVE: a batch of five rows
+    behind one slow extraction would routinely have expired leases by the
+    time the worker reached them, so each would be stolen mid-flight and its
+    finished LLM work thrown away, indefinitely. Renewing immediately before
+    a call is what gives the row a full lease window for its own work rather
+    than whatever was left after its siblings.
+
+    Raises `LeaseLost` if the lease has already moved on -- there is nothing
+    to renew, and the caller must not proceed.
+    """
+    _hold_lease(db, row, owner)
+    row.lease_until = db.execute(select(func.now())).scalar_one() + timedelta(
+        seconds=lease_seconds
+    )
+    db.flush()
+
+
 def release_lease(db: Session, row: CaptureSlice, *, owner: str) -> None:
     _hold_lease(db, row, owner)
     row.lease_owner = None

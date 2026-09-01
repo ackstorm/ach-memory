@@ -256,8 +256,9 @@ def test_a_batch_is_bounded_on_whole_record_boundaries(tmp_path):
     # hashes span exactly the offsets it names, and its text is the
     # sanitization of exactly those records -- not a prefix of a longer one.
     assert len(batch.raw) == batch.end_offset - batch.start_offset
-    covered = local.read_new_slice(transcript, 0).records[: batch.content.count("\n") + 1]
-    assert batch.content == local.sanitize(covered)
+    covered = local.read_new_slice(transcript, 0).records[: len(batch.record_spans)]
+    body = [line for line in batch.content.splitlines() if not line.startswith("[raw ")]
+    assert "\n".join(body) == local.sanitize(covered)
 
 
 # ---------------------------------------------------------------------------

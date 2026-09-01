@@ -83,6 +83,24 @@ def _worker_principal(row: CaptureSlice) -> Principal:
     )
 
 
+def _renew(db: Session, row: CaptureSlice, *, owner: str, lease_seconds: int) -> None:
+    """Give this row a full lease window around one external call.
+
+    Called immediately before and immediately after every call that leaves
+    this process. Before, because a row queued behind a slow sibling in the
+    same batch would otherwise start its own work on whatever lease time was
+    left over; after, because a call that outran even a fresh lease must be
+    caught before its result is written, not once it already has been.
+
+    Committed rather than merely flushed: an uncommitted renewal is
+    invisible to the worker deciding whether this row is stealable. Safe at
+    every call site because each sits between two committed stage
+    boundaries, so there is never other pending work to commit early.
+    """
+    repository.renew_lease(db, row, owner=owner, lease_seconds=lease_seconds)
+    db.commit()
+
+
 # --------------------------------------------------------------------------
 # Stage handlers. Each persists its own result and returns -- never chains
 # into the next stage within one call.
@@ -90,9 +108,16 @@ def _worker_principal(row: CaptureSlice) -> Principal:
 
 
 def _extract_stage(
-    db: Session, client: HindsightClient, row: CaptureSlice, *, owner: str, max_attempts: int
+    db: Session,
+    client: HindsightClient,
+    row: CaptureSlice,
+    *,
+    owner: str,
+    lease_seconds: int,
+    max_attempts: int,
 ) -> StageOutcome:
     project = db.get(Project, row.project_internal_id)
+    _renew(db, row, owner=owner, lease_seconds=lease_seconds)
     try:
         result = extract(client, project.bank_id, row.sanitized_content or "")
     except (ExtractionFailed, HindsightError) as exc:
@@ -103,6 +128,7 @@ def _extract_stage(
         db.commit()
         return "failed"
 
+    _renew(db, row, owner=owner, lease_seconds=lease_seconds)
     repository.advance_stage(
         db, row, owner=owner, status="retaining", extraction=_serialize_extraction(result)
     )
@@ -111,7 +137,13 @@ def _extract_stage(
 
 
 def _retain_stage(
-    db: Session, client: HindsightClient, row: CaptureSlice, *, owner: str, max_attempts: int
+    db: Session,
+    client: HindsightClient,
+    row: CaptureSlice,
+    *,
+    owner: str,
+    lease_seconds: int,
+    max_attempts: int,
 ) -> StageOutcome:
     extraction = _deserialize_extraction(row.extraction)
 
@@ -158,6 +190,7 @@ def _retain_stage(
         sanitized_hash=row.sanitized_hash,
     )
     bank_id = _bank_id_for(db, row, pending_bank)
+    _renew(db, row, owner=owner, lease_seconds=lease_seconds)
     try:
         client.retain_items(
             bank_id,
@@ -171,6 +204,7 @@ def _retain_stage(
         db.commit()
         return "failed"
 
+    _renew(db, row, owner=owner, lease_seconds=lease_seconds)
     operations[pending_bank] = {**operations[pending_bank], "acknowledged": True}
     all_acknowledged = all(op["acknowledged"] for op in operations.values())
     repository.advance_stage(
@@ -190,6 +224,7 @@ def _applying_stage(
     row: CaptureSlice,
     *,
     owner: str,
+    lease_seconds: int,
     max_attempts: int,
     correction_refresh_enabled: bool,
 ) -> StageOutcome:
@@ -197,6 +232,7 @@ def _applying_stage(
 
     for bank_kind, op in operations.items():
         bank_id = _bank_id_for(db, row, bank_kind)
+        _renew(db, row, owner=owner, lease_seconds=lease_seconds)
         try:
             status_result = client.get_operation(bank_id, op["operation_id"])
         except HindsightError:
@@ -205,6 +241,7 @@ def _applying_stage(
             )
             db.commit()
             return "failed"
+        _renew(db, row, owner=owner, lease_seconds=lease_seconds)
         if filer.is_complete(status_result):
             continue
         if filer.is_pending(status_result):
@@ -258,7 +295,9 @@ def _applying_stage(
             return "failed"
 
     if correction_refresh_enabled:
+        _renew(db, row, owner=owner, lease_seconds=lease_seconds)
         _refresh_corrected_banks(db, client, row, extraction.candidates)
+        _renew(db, row, owner=owner, lease_seconds=lease_seconds)
 
     repository.complete(db, row, owner=owner)
     db.commit()
@@ -288,6 +327,7 @@ def process_row(
     row: CaptureSlice,
     *,
     owner: str,
+    lease_seconds: int,
     max_attempts: int,
     correction_refresh_enabled: bool,
 ) -> None:
@@ -303,15 +343,22 @@ def process_row(
     started = time.monotonic()
     try:
         if row.status == "pending":
-            outcome = _extract_stage(db, client, row, owner=owner, max_attempts=max_attempts)
+            outcome = _extract_stage(
+                db, client, row, owner=owner, lease_seconds=lease_seconds,
+                max_attempts=max_attempts,
+            )
         elif row.status == "retaining":
-            outcome = _retain_stage(db, client, row, owner=owner, max_attempts=max_attempts)
+            outcome = _retain_stage(
+                db, client, row, owner=owner, lease_seconds=lease_seconds,
+                max_attempts=max_attempts,
+            )
         else:
             outcome = _applying_stage(
                 db,
                 client,
                 row,
                 owner=owner,
+                lease_seconds=lease_seconds,
                 max_attempts=max_attempts,
                 correction_refresh_enabled=correction_refresh_enabled,
             )
@@ -402,6 +449,7 @@ def run_once(
                 client,
                 row,
                 owner=owner,
+                lease_seconds=settings.capture_worker_lease_seconds,
                 max_attempts=settings.capture_worker_max_attempts,
                 correction_refresh_enabled=settings.capture_correction_refresh_enabled,
             )

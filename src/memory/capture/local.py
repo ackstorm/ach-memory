@@ -387,6 +387,24 @@ class SanitizedBatch:
     content: str
     start_offset: int
     end_offset: int
+    #: The `[raw_start, raw_end)` span of each record that contributed text,
+    #: in the order the markers appear in `content`. Batch-level offsets say
+    #: which bytes the batch covers; these say which bytes each individual
+    #: sanitized record came from.
+    record_spans: list[tuple[int, int]] = field(default_factory=list)
+
+
+def raw_marker(raw_start: int, raw_end: int) -> str:
+    """The code-owned marker naming one record's half-open raw byte span.
+
+    Code-owned in the literal sense: this client writes it from offsets it
+    measured itself, and nothing downstream may invent or alter one. It is
+    what lets a claim extracted from the sanitized text be traced back to
+    the exact bytes of the original transcript -- the sanitized form is a
+    lossy projection, so without the mapping the raw evidence for a claim is
+    only locatable to the whole batch.
+    """
+    return f"[raw {raw_start}:{raw_end})"
 
 
 def build_batch(slice_: RawSlice) -> SanitizedBatch:
@@ -398,22 +416,35 @@ def build_batch(slice_: RawSlice) -> SanitizedBatch:
     next checkpoint. The first record is always included even if it alone
     overflows -- otherwise one huge record would wedge the cursor forever --
     and only then is its own text capped.
+
+    Every record that contributes text is preceded by its own
+    `[raw_start, raw_end)` marker. A record that sanitizes to nothing gets
+    no marker: there is no sanitized record for it to mark, and emitting one
+    would spend bytes announcing an absence.
     """
     tool_uses: dict[str, _ToolUse] = {}
     lines: list[str] = []
+    spans: list[tuple[int, int]] = []
     used = 0
     end_offset = slice_.start_offset
     consumed = 0
+    raw_start = slice_.start_offset
 
     for record, record_end in zip(slice_.records, slice_.record_ends, strict=True):
         record_lines = _sanitize_record(record, tool_uses)
+        if record_lines:
+            marker = raw_marker(raw_start, record_end)
+            record_lines = [marker, *record_lines]
         size = sum(len(line.encode("utf-8")) + 1 for line in record_lines)
         if lines and used + size > _SLICE_CAP:
             break
+        if record_lines:
+            spans.append((raw_start, record_end))
         lines.extend(record_lines)
         used += size
         end_offset = record_end
         consumed = record_end - slice_.start_offset
+        raw_start = record_end
 
     content = "\n".join(lines)
     if len(content) > _SLICE_CAP:
@@ -426,6 +457,7 @@ def build_batch(slice_: RawSlice) -> SanitizedBatch:
         content=content,
         start_offset=slice_.start_offset,
         end_offset=end_offset,
+        record_spans=spans,
     )
 
 

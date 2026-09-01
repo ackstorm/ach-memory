@@ -846,3 +846,59 @@ def test_the_skill_requires_english_at_write_time(host: str) -> None:
     """
     text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
     assert "write every memory in english" in text
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected"),
+    [
+        (
+            "https://x-access-token:ghp_CANARYTOKEN123@github.com/acme/api.git",
+            "https://github.com/acme/api.git",
+        ),
+        (
+            "https://ghp_CANARYTOKEN123@github.com/acme/api.git",
+            "https://github.com/acme/api.git",
+        ),
+        ("ssh://git@github.com:22/acme/api.git", "ssh://github.com:22/acme/api.git"),
+        # No credential to strip: these must pass through untouched.
+        ("https://github.com/acme/api.git", "https://github.com/acme/api.git"),
+    ],
+)
+def test_the_session_start_hook_strips_userinfo_from_the_git_locator(
+    tmp_path: Path, origin: str, expected: str
+) -> None:
+    """SPEC Phase 3 review finding 2, on the highest-frequency path there is.
+
+    The locator becomes a URL QUERY PARAMETER, so an unstripped credential
+    lands in the service's access logs once per session start.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    subprocess.run(["git", "remote", "add", "origin", origin], cwd=repo, check=True)
+    fake_curl = _capture_curl_args(tmp_path)
+    args = tmp_path / "curl-args"
+    environment = _hook_env()
+    environment.update(
+        {
+            "ACH_MEMORY_API_KEY": "test-key",
+            "ACH_MEMORY_URL": "https://memory.test",
+            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
+            "CURL_ARGS": str(args),
+            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
+        }
+    )
+
+    result = subprocess.run(
+        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+        cwd=repo,
+    )
+
+    assert result.returncode == 0
+    values = args.read_text()
+    assert f"git_locator={expected}" in values
+    assert "CANARYTOKEN123" not in values
+    assert "x-access-token" not in values

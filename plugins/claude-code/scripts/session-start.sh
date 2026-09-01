@@ -14,7 +14,16 @@ key="${ACH_MEMORY_API_KEY:-}"
 [ -n "$key" ] || exit 0
 url="${ACH_MEMORY_URL:-http://localhost:8000}"
 
+# Userinfo is stripped before the locator goes anywhere: `git remote get-url`
+# returns whatever is in the config, and a machine that clones over HTTPS
+# routinely has a token in it (https://x-access-token:ghp_...@github.com/...).
+# This value becomes a URL QUERY PARAMETER below, so an unstripped credential
+# lands in the service's access logs -- on the highest-frequency path in the
+# system, once per session start. Matches what canonical_locator() does
+# server-side and what the capture hook now does locally: drop the userinfo
+# run ahead of the host, with or without a scheme.
 locator="$(git remote get-url origin 2>/dev/null || true)"
+locator="$(printf '%s' "$locator" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#; s#^[^/@:]*@([^/])#\1#')"
 cache_dir="${ACH_MEMORY_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/ach-memory}"
 mkdir -p "$cache_dir" 2>/dev/null || true
 

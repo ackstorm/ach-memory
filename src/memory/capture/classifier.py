@@ -24,6 +24,23 @@ class CandidateRejected(ValueError):
     project bank. Distinct from a pydantic ValidationError (a malformed
     envelope) -- this is a well-formed envelope the rules say must not
     become project truth.
+
+    Fatal to the whole slice (see `memory.capture.extractor.extract`): a
+    routing error means the model misunderstood which bank it was writing
+    to, and the rest of its output is not more trustworthy for it.
+    """
+
+
+class CandidateDropped(CandidateRejected):
+    """One candidate a semantic rule refuses, without prejudice to the rest.
+
+    The difference from `CandidateRejected` is blast radius, and it is
+    deliberate. A mislabelled `negative` flag or a repository-local
+    sentence filed against the user bank is a judgement this harness
+    disagrees with on ONE claim -- not evidence that the model misread the
+    slice. Failing the whole slice for it would discard every good
+    candidate alongside it and then retry the identical prompt eight times
+    before going terminal, which loses the slice permanently.
     """
 
 
@@ -46,11 +63,20 @@ _LOCAL_SCOPE_RE = re.compile(
 # An explicit negative claim, for validating `negative` (SPEC §7.5:
 # "preserve explicit negative constraints as negative constraints"). The
 # flag is what routes a prohibition, so a model that sets it without a
-# prohibition in the text has mislabelled the claim -- fail closed rather
-# than file "use X" as if it read "never use X".
+# prohibition in the text has mislabelled the claim.
+#
+# English spells a prohibition many ways, and this lexicon is a floor rather
+# than a parser -- "refrain from", "skip", "omit" and "leave out" are
+# ordinary prohibitions with no negation particle in them at all. A claim it
+# fails to recognize is dropped on its own (CandidateDropped), never at the
+# cost of the slice around it, which is what makes an incomplete lexicon an
+# acceptable trade here instead of a data-loss bug.
 _NEGATION_RE = re.compile(
     r"(?i)(\bnot\b|\bno\b|\bnever\b|\bnone\b|\bavoid(?:s|ed|ing)?\b|\bwithout\b"
-    r"|\bstop\b|\bprohibit(?:s|ed)?\b|\bforbid(?:s|den)?\b|\bdisallow(?:s|ed)?\b"
+    r"|\bstop\b|\bprohibit(?:s|ed|ing)?\b|\bforbid(?:s|den|ding)?\b"
+    r"|\bdisallow(?:s|ed|ing)?\b|\brefrain(?:s|ed|ing)?\b|\bskip(?:s|ped|ping)?\b"
+    r"|\bomit(?:s|ted|ting)?\b|\bexclude(?:s|d)?\b|\bexcluding\b|\bban(?:s|ned|ning)?\b"
+    r"|\bcease(?:s|d)?\b|\bdrop(?:s|ped|ping)?\b|\bleave out\b|\bleaves out\b"
     r"|\bdon't\b|\bdoesn't\b|\bdidn't\b|\bcan't\b|\bcannot\b|\bwon't\b|\bshouldn't\b"
     r"|\bmustn't\b|\bisn't\b|\baren't\b|n't\b)"
 )
@@ -102,7 +128,7 @@ def _classify_candidate(envelope: CandidateEnvelope) -> NormalizedCandidate:
     # works, not how this person works, and filing it as user truth would
     # carry it into every other repository they touch.
     if envelope.subject == "user" and _LOCAL_SCOPE_RE.search(envelope.text):
-        raise CandidateRejected(
+        raise CandidateDropped(
             "project-local wording cannot widen into user scope"
         )
 
@@ -111,7 +137,7 @@ def _classify_candidate(envelope: CandidateEnvelope) -> NormalizedCandidate:
     # the text -- otherwise "do not X" and "prefer X" become indistinguishable
     # downstream, in whichever direction the model got it wrong.
     if envelope.negative and not _NEGATION_RE.search(envelope.text):
-        raise CandidateRejected(
+        raise CandidateDropped(
             "negative=true does not match an explicit negative claim"
         )
 

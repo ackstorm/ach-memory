@@ -199,6 +199,7 @@ def test_a_capture_extraction_stage_increments_the_stage_counter(session, tenant
             client,
             result.row,
             owner=owner,
+            lease_seconds=60,
             max_attempts=8,
             correction_refresh_enabled=False,
         )
