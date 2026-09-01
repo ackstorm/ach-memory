@@ -51,12 +51,20 @@ class FakeClient:
         raise AssertionError("provisioning must never trigger a dry-run refresh")
 
 
-def _model(*, source_query: str | None = None, trigger: dict | None = None) -> dict:
+def _model(
+    *,
+    source_query: str | None = None,
+    max_tokens: int | None = None,
+    trigger: dict | None = None,
+) -> dict:
     return {
         "id": "mm-1",
         "name": profiles.PROFILE_MODEL_NAME,
         "source_query": (
             profiles.PROFILE_USER_QUERY if source_query is None else source_query
+        ),
+        "max_tokens": (
+            profiles.USER_PROFILE_MAX_TOKENS if max_tokens is None else max_tokens
         ),
         "trigger": profiles._profile_trigger("user") if trigger is None else trigger,
     }
@@ -122,6 +130,29 @@ def test_a_changed_source_query_updates_the_model_in_place():
     assert (bank_id, model_id) == ("user_1", "mm-1")
     assert kwargs["source_query"] == profiles.PROFILE_USER_QUERY
     assert "trigger" not in kwargs
+    assert "max_tokens" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# Reconcile: max_tokens drift
+# ---------------------------------------------------------------------------
+
+
+def test_a_changed_max_tokens_updates_the_model_in_place():
+    """A redeploy that changes USER_PROFILE_MAX_TOKENS/PROJECT_PROFILE_MAX_
+    TOKENS must reach a model that already exists, same as `brief._reconcile`
+    learned to do for TRIGGER after fixing this exact class of bug once
+    (`brief.py`'s own docstring records it) -- and this budget is explicitly
+    the least settled of the constants provisioned here."""
+    client = FakeClient(models=[_model(max_tokens=999)])
+
+    assert profiles.provision_profile(client, "user_1", "user") == "reconciled"
+
+    (_, _, kwargs) = client.updated[0]
+    assert kwargs["max_tokens"] == profiles.USER_PROFILE_MAX_TOKENS
+    # `test_a_model_already_in_line_is_not_patched` above already covers the
+    # already-correct case (its `_model()` default now includes a matching
+    # `max_tokens`), so no separate no-op test is needed here.
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +188,11 @@ def test_a_schema_already_matching_the_scope_is_not_patched():
     }
     client = FakeClient(
         models=[
-            _model(source_query=profiles.PROFILE_PROJECT_QUERY, trigger=matching_trigger)
+            _model(
+                source_query=profiles.PROFILE_PROJECT_QUERY,
+                max_tokens=profiles.PROJECT_PROFILE_MAX_TOKENS,
+                trigger=matching_trigger,
+            )
         ]
     )
 
@@ -185,6 +220,7 @@ def test_a_changed_trigger_field_reaches_a_model_that_already_exists():
     (_, _, kwargs) = client.updated[0]
     assert kwargs["trigger"]["mode"] == "full"
     assert "source_query" not in kwargs
+    assert "max_tokens" not in kwargs
 
 
 def test_reconciling_a_trigger_keeps_fields_this_module_does_not_set():
@@ -386,6 +422,7 @@ def test_provision_profile_reconciles_an_existing_model_for_a_project(
 
     sent = json.loads(route.calls.last.request.content)
     assert sent["source_query"] == profiles.PROFILE_PROJECT_QUERY
+    assert sent["max_tokens"] == profiles.PROJECT_PROFILE_MAX_TOKENS
     assert sent["trigger"]["mode"] == "full"
 
 

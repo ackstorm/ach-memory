@@ -533,7 +533,8 @@ PROFILE_USER_QUERY = (
     "not a history of how understanding changed over time. An explicit "
     "correction supersedes what it corrects. Draw every item only from "
     "evidence marked stated, confirmed or observed; an observed preference "
-    "is never eligible for a profile item, but an observed convention is. "
+    "or observed decision is never eligible for a profile item, but an "
+    "observed convention is. "
     "Never synthesize from inferred evidence or from a bare technical_claim. "
     "Each item is exactly one atomic claim -- never combine two independent "
     "statements into one item, even when the same memory states both. "
@@ -608,7 +609,12 @@ def _find_profile(client, bank_id: str) -> dict | None:
 
 
 def _reconcile_profile(
-    client, bank_id: str, model: dict, source_query: str, trigger: dict[str, Any]
+    client,
+    bank_id: str,
+    model: dict,
+    source_query: str,
+    max_tokens: int,
+    trigger: dict[str, Any],
 ) -> None:
     """Bring an existing profile model back in line with the constants
     above. Same merge-not-replace reasoning as `brief._reconcile`: the
@@ -623,10 +629,20 @@ def _reconcile_profile(
     way a changed `mode` or `keep_trace` would be. Compared by full dict
     equality, not presence -- two schemas can share every top-level key and
     still differ underneath.
+
+    `max_tokens` is reconciled too, for `brief._reconcile`'s own recorded
+    reason (see that docstring): "Only the query was reconciled here at
+    first, which meant a changed TRIGGER silently applied to new banks
+    alone" -- the same failure mode, here, for a budget already flagged as
+    an unmeasured first-pass draft that is expected to change once Task 7's
+    evaluator has real output to correct it against.
     """
     changed: dict[str, object] = {}
     if model.get("source_query") != source_query:
         changed["source_query"] = source_query
+
+    if model.get("max_tokens") != max_tokens:
+        changed["max_tokens"] = max_tokens
 
     stored = model.get("trigger") or {}
     if any(stored.get(key) != value for key, value in trigger.items()):
@@ -655,6 +671,7 @@ def provision_profile(client, bank_id: str, scope: ProfileScope) -> str:
     Returns "created" or "reconciled".
     """
     source_query = _SOURCE_QUERY[scope]
+    max_tokens = _MAX_TOKENS[scope]
     trigger = _profile_trigger(scope)
 
     model = _find_profile(client, bank_id)
@@ -663,13 +680,13 @@ def provision_profile(client, bank_id: str, scope: ProfileScope) -> str:
             bank_id,
             name=PROFILE_MODEL_NAME,
             source_query=source_query,
-            max_tokens=_MAX_TOKENS[scope],
+            max_tokens=max_tokens,
             trigger=trigger,
             tags=[],
         )
         return "created"
 
-    _reconcile_profile(client, bank_id, model, source_query, trigger)
+    _reconcile_profile(client, bank_id, model, source_query, max_tokens, trigger)
     return "reconciled"
 
 
