@@ -398,9 +398,13 @@ def test_clear_uses_the_clear_suffix_not_the_refresh_suffix(client, juan, tenant
     assert refresh.call_count == 0
 
 
-def test_no_dry_run_refresh_surface_exists(client):
+@pytest.mark.anyio
+async def test_no_dry_run_refresh_surface_exists(client):
     """SPEC §11.7: dry-run-refresh costs exactly the same as a real refresh,
-    so it is never wired on any surface, REST included."""
+    so it is never wired on any surface, REST or MCP included. The trusted
+    client's own `dry_run_refresh_mental_model` (Phase 4 Task 2) is an
+    internal-only method for the Task 7 local/admin evaluator -- it must
+    never surface as a route or a tool."""
     schema = client.get("/openapi.json").json()
     assert not any(
         "dry-run" in path or "dry_run" in path for path in schema["paths"]
@@ -410,6 +414,14 @@ def test_no_dry_run_refresh_surface_exists(client):
     ]
     params = {p["name"] for p in refresh_op.get("parameters", [])}
     assert "dry_run" not in params
+
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    tool_names = {t.name for t in await mcp.list_tools()}
+    assert not any("dry-run" in name or "dry_run" in name for name in tool_names)
 
 
 @respx.mock

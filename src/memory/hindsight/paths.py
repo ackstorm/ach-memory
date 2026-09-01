@@ -219,3 +219,9 @@ def mental_model_clear(tenant: str, bank_id: str, mental_model_id: str) -> str:
 
 def mental_model_history(tenant: str, bank_id: str, mental_model_id: str) -> str:
     return f"{mental_model(tenant, bank_id, mental_model_id)}/history"
+
+
+def mental_model_dry_run_refresh(tenant: str, bank_id: str, mental_model_id: str) -> str:
+    # Same overlap caution as mental_model_refresh above: callers must
+    # `$`-anchor their mock/route match against this path.
+    return f"{mental_model(tenant, bank_id, mental_model_id)}/dry-run-refresh"

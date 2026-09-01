@@ -570,20 +570,25 @@ class HindsightClient:
         source_query: str,
         max_tokens: int | None = None,
         trigger: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
     ) -> dict:
         # trigger is passed through verbatim when supplied and omitted
         # entirely when not (SPEC §14.5) -- `_present` already drops a None
         # value, so an omitted trigger sends no "trigger" key at all, never
         # `{}` or a default. No shape validation, no default of our own: a
         # model created without one performs no automatic refresh, which is
-        # Hindsight's own cheapest and safest behavior. tags is never sent,
-        # same reasoning as create_directive.
+        # Hindsight's own cheapest and safest behavior. tags follows the same
+        # discipline: it is Hindsight's in-bank visibility scope, server-owned
+        # (structured-profile provisioning passes an explicit `tags=[]`), and
+        # is sent only when a trusted caller actually supplies it --
+        # CreateMentalModelRequest, the caller-facing route, never does.
         body = _present(
             {
                 "name": name,
                 "source_query": source_query,
                 "max_tokens": max_tokens,
                 "trigger": trigger,
+                "tags": tags,
             }
         )
         return self._request("POST", paths.mental_models(self._tenant, bank_id), body)
@@ -619,6 +624,7 @@ class HindsightClient:
         source_query: str | None = None,
         max_tokens: int | None = None,
         trigger: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
     ) -> dict:
         paths.reject_mental_model_id_traversal(mental_model_id)
         body = _present(
@@ -627,6 +633,7 @@ class HindsightClient:
                 "source_query": source_query,
                 "max_tokens": max_tokens,
                 "trigger": trigger,
+                "tags": tags,
             }
         )
         return self._request(
@@ -652,6 +659,23 @@ class HindsightClient:
             "POST",
             paths.mental_model_refresh(self._tenant, bank_id, mental_model_id),
             not_found=MentalModelNotFound,
+        )
+
+    def dry_run_refresh_mental_model(self, bank_id: str, mental_model_id: str) -> dict:
+        # Hindsight's own non-persisting refresh preview: same LLM cost as a
+        # real refresh, no upstream write. Deliberately not reachable from
+        # refresh_mental_model above or any ach-memory route -- SPEC §11.7's
+        # comment there is about that public-reachable call never branching
+        # into a cheap dry-run mode, not about forbidding this wholly
+        # separate, internal-only method. The only caller is the local/admin
+        # cost-quality evaluator (Task 7); no request body, and forwards the
+        # response's usage/duration/diff metadata unmodified.
+        paths.reject_mental_model_id_traversal(mental_model_id)
+        return self._request(
+            "POST",
+            paths.mental_model_dry_run_refresh(self._tenant, bank_id, mental_model_id),
+            not_found=MentalModelNotFound,
+            timeout=self._llm_timeout,
         )
 
     def clear_mental_model(self, bank_id: str, mental_model_id: str) -> dict:
