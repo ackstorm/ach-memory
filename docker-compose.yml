@@ -150,13 +150,14 @@ services:
       # Loopback only. See the postgres/hindsight services above for why.
       - "127.0.0.1:${MEMORY_API_PORT:-8000}:8000"
 
-  # SPEC Phase 3. Disabled-by-default even under this opt-in profile:
-  # MEMORY_CAPTURE_WORKER_ENABLED defaults true here only because starting
-  # this service at all (`docker compose --profile capture up`) is already
-  # the explicit enablement gesture for local development -- production
-  # (deploy/helm) keeps the stricter two-layer default of both the
-  # Deployment and the flag off. No ports: this process serves nothing and
-  # has no HTTP surface of its own.
+  # SPEC Phase 3. Two independent switches, both off by default: selecting
+  # the profile (`docker compose --profile capture up`) starts the process,
+  # and MEMORY_CAPTURE_WORKER_ENABLED=true is what makes it do any work.
+  # Defaulting the flag to true here collapsed those two into one, so the
+  # profile alone enabled capture -- and that is not what selecting a
+  # profile means anywhere else in this file (SPEC Phase 3 review finding
+  # 9). Same stricter two-layer default as production (deploy/helm). No
+  # ports: this process serves nothing and has no HTTP surface of its own.
   capture-worker:
     build: .
     profiles: ["capture"]
@@ -176,7 +177,7 @@ services:
       MEMORY_HINDSIGHT_URL: http://hindsight:8888
       MEMORY_HINDSIGHT_API_KEY: ${MEMORY_HINDSIGHT_API_KEY:-}
       MEMORY_TENANT_ID: default
-      MEMORY_CAPTURE_WORKER_ENABLED: ${MEMORY_CAPTURE_WORKER_ENABLED:-true}
+      MEMORY_CAPTURE_WORKER_ENABLED: ${MEMORY_CAPTURE_WORKER_ENABLED:-false}
       MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED: ${MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED:-false}
     command: ["ach-memory", "capture-worker"]
 

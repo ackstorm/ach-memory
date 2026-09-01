@@ -182,8 +182,9 @@ def test_stage_payloads_survive_a_process_boundary(session, tenant, connection):
     result = _submit(session, principal)
     session.commit()
 
+    owner = _lease(session, result.row)
     repository.advance_stage(
-        session, result.row, status="retaining", extraction=[{"text": "a fact"}]
+        session, result.row, owner=owner, status="retaining", extraction=[{"text": "a fact"}]
     )
     session.commit()
 
@@ -196,13 +197,36 @@ def test_stage_payloads_survive_a_process_boundary(session, tenant, connection):
     assert reloaded.extraction == [{"text": "a fact"}]
 
 
+def _lease(session, row, owner: str = "worker-a") -> str:
+    """Take the lease the worker would hold before transitioning `row`.
+
+    Transitions are owner-fenced, so a test that skipped this would be
+    testing an unleased row -- a state the worker never transitions from.
+    """
+    leased = repository.acquire_lease(session, owner=owner, lease_seconds=60, batch_size=50)
+    assert any(candidate.id == row.id for candidate in leased), "row was not leasable"
+    return owner
+
+
+def _hold(session, row, owner: str = "worker-a") -> str:
+    """Stamp the lease directly, for tests that drive a transition repeatedly
+    across a backoff they do not want to wait out. `_lease` is the real
+    acquisition; this only establishes the precondition it would leave."""
+    row.lease_owner = owner
+    session.flush()
+    return owner
+
+
 def test_record_failure_increments_attempts_and_backs_off(session, tenant):
     user, _project = _user_and_project(session, tenant)
     principal = _principal(user, tenant)
     result = _submit(session, principal)
     session.commit()
 
-    repository.record_failure(session, result.row, error_code="HINDSIGHT_UNAVAILABLE")
+    owner = _lease(session, result.row)
+    repository.record_failure(
+        session, result.row, owner=owner, error_code="HINDSIGHT_UNAVAILABLE"
+    )
     session.commit()
 
     assert result.row.attempt_count == 1
@@ -221,8 +245,13 @@ def test_backoff_never_exceeds_the_cap(session, tenant):
     session.commit()
 
     for _ in range(10):
+        owner = _hold(session, result.row)
         repository.record_failure(
-            session, result.row, error_code="HINDSIGHT_UNAVAILABLE", backoff_cap_seconds=300
+            session,
+            result.row,
+            owner=owner,
+            error_code="HINDSIGHT_UNAVAILABLE",
+            backoff_cap_seconds=300,
         )
     session.commit()
 
@@ -237,7 +266,10 @@ def test_a_row_past_max_attempts_is_not_auto_leased(session, tenant):
     session.commit()
 
     for _ in range(8):
-        repository.record_failure(session, result.row, error_code="E", backoff_cap_seconds=0)
+        owner = _hold(session, result.row)
+        repository.record_failure(
+            session, result.row, owner=owner, error_code="E", backoff_cap_seconds=0
+        )
     session.commit()
     result.row.available_at = result.row.available_at - timedelta(days=1)
     session.commit()
@@ -256,8 +288,12 @@ def test_complete_clears_sanitized_content_and_extraction(session, tenant):
     session.commit()
     assert result.row.sanitized_content == "user: something sensitive"
 
-    repository.advance_stage(session, result.row, status="applying", extraction=[{"x": 1}])
-    repository.complete(session, result.row)
+    owner = _lease(session, result.row)
+    repository.advance_stage(
+        session, result.row, owner=owner, status="applying", extraction=[{"x": 1}]
+    )
+    owner = _lease(session, result.row)
+    repository.complete(session, result.row, owner=owner)
     session.commit()
 
     assert result.row.status == "completed"

@@ -33,6 +33,28 @@ class CandidateRejected(ValueError):
 # rather than silently rewritten into impersonal wording.
 _PERSONAL_LANGUAGE_RE = re.compile(r"(?i)\b(i|i'm|i've|i'd|my|mine|myself)\b")
 
+# The mirror of the rule above, for the other bank (SPEC §6.5): "local
+# wording such as `here`, `in this repo`, `for this project` or
+# task-specific instructions must not widen into user scope". A claim about
+# how one repository works is project truth however it was phrased, and
+# filing it as user truth would apply it to every other repository.
+_LOCAL_SCOPE_RE = re.compile(
+    r"(?i)\b(here|in this (?:repo|repository|project|codebase)"
+    r"|for this (?:repo|repository|project|codebase)|on this project)\b"
+)
+
+# An explicit negative claim, for validating `negative` (SPEC §7.5:
+# "preserve explicit negative constraints as negative constraints"). The
+# flag is what routes a prohibition, so a model that sets it without a
+# prohibition in the text has mislabelled the claim -- fail closed rather
+# than file "use X" as if it read "never use X".
+_NEGATION_RE = re.compile(
+    r"(?i)(\bnot\b|\bno\b|\bnever\b|\bnone\b|\bavoid(?:s|ed|ing)?\b|\bwithout\b"
+    r"|\bstop\b|\bprohibit(?:s|ed)?\b|\bforbid(?:s|den)?\b|\bdisallow(?:s|ed)?\b"
+    r"|\bdon't\b|\bdoesn't\b|\bdidn't\b|\bcan't\b|\bcannot\b|\bwon't\b|\bshouldn't\b"
+    r"|\bmustn't\b|\bisn't\b|\baren't\b|n't\b)"
+)
+
 
 def classify(envelope: dict) -> NormalizedCandidate | WorkingStateEnvelope:
     """Route one raw extractor envelope. An unrecognized `record` value
@@ -75,6 +97,24 @@ def _classify_candidate(envelope: CandidateEnvelope) -> NormalizedCandidate:
                 "personal language cannot be preserved as project truth"
             )
 
+    # §6.5, the other direction: repository-local wording must not widen
+    # into user scope. "Always run make check here" is how this project
+    # works, not how this person works, and filing it as user truth would
+    # carry it into every other repository they touch.
+    if envelope.subject == "user" and _LOCAL_SCOPE_RE.search(envelope.text):
+        raise CandidateRejected(
+            "project-local wording cannot widen into user scope"
+        )
+
+    # §7.5: a negative constraint stays a negative constraint. The flag is
+    # what preserves it, so it must be backed by an actual prohibition in
+    # the text -- otherwise "do not X" and "prefer X" become indistinguishable
+    # downstream, in whichever direction the model got it wrong.
+    if envelope.negative and not _NEGATION_RE.search(envelope.text):
+        raise CandidateRejected(
+            "negative=true does not match an explicit negative claim"
+        )
+
     eligible = _eligibility(kind, origin)
     correction_scope = (envelope.subject, eligible) if envelope.correction else None
 
@@ -93,14 +133,53 @@ def _classify_candidate(envelope: CandidateEnvelope) -> NormalizedCandidate:
     )
 
 
+# SPEC §6.4, transcribed cell by cell rather than summarized. The previous
+# summary ("everything that is neither a technical claim nor inferred is
+# eligible") read one row wrong: an OBSERVED preference and an OBSERVED
+# decision are evidence, not profile truth. Watching someone do a thing
+# twice is not the same as their saying they want it done that way, and
+# §6.6 is explicit that observed preferences remain evidence.
+#
+# | kind             | stated   | confirmed | observed | inferred |
+# | preference       | profile  | profile   | evidence | evidence |
+# | decision         | profile  | profile   | evidence | evidence |
+# | convention       | profile  | profile   | profile  | evidence |
+# | gotcha           | profile  | profile   | profile  | evidence |
+# | technical_claim  | evidence | evidence  | evidence | evidence |
+#
+# `working_state` has no row here: §6.4 routes it by kind before bank
+# retention and it never becomes a Hindsight fact at all, so it never
+# reaches this function -- WorkingStateEnvelope is a separate shape.
+_PROFILE = "profile_eligible"
+_EVIDENCE = "evidence_only"
+
+_DURABILITY: dict[tuple[CandidateKind, CandidateOrigin], Eligibility] = {
+    ("preference", "stated"): _PROFILE,
+    ("preference", "confirmed"): _PROFILE,
+    ("preference", "observed"): _EVIDENCE,
+    ("preference", "inferred"): _EVIDENCE,
+    ("decision", "stated"): _PROFILE,
+    ("decision", "confirmed"): _PROFILE,
+    ("decision", "observed"): _EVIDENCE,
+    ("decision", "inferred"): _EVIDENCE,
+    ("convention", "stated"): _PROFILE,
+    ("convention", "confirmed"): _PROFILE,
+    ("convention", "observed"): _PROFILE,
+    ("convention", "inferred"): _EVIDENCE,
+    ("gotcha", "stated"): _PROFILE,
+    ("gotcha", "confirmed"): _PROFILE,
+    ("gotcha", "observed"): _PROFILE,
+    ("gotcha", "inferred"): _EVIDENCE,
+    ("technical_claim", "stated"): _EVIDENCE,
+    ("technical_claim", "confirmed"): _EVIDENCE,
+    ("technical_claim", "observed"): _EVIDENCE,
+    ("technical_claim", "inferred"): _EVIDENCE,
+}
+
+
 def _eligibility(kind: CandidateKind, origin: CandidateOrigin) -> Eligibility:
-    """Harness rule #7, the spec matrix: a technical claim is always
-    evidence-only regardless of origin, and inferred evidence is always
-    evidence-only regardless of kind. Everything else -- a stated,
-    confirmed, or artifact-backed observed preference/decision/convention/
-    evidenced-gotcha -- is profile eligible."""
-    if kind == "technical_claim":
-        return "evidence_only"
-    if origin == "inferred":
-        return "evidence_only"
-    return "profile_eligible"
+    """Harness rule #7: durability is looked up in §6.4's matrix, never
+    inferred from a rule of thumb about it. A pair missing from the table is
+    a kind/origin this harness does not know how to place, so it is evidence
+    -- the safe half of the matrix."""
+    return _DURABILITY.get((kind, origin), _EVIDENCE)

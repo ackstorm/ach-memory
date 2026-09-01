@@ -120,3 +120,21 @@ def is_complete(operation: dict) -> bool:
     or failed never reports complete -- a caller must not advance Working
     State on a maybe."""
     return operation.get("status") == "completed"
+
+
+# The only two statuses that mean "ask again later". Everything else --
+# `failed`, `not_found`, or a status this client has never heard of -- is
+# terminal, because an operation id Hindsight no longer recognizes will not
+# start being recognized on the next poll.
+_PENDING_STATUSES = frozenset({"pending", "running"})
+
+
+def is_pending(operation: dict) -> bool:
+    """True while the operation may still complete.
+
+    Deliberately an allowlist rather than `not is_complete(...)`: a failed
+    or forgotten operation read as "still pending" is a row that re-polls a
+    dead id every cycle and never reaches a terminal state at all (SPEC
+    Phase 3 review finding 5).
+    """
+    return operation.get("status") in _PENDING_STATUSES

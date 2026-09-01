@@ -39,10 +39,28 @@ or omitted}
 {"record":"working_state","objective":"...","current_direction":"..." or \
 omitted,"recent_decisions":[...],"open_questions":[...],"next_steps":[...]}
 
+Plans, proposals, research output and next steps are Working State, never \
+decisions. Permission to execute, test or explore a proposal is \
+authorization, not confirmation of a decision: use "confirmed" only when \
+the human accepted the decision itself, and then only for the gist they \
+accepted, not for every detail of the proposal around it.
+
+Set "correction":true only for an explicit human correction of an earlier \
+claim, and route it to the scope it corrects -- a correction about this \
+repository is subject "project", a correction about how the person works \
+is subject "user". Repository-local wording ("here", "in this repo", "for \
+this project") is always subject "project"; never widen it to "user".
+
+Preserve a negative constraint as a negative constraint: keep the \
+prohibition in "text" and set "negative":true. Never weaken "do not X" \
+into "prefers Y". Write project claims impersonally -- no "I", "my" or \
+"we".
+
 Never set bank, profile_eligible, tags, or observation_scopes -- those are \
 derived, not proposed. Use "observed" only when provenance names the exact \
-transcript span. Use "gotcha" only when failure and (cause or \
-reproduction) are also given. At most one working_state object total.\
+transcript span, as character offsets into this slice. Use "gotcha" only \
+when failure and (cause or reproduction) are also given. At most one \
+working_state object total.\
 """
 
 
@@ -99,6 +117,25 @@ def extract(
                 raise ExtractionFailed("more than one working_state record")
             working_state = classified
         else:
+            _check_provenance_span(classified, len(sanitized_content))
             candidates.append(classified)
 
     return ExtractionResult(candidates=candidates, working_state=working_state)
+
+
+def _check_provenance_span(candidate: NormalizedCandidate, slice_length: int) -> None:
+    """A provenance span must point into the slice it was extracted from.
+
+    `observed` is the origin that survives on the strength of its artifact
+    (SPEC §6.1, harness rule #3), so a span that runs off the end of the
+    slice is not a citation -- it is a model inventing an anchor for a claim
+    it did not actually witness. This is the only check with the slice
+    length in scope, which is why it lives here and not in `classify()`.
+    """
+    span = candidate.provenance
+    if span is None:
+        return
+    if span.start >= slice_length or span.end > slice_length:
+        raise ExtractionFailed(
+            "provenance span falls outside the slice it was extracted from"
+        )

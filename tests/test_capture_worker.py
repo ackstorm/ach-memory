@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
 
@@ -76,9 +77,28 @@ def _mock_operation(bank_id: str, operation_id: str, status: str = "completed"):
     )
 
 
+def _hold_lease(session, row) -> str:
+    """Put `row` in the state `acquire_lease` would leave it in, and return
+    the token.
+
+    Transitions are owner-fenced, so a lease is a precondition for every one
+    of them. Stamped directly rather than acquired, so that a test driving
+    one specific row is not affected by whatever else is leasable in the
+    same session; `run_once`'s own tests below exercise the real
+    acquisition, and the fencing regressions live in
+    tests/test_phase3_review_closure.py.
+    """
+    owner = repository.new_lease_owner("test")
+    row.lease_owner = owner
+    row.lease_until = datetime.now(UTC) + timedelta(seconds=60)
+    session.flush()
+    return owner
+
+
 def _process(session, rig, row, **kwargs):
     kwargs.setdefault("max_attempts", 8)
     kwargs.setdefault("correction_refresh_enabled", False)
+    kwargs.setdefault("owner", _hold_lease(session, row))
     worker.process_row(session, rig.client, row, **kwargs)
     session.commit()
 
@@ -213,7 +233,14 @@ def test_crash_after_hindsight_completion_is_recoverable_via_re_poll(session, ri
         worker.repository, "complete", side_effect=RuntimeError("simulated crash")
     ):
         with pytest.raises(RuntimeError):
-            worker.process_row(session, rig.client, row, max_attempts=8, correction_refresh_enabled=False)
+            worker.process_row(
+                    session,
+                    rig.client,
+                    row,
+                    owner=_hold_lease(session, row),
+                    max_attempts=8,
+                    correction_refresh_enabled=False,
+                )
         session.rollback()
 
     assert working_state.get_current(session, rig.principal, rig.project.internal_id, WS) is None
@@ -237,7 +264,14 @@ def test_crash_between_working_state_write_and_completion_mark_is_recoverable(se
         worker.repository, "complete", side_effect=RuntimeError("simulated crash")
     ):
         with pytest.raises(RuntimeError):
-            worker.process_row(session, rig.client, row, max_attempts=8, correction_refresh_enabled=False)
+            worker.process_row(
+                    session,
+                    rig.client,
+                    row,
+                    owner=_hold_lease(session, row),
+                    max_attempts=8,
+                    correction_refresh_enabled=False,
+                )
         session.rollback()
 
     # Working State write and the completion mark are one transaction (they

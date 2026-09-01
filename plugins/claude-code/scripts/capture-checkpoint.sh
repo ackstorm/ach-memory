@@ -11,6 +11,17 @@
 # through to `ach-memory capture-checkpoint`, unmodified.
 set -u
 
+# Off by default, and cheaply off: this runs on every Stop and PreCompact of
+# every session, so the disabled path must cost nothing. `uvx` resolves and
+# may download a whole environment before the Python code gets far enough to
+# read this same flag and return -- seconds of latency per turn, for a
+# feature nobody switched on. The gate belongs here, ahead of the spawn
+# (SPEC Phase 3 review finding 9).
+case "${MEMORY_CAPTURE_ENABLED:-false}" in
+  1 | true | TRUE | True | yes | YES | Yes) ;;
+  *) exit 0 ;;
+esac
+
 key="${ACH_MEMORY_API_KEY:-}"
 [ -n "$key" ] || exit 0
 

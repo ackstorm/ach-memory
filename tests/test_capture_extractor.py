@@ -173,7 +173,7 @@ def test_multiple_candidates_in_one_slice(client):
         },
     )
 
-    result = extract(client, BANK, "...")
+    result = extract(client, BANK, "user: I prefer tabs; CI runs on every push")
 
     assert len(result.candidates) == 2
 

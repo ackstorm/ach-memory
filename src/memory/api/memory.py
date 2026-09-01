@@ -129,6 +129,20 @@ EXPLICIT_RETAIN_TAGS = ["kind:technical_claim", "evidence_only"]
 EXPLICIT_RETAIN_OBSERVATION_SCOPES = [["evidence_only"]]
 EXPLICIT_RETAIN_STRATEGY = "candidate_verbatim"
 
+# The classification this route stamps, matching the tags above. Fixed, and
+# reserved from callers (memory.provenance.RESERVED_KEYS) so that a client
+# cannot supply its own: "remember this" is a human STATING something, which
+# is an evidence candidate (§6.4, technical_claim/stated), and a caller able
+# to send origin=confirmed + kind=decision could promote its own proposal to
+# durable project truth without a human ever accepting it -- the exact
+# promotion §6.3 forbids (Phase 3 review finding 7).
+EXPLICIT_RETAIN_PROVENANCE: dict[str, Any] = {
+    "origin": "stated",
+    "kind": "technical_claim",
+    "explicit_request": True,
+    "provenance": {"type": "explicit_request"},
+}
+
 
 class RetainRequest(ScopedRequest):
     """An explicit human "remember this" request. Stored as one verbatim
@@ -380,10 +394,15 @@ def _retain(
     # this specific sentence to be remembered; classification (kind,
     # origin, eligibility) is the automatic capture pipeline's job, never
     # this route's.
+    #
+    # The same classification is stamped into the metadata, not just the
+    # tags: a downstream reader that trusted metadata over tags would
+    # otherwise see an unclassified memory. Server-last on purpose, though
+    # `build()` has already refused these keys from the caller.
     item = RetainItem(
         content=body.content,
         document_id=body.document_id,
-        metadata=extraction,
+        metadata={**extraction, **EXPLICIT_RETAIN_PROVENANCE},
         context=provenance.context_line(extraction),
         tags=list(EXPLICIT_RETAIN_TAGS),
         observation_scopes=[list(scope) for scope in EXPLICIT_RETAIN_OBSERVATION_SCOPES],

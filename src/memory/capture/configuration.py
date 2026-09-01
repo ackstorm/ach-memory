@@ -97,10 +97,17 @@ def redact_for_display(value: Any, bank_id: str) -> Any:
     """Bank IDs never appear in a printed diff (SPEC inv. 29): a config
     response can echo the bank's own id back, and printing it verbatim
     would defeat the fingerprinting every other caller-facing surface
-    already applies."""
+    already applies.
+
+    Replaces the id as a SUBSTRING, not only as a whole field value. The
+    id turns up embedded far more often than alone -- in a URL a config
+    echoes, in an error string, in a mental-model name -- and an
+    exact-match-only filter leaks every one of those (Phase 3 review
+    finding 9). Same rule as `memory.api.memory._strip_bank_id`.
+    """
     fingerprint = activity.fingerprint(bank_id)
-    if value == bank_id:
-        return fingerprint
+    if isinstance(value, str):
+        return value.replace(bank_id, fingerprint)
     if isinstance(value, dict):
         return {key: redact_for_display(item, bank_id) for key, item in value.items()}
     if isinstance(value, list):

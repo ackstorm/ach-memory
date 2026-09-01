@@ -15,6 +15,30 @@ RESERVED_KEYS = frozenset(
         "on_behalf_of",
         "agent",
         "client_name",
+        # SPEC Phase 3 classification metadata. Invariant 13: eligibility is
+        # computed by the harness, never declared by an agent or trusted to
+        # a prompt -- and a metadata key is a prompt with extra steps. These
+        # are exactly the fields the capture pipeline stamps for itself
+        # (memory.capture.filer), so a caller setting one would be handing
+        # itself a classification the classifier never made.
+        "origin",
+        "kind",
+        "negative",
+        "correction",
+        "provenance",
+        "explicit_request",
+        "eligible",
+        "profile_eligible",
+        "evidence_only",
+        # Slice identity (§7.3). Server-owned for the same reason: these
+        # tie a memory to the transcript span it came from, and a forged
+        # span is worse than none.
+        "session_id",
+        "session_epoch",
+        "checkpoint_seq",
+        "slice_hash",
+        "sanitized_hash",
+        "content_hash",
     }
 )
 

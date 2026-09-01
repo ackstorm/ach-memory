@@ -26,6 +26,37 @@ def _candidate(**overrides) -> dict:
 _ALL_KINDS = ["preference", "decision", "convention", "gotcha", "technical_claim"]
 _ALL_ORIGINS = ["stated", "confirmed", "observed", "inferred"]
 
+# SPEC §6.4, transcribed cell by cell. Written out in full rather than
+# derived from a rule, because a derived expectation is what let the
+# observed-preference and observed-decision cells stay wrong: the rule
+# "neither a technical claim nor inferred, therefore eligible" agrees with
+# the spec in eighteen cells out of twenty, and a test that encodes the rule
+# cannot tell you which two it disagrees on.
+_PROFILE = "profile_eligible"
+_EVIDENCE = "evidence_only"
+_SPEC_6_4 = {
+    ("preference", "stated"): _PROFILE,
+    ("preference", "confirmed"): _PROFILE,
+    ("preference", "observed"): _EVIDENCE,
+    ("preference", "inferred"): _EVIDENCE,
+    ("decision", "stated"): _PROFILE,
+    ("decision", "confirmed"): _PROFILE,
+    ("decision", "observed"): _EVIDENCE,
+    ("decision", "inferred"): _EVIDENCE,
+    ("convention", "stated"): _PROFILE,
+    ("convention", "confirmed"): _PROFILE,
+    ("convention", "observed"): _PROFILE,
+    ("convention", "inferred"): _EVIDENCE,
+    ("gotcha", "stated"): _PROFILE,
+    ("gotcha", "confirmed"): _PROFILE,
+    ("gotcha", "observed"): _PROFILE,
+    ("gotcha", "inferred"): _EVIDENCE,
+    ("technical_claim", "stated"): _EVIDENCE,
+    ("technical_claim", "confirmed"): _EVIDENCE,
+    ("technical_claim", "observed"): _EVIDENCE,
+    ("technical_claim", "inferred"): _EVIDENCE,
+}
+
 
 @pytest.mark.parametrize("kind", _ALL_KINDS)
 @pytest.mark.parametrize("origin", _ALL_ORIGINS)
@@ -42,12 +73,14 @@ def test_the_kind_by_origin_eligibility_matrix(kind, origin):
     result = classify(envelope)
 
     assert isinstance(result, NormalizedCandidate)
-    if kind == "technical_claim" or origin == "inferred":
-        assert result.eligible == "evidence_only"
-    else:
-        assert result.eligible == "profile_eligible"
+    assert result.eligible == _SPEC_6_4[(kind, origin)]
     assert result.tags == [f"kind:{result.kind}", result.eligible]
     assert result.observation_scopes == [[result.eligible]]
+
+
+def test_every_kind_by_origin_pair_is_covered_by_the_spec_table():
+    """The table above is exhaustive: no pair falls through to a default."""
+    assert set(_SPEC_6_4) == {(k, o) for k in _ALL_KINDS for o in _ALL_ORIGINS}
 
 
 # ---------------------------------------------------------------------------

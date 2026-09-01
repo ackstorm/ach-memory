@@ -9,6 +9,7 @@ worker processes racing for the same batch never both claim one row.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -144,6 +145,28 @@ def accept_checkpoint(
 # --------------------------------------------------------------------------
 
 
+class LeaseLost(Exception):
+    """This worker no longer holds the row it is transitioning.
+
+    Raised, never swallowed: the work whose result was about to be written
+    has already been redone (or is being redone) by whoever holds the lease
+    now, and writing it anyway is how one slice retains twice.
+    """
+
+
+def new_lease_owner(prefix: str = "worker") -> str:
+    """A lease token that is never reused.
+
+    The generation half of owner/generation fencing. A token derived from
+    something stable about the process -- its pid, the id() of its session
+    -- repeats across cycles, so a worker whose lease expired mid-call would
+    still match its own row after another worker had taken it and handed it
+    back (Phase 3 review finding 6). A fresh token per acquisition makes
+    "is this still my lease?" answerable.
+    """
+    return f"{prefix}-{uuid.uuid4().hex}"
+
+
 def acquire_lease(
     db: Session,
     *,
@@ -179,7 +202,25 @@ def acquire_lease(
     return list(rows)
 
 
-def release_lease(db: Session, row: CaptureSlice) -> None:
+def _hold_lease(db: Session, row: CaptureSlice, owner: str) -> None:
+    """Refuse the caller's transition unless it still holds the row's lease.
+
+    Every stage between two transitions makes an external call -- an
+    extraction, a retain, an operation poll -- and any of them can outlast a
+    60-second lease. When that happens the row is re-leased and redone by
+    another worker, and the slow worker's write must not land on top of it.
+    Re-reads `lease_owner` from the database rather than trusting the
+    in-memory row, which is exactly as stale as the worker holding it.
+    """
+    current = db.execute(
+        select(CaptureSlice.lease_owner).where(CaptureSlice.id == row.id).with_for_update()
+    ).scalar_one_or_none()
+    if current != owner:
+        raise LeaseLost(f"lease on capture row {row.id} is no longer held by this worker")
+
+
+def release_lease(db: Session, row: CaptureSlice, *, owner: str) -> None:
+    _hold_lease(db, row, owner)
     row.lease_owner = None
     row.lease_until = None
     db.flush()
@@ -189,6 +230,7 @@ def advance_stage(
     db: Session,
     row: CaptureSlice,
     *,
+    owner: str,
     status: CaptureStatus,
     extraction: dict | list | None = None,
     hindsight_operations: dict | list | None = None,
@@ -203,7 +245,11 @@ def advance_stage(
     docstring), so the row must be immediately re-leasable for its next
     stage rather than sitting locked until the lease it already used
     expires.
+
+    Refused if the lease has since moved on (`LeaseLost`): the stage result
+    being persisted here was computed against a row someone else now owns.
     """
+    _hold_lease(db, row, owner)
     row.status = status
     if extraction is not None:
         row.extraction = extraction
@@ -218,6 +264,7 @@ def record_failure(
     db: Session,
     row: CaptureSlice,
     *,
+    owner: str,
     error_code: str,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     backoff_cap_seconds: int = DEFAULT_BACKOFF_CAP_SECONDS,
@@ -227,7 +274,12 @@ def record_failure(
     there instead of restarting from pending. Only past `max_attempts` does
     the row become the terminal `failed`, at which point acquire_lease()
     stops claiming it and a master-only operational reset is what's left.
+
+    Refused if the lease has since moved on (`LeaseLost`): charging an
+    attempt to a row another worker is actively retrying would burn its
+    budget for a failure that is no longer its own.
     """
+    _hold_lease(db, row, owner)
     row.attempt_count += 1
     row.last_error_code = error_code
     row.lease_owner = None
@@ -240,10 +292,15 @@ def record_failure(
     db.flush()
 
 
-def complete(db: Session, row: CaptureSlice) -> None:
+def complete(db: Session, row: CaptureSlice, *, owner: str) -> None:
     """Clears sanitized_content and extraction on completion (SPEC): only
     identity, status, counters and operation state remain for replay/audit.
+
+    Refused if the lease has since moved on (`LeaseLost`): completing a row
+    another worker is mid-way through would strip the sanitized content out
+    from under it.
     """
+    _hold_lease(db, row, owner)
     now = db.execute(select(func.now())).scalar_one()
     row.status = "completed"
     row.sanitized_content = None
