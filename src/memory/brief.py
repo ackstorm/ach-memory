@@ -278,7 +278,10 @@ def _older_than(timestamp: str | None, now: datetime) -> bool:
 # derived from the Pydantic schema: what a cache has to notice is a change to
 # the TEXT, and two different schemas can render identically while one
 # rendering change can alter every line.
-PROFILE_RENDER_VERSION = "profile-v1-render-1"
+# render-2: a gotcha's `failure` joined the line (render-1 dropped it, which
+# lost the observable symptom on every gotcha whose claim states only the
+# trigger condition).
+PROFILE_RENDER_VERSION = "profile-v1-render-2"
 
 
 def _find_profile(client, bank_id: str) -> dict | None:
@@ -296,6 +299,26 @@ def _find_profile(client, bank_id: str) -> dict | None:
     return None
 
 
+def _restates(claim: str, failure: str) -> bool:
+    """Whether `claim` already contains `failure`'s sentence.
+
+    The schema lets a synthesizing model file one sentence in both fields, and
+    a line that says the same thing twice spends scarce budget on nothing. But
+    this is deliberately crude containment -- casefolded, whitespace-collapsed,
+    trailing-period-stripped -- and not a similarity measure: the cost of
+    suppressing too eagerly is losing what breaking actually looks like, which
+    is the whole reason `failure` is delivered. Anything the claim does not
+    literally contain is kept.
+
+    One direction only. A claim that is a PREFIX of the failure ("Deploy
+    fails." / "Deploy fails after the migration step, leaving the schema half
+    applied.") has not stated it, so the failure still has something to add.
+    """
+    normalized_claim = " ".join(claim.split()).casefold()
+    normalized_failure = " ".join(failure.split()).casefold().rstrip(".")
+    return bool(normalized_failure) and normalized_failure in normalized_claim
+
+
 def _profile_line(compiled: profiles.CompiledProfileItem) -> str:
     """One compiled item as one line.
 
@@ -305,13 +328,16 @@ def _profile_line(compiled: profiles.CompiledProfileItem) -> str:
 
     What else the line carries:
 
+    - A gotcha's `failure`, unless the claim already states it verbatim (see
+      `_restates`). Claim and failure are two different facts -- WHEN it
+      breaks and WHAT breaking looks like ("Deploy fails when DATABASE_URL is
+      unset" / "The deploy script exits with a stack trace") -- and nothing in
+      the schema makes one restate the other. The symptom is what lets an
+      agent recognise the failure it is already looking at, so dropping it
+      loses the half of a gotcha that fires at the moment it matters.
     - A gotcha's `cause`/`reproduction`. A bare warning is not actionable --
       "deploys sometimes fail" tells an agent nothing it can avoid -- and the
       schema already guarantees at least one of the two is present.
-    - `failure` is NOT rendered. The schema requires it, but `claim` is
-      already the failure stated as the claim ("Deploy fails when
-      DATABASE_URL is unset"), so rendering both spends a scarce line twice
-      on one fact.
     - `provenance`, for a gotcha or for an explicit negative constraint only.
       Those are the items an agent is most likely to reason its way past --
       "never do X" with no reason attached invites exactly that -- so the
@@ -324,8 +350,9 @@ def _profile_line(compiled: profiles.CompiledProfileItem) -> str:
     would spend budget on structure while colliding with the compiler's own
     heading rules. The order is `compile_profile`'s, unchanged.
 
-    Every upstream string goes through `inert` -- claim, cause, reproduction
-    and provenance alike -- and so does the assembled line. `ProfileLine`
+    Every upstream string goes through `inert` -- claim, failure, cause,
+    reproduction and provenance alike -- and so does the assembled line.
+    `ProfileLine`
     already rejects C0 controls, but U+2028 is not one and `_lines` splits on
     it: a cause could otherwise open a line the allocator never charged
     budget for and forge a heading on it. Same defence, same reason, as
@@ -334,6 +361,8 @@ def _profile_line(compiled: profiles.CompiledProfileItem) -> str:
     item = compiled.representative
     parts = [compiled.claim]
     if item.kind == "gotcha":
+        if item.failure and not _restates(compiled.claim, item.failure):
+            parts.append(f"failure: {item.failure}")
         if item.cause:
             parts.append(f"cause: {item.cause}")
         if item.reproduction:

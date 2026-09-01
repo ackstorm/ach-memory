@@ -1909,12 +1909,41 @@ def test_a_structured_read_creates_and_patches_nothing():
     assert client.updated == []
 
 
-def test_a_gotcha_line_carries_its_cause_and_its_provenance():
-    """A gotcha is the item whose "why" changes what an agent does: the cause
-    is what makes it actionable, the provenance is what stops it being
-    second-guessed away. `failure` is not rendered -- the claim already
-    states the failure, and repeating it costs a line's budget twice."""
+def test_a_gotcha_line_carries_its_failure_cause_and_provenance():
+    """A gotcha is the item whose detail changes what an agent does. Claim and
+    failure are two different facts -- when it breaks, and what breaking looks
+    like -- and the second is what lets an agent recognise the failure it is
+    already staring at. The cause makes it actionable; the provenance stops it
+    being second-guessed away."""
     response = _reflect("project", {"gotchas": [_profile_gotcha()]})
+
+    section = _structured_section([_profile_model(response)], scope="project")
+
+    assert section.text == (
+        "Deploy fails when DATABASE_URL is unset. "
+        "-- failure: The deploy script exits with a stack trace. "
+        "-- cause: DATABASE_URL is not exported in the deploy shell. "
+        "-- provenance: Observed twice in CI logs."
+    )
+
+
+def test_a_gotcha_whose_claim_already_states_the_failure_does_not_say_it_twice():
+    """The schema lets a synthesizing model file one sentence in both fields.
+    Rendering it twice would spend a scarce line saying one thing -- but the
+    check is deliberately crude containment, not similarity: a failure that
+    says anything the claim does not is always kept."""
+    response = _reflect(
+        "project",
+        {
+            "gotchas": [
+                _profile_gotcha(
+                    claim="Deploy fails when DATABASE_URL is unset.",
+                    # Same sentence, differently spaced and cased, no period.
+                    failure="deploy   fails when DATABASE_URL   is unset",
+                )
+            ]
+        },
+    )
 
     section = _structured_section([_profile_model(response)], scope="project")
 
@@ -1923,7 +1952,26 @@ def test_a_gotcha_line_carries_its_cause_and_its_provenance():
         "-- cause: DATABASE_URL is not exported in the deploy shell. "
         "-- provenance: Observed twice in CI logs."
     )
-    assert "exits with a stack trace" not in section.text
+
+
+def test_a_failure_that_extends_the_claim_is_still_rendered():
+    """Containment one way only: a claim that is a PREFIX of the failure has
+    not stated it, so suppressing here would drop the part that is new."""
+    response = _reflect(
+        "project",
+        {
+            "gotchas": [
+                _profile_gotcha(
+                    claim="Deploy fails.",
+                    failure="Deploy fails after the migration step, leaving the schema half applied.",
+                )
+            ]
+        },
+    )
+
+    section = _structured_section([_profile_model(response)], scope="project")
+
+    assert "-- failure: Deploy fails after the migration step" in section.text
 
 
 def test_a_reproduction_only_gotcha_names_how_to_reproduce_it():
@@ -1942,6 +1990,7 @@ def test_a_reproduction_only_gotcha_names_how_to_reproduce_it():
 
     assert section.text == (
         "Deploy fails when DATABASE_URL is unset. "
+        "-- failure: The deploy script exits with a stack trace. "
         "-- reproduction: Run make deploy with an empty environment. "
         "-- provenance: Observed twice in CI logs."
     )
@@ -1957,6 +2006,7 @@ def test_a_gotcha_with_both_details_renders_cause_before_reproduction():
 
     assert section.text == (
         "Deploy fails when DATABASE_URL is unset. "
+        "-- failure: The deploy script exits with a stack trace. "
         "-- cause: DATABASE_URL is not exported in the deploy shell. "
         "-- reproduction: Unset DATABASE_URL and run make deploy. "
         "-- provenance: Observed twice in CI logs."
