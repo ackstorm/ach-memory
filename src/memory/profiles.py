@@ -824,12 +824,23 @@ class CompiledProfileItem:
     `ProfileItem`, so there is nothing left to validate and nothing that is
     ever serialized back to Hindsight.
 
-    `evidence_ids`, `support_count` and `claim` are the authoritative
-    compiled values and are what rendering and fingerprinting must use.
-    `item` is the representative exactly as upstream sent it, kept for its
-    typed fields (`kind`, `origin`, `negative`, gotcha detail, provenance);
-    `item.evidence_ids` is that one representative's raw, ungrounded list
-    and must NOT be used as support -- it is neither grounded nor merged.
+    The wrapper's own `claim`, `evidence_ids` and `support_count` are the
+    authoritative compiled values, and are the ones rendering and
+    fingerprinting must use.
+
+    `representative` is deliberately NOT named `item`: it is not "the
+    thing", it is the single group member that was chosen to supply the
+    typed fields the wrapper does not carry (`kind`, `origin`, `negative`,
+    gotcha `failure`/`cause`/`reproduction`, `provenance`). Two of its
+    fields are shadowed by authoritative wrapper fields and must not be
+    read off it:
+
+    - `representative.claim` is that one member's raw text, before
+      whitespace normalization and before a merge chose between two
+      spellings of the same claim -- use `claim`;
+    - `representative.evidence_ids` is that one member's raw, ungrounded
+      list, neither filtered against `based_on` nor unioned across the
+      merge group -- use `evidence_ids`, and `support_count` for its size.
     """
 
     category: str
@@ -842,7 +853,7 @@ class CompiledProfileItem:
     kind_rank: int
     support_count: int
     evidence_ids: tuple[str, ...]
-    item: ProfileItem
+    representative: ProfileItem
 
 
 def _collapse_whitespace(value: str) -> str:
@@ -970,7 +981,7 @@ def _compile_item(
         kind_rank=_KIND_RANK[(item.kind, item.negative)],
         support_count=len(evidence_ids),
         evidence_ids=evidence_ids,
-        item=item,
+        representative=item,
     )
 
 
@@ -1005,7 +1016,7 @@ def _merge_duplicates(candidates: list[CompiledProfileItem]) -> list[CompiledPro
             merged.append(group[0])
             continue
         representative = min(
-            group, key=lambda entry: (entry.kind_rank, _item_fingerprint(entry.item))
+            group, key=lambda entry: (entry.kind_rank, _item_fingerprint(entry.representative))
         )
         evidence_ids = tuple(sorted({ref for entry in group for ref in entry.evidence_ids}))
         merged.append(

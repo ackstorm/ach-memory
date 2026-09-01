@@ -828,8 +828,8 @@ def test_compile_enforces_every_matrix_combination(scope, kind, origin):
     assert len(compiled) == (1 if delivered else 0)
     if delivered:
         assert compiled[0].category == category
-        assert compiled[0].item.kind == kind
-        assert compiled[0].item.origin == origin
+        assert compiled[0].representative.kind == kind
+        assert compiled[0].representative.origin == origin
 
 
 def test_one_ineligible_item_drops_alone_and_the_rest_of_the_batch_survives():
@@ -842,7 +842,7 @@ def test_one_ineligible_item_drops_alone_and_the_rest_of_the_batch_survives():
         "user", _response("user", {"preferences": [evidence_only, eligible]})
     )
 
-    assert [entry.item.claim for entry in compiled] == ["Prefers dark mode."]
+    assert [entry.claim for entry in compiled] == ["Prefers dark mode."]
 
 
 def test_compiled_item_is_frozen():
@@ -893,7 +893,7 @@ def test_repeated_evidence_reference_inside_one_item_drops_only_that_item():
 
     compiled = compile_profile("user", _response("user", {"preferences": [repeated, clean]}))
 
-    assert [entry.item.claim for entry in compiled] == ["Prefers dark mode."]
+    assert [entry.claim for entry in compiled] == ["Prefers dark mode."]
 
 
 def test_based_on_accepts_plain_id_strings():
@@ -982,7 +982,7 @@ def test_evidence_ids_outside_based_on_do_not_inflate_support():
         ),
     )
 
-    assert [(entry.item.claim, entry.support_count) for entry in compiled] == [
+    assert [(entry.claim, entry.support_count) for entry in compiled] == [
         ("Prefers dark mode.", 3),
         ("Prefers tabs.", 1),
     ]
@@ -1043,7 +1043,7 @@ def test_merge_keeps_the_lowest_kind_rank_member_as_representative():
     backward = compile_profile("user", _response("user", {"engineering": [convention, decision]}))
 
     assert len(forward) == 1
-    assert forward[0].item.kind == "decision"
+    assert forward[0].representative.kind == "decision"
     assert forward[0].kind_rank == 1
     assert forward == backward
 
@@ -1128,7 +1128,7 @@ def test_ordering_is_ascending_kind_rank_first():
     )
 
     assert [entry.kind_rank for entry in compiled] == [0, 1, 2]
-    assert [entry.item.kind for entry in compiled] == ["gotcha", "decision", "convention"]
+    assert [entry.representative.kind for entry in compiled] == ["gotcha", "decision", "convention"]
 
 
 def test_a_single_evidence_gotcha_outranks_a_heavily_supported_convention():
@@ -1149,7 +1149,7 @@ def test_a_single_evidence_gotcha_outranks_a_heavily_supported_convention():
         "project", _response("project", {"conventions": [convention], "gotchas": [gotcha]})
     )
 
-    assert [(entry.item.kind, entry.support_count) for entry in compiled] == [
+    assert [(entry.representative.kind, entry.support_count) for entry in compiled] == [
         ("gotcha", 1),
         ("convention", 8),
     ]
@@ -1177,7 +1177,7 @@ def test_a_negative_constraint_outranks_a_heavily_supported_preference():
 
     assert [(entry.kind_rank, entry.support_count) for entry in compiled] == [(0, 1), (3, 8)]
     # The explicit negative flag survives the pipeline intact.
-    assert compiled[0].item.negative is True
+    assert compiled[0].representative.negative is True
     assert compiled[0].category == "constraints"
 
 
@@ -1197,7 +1197,7 @@ def test_a_negative_project_item_also_ranks_at_tier_zero():
 
     assert compiled[0].kind_rank == 0
     assert compiled[0].category == "conventions"
-    assert compiled[0].item.negative is True
+    assert compiled[0].representative.negative is True
 
 
 def test_support_count_breaks_a_kind_rank_tie_descending():
@@ -1379,8 +1379,8 @@ def test_the_budget_is_a_total_across_categories():
     assert len(compiled) == USER_PROFILE_BUDGET
     # Conventions (rank 2) displace every preference (rank 3): all ten
     # conventions survive and only five preferences fit behind them.
-    assert sum(1 for entry in compiled if entry.item.kind == "convention") == 10
-    assert sum(1 for entry in compiled if entry.item.kind == "preference") == 5
+    assert sum(1 for entry in compiled if entry.representative.kind == "convention") == 10
+    assert sum(1 for entry in compiled if entry.representative.kind == "preference") == 5
 
 
 def test_a_higher_ranked_new_item_displaces_the_current_last_item():
@@ -1573,7 +1573,7 @@ def test_a_category_that_is_not_a_list_fails_closed_without_taking_the_rest():
         ),
     )
 
-    assert [entry.item.claim for entry in compiled] == ["Prefers dark mode."]
+    assert [entry.claim for entry in compiled] == ["Prefers dark mode."]
 
 
 def test_an_invented_category_key_contributes_nothing():
@@ -1589,7 +1589,7 @@ def test_an_invented_category_key_contributes_nothing():
         ),
     )
 
-    assert [entry.item.claim for entry in compiled] == ["Prefers dark mode."]
+    assert [entry.claim for entry in compiled] == ["Prefers dark mode."]
 
 
 @pytest.mark.parametrize(
@@ -1605,7 +1605,7 @@ def test_a_non_item_entry_drops_without_taking_the_rest(raw_item):
         _response("user", {"preferences": [raw_item, good]}, based_on=_grounded("mem-1")),
     )
 
-    assert [entry.item.claim for entry in compiled] == ["Prefers dark mode."]
+    assert [entry.claim for entry in compiled] == ["Prefers dark mode."]
 
 
 # ---------------------------------------------------------------------------
@@ -1641,7 +1641,7 @@ def test_a_valid_gotcha_cause_may_contain_the_word_and():
 
     compiled = compile_profile("project", _response("project", {"gotchas": [gotcha]}))
 
-    assert compiled[0].item.cause == "The migration ran twice and left orphaned rows."
+    assert compiled[0].representative.cause == "The migration ran twice and left orphaned rows."
 
 
 def test_list_like_claim_text_passes_through_unchanged():
