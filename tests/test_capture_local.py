@@ -10,6 +10,7 @@ import pytest
 import respx
 
 from memory.capture import local
+from memory.slugs import slug_from_locator
 
 FIXTURES = Path(__file__).parent / "fixtures" / "claude-transcripts"
 URL = "http://ach-memory.test"
@@ -147,7 +148,11 @@ def test_basic_transcript_keeps_dialogue_and_minimal_tool_evidence():
     assert "user: Can you check whether the auth middleware" in text
     assert "assistant: I'll check the auth middleware" in text
     assert "tool_use: Bash" in text
-    assert 'tool_result: Bash ok 42: if payload' in text
+    # The Bash call behind this result is `grep -n exp src/auth/middleware.py`
+    # -- a file read wearing a shell tool's name. Its output is withheld
+    # exactly as `Read`'s would be; only the fact that it ran survives.
+    assert "tool_result: Bash ok [output omitted]" in text
+    assert "42: if payload" not in text
     assert "assistant: Yes, line 42 raises Expired" in text
 
 
@@ -172,7 +177,7 @@ def test_redaction_fixture_replaces_file_reading_tool_output_with_a_bounded_mark
     text = _sanitize_fixture("redaction.jsonl")
 
     assert "tool_use: Read" in text
-    assert "[file content omitted]" in text
+    assert "tool_result: Read ok [output omitted]" in text
     # Neither the file path (tool_use input) nor the file body (tool_result
     # content) is redacted-in-place -- both are dropped outright.
     assert "id_rsa" not in text
@@ -191,7 +196,16 @@ def test_tool_output_is_capped_per_call():
             "type": "assistant",
             "message": {
                 "role": "assistant",
-                "content": [{"type": "tool_use", "id": "t1", "name": "Bash"}],
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Bash",
+                        # A classifiable non-reader, so the output is
+                        # retained at all and the cap is what bounds it.
+                        "input": {"command": "npm test"},
+                    }
+                ],
             },
         },
         {
@@ -213,21 +227,37 @@ def test_tool_output_is_capped_per_call():
     text = local.sanitize(records)
 
     result_line = next(line for line in text.splitlines() if line.startswith("tool_result"))
+    assert "x" in result_line, "a classifiable non-reader's output should survive"
     assert len(result_line) <= local._TOOL_OUTPUT_CAP + len("tool_result: Bash ok ")
 
 
-def test_whole_slice_is_capped_even_across_many_small_messages():
-    records = [
-        {
-            "type": "user",
-            "message": {"role": "user", "content": f"line {i}: " + "y" * 200},
-        }
-        for i in range(500)
-    ]
+def test_a_batch_is_bounded_on_whole_record_boundaries(tmp_path):
+    """The cap drops whole records, never the tail of the joined text.
 
-    text = local.sanitize(records)
+    Cutting the text is what silently loses records: the cursor advances to
+    the end of the slice while everything past the cut was never sent.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_bytes(
+        b"".join(
+            json.dumps(
+                {"type": "user", "message": {"role": "user", "content": f"line {i}: " + "y" * 200}}
+            ).encode()
+            + b"\n"
+            for i in range(500)
+        )
+    )
 
-    assert len(text) <= local._SLICE_CAP
+    batch = local.build_batch(local.read_new_slice(transcript, 0))
+
+    assert len(batch.content) <= local._SLICE_CAP
+    assert batch.end_offset < transcript.stat().st_size, "the tail must be left for next time"
+    # The batch covers exactly the records it carries: the raw bytes it
+    # hashes span exactly the offsets it names, and its text is the
+    # sanitization of exactly those records -- not a prefix of a longer one.
+    assert len(batch.raw) == batch.end_offset - batch.start_offset
+    covered = local.read_new_slice(transcript, 0).records[: batch.content.count("\n") + 1]
+    assert batch.content == local.sanitize(covered)
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +385,10 @@ def test_checkpoint_submits_the_sanitized_slice_and_advances_the_cursor(git_repo
     assert route.called
     request_body = json.loads(route.calls.last.request.read())
     assert request_body["session_id"] == "sess-1"
-    assert request_body["git_locator"] == "https://example.com/acme/super-secret.git"
+    # The canonical locator, never the raw remote: one spelling, no scheme,
+    # no `.git`, and no userinfo to carry a credential (SPEC §8.2).
+    assert request_body["git_locator"] == "example.com/acme/super-secret"
+    assert request_body["project_slug"] == slug_from_locator("example.com/acme/super-secret")
     assert request_body["workspace_id"] == local.workspace_id_for(str(git_repo))
     for sensitive in ("CANARY", str(git_repo), "id_rsa", "super-secret.git"):
         assert sensitive not in request_body["content"]
@@ -364,7 +397,7 @@ def test_checkpoint_submits_the_sanitized_slice_and_advances_the_cursor(git_repo
         Path(base_env["ACH_MEMORY_CACHE_DIR"]),
         owner_fingerprint=hashlib.sha256(base_env["ACH_MEMORY_API_KEY"].encode()).hexdigest(),
         service_url=base_env["ACH_MEMORY_URL"],
-        project_key="https://example.com/acme/super-secret.git",
+        project_key=slug_from_locator("example.com/acme/super-secret"),
         workspace_id=local.workspace_id_for(str(git_repo)),
         session_id="sess-1",
     )

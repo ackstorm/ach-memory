@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from memory.contracts import WorkingStateLine, WorkingStateLines
+from memory.contracts import SessionId, WorkingStateLine, WorkingStateLines, WorkspaceId
 
 _HEX64 = r"^[0-9a-f]{64}$"
 
@@ -31,15 +31,22 @@ class CheckpointSubmission(BaseModel):
     """The exact wire body for `POST /v1/capture/checkpoints`. Built once
     the local client has already sanitized the slice -- nothing on this
     model is raw transcript content.
+
+    This is the ONE definition of that body: `memory.api.capture` accepts
+    this same model, so a field the local client leaves optional cannot
+    differ from what the route requires. The Phase 3 review found the two
+    had drifted -- the shipped hook omitted `project_slug` and every 422 it
+    earned was invisible, because the hook swallows failures by design and
+    the delivery gate hand-repaired the body before replaying it.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    host: str
-    session_id: str
-    project_slug: str | None = None
+    host: str = Field(min_length=1, max_length=32)
+    session_id: SessionId
+    project_slug: str
     git_locator: str | None = None
-    workspace_id: str | None = None
+    workspace_id: WorkspaceId
     start_offset: int = Field(ge=0)
     end_offset: int = Field(ge=0)
     content_hash: str = Field(pattern=_HEX64)

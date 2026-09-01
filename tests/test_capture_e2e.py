@@ -16,6 +16,7 @@ import httpx
 import respx
 
 from memory.capture import local, worker
+from memory.capture.contracts import CheckpointSubmission
 from memory.hindsight.client import HindsightClient
 from memory.models import Project, User
 
@@ -181,24 +182,28 @@ def test_the_phase_3_delivery_gate(client, master_headers, tenant, session, tmp_
     transcript_path.write_text(TRANSCRIPT)
     raw_slice = local.read_new_slice(transcript_path, 0)
     assert raw_slice.records, "fixture produced no complete records"
-    sanitized = local.sanitize(raw_slice.records)
+    batch = local.build_batch(raw_slice)
+    sanitized = batch.content
 
     for canary in (SECRET_CANARY, FILE_CANARY, PATH_CANARY, "BEGIN RSA PRIVATE KEY"):
         assert canary not in sanitized, f"{canary!r} leaked into the sanitized slice"
 
-    content_hash = hashlib.sha256(raw_slice.raw).hexdigest()
-    sanitized_hash = hashlib.sha256(sanitized.encode()).hexdigest()
-    body = {
-        "host": "claude-code",
-        "session_id": "sess-e2e",
-        "project_slug": "acme-e2e",
-        "workspace_id": WS,
-        "start_offset": 0,
-        "end_offset": raw_slice.end_offset,
-        "content_hash": content_hash,
-        "sanitized_hash": sanitized_hash,
-        "content": sanitized,
-    }
+    # The body is the local client's own model, filled from the local
+    # client's own batch -- no field is supplied here that the hook does not
+    # supply itself. `project_slug` used to be patched in at this line
+    # because the hook never sent one and the route requires it; that repair
+    # is what hid Phase 3 review finding 1, so the model is built for real.
+    body = CheckpointSubmission(
+        host="claude-code",
+        session_id="sess-e2e",
+        project_slug="acme-e2e",
+        workspace_id=WS,
+        start_offset=batch.start_offset,
+        end_offset=batch.end_offset,
+        content_hash=hashlib.sha256(batch.raw).hexdigest(),
+        sanitized_hash=hashlib.sha256(sanitized.encode()).hexdigest(),
+        content=sanitized,
+    ).model_dump(exclude_none=True)
 
     # --- Submit twice: the second must be the identical row, not a new one ---
     first = client.post("/v1/capture/checkpoints", json=body, headers=headers)

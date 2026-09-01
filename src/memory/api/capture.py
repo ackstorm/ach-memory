@@ -9,44 +9,24 @@ import hashlib
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
-from memory import activity
+from memory import metrics
 from memory.api.app import current_principal
 from memory.api.common import RenameForwarding
 from memory.api.memory import _check_content_size
 from memory.auth.principal import Principal
 from memory.capture import repository
-from memory.capture.contracts import CaptureStatus
-from memory.contracts import SessionId, WorkspaceId
+from memory.capture.contracts import CaptureStatus, CheckpointSubmission
 from memory.db import get_session
 from memory.errors import CaptureIntegrityError, Forbidden
 
 router = APIRouter(prefix="/v1/capture", tags=["capture"])
 
-_HEX64 = r"^[0-9a-f]{64}$"
-
-
-class CheckpointRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    host: str = Field(min_length=1, max_length=32)
-    session_id: SessionId
-    project_slug: str
-    git_locator: str | None = None
-    workspace_id: WorkspaceId
-    start_offset: int = Field(ge=0)
-    end_offset: int = Field(ge=0)
-    content_hash: str = Field(pattern=_HEX64)
-    sanitized_hash: str = Field(pattern=_HEX64)
-    content: str
-
-    @model_validator(mode="after")
-    def _end_after_start(self) -> "CheckpointRequest":
-        if self.end_offset <= self.start_offset:
-            raise ValueError("end_offset must be greater than start_offset")
-        return self
+# The request body is the local client's own submission model, not a
+# parallel copy of it (SPEC Phase 3 review finding 1): a second definition
+# is exactly how the shipped hook came to omit a field this route requires.
+CheckpointRequest = CheckpointSubmission
 
 
 class CheckpointResponse(RenameForwarding):
@@ -93,19 +73,18 @@ def submit_checkpoint(
     )
     row = result.row
 
-    # Only fields activity_events already has room for: no content, no
-    # offsets, no hashes, no host/status/duplicate column yet (those land in
-    # Task 8's dedicated capture counters). action alone already says "this
-    # was a capture checkpoint".
-    activity.describe(
-        action="capture.checkpoint",
-        scope="project",
-        tenant_id=principal.tenant_id,
-        credential_id=principal.credential_id,
-        project_slug=result.resolution.project.project_slug,
-        bank_fingerprint=activity.fingerprint(result.resolution.project.bank_id),
-        content_bytes=len(body.content.encode("utf-8")),
-    )
+    # Acceptance telemetry is counts and modes only (SPEC Phase 3 review
+    # finding 9). The activity_events row this used to write carried the
+    # project slug and a bank fingerprint -- identity, on a path that fires
+    # once per Stop hook -- so it is a Prometheus counter now: host bucket,
+    # resulting status, whether it was a replay, and a byte bucket. No slug,
+    # no bank, no offsets, no hashes, no content.
+    metrics.CAPTURE_CHECKPOINT.labels(
+        host=metrics.host_label(body.host),
+        status=row.status,
+        duplicate=str(result.duplicate).lower(),
+        bytes_bucket=metrics.bytes_bucket(len(body.content.encode("utf-8"))),
+    ).inc()
     db.commit()
 
     return CheckpointResponse(

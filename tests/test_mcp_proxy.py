@@ -45,12 +45,17 @@ def test_git_origin_becomes_a_derived_slug_and_the_locator(tmp_path, monkeypatch
     Sending the locator alone instead of a slug does not work -- measured
     against production 2026-08-27, PROJECT_CONTEXT_UNAVAILABLE -- because a
     locator never resolves identity (inv. 11) and is not unique (§17).
+
+    The locator that travels is the CANONICAL spelling, not the raw remote:
+    one spelling per repository, and no userinfo to leak (§8.2). The slug is
+    unaffected -- it is derived from the canonical locator either way, so no
+    project changes bank.
     """
     repo = _git_repo(tmp_path, "git@github.com:acme/payments-api.git")
     monkeypatch.delenv("MEMORY_PROJECT", raising=False)
     assert resolve_project_context(str(repo)) == (
         "github.com-acme-payments-api-dab6719d",
-        "git@github.com:acme/payments-api.git",
+        "github.com/acme/payments-api",
     )
 
 

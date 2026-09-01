@@ -40,8 +40,7 @@ from mcp.shared.inbound import (
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from memory import brief
-from memory.errors import ProjectInvalidSlug
-from memory.slugs import slug_from_locator
+from memory.capture.local import resolve_project_context as resolve_local_project_context
 
 BRIEF_TIMEOUT_SECONDS = 2.0
 
@@ -66,34 +65,17 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
 
     The locator travels alongside the derived slug so the server binds it to
     the project on first touch and refuses a mismatch afterwards (§8.3/§8.4).
+
+    The resolution itself lives in `memory.capture.local` and is shared with
+    the checkpoint hook: two copies is what let one of them send a raw
+    `origin` -- credentials and all -- over the network (SPEC Phase 3 review
+    finding 2). The tuple shape is kept because this is a hot startup path
+    with existing callers; the values are the canonical ones.
     """
-    slug = os.environ.get("MEMORY_PROJECT")
-    if slug:
-        return slug, None
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        # No git on PATH (or a hung filesystem): same outcome as no repo.
+    context = resolve_local_project_context(cwd or os.getcwd())
+    if context is None:
         return None, None
-    locator = result.stdout.strip()
-    if result.returncode != 0 or not locator:
-        return None, None
-    try:
-        return slug_from_locator(locator), locator
-    except ProjectInvalidSlug:
-        # A remote that names no host and path -- a local clone, a bare path,
-        # a bundle file. It identifies no project, and raising here would take
-        # the whole session down at startup over a repository the agent may
-        # never ask about. Same outcome as no repo at all: the server's error
-        # tells the model what to pass.
-        return None, None
+    return context.project_slug, context.git_locator
 
 
 def resolve_workspace_context(cwd: str | None = None) -> str | None:

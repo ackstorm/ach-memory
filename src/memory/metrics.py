@@ -70,10 +70,12 @@ BUILD = Gauge("memory_build_info", "Deployed version.", ["version"])
 # report through activity.py's ContextVar-based CALLS/CALL_DURATION (see
 # that module's docstring) -- these are its equivalent, Prometheus-only.
 # `stage` is the closed set {"extract", "retain", "apply"} and `outcome` is
-# the closed set {"advanced", "waiting", "failed"} ("waiting" is not a
-# failure: it means an operation Hindsight is still working on, checked
-# again next poll). Never a session id, a project slug, a content hash or a
-# bank id -- exactly the same discipline as every other label in this file.
+# the closed set {"advanced", "waiting", "failed", "lease_lost"} ("waiting"
+# is not a failure: it means an operation Hindsight is still working on,
+# checked again next poll; "lease_lost" means this worker's lease expired
+# and another worker owns the row, so its transition was refused). Never a
+# session id, a project slug, a content hash or a bank id -- exactly the
+# same discipline as every other label in this file.
 CAPTURE_STAGE = Counter(
     "memory_capture_stage_total",
     "Capture queue worker stage transitions.",
@@ -87,6 +89,48 @@ CAPTURE_STAGE_DURATION = Histogram(
     "State write).",
     ["stage"],
 )
+
+# Every retry the queue schedules, by the stage that failed and the error
+# code that failed it. Both label sets are closed and defined in this
+# repository (memory.capture.worker), so this cannot grow a series per
+# caller. It is the counter that makes a row silently burning its eight
+# attempts visible before it goes terminal.
+CAPTURE_RETRY = Counter(
+    "memory_capture_retries_total",
+    "Capture queue retries scheduled after a failed stage.",
+    ["stage", "error_code"],
+)
+
+# Checkpoint acceptance (POST /v1/capture/checkpoints). Deliberately not an
+# activity_events row: that table records a project slug and a bank
+# fingerprint, and this path fires once per Stop hook for every session
+# (SPEC Phase 3: metrics carry counts, timings, modes and error codes only).
+CAPTURE_CHECKPOINT = Counter(
+    "memory_capture_checkpoint_total",
+    "Checkpoint submissions accepted.",
+    ["host", "status", "duplicate", "bytes_bucket"],
+)
+
+# `host` is caller-supplied, so it is bucketed to the hosts this repository
+# actually ships a plugin for. Anything else is "other" -- a caller must not
+# be able to mint a time series by inventing a host name.
+KNOWN_HOSTS = frozenset({"claude-code", "codex", "opencode", "pi"})
+
+_BYTE_BUCKETS = ((1_024, "1k"), (4_096, "4k"), (16_384, "16k"), (65_536, "64k"))
+
+
+def host_label(host: str) -> str:
+    """The bounded label for a client-declared host."""
+    return host if host in KNOWN_HOSTS else "other"
+
+
+def bytes_bucket(size: int) -> str:
+    """The bounded label for a payload size. Order of magnitude, never the
+    exact byte count: a size is a weak identifier of the content behind it."""
+    for limit, name in _BYTE_BUCKETS:
+        if size < limit:
+            return name
+    return "64k+"
 
 
 def _version() -> str:

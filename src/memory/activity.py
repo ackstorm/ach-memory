@@ -17,16 +17,21 @@ The row is written ONCE, at the end, never inserted-then-updated: one round
 trip, and a row can never claim a retain succeeded when Hindsight answered
 502.
 
-The checkpoint SUBMISSION call (POST /v1/capture/checkpoints) is a REST call
-like any other and gets a row here for free, action="capture.checkpoint",
-the moment its handler calls describe() -- see memory/api/capture.py.
+Neither half of the capture pipeline writes a row here.
 
-The capture WORKER (memory/capture/worker.py) is not: it has no per-request
-edge to call new_call()/finish() from, and `surface` is String(4) ("rest"/
-"mcp" both fit; "worker" does not). Its stage/outcome/retry/latency
-telemetry lives in memory.metrics's dedicated CAPTURE_STAGE/
-CAPTURE_STAGE_DURATION counters instead -- Prometheus-only, no per-slice
-row, same content-free discipline (stage and outcome are both closed sets;
+The checkpoint SUBMISSION call (POST /v1/capture/checkpoints) could -- it is
+a REST call like any other -- but a row costs a project slug and a bank
+fingerprint, and that path fires once per Stop hook for every session of
+every user. SPEC Phase 3 keeps capture telemetry to counts and modes, so it
+reports through memory.metrics's CAPTURE_CHECKPOINT counter instead: host
+bucket, status, duplicate flag, byte bucket, no identity at all.
+
+The capture WORKER (memory/capture/worker.py) could not in any case: it has
+no per-request edge to call new_call()/finish() from, and `surface` is
+String(4) ("rest"/"mcp" both fit; "worker" does not). Its
+stage/outcome/retry/latency telemetry lives in memory.metrics's dedicated
+CAPTURE_STAGE/CAPTURE_STAGE_DURATION/CAPTURE_RETRY counters -- same
+content-free discipline (stage, outcome and error code are all closed sets;
 never a session/project id, a hash, or a bank id).
 """
 
