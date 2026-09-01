@@ -474,3 +474,226 @@ def project_response_schema() -> dict[str, Any]:
     response, keyed as `{"project_profile": {...}}`. See
     `user_response_schema`."""
     return _ProjectProfileResponse.model_json_schema()
+
+
+# ---------------------------------------------------------------------------
+# Provisioning (Task 3): one `ach-memory-profile-v1` mental model per bank,
+# created and reconciled only through `POST /v1/admin/profile/{scope}/
+# provision` in `api/admin.py` -- see `brief.py`'s module docstring for why
+# creation never lives on a read path; this module has no read path for the
+# structured profile at all yet (that is Task 4's job -- parsing
+# `reflect_response.structured_output`, eligibility, ranking, displacement).
+# Task 3 only gets a model with the right query, budget and trigger into
+# existence, and keeps it that way across deploys.
+# ---------------------------------------------------------------------------
+
+ProfileScope = Literal["user", "project"]
+
+PROFILE_MODEL_NAME = "ach-memory-profile-v1"
+
+# Proportional to each scope's item budget (USER_PROFILE_BUDGET=15,
+# PROJECT_PROFILE_BUDGET=25 above) and bounded by Hindsight's own
+# Field(ge=256, le=8192) (api/mental_models.py). A structured item costs
+# more tokens than brief.py's free-text line: every item pays JSON-object
+# overhead (~40 tokens for field names/braces) on top of `claim` (<=320
+# chars, ~80 tokens) and `evidence_ids` (up to 8 ids, ~60 tokens) --
+# roughly 200 tokens for a plain item. A `gotcha` item (project-only) also
+# pays for `failure`/`cause`/`reproduction`/`provenance` (<=240 chars each,
+# ~60 tokens apiece), worst case ~450 tokens. 15 user items, none of them
+# gotchas, come to ~3000 tokens plus wrapper/category-key overhead; 25
+# project items with some share of gotchas come to ~5000-6500. Both rounded
+# up for headroom, both comfortably inside the upstream ceiling.
+#
+# Unmeasured against a live Hindsight instance -- none is available in this
+# phase (same situation as Tasks 1/2). Task 7's nightly evaluator is where
+# these get corrected against real synthesis output, not guessed here.
+USER_PROFILE_MAX_TOKENS = 3200
+PROJECT_PROFILE_MAX_TOKENS = 6400
+
+_MAX_TOKENS: dict[ProfileScope, int] = {
+    "user": USER_PROFILE_MAX_TOKENS,
+    "project": PROJECT_PROFILE_MAX_TOKENS,
+}
+
+# Mission text for the structured synthesis, in brief.py's imperative,
+# economical style. Unlike brief.USER_QUERY/PROJECT_QUERY -- tuned against
+# real memories over months of live use, per that module's own comment --
+# these are drafted from the plan's explicit textual requirements alone:
+# nothing in this environment can run them against a live Hindsight instance
+# to measure what they actually produce. Task 7's nightly evaluator is where
+# empirical refinement belongs; treat these as a first, defensible draft,
+# not a tuned prompt.
+#
+# Named distinctly from brief.USER_QUERY/PROJECT_QUERY (not reused, not
+# shadowed) -- this module accumulates prompts for several profile-related
+# tasks across Phase 4, so the PROFILE_ prefix keeps a later grep for
+# "USER_QUERY" from returning two unrelated missions.
+PROFILE_USER_QUERY = (
+    "Synthesize this user's current standing profile -- what is true now, "
+    "not a history of how understanding changed over time. An explicit "
+    "correction supersedes what it corrects. Draw every item only from "
+    "evidence marked stated, confirmed or observed; an observed preference "
+    "is never eligible for a profile item, but an observed convention is. "
+    "Never synthesize from inferred evidence or from a bare technical_claim. "
+    "Each item is exactly one atomic claim -- never combine two independent "
+    "statements into one item, even when the same memory states both. "
+    "Every item must cite the specific evidence memory IDs (1 to 8) it is "
+    "drawn from; never state a claim its cited evidence does not support. "
+    "Place every item in exactly one of the four fixed categories "
+    "(interaction, engineering, preferences, constraints); never invent a "
+    "category. State only what the memories say."
+)
+PROFILE_PROJECT_QUERY = (
+    "Synthesize this project's current standing profile -- what is true "
+    "now, not a history of how understanding changed over time. An "
+    "explicit correction supersedes what it corrects. Draw every item only "
+    "from evidence marked stated, confirmed or observed; an observed "
+    "decision is never eligible for a profile item, but an observed "
+    "convention or gotcha is. Never synthesize from inferred evidence or "
+    "from a bare technical_claim. Each item is exactly one atomic claim -- "
+    "never combine two independent statements into one item, even when the "
+    "same memory states both. A gotcha item must state the failure and at "
+    "least its cause or how to reproduce it, plus provenance -- never a "
+    "bare warning with no detail. Every item must cite the specific "
+    "evidence memory IDs (1 to 8) it is drawn from; never state a claim its "
+    "cited evidence does not support. Write every claim as how this project "
+    "works, never as this person's preference -- personal preference "
+    "belongs only in the user profile, even for a fact that could be "
+    "phrased either way. Do not describe what the repository's files would "
+    "already show. Place every item in exactly one of the six fixed "
+    "categories (architecture, decisions, workflow, testing, conventions, "
+    "gotchas); never invent a category."
+)
+
+_SOURCE_QUERY: dict[ProfileScope, str] = {
+    "user": PROFILE_USER_QUERY,
+    "project": PROFILE_PROJECT_QUERY,
+}
+
+
+def _schema_for(scope: ProfileScope) -> dict[str, Any]:
+    return user_response_schema() if scope == "user" else project_response_schema()
+
+
+def _profile_trigger(scope: ProfileScope) -> dict[str, Any]:
+    """The Phase 4 trigger for `ach-memory-profile-v1`: `full` mode, no
+    cron, no automatic post-consolidation refresh (plan "Hindsight target
+    and safe rollout") -- Phase 4 provisions this model, it never refreshes
+    it on its own. `response_schema` is the scope's own canonical schema, so
+    Hindsight's structured output round-trips into
+    `UserProfileDocument`/`ProjectProfileDocument`. `keep_trace` is kept for
+    the same diagnostic reason as `brief.TRIGGER`'s: the only way to see why
+    a refresh (however it gets triggered) did what it did, after the fact.
+
+    This is NOT the eventual Phase 0 trigger -- see `desired_phase0_trigger`
+    for the observation-only, exact-tag trigger that stays represented but
+    unapplied until a separately authorized rollout step.
+    """
+    return {
+        "mode": "full",
+        "refresh_after_consolidation": False,
+        "response_schema": _schema_for(scope),
+        "keep_trace": True,
+    }
+
+
+def _find_profile(client, bank_id: str) -> dict | None:
+    """Same list-and-match shape as `brief._find`."""
+    listed = client.list_mental_models(bank_id, detail="full")
+    models = listed.get("mental_models") or listed.get("items") or []
+    for model in models:
+        if model.get("name") == PROFILE_MODEL_NAME:
+            return model
+    return None
+
+
+def _reconcile_profile(
+    client, bank_id: str, model: dict, source_query: str, trigger: dict[str, Any]
+) -> None:
+    """Bring an existing profile model back in line with the constants
+    above. Same merge-not-replace reasoning as `brief._reconcile`: the
+    trigger is merged onto whatever Hindsight already stores there and
+    compared only on the keys this module sets, so a field Hindsight adds on
+    its own side survives untouched.
+
+    `response_schema` is one of those compared keys, unlike anything
+    `brief._reconcile` ever had to handle: a deploy that changes
+    `user_response_schema()`/`project_response_schema()`, or a model that
+    somehow ended up holding the OTHER scope's schema, is corrected the same
+    way a changed `mode` or `keep_trace` would be. Compared by full dict
+    equality, not presence -- two schemas can share every top-level key and
+    still differ underneath.
+    """
+    changed: dict[str, object] = {}
+    if model.get("source_query") != source_query:
+        changed["source_query"] = source_query
+
+    stored = model.get("trigger") or {}
+    if any(stored.get(key) != value for key, value in trigger.items()):
+        changed["trigger"] = {**stored, **trigger}
+
+    if changed:
+        client.update_mental_model(bank_id, model["id"], **changed)
+
+
+def provision_profile(client, bank_id: str, scope: ProfileScope) -> str:
+    """Create the bank's `ach-memory-profile-v1` model, or bring an existing
+    one back in line.
+
+    Reached only through `POST /v1/admin/profile/{scope}/provision` -- Task
+    3 wires no read path to this at all, so unlike `brief.provision_section`
+    there is no sibling read function here yet whose docstring needs to
+    explain why it never calls this.
+
+    `tags=[]` is sent explicitly on create, unlike `brief.provision_section`
+    (which never sends `tags`) -- Task 2 built exactly this capability: an
+    omitted `tags` kwarg sends no key at all, while an explicit `[]` sends
+    one. This matches the plan's literal Phase 4 target, `tags: []` at the
+    top level of the create body; no final tag filter is installed until
+    Phase 0 (see `desired_phase0_trigger`).
+
+    Returns "created" or "reconciled".
+    """
+    source_query = _SOURCE_QUERY[scope]
+    trigger = _profile_trigger(scope)
+
+    model = _find_profile(client, bank_id)
+    if model is None:
+        client.create_mental_model(
+            bank_id,
+            name=PROFILE_MODEL_NAME,
+            source_query=source_query,
+            max_tokens=_MAX_TOKENS[scope],
+            trigger=trigger,
+            tags=[],
+        )
+        return "created"
+
+    _reconcile_profile(client, bank_id, model, source_query, trigger)
+    return "reconciled"
+
+
+def desired_phase0_trigger(scope: ProfileScope) -> dict[str, Any]:
+    """The trigger Phase 0 will eventually install: `delta` mode over
+    observation-only facts tagged `profile_eligible` with exact tag
+    matching -- what is meant to make correction refresh and continuous
+    synthesis safe to turn on (plan "Hindsight target and safe rollout").
+
+    Represented here so its shape is pinned in code and tested. Pure: no
+    client argument, no side effects, nothing upstream is called. Not
+    applied by anything -- `provision_profile` builds and sends only
+    `_profile_trigger`'s `full`, untagged trigger, and nothing in this
+    module or any application code path calls this function; only its own
+    tests do. Wiring this trigger up is a separately authorized later
+    rollout step (plan "Rollout order"), never a side effect of adding the
+    builder that describes it.
+    """
+    return {
+        "mode": "delta",
+        "fact_types": ["observation"],
+        "tags": ["profile_eligible"],
+        "tags_match": "exact",
+        "refresh_after_consolidation": False,
+        "response_schema": _schema_for(scope),
+        "keep_trace": True,
+    }
