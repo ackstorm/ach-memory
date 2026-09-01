@@ -183,13 +183,24 @@ def test_a_capture_extraction_stage_increments_the_stage_counter(session, tenant
 
     before = _sample("memory_capture_stage_total", stage="extract", outcome="advanced")
 
+    # Transitions are owner-fenced, so the worker only ever processes a row
+    # it holds the lease on.
+    owner = repository.new_lease_owner("test")
+    repository.acquire_lease(session, owner=owner, lease_seconds=60)
+    session.commit()
+
     client = HindsightClient(base_url="http://hindsight.test", api_key="k", tenant_id="default")
     with respx.mock:
         respx.post(
             f"http://hindsight.test/v1/default/banks/{project.bank_id}/memories/dry-run-extract"
         ).mock(return_value=Response(200, json={"facts": []}))
         worker.process_row(
-            session, client, result.row, max_attempts=8, correction_refresh_enabled=False
+            session,
+            client,
+            result.row,
+            owner=owner,
+            max_attempts=8,
+            correction_refresh_enabled=False,
         )
     session.commit()
 
