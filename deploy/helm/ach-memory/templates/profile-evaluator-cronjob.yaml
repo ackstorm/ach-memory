@@ -1,0 +1,126 @@
+{{/*
+SPEC Phase 4 Task 7's non-persisting profile evaluator. See the
+`profileEvaluator` block in values.yaml for the two gates, the empty target
+list, and the seven-run/recorded-report requirement that has to be satisfied
+before any structured cutover.
+
+A new template file rather than values-only wiring: the values block would
+be inert without something to render, and a nightly measurement that runs to
+completion with no Service and no Ingress is a CronJob (migration-job.yaml
+is the closest existing shape, but a one-shot hook Job cannot be scheduled).
+*/}}
+{{/*
+The per-container environment, defined once. Same database/Hindsight
+configuration the API Deployment gets -- profile-check reads the same tables
+and the same Hindsight banks, just out of band and read-only. Defined at the
+top level because a `define` inside an `if` is a template parse error.
+*/}}
+{{- define "ach-memory.profileEvaluatorEnv" -}}
+- name: MEMORY_DATABASE_URL
+  value: {{ required "config.databaseUrl is required (MEMORY_DATABASE_URL)" .Values.config.databaseUrl | quote }}
+- name: MEMORY_HINDSIGHT_URL
+  value: {{ required "config.hindsight.url is required (MEMORY_HINDSIGHT_URL)" .Values.config.hindsight.url | quote }}
+{{- if .Values.config.hindsight.apiKeySecret.name }}
+- name: MEMORY_HINDSIGHT_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.config.hindsight.apiKeySecret.name }}
+      key: {{ .Values.config.hindsight.apiKeySecret.key }}
+{{- else }}
+- name: MEMORY_HINDSIGHT_API_KEY
+  value: {{ .Values.config.hindsight.apiKey | quote }}
+{{- end }}
+- name: MEMORY_MASTER_KEY_HASH
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "ach-memory.masterKeySecretName" . }}
+      key: {{ .Values.masterKeySecret.key }}
+- name: MEMORY_TENANT_ID
+  value: {{ .Values.config.tenantId | quote }}
+- name: MEMORY_HINDSIGHT_TIMEOUT_SECONDS
+  value: {{ .Values.config.timeoutSeconds | quote }}
+- name: MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS
+  value: {{ .Values.config.llmTimeoutSeconds | quote }}
+{{- end }}
+{{- if .Values.profileEvaluator.enabled }}
+{{- if not .Values.profileEvaluator.targets }}
+{{- fail "profileEvaluator.enabled is true with no profileEvaluator.targets: no target bank ships with this chart, every bank to evaluate must be named explicitly" }}
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "ach-memory.fullname" . }}-profile-evaluator
+  labels:
+    {{- include "ach-memory.labels" . | nindent 4 }}
+    app.kubernetes.io/component: profile-evaluator
+spec:
+  schedule: {{ .Values.profileEvaluator.schedule | quote }}
+  # The second gate. `enabled` puts the object in the cluster so image,
+  # schedule, targets and config can be reviewed; this is what lets
+  # Kubernetes create a Job from it.
+  suspend: {{ not .Values.profileEvaluator.evaluatorEnabled }}
+  # A measurement run that overlaps its predecessor would double the
+  # upstream synthesis cost it exists to measure.
+  concurrencyPolicy: Forbid
+  # Seven, so a full week of nightly runs stays inspectable in the cluster
+  # -- the same seven the rollout gate asks for.
+  successfulJobsHistoryLimit: {{ .Values.profileEvaluator.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.profileEvaluator.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.profileEvaluator.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            {{- include "ach-memory.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: profile-evaluator
+        spec:
+          restartPolicy: Never
+          {{- with .Values.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            {{- range $index, $target := .Values.profileEvaluator.targets }}
+            # Named by index, not by target: a project slug is neither
+            # guaranteed to fit a 63-character DNS label alongside the
+            # prefix, nor something to stamp into a Kubernetes object name
+            # when the rest of this evaluator keeps identifiers out of
+            # everything it emits. Which target a container ran is in its
+            # own command below.
+            - name: check-{{ $index }}
+              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              {{- with $.Values.securityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              command:
+                - "ach-memory"
+                - "profile-check"
+                - "--scope"
+                - {{ required "each profileEvaluator.targets entry needs a scope (user|project)" $target.scope | quote }}
+                - "--project"
+                - {{ required "each profileEvaluator.targets entry needs a project slug" $target.project | quote }}
+                # The report is the artifact this job exists to produce, and
+                # a JSON object per container is what gets kept for the
+                # recorded token/duration/quality report.
+                - "--json"
+              env:
+                {{- include "ach-memory.profileEvaluatorEnv" $ | nindent 16 }}
+              resources:
+                {{- toYaml $.Values.profileEvaluator.resources | nindent 16 }}
+            {{- end }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

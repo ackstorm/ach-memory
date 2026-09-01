@@ -699,6 +699,23 @@ def _parser() -> argparse.ArgumentParser:
         "--project", required=True, help="project slug (identifies the bank to check; "
         "for --scope user, the project's owning user)"
     )
+    profile = commands.add_parser(
+        "profile-check",
+        help="read-only cost/quality measurement of the structured profile "
+        "against Hindsight's non-persisting refresh preview; never creates, "
+        "updates, refreshes or retains anything",
+    )
+    profile.add_argument("--scope", choices=("user", "project"), required=True)
+    profile.add_argument(
+        "--project", required=True, help="project slug (identifies the bank to "
+        "measure; for --scope user, the project's owning user)"
+    )
+    profile.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the evaluation result as one JSON object instead of a "
+        "human-readable report",
+    )
     return parser
 
 
@@ -878,6 +895,145 @@ def _capture_check(*, scope: str, project_slug: str) -> int:
     return 1
 
 
+def _format_evaluation(result) -> str:
+    """The human report for one evaluation: counts, timings and codes only.
+
+    Deliberately narrower than `capture-check`'s output, which echoes the
+    project slug it was given: this command's output is designed to be
+    collected by a nightly job into a log, so nothing it writes on any path
+    carries content or an identifier -- not a claim, not an evidence ID, not
+    a bank id, not the slug on its own argv.
+    """
+
+    def number(value) -> str:
+        return "-" if value is None else str(value)
+
+    lines = [
+        f"profile-check {result.scope}",
+        f"  outcome: {result.outcome}",
+        f"  mode: {result.requested_mode} requested / {result.effective_mode} evaluated",
+        f"  schema_valid: {str(result.schema_valid).lower()}",
+        f"  would_persist: {str(result.would_persist).lower()}",
+        (
+            f"  items: {result.candidate_item_count} candidate -> "
+            f"{result.delivered_item_count} delivered "
+            f"({result.displacement_count} displaced by budget)"
+        ),
+        (
+            f"  facts: {number(result.retrieved_fact_count)} retrieved -> "
+            f"{number(result.used_fact_count)} used"
+        ),
+        (
+            f"  tokens: {number(result.input_tokens)} in / "
+            f"{number(result.output_tokens)} out / {number(result.total_tokens)} total"
+        ),
+        f"  duration_ms: {number(result.duration_ms)}",
+        f"  warnings: {', '.join(result.warning_codes) or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def _profile_check(*, scope: str, project_slug: str, as_json: bool) -> int:
+    """Measure the structured profile without mutating anything (SPEC Phase
+    4; plan "Hindsight target and safe rollout").
+
+    The two Hindsight calls below are the ONLY ones this command may make,
+    and both are reads: the mental-model listing that finds the bank's
+    already-provisioned `ach-memory-profile-v1`, and Hindsight's own
+    non-persisting `dry-run-refresh` preview of what a refresh would
+    produce. It never provisions, never updates, never issues the real
+    refresh, never retains, and resolves an existing bank only -- it never
+    asks for one to be created. A measurement command that mutated
+    production state would be the worst possible bug in this file. There is
+    deliberately no HTTP or MCP route for any of it: this is a local/admin
+    operation only.
+
+    `--scope project` measures the named project's own bank; `--scope user`
+    measures that project's owning user's bank -- the same slug semantics as
+    `capture-check` above, for the same reason (there is no separate --user
+    flag).
+
+    Exit status is 0 only for a schema-valid `ok` measurement; any schema,
+    quality or budget finding, a missing model, or an upstream refusal is
+    nonzero, so a nightly job fails loudly instead of logging quietly.
+    """
+    import logging
+
+    from memory import metrics, profiles
+    from memory.config import get_settings
+    from memory.db import session_scope
+    from memory.errors import DomainError
+    from memory.hindsight.client import get_client
+    from memory.models import Project, User
+
+    # httpx logs the full request URL at INFO and our Hindsight URLs carry
+    # the bank ID -- `create_app()` mutes it for the same reason. This
+    # command has no app to do that: it is meant to run as a nightly job
+    # whose entire stdout and stderr get collected, so one
+    # basicConfig(level=INFO) anywhere upstream would put a bank id in every
+    # collected line of an evaluation that is otherwise content-free.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    with session_scope() as db:
+        project = (
+            db.query(Project)
+            .filter_by(tenant_id=get_settings().tenant_id, project_slug=project_slug)
+            .first()
+        )
+        if project is None:
+            # Deliberately narrower than capture-check's version above,
+            # which echoes the slug: every byte this command writes, on
+            # every path, is meant to be safe to collect from a nightly job.
+            print("ach-memory: no such project", file=sys.stderr)
+            return 2
+        if scope == "project":
+            bank_id = project.bank_id
+        else:
+            if project.owner_type != "user":
+                print(
+                    "ach-memory: --scope user needs a user-owned project", file=sys.stderr
+                )
+                return 2
+            bank_id = db.get(User, project.owner_id).bank_id
+
+    client = get_client()
+    try:
+        model = profiles._find_profile(client, bank_id)
+        if model is None:
+            result = profiles.EvaluationResult(scope=scope, outcome="no_model")
+        else:
+            result = profiles.evaluate_dry_run(
+                scope, client.dry_run_refresh_mental_model(bank_id, model["id"])
+            )
+    except DomainError as exc:
+        # The code is a closed SPEC §18 constant; the message is not, and can
+        # carry the bank id, so only the code is ever printed.
+        print(f"ach-memory: profile-check upstream error ({exc.code})", file=sys.stderr)
+        result = profiles.EvaluationResult(scope=scope, outcome="upstream_error")
+
+    metrics.PROFILE_EVALUATION.labels(
+        scope=result.scope, mode=result.effective_mode, outcome=result.outcome
+    ).inc()
+    if result.duration_ms is not None:
+        metrics.PROFILE_EVALUATION_DURATION.labels(scope=result.scope).observe(
+            result.duration_ms / 1000
+        )
+    for direction, tokens in (
+        ("input", result.input_tokens),
+        ("output", result.output_tokens),
+    ):
+        if tokens is not None:
+            metrics.PROFILE_EVALUATION_TOKENS.labels(
+                scope=result.scope, direction=direction
+            ).observe(tokens)
+
+    # The report is the payload, so it goes to stdout in both formats and
+    # stderr carries only the failures above -- `--json | jq` and the plain
+    # form then read the same run the same way.
+    print(json.dumps(result.to_dict()) if as_json else _format_evaluation(result))
+    return 0 if result.schema_valid and result.outcome == "ok" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -898,6 +1054,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "capture-check":
         return _capture_check(scope=args.scope, project_slug=args.project)
+
+    if args.command == "profile-check":
+        return _profile_check(
+            scope=args.scope, project_slug=args.project, as_json=args.json
+        )
 
     base = os.environ.get("ACH_MEMORY_URL")
     mode = "http" if args.http else ("local" if args.local else "stdio")

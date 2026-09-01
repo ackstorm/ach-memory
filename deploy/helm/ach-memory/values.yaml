@@ -289,3 +289,60 @@ captureWorker:
       memory: 256Mi
     limits:
       memory: 512Mi
+
+# SPEC Phase 4's non-persisting profile evaluator: a CronJob (no Service, no
+# Ingress -- it serves nothing) running `ach-memory profile-check` once per
+# target bank, one container per target.
+#
+# The command is measurement only. It lists a bank's mental models to find
+# the already-provisioned `ach-memory-profile-v1` and asks Hindsight for its
+# own non-persisting refresh preview; it never provisions, updates, issues
+# the real refresh, or retains -- upstream or locally -- and it never
+# creates a bank. It also does not read MEMORY_PROFILE_DELIVERY_MODE: it
+# always measures the structured path, which is why running it changes
+# nothing about what the API currently serves (legacy, everywhere).
+#
+# Two independent gates, both off by default, plus an empty target list:
+#   - enabled:          whether this CronJob renders at all.
+#   - evaluatorEnabled: whether Kubernetes ever creates a Job from it. While
+#                       false the CronJob is rendered `suspend: true` --
+#                       no run, as opposed to "run then skip".
+#   - targets:          which banks to measure. Empty on purpose, and the
+#                       render FAILS if enabled is true with none set: no
+#                       target bank ships with this chart, an operator names
+#                       every one of them explicitly.
+# Turning enabled on with evaluatorEnabled still false stages the rollout --
+# image, schedule, targets and config all present and reviewable in the
+# cluster, nothing running -- the same staging step captureWorker above
+# supports, for the same reason.
+#
+# Before any structured cutover (MEMORY_PROFILE_DELIVERY_MODE=structured
+# anywhere, including non-production), the plan's rollout order requires at
+# least SEVEN representative runs per scope and a recorded report of what
+# they measured: token and duration ceilings, schema validity, budget
+# conformance and curated behaviour at least equal to legacy. That is a
+# process requirement for the humans running this job. Nothing in the chart
+# or the CLI counts runs or blocks a seventh, and profile-check exiting 0 is
+# not by itself permission to enable structured delivery.
+profileEvaluator:
+  enabled: false
+  evaluatorEnabled: false
+  # Nightly, off-peak. Only consulted once evaluatorEnabled is true.
+  schedule: "0 3 * * *"
+  # One entry per bank to measure: {scope: user|project, project: <slug>}.
+  # `scope: project` measures the named project's own bank; `scope: user`
+  # measures that project's owning user's bank -- the CLI's own --scope
+  # semantics, since there is no separate --user flag.
+  targets: []
+  # A measurement that failed is a finding to read, not a flake to retry:
+  # retrying would spend the same upstream synthesis cost again and report
+  # the same thing.
+  backoffLimit: 0
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi

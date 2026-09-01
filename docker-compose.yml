@@ -181,6 +181,62 @@ services:
       MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED: ${MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED:-false}
     command: ["ach-memory", "capture-worker"]
 
+  # SPEC Phase 4's non-persisting profile evaluator. Measurement only: it
+  # lists a bank's mental models to find `ach-memory-profile-v1` and asks
+  # Hindsight for its own non-persisting refresh preview. It never
+  # provisions, updates, issues the real refresh or retains -- upstream or
+  # locally -- and it never creates a bank. It also ignores
+  # MEMORY_PROFILE_DELIVERY_MODE, which stays legacy: this measures the
+  # structured path without switching anything onto it.
+  #
+  # Compose has no scheduler, so there is nothing nightly about this
+  # service. An operator runs it on their own schedule:
+  #
+  #   MEMORY_PROFILE_CHECK_SCOPE=user MEMORY_PROFILE_CHECK_PROJECT=acme-api \
+  #     docker compose --profile profile-evaluation run --rm profile-evaluator
+  #
+  # No target ships. Both variables default to empty rather than to
+  # compose's required-variable form (`:?`), because compose interpolates
+  # the whole file before it filters by profile: a `:?` here would break
+  # `docker compose config` and `up` for every service in this file, for
+  # everyone, whether or not they ever select this profile. Empty is
+  # rejected by argparse the moment the container starts, which is the same
+  # guarantee one layer later -- an operator must name a target explicitly.
+  #
+  # Before any structured cutover (MEMORY_PROFILE_DELIVERY_MODE=structured
+  # anywhere), the rollout order requires at least SEVEN representative runs
+  # per scope and a recorded report of what they measured: token and
+  # duration ceilings, schema validity, budget conformance and curated
+  # behaviour at least equal to legacy. That is a process requirement for
+  # whoever runs this -- nothing here counts runs, and profile-check exiting
+  # 0 is not by itself permission to enable structured delivery.
+  profile-evaluator:
+    build: .
+    profiles: ["profile-evaluation"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      hindsight:
+        condition: service_healthy
+    environment:
+      # Same database/Hindsight configuration as `api` above: it reads the
+      # same tables and the same Hindsight banks, read-only.
+      MEMORY_DATABASE_URL: postgresql+psycopg://memory:memory@postgres:5432/memory
+      MEMORY_MASTER_KEY_HASH: ${MEMORY_MASTER_KEY_HASH:?set MEMORY_MASTER_KEY_HASH}
+      MEMORY_HINDSIGHT_URL: http://hindsight:8888
+      MEMORY_HINDSIGHT_API_KEY: ${MEMORY_HINDSIGHT_API_KEY:-}
+      MEMORY_TENANT_ID: default
+    command:
+      - "ach-memory"
+      - "profile-check"
+      - "--scope"
+      - "${MEMORY_PROFILE_CHECK_SCOPE:-}"
+      - "--project"
+      - "${MEMORY_PROFILE_CHECK_PROJECT:-}"
+      - "--json"
+
 volumes:
   memory-pgdata:
   hindsight-pgdata:

@@ -111,6 +111,42 @@ CAPTURE_CHECKPOINT = Counter(
     ["host", "status", "duplicate", "bytes_bucket"],
 )
 
+# Non-persisting profile evaluation (`ach-memory profile-check`, SPEC Phase
+# 4). `scope` is the two-value profile scope, `mode` the two-value delivery
+# mode, and `outcome` memory.profiles' closed EvaluationOutcome set -- no
+# bank id, project slug, claim text or evidence id can reach a label here,
+# the same discipline as every other collector in this file.
+#
+# The evaluator normally runs as a short-lived CLI process (a Kubernetes
+# CronJob, or `docker compose run`), which no Prometheus scrapes: the
+# authoritative record of one nightly run is its `--json` output, kept by
+# whoever ran it. These collectors exist so the identical evaluation reports
+# through /metrics wherever it runs inside a long-lived process instead, and
+# so the evaluator has one telemetry shape rather than two.
+PROFILE_EVALUATION = Counter(
+    "memory_profile_evaluation_total",
+    "Non-persisting structured profile evaluations, by outcome.",
+    ["scope", "mode", "outcome"],
+)
+
+PROFILE_EVALUATION_TOKENS = Histogram(
+    "memory_profile_evaluation_tokens",
+    "Tokens one non-persisting profile refresh preview reported it would "
+    "cost, by direction.",
+    ["scope", "direction"],
+    # The default buckets are tuned for seconds and are useless here. These
+    # straddle both provisioned max_tokens ceilings (3200 user, 6400
+    # project), so the histogram answers "is synthesis outgrowing its
+    # budget" directly.
+    buckets=(100, 250, 500, 1000, 2000, 3200, 6400, 12800, float("inf")),
+)
+
+PROFILE_EVALUATION_DURATION = Histogram(
+    "memory_profile_evaluation_duration_seconds",
+    "Upstream wall time of one non-persisting profile refresh preview.",
+    ["scope"],
+)
+
 # `host` is caller-supplied, so it is bucketed to the hosts this repository
 # actually ships a plugin for. Anything else is "other" -- a caller must not
 # be able to mint a time series by inventing a host name.

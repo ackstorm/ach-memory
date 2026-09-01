@@ -9,8 +9,9 @@ into the deterministically ranked, budget-truncated active profile. This
 module still does not query Hindsight itself (`provision_profile` acts on a
 client its caller supplies; `compile_profile` takes no client at all) and
 touches no HTTP route. Later Phase 4 tasks extend this same file with brief
-compilation (Task 5), correction-refresh targeting (Task 6) and evaluation
-(Task 7).
+compilation (Task 5) and correction-refresh targeting (Task 6). Task 7 adds
+the last section below: the pure, non-persisting evaluation of one upstream
+dry-run-refresh preview that `ach-memory profile-check` reports.
 
 Non-negotiable contracts this module enforces (plan "Structured contracts" /
 "Non-negotiable contracts"):
@@ -33,8 +34,9 @@ Non-negotiable contracts this module enforces (plan "Structured contracts" /
 
 import hashlib
 import json
+import math
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -1025,6 +1027,42 @@ def _merge_duplicates(candidates: list[CompiledProfileItem]) -> list[CompiledPro
     return merged
 
 
+def _profile_candidates(
+    scope: ProfileScope, reflect_response: Any
+) -> list[CompiledProfileItem]:
+    """Every raw item that survives eligibility, in upstream order.
+
+    Split out of `compile_profile` (unchanged logic) so Task 7's evaluator
+    can see this intermediate: how many items were offered, how many were
+    eligible and grounded, and -- with `_rank_candidates` below -- how many
+    were then merged away or displaced by the budget. `compile_profile`
+    itself only ever returns the final prefix, which cannot answer any of
+    those questions.
+    """
+    grounded = _based_on_memory_ids(reflect_response)
+    document = _structured_document(scope, reflect_response)
+
+    candidates: list[CompiledProfileItem] = []
+    for category in _SCOPE_CATEGORIES[scope]:
+        raw_items = document.get(category)
+        if not isinstance(raw_items, list):
+            continue
+        for raw_item in raw_items:
+            compiled = _compile_item(scope, category, raw_item, grounded)
+            if compiled is not None:
+                candidates.append(compiled)
+    return candidates
+
+
+def _rank_candidates(candidates: list[CompiledProfileItem]) -> list[CompiledProfileItem]:
+    """Merged duplicates in the plan's total order, before truncation. See
+    `_profile_candidates` for why this is a named step."""
+    return sorted(
+        _merge_duplicates(candidates),
+        key=lambda entry: (entry.kind_rank, -entry.support_count, entry.claim_key),
+    )
+
+
 def compile_profile(
     scope: ProfileScope, reflect_response: Any
 ) -> tuple[CompiledProfileItem, ...]:
@@ -1041,21 +1079,385 @@ def compile_profile(
     bad item drops alone, a bad category drops alone, and an unusable
     response yields an empty profile.
     """
-    grounded = _based_on_memory_ids(reflect_response)
-    document = _structured_document(scope, reflect_response)
+    ranked = _rank_candidates(_profile_candidates(scope, reflect_response))
+    return tuple(ranked[: _SCOPE_BUDGET[scope]])
 
-    candidates: list[CompiledProfileItem] = []
+
+# ---------------------------------------------------------------------------
+# Non-persisting evaluation (Task 7; plan "Hindsight target and safe
+# rollout": run the profile evaluator nightly for at least seven
+# representative runs per scope and record token/duration/quality ceilings
+# before enabling structured delivery anywhere).
+#
+# This half of the module reads one upstream `dry-run-refresh` response --
+# Hindsight's own non-persisting preview of what a refresh WOULD produce --
+# and reduces it to numbers. It writes nothing, upstream or locally, and
+# like the rest of this module performs no I/O of its own: the caller
+# (`ach-memory profile-check`) makes the two read-shaped calls and hands the
+# response here.
+#
+# Everything that leaves this section is content-free, per the plan's
+# non-negotiable contract that "metrics, evaluator JSON and logs contain
+# counts, timings, modes and error codes only": no claim text, no evidence
+# or memory IDs, no bank id, user id or project slug. The preview document
+# exists transiently inside `evaluate_dry_run` and never reaches the result.
+# ---------------------------------------------------------------------------
+
+DeliveryMode = Literal["legacy", "structured"]
+
+EvaluationOutcome = Literal[
+    # Measured, and nothing to report against it.
+    "ok",
+    # The bank has no `ach-memory-profile-v1` to preview: nothing to measure
+    # and, under structured delivery, nothing that would be served either.
+    "no_model",
+    # `preview_content` was not JSON, not this scope's document, or did not
+    # satisfy the response schema the model was provisioned with.
+    "schema_invalid",
+    # The preview cost more output tokens than the scope's provisioned
+    # `max_tokens` ceiling. Item-count conformance is not an outcome: the
+    # compiler truncates to the 15/25 budget by construction, so it cannot
+    # be exceeded -- `displacement_count` reports how hard it had to cut.
+    "budget_exceeded",
+    # A valid document that delivers no items at all. Under structured
+    # delivery this bank would serve an empty profile section, so a run that
+    # is meant to represent real traffic reports it as a failure rather than
+    # as a pass with a zero in it.
+    "empty_profile",
+    # Hindsight refused one of the two read calls. A finding about the run,
+    # not about the profile.
+    "upstream_error",
+]
+
+# Non-fatal observations, as a closed set of codes. Never a message: a
+# formatted string is how claim text and identifiers escape into logs.
+WARNING_CODES = frozenset(
+    {
+        # The dry-run response carried no usable `based_on` block, so
+        # grounding could not be verified against the memories the synthesis
+        # actually read. See `evaluate_dry_run` for what that costs.
+        "NO_BASED_ON",
+        # No usable `usage` / `duration_ms` / `diff` block: the corresponding
+        # measurement is absent rather than guessed at.
+        "NO_USAGE",
+        "NO_DURATION",
+        "NO_DIFF",
+        # `preview_content` was missing, not a string, or not JSON.
+        "PREVIEW_NOT_JSON",
+        # Parsed, but this scope's root key was absent or not an object --
+        # including the other scope's document, which is never partially
+        # salvaged.
+        "PREVIEW_ROOT_MISSING",
+        # Parsed and rooted correctly, but the document did not satisfy the
+        # response schema the model was provisioned with.
+        "DOCUMENT_INVALID",
+        # The document offered no items in any of this scope's categories.
+        "EMPTY_PREVIEW",
+        # At least one offered item failed structural, durability or
+        # category validation and was dropped on its own.
+        "INELIGIBLE_ITEMS_DROPPED",
+        # At least one otherwise-valid item lost every evidence reference
+        # against a real `based_on` (only reachable when one was present).
+        "UNGROUNDED_ITEMS_DROPPED",
+        # At least two candidates shared a claim key and merged into one.
+        "DUPLICATE_ITEMS_MERGED",
+        # The ranked list was longer than the budget, so its tail was cut.
+        "BUDGET_TRUNCATED",
+    }
+)
+
+
+@dataclass(frozen=True)
+class EvaluationResult:
+    """One non-persisting measurement of one bank's structured profile.
+
+    A dataclass rather than a Pydantic model: this never crosses a wire
+    boundary that needs a JSON Schema, it is constructed in exactly one
+    place, and `CompiledProfileItem` above already sets the convention. Every
+    field after `outcome` defaults to "not measured" so a run that stops
+    early (no model, upstream refusal) reports honest absence instead of
+    zeros that read like measurements.
+
+    Field notes that are not obvious from the names:
+
+    - `requested_mode` / `effective_mode`: which delivery mode was asked for
+      and which was actually evaluated. For `profile-check` both are always
+      `structured` -- it exists to measure the structured path, and Task 5
+      wired no fallback from structured delivery to the legacy prose section
+      (`memory/api/brief.py`), so there is nothing to degrade to. They are
+      reported anyway because this is the shared result shape the curated
+      delivery gate also reports through, where one case is run in each mode
+      and the two are compared.
+    - `retrieved_fact_count` / `used_fact_count`: only populated when the
+      response carried a `based_on` block, since without one there is no
+      statement of what the synthesis read. Never synthesized from the
+      preview itself.
+    - `curated_case_pass_count` / `curated_case_fail_count`: always None
+      here. `profile-check` measures one real bank's real synthesis output,
+      which has no relationship to a curated adversarial corpus; those two
+      fields belong to the curated delivery gate that shares this shape.
+    - `displacement_count`: items that were eligible, grounded, deduplicated
+      and ranked, and still fell outside the budget prefix -- the plan's own
+      sense of displacement ("a new item enters only by displacing the
+      current last item"). An item dropped for ineligibility or lost
+      grounding never reached the ranked list, so it displaced nothing and
+      is not counted here.
+    """
+
+    scope: ProfileScope
+    outcome: EvaluationOutcome
+    requested_mode: DeliveryMode = "structured"
+    effective_mode: DeliveryMode = "structured"
+    would_persist: bool = False
+    retrieved_fact_count: int | None = None
+    used_fact_count: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    duration_ms: int | None = None
+    schema_valid: bool = False
+    candidate_item_count: int = 0
+    delivered_item_count: int = 0
+    displacement_count: int = 0
+    curated_case_pass_count: int | None = None
+    curated_case_fail_count: int | None = None
+    warning_codes: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        """A JSON-serializable view, for `profile-check --json`."""
+        return asdict(self)
+
+
+_RESPONSE_MODEL: dict[ProfileScope, type[BaseModel]] = {
+    "user": _UserProfileResponse,
+    "project": _ProjectProfileResponse,
+}
+
+
+def _count_or_none(value: Any) -> int | None:
+    """A non-negative integer measurement, or None when the response did not
+    report one. `bool` is an `int` subclass and a JSON `true` is not a token
+    count, so it is rejected explicitly."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and math.isfinite(value) and value >= 0:
+        return int(value)
+    return None
+
+
+def _diff_would_persist(diff: Any) -> tuple[bool, bool]:
+    """`(would_persist, diff_reported)` from the preview's own `diff` block.
+
+    A real refresh writes new content exactly when the preview says the
+    document would change, so the upstream diff is the answer rather than
+    anything this module could infer. Every integer entry counts, whatever
+    it is named, so an `updated`/`changed` key this repository has not seen
+    still registers.
+    """
+    if not isinstance(diff, dict):
+        return False, False
+    counts = [
+        count
+        for count in (_count_or_none(value) for value in diff.values())
+        if count is not None
+    ]
+    if not counts:
+        return False, False
+    return any(counts), True
+
+
+def _preview_document(
+    scope: ProfileScope, preview_content: Any
+) -> tuple[dict[str, Any], bool, str | None]:
+    """`(document, schema_valid, warning_code)` for one `preview_content`.
+
+    `schema_valid` is whole-document validity against the response schema
+    the model was provisioned with, not a per-item verdict: Hindsight was
+    handed that exact schema, so one item it could not satisfy is a real
+    finding for the rollout gate. The document is still returned in that
+    case, because the normalizer drops bad items one at a time and the
+    surviving counts are what say how bad the damage is.
+    """
+    if not isinstance(preview_content, str):
+        return {}, False, "PREVIEW_NOT_JSON"
+    try:
+        parsed = json.loads(preview_content)
+    except (json.JSONDecodeError, ValueError):
+        return {}, False, "PREVIEW_NOT_JSON"
+
+    # An empty document is either a missing/non-object root, which is not
+    # schema-valid, or this scope's genuinely empty profile, which is (and
+    # is reported as an empty profile below instead).
+    document = _structured_document(scope, {"structured_output": parsed})
+    if not document and (
+        not isinstance(parsed, dict) or not isinstance(parsed.get(_ROOT_KEY[scope]), dict)
+    ):
+        return {}, False, "PREVIEW_ROOT_MISSING"
+
+    try:
+        _RESPONSE_MODEL[scope].model_validate(parsed)
+    except ValidationError:
+        return document, False, "DOCUMENT_INVALID"
+    return document, True, None
+
+
+def _cited_evidence_ids(scope: ProfileScope, document: dict[str, Any]) -> set[str]:
+    """Every evidence ID the preview document cites, read defensively.
+
+    Used only as the permissive grounding set when the response carries no
+    `based_on` -- see `evaluate_dry_run`.
+    """
+    cited: set[str] = set()
     for category in _SCOPE_CATEGORIES[scope]:
         raw_items = document.get(category)
         if not isinstance(raw_items, list):
             continue
         for raw_item in raw_items:
-            compiled = _compile_item(scope, category, raw_item, grounded)
-            if compiled is not None:
-                candidates.append(compiled)
+            if not isinstance(raw_item, dict):
+                continue
+            evidence_ids = raw_item.get("evidence_ids")
+            if not isinstance(evidence_ids, list):
+                continue
+            cited.update(value for value in evidence_ids if isinstance(value, str))
+    return cited
 
-    ranked = sorted(
-        _merge_duplicates(candidates),
-        key=lambda entry: (entry.kind_rank, -entry.support_count, entry.claim_key),
+
+def evaluate_dry_run(scope: ProfileScope, dry_run_response: Any) -> EvaluationResult:
+    """Measure one upstream dry-run-refresh preview. Pure; writes nothing.
+
+    The response shape this reads is the one Task 2 pinned against the
+    client (`usage`, `duration_ms`, `diff`, and `preview_content` as a JSON
+    *string*), every field read defensively: a preview is upstream output,
+    not a contract this repository controls, and a nightly evaluator that
+    raises on a surprise field measures nothing.
+
+    Grounding is the one gate a preview cannot verify. Task 2's pinned shape
+    carries no `based_on`, and no live Hindsight instance exists here to say
+    whether the real response mirrors the persisted listing's block. So:
+    when the response does carry one it is used exactly as delivery uses it,
+    and grounding is genuinely measured (`retrieved_fact_count`,
+    `used_fact_count`, `UNGROUNDED_ITEMS_DROPPED`); when it does not, the
+    IDs the preview itself cites stand in as the grounding set, the fact
+    counts are reported as absent, and `NO_BASED_ON` says so.
+
+    The alternative -- grounding against an empty set -- would fail every
+    item on every real call and report an empty profile for a bank whose
+    delivery is fine, which is worse than useless for a gate that exists to
+    measure quality. Declaring one dimension unmeasured keeps the other
+    dimensions (structural validity, category compatibility, deduplication,
+    ranking and budget displacement) honest and running through the exact
+    same normalizer real delivery uses.
+    """
+    warnings: set[str] = set()
+    response = dry_run_response if isinstance(dry_run_response, dict) else {}
+
+    usage = response.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    input_tokens = _count_or_none(usage.get("input_tokens"))
+    output_tokens = _count_or_none(usage.get("output_tokens"))
+    total_tokens = _count_or_none(usage.get("total_tokens"))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    if input_tokens is None and output_tokens is None:
+        warnings.add("NO_USAGE")
+
+    duration_ms = _count_or_none(response.get("duration_ms"))
+    if duration_ms is None:
+        warnings.add("NO_DURATION")
+
+    diff_persists, diff_reported = _diff_would_persist(response.get("diff"))
+    if not diff_reported:
+        warnings.add("NO_DIFF")
+
+    document, schema_valid, preview_warning = _preview_document(
+        scope, response.get("preview_content")
     )
-    return tuple(ranked[: _SCOPE_BUDGET[scope]])
+    if preview_warning is not None:
+        warnings.add(preview_warning)
+
+    candidate_item_count = 0
+    for category in _SCOPE_CATEGORIES[scope]:
+        raw_items = document.get(category)
+        if isinstance(raw_items, list):
+            candidate_item_count += len(raw_items)
+    if candidate_item_count == 0:
+        warnings.add("EMPTY_PREVIEW")
+
+    structured_output = {_ROOT_KEY[scope]: document}
+    # Permissive grounding: nothing an item cites can be missing from it, so
+    # the only gates left are structural, durability and category ones --
+    # which makes this exactly the eligible-item count.
+    eligible = _profile_candidates(
+        scope,
+        {
+            "structured_output": structured_output,
+            "based_on": {"memories": sorted(_cited_evidence_ids(scope, document))},
+        },
+    )
+    if len(eligible) < candidate_item_count:
+        warnings.add("INELIGIBLE_ITEMS_DROPPED")
+
+    based_on = response.get("based_on")
+    grounding_reported = isinstance(based_on, dict) and isinstance(
+        based_on.get("memories"), list
+    )
+    if grounding_reported:
+        grounded_response = {
+            "structured_output": structured_output,
+            "based_on": based_on,
+        }
+        candidates = _profile_candidates(scope, grounded_response)
+        retrieved_fact_count: int | None = len(_based_on_memory_ids(grounded_response))
+        if len(candidates) < len(eligible):
+            warnings.add("UNGROUNDED_ITEMS_DROPPED")
+    else:
+        warnings.add("NO_BASED_ON")
+        candidates = eligible
+        retrieved_fact_count = None
+
+    ranked = _rank_candidates(candidates)
+    if len(ranked) < len(candidates):
+        warnings.add("DUPLICATE_ITEMS_MERGED")
+
+    budget = _SCOPE_BUDGET[scope]
+    delivered = ranked[:budget]
+    displacement_count = max(0, len(ranked) - budget)
+    if displacement_count:
+        warnings.add("BUDGET_TRUNCATED")
+
+    used_fact_count = (
+        len({reference for item in delivered for reference in item.evidence_ids})
+        if grounding_reported
+        else None
+    )
+
+    if not schema_valid:
+        outcome: EvaluationOutcome = "schema_invalid"
+    elif output_tokens is not None and output_tokens > _MAX_TOKENS[scope]:
+        outcome = "budget_exceeded"
+    elif not delivered:
+        outcome = "empty_profile"
+    else:
+        outcome = "ok"
+
+    return EvaluationResult(
+        scope=scope,
+        outcome=outcome,
+        # A refresh that reports no diff of its own would still have written
+        # whatever it just synthesized, so a usable preview stands in for
+        # the missing statement rather than claiming nothing would change.
+        would_persist=diff_persists if diff_reported else outcome == "ok",
+        retrieved_fact_count=retrieved_fact_count,
+        used_fact_count=used_fact_count,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        duration_ms=duration_ms,
+        schema_valid=schema_valid,
+        candidate_item_count=candidate_item_count,
+        delivered_item_count=len(delivered),
+        displacement_count=displacement_count,
+        warning_codes=tuple(sorted(warnings)),
+    )
