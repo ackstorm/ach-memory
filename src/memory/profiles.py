@@ -71,7 +71,14 @@ ProfileLine = Annotated[str, Field(min_length=1, max_length=240), AfterValidator
 # payloads. Control characters are rejected for the same reason as any
 # other single-line field.
 EvidenceId = Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_single_line)]
-EvidenceIds = Annotated[list[EvidenceId], Field(min_length=1, max_length=8)]
+# A tuple, not a list: `frozen=True` on ProfileItem only blocks attribute
+# *assignment* (`item.evidence_ids = ...`) -- a `list` field stays mutable
+# in place (`item.evidence_ids.append(...)`), which would make "frozen"
+# false advertising and the model unhashable. A tuple has no `.append` and
+# is itself hashable, so both problems disappear together. Same JSON
+# Schema shape as `list` (`type: array` with `minItems`/`maxItems`),
+# verified empirically before making this change.
+EvidenceIds = Annotated[tuple[EvidenceId, ...], Field(min_length=1, max_length=8)]
 
 ProfileKind = Literal["preference", "decision", "convention", "gotcha"]
 # Note: this enum deliberately excludes "inferred" -- an inferred claim
@@ -141,7 +148,7 @@ class ProfileItem(BaseModel):
 
     @field_validator("evidence_ids")
     @classmethod
-    def _unique_evidence_ids(cls, value: list[str]) -> list[str]:
+    def _unique_evidence_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(set(value)) != len(value):
             raise ValueError("evidence_ids must not contain duplicate IDs")
         return value
@@ -293,22 +300,63 @@ def _reject_duplicates(items: list[tuple[str, ProfileItem]]) -> None:
         seen.add(key)
 
 
-_UserCategoryField = Annotated[list[ProfileItem], Field(max_length=USER_PROFILE_BUDGET)]
-_ProjectCategoryField = Annotated[list[ProfileItem], Field(max_length=PROJECT_PROFILE_BUDGET)]
+# Tuples, not lists -- same reasoning as `EvidenceIds` above: a `list`
+# field on a `frozen=True` model stays mutable in place, which would let a
+# caller push a bare, unvalidated item into `doc.preferences.append(...)`
+# after construction. Same JSON Schema shape as `list[ProfileItem]`
+# (`type: array` with `maxItems`, items `$ref`ing `ProfileItem`), verified
+# empirically before making this change.
+_UserCategoryField = Annotated[tuple[ProfileItem, ...], Field(max_length=USER_PROFILE_BUDGET)]
+_ProjectCategoryField = Annotated[tuple[ProfileItem, ...], Field(max_length=PROJECT_PROFILE_BUDGET)]
 
 
 class UserProfileDocument(BaseModel):
     """The `user_profile` response document (plan "Structured contracts").
     Category membership is structural: `extra="forbid"` means the model
     cannot invent a category key outside this fixed set of four, and each
-    category is capped at the user profile's total budget of 15."""
+    category is capped at the user profile's total budget of 15.
+
+    JSON Schema alone can `$ref` the same closed `ProfileItem` shape from
+    every category, but it cannot express which `kind` values or which
+    `negative` value belong in which category -- that compatibility rule
+    is enforced by `_validate_categories` below, not by the schema. Each
+    field's `description=` states its own rule so a synthesizing model has
+    a chance to get it right the first time, instead of only discovering
+    the rule for the first time through a validation failure."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    interaction: _UserCategoryField = Field(default_factory=list)
-    engineering: _UserCategoryField = Field(default_factory=list)
-    preferences: _UserCategoryField = Field(default_factory=list)
-    constraints: _UserCategoryField = Field(default_factory=list)
+    interaction: _UserCategoryField = Field(
+        default_factory=tuple,
+        description=(
+            "Personal interaction/communication-style claims. kind must be "
+            "preference or convention. negative=true items belong in "
+            "constraints instead, never here."
+        ),
+    )
+    engineering: _UserCategoryField = Field(
+        default_factory=tuple,
+        description=(
+            "Personal technical/tooling claims. kind must be preference, "
+            "decision or convention. negative=true items belong in "
+            "constraints instead, never here."
+        ),
+    )
+    preferences: _UserCategoryField = Field(
+        default_factory=tuple,
+        description=(
+            "Personal preferences. kind must be preference. negative=true "
+            "items belong in constraints instead, never here."
+        ),
+    )
+    constraints: _UserCategoryField = Field(
+        default_factory=tuple,
+        description=(
+            "Explicit negative constraints. The ONLY category whose items "
+            "must have negative=true; kind must be preference, decision or "
+            "convention (never gotcha)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_categories(self) -> "UserProfileDocument":
@@ -329,16 +377,53 @@ class ProjectProfileDocument(BaseModel):
     contracts"). Category membership is structural: `extra="forbid"` means
     the model cannot invent a category key outside this fixed set of six,
     and each category is capped at the project profile's total budget of
-    25."""
+    25.
+
+    As with `UserProfileDocument`, the schema cannot express category/kind
+    compatibility on its own -- see each field's `description=` and
+    `_validate_categories` below."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    architecture: _ProjectCategoryField = Field(default_factory=list)
-    decisions: _ProjectCategoryField = Field(default_factory=list)
-    workflow: _ProjectCategoryField = Field(default_factory=list)
-    testing: _ProjectCategoryField = Field(default_factory=list)
-    conventions: _ProjectCategoryField = Field(default_factory=list)
-    gotchas: _ProjectCategoryField = Field(default_factory=list)
+    architecture: _ProjectCategoryField = Field(
+        default_factory=tuple,
+        description=(
+            "Structural claims. kind must be decision or convention -- "
+            "never preference (projects have no preferences) and never "
+            "gotcha (gotcha belongs only in the gotchas category)."
+        ),
+    )
+    decisions: _ProjectCategoryField = Field(
+        default_factory=tuple,
+        description="kind must be decision. This is the only category for decisions.",
+    )
+    workflow: _ProjectCategoryField = Field(
+        default_factory=tuple,
+        description=(
+            "Process claims. kind must be decision or convention -- never "
+            "preference (projects have no preferences) and never gotcha "
+            "(gotcha belongs only in the gotchas category)."
+        ),
+    )
+    testing: _ProjectCategoryField = Field(
+        default_factory=tuple,
+        description=(
+            "Testing claims. kind must be decision or convention -- never "
+            "preference (projects have no preferences) and never gotcha "
+            "(gotcha belongs only in the gotchas category)."
+        ),
+    )
+    conventions: _ProjectCategoryField = Field(
+        default_factory=tuple,
+        description="kind must be convention. This is the only category for conventions.",
+    )
+    gotchas: _ProjectCategoryField = Field(
+        default_factory=tuple,
+        description=(
+            "kind must be gotcha. This is the ONLY category that may hold a "
+            "gotcha -- a gotcha filed under any other category is invalid."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_categories(self) -> "ProjectProfileDocument":

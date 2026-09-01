@@ -110,20 +110,20 @@ def test_project_document_category_keys():
 
 def test_empty_user_profile_document_is_valid():
     doc = UserProfileDocument()
-    assert doc.interaction == []
-    assert doc.engineering == []
-    assert doc.preferences == []
-    assert doc.constraints == []
+    assert doc.interaction == ()
+    assert doc.engineering == ()
+    assert doc.preferences == ()
+    assert doc.constraints == ()
 
 
 def test_empty_project_profile_document_is_valid():
     doc = ProjectProfileDocument()
-    assert doc.architecture == []
-    assert doc.decisions == []
-    assert doc.workflow == []
-    assert doc.testing == []
-    assert doc.conventions == []
-    assert doc.gotchas == []
+    assert doc.architecture == ()
+    assert doc.decisions == ()
+    assert doc.workflow == ()
+    assert doc.testing == ()
+    assert doc.conventions == ()
+    assert doc.gotchas == ()
 
 
 def test_profile_item_is_frozen():
@@ -142,6 +142,47 @@ def test_project_profile_document_is_frozen():
     doc = ProjectProfileDocument()
     with pytest.raises(ValidationError):
         doc.conventions = [ProfileItem(**_base_item())]
+
+
+# --- frozen means frozen: list fields would stay mutable in place (review
+# finding 1) -- `evidence_ids` and every document category field are tuples,
+# not lists, specifically so there is no in-place mutation path left open
+# and so a validated item/document is hashable. -------------------------
+
+
+def test_evidence_ids_is_a_tuple_with_no_append():
+    item = ProfileItem(**_base_item())
+    assert isinstance(item.evidence_ids, tuple)
+    with pytest.raises(AttributeError):
+        item.evidence_ids.append("mem-2")
+
+
+def test_document_category_fields_are_tuples_with_no_append():
+    doc = UserProfileDocument(preferences=[_base_item(kind="preference", origin="stated")])
+    assert isinstance(doc.preferences, tuple)
+    with pytest.raises(AttributeError):
+        doc.preferences.append("not an item")
+
+
+def test_profile_item_is_hashable():
+    item_a = ProfileItem(**_base_item())
+    item_b = ProfileItem(**_base_item())
+    assert hash(item_a) == hash(item_b)
+    assert {item_a, item_b} == {item_a}
+
+
+def test_user_profile_document_is_hashable():
+    doc_a = UserProfileDocument(preferences=[_base_item(kind="preference", origin="stated")])
+    doc_b = UserProfileDocument(preferences=[_base_item(kind="preference", origin="stated")])
+    assert hash(doc_a) == hash(doc_b)
+    assert {doc_a, doc_b} == {doc_a}
+
+
+def test_project_profile_document_is_hashable():
+    doc_a = ProjectProfileDocument(conventions=[_base_item(kind="convention", origin="stated")])
+    doc_b = ProjectProfileDocument(conventions=[_base_item(kind="convention", origin="stated")])
+    assert hash(doc_a) == hash(doc_b)
+    assert {doc_a, doc_b} == {doc_a}
 
 
 def test_user_response_schema_root_key():
@@ -190,6 +231,59 @@ def test_project_category_max_items_matches_budget():
 def test_budgets_match_the_plan():
     assert USER_PROFILE_BUDGET == 15
     assert PROJECT_PROFILE_BUDGET == 25
+
+
+# --- category/kind/negative compatibility rules are discoverable in the
+# schema text itself (review finding 2): every category `$ref`s the same
+# unconstrained ProfileItem, so JSON Schema structure alone cannot express
+# "gotcha only in gotchas" or "negative=true only in constraints". These
+# tests assert that a synthesizing model reading `description` text on the
+# category fields has a chance to learn the strictest rules before ever
+# producing invalid output, not only after a validation failure. -----------
+
+
+def test_project_gotchas_description_states_gotcha_only_rule():
+    schema = project_response_schema()
+    doc_schema = schema["$defs"]["ProjectProfileDocument"]
+    gotchas_description = doc_schema["properties"]["gotchas"]["description"].lower()
+    assert "gotcha" in gotchas_description
+    assert "only" in gotchas_description
+
+    # The topical categories that accept more than one kind (and so could
+    # plausibly tempt a misplaced gotcha) explicitly disclaim it; the two
+    # single-kind categories (decisions/conventions) already exclude a
+    # gotcha implicitly by naming exactly one allowed kind each -- see
+    # test_every_category_field_has_a_kind_description.
+    for category in ("architecture", "workflow", "testing"):
+        description = doc_schema["properties"][category]["description"].lower()
+        assert "gotcha" in description
+        assert "never" in description
+
+
+def test_user_constraints_description_states_negative_only_rule():
+    schema = user_response_schema()
+    doc_schema = schema["$defs"]["UserProfileDocument"]
+    constraints_description = doc_schema["properties"]["constraints"]["description"].lower()
+    assert "negative=true" in constraints_description
+    assert "only" in constraints_description
+
+    # The other three user categories should each point negative=true
+    # items back at constraints, not stay silent about it.
+    for category in ("interaction", "engineering", "preferences"):
+        description = doc_schema["properties"][category]["description"].lower()
+        assert "constraints" in description
+        assert "negative=true" in description
+
+
+def test_every_category_field_has_a_kind_description():
+    user_schema = user_response_schema()["$defs"]["UserProfileDocument"]
+    for category in ("interaction", "engineering", "preferences", "constraints"):
+        assert "kind" in user_schema["properties"][category]["description"].lower()
+
+    project_schema = project_response_schema()["$defs"]["ProjectProfileDocument"]
+    categories = ("architecture", "decisions", "workflow", "testing", "conventions", "gotchas")
+    for category in categories:
+        assert "kind" in project_schema["properties"][category]["description"].lower()
 
 
 # --- bounded one-line strings -----------------------------------------------
@@ -613,12 +707,12 @@ def _schema_hash(schema: dict) -> str:
 def test_user_response_schema_hash_is_stable():
     assert (
         _schema_hash(user_response_schema())
-        == "e6c8972bf9f63eecc86844314b9245c6ad4a8d898e5f8a65a5e68a9398a364f9"
+        == "645f19c0ca6ac8e84cf27ac1e054e4b7cdb85c88c17fbbec0084ffbb4cd2735d"
     )
 
 
 def test_project_response_schema_hash_is_stable():
     assert (
         _schema_hash(project_response_schema())
-        == "89253d9328d5f67ceaee394248480e12b364ac558271e1b1900267b1e7c9f427"
+        == "bef57794af3bcae45cffc57a38f407187670da42aca4a88c0758724353995dbc"
     )
