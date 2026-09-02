@@ -31,6 +31,7 @@ class ReliabilityResult(BaseModel):
     duplicate_objects: int
     final_cursor_state: str
     evidence_codes: tuple[str, ...] = ()
+    write_modes: tuple[str, ...] = ()
 
 
 class FaultTransport:
@@ -200,12 +201,21 @@ def run_official_fault_scenario(source_root: Path, bank_id: str, upstream_url: s
     observed = "recovered_later" if len(outcomes) > 1 and outcomes[-1].get("ok") else "unrecoverable_without_outbox"
     if cursors and cursors[-1].get("dirty"):
         observed = "requires_future_event"
-    evidence = ["PROXY_REQUESTS_OBSERVED", "CURSOR_STATE_OBSERVED"]
+    modes = tuple("append" if '"update_mode":"append"' in record["body"] else "replace" for record in records if record["path"].endswith("/memories"))
+    try:
+        documents = httpx.get(f"{upstream_url}/v1/default/banks/{bank_id}/documents", timeout=15.0).json().get("items", [])
+        document_ids = [str(item.get("document_id", item.get("id", ""))) for item in documents if isinstance(item, dict)]
+        duplicates = len(document_ids) - len(set(document_ids))
+    except (httpx.HTTPError, ValueError):
+        duplicates = -1
+    evidence = ["PROXY_REQUESTS_OBSERVED", "CURSOR_STATE_OBSERVED", "DOCUMENTS_QUERIED"]
     if any(record["path"].endswith("/memories") for record in records):
         evidence.append("RETAIN_BOUNDARY_OBSERVED")
     if fault in {"lost_ack_after_commit", "hindsight_offline_after_ack"}:
         evidence.append("UPSTREAM_COMMIT_RESPONSE_DROPPED")
-    return ReliabilityResult(variant="official_reliability", fault=fault, observed=observed, requests=len(records), duplicate_objects=0, final_cursor_state="dirty" if cursors and cursors[-1].get("dirty") else "clean", evidence_codes=tuple(evidence))
+    if cursors and cursors[0].get("dirty") and "replace" in modes:
+        evidence.append("DIRTY_TO_FULL_REPLACE")
+    return ReliabilityResult(variant="official_reliability", fault=fault, observed=observed, requests=len(records), duplicate_objects=duplicates, final_cursor_state="dirty" if cursors and cursors[-1].get("dirty") else "clean", evidence_codes=tuple(evidence), write_modes=modes)
 
 
 def run_capture_checkpoint_fault(
