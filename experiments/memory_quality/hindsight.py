@@ -98,7 +98,10 @@ class DisposableHindsight:
 
     def create_bank(self, purpose: str, ordinal: int = 1) -> str:
         value = bank_id(self.config.run_id, purpose, ordinal)
-        response = self._client.put(f"{self.config.base_url}/v1/default/banks/{value}", headers=self._headers(), json={})
+        # Bank creation is idempotent and may wait behind the API worker's
+        # live reflect/consolidation workload, so use the long control-plane
+        # window rather than the short CRUD default.
+        response = self._client.put(f"{self.config.base_url}/v1/default/banks/{value}", headers=self._headers(), json={}, timeout=max(self.config.request_timeout_seconds, 120.0))
         response.raise_for_status()
         self._record_bank(value)
         return value
