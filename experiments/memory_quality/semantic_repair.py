@@ -10,9 +10,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .contracts import (
+    SEMANTIC_V2_CORPUS_VERSION,
     RunObservation,
     SemanticCase,
     SemanticRepairManifest,
+    SemanticSplitterManifest,
     corpus_digest,
     load_delivery_cases,
     load_semantic_cases,
@@ -32,6 +34,7 @@ from .semantic import run_semantic_case
 
 ROOT = Path(__file__).parent
 CORPUS = ROOT / "corpus/semantic.jsonl"
+SPLITTER_CORPUS = ROOT / "corpus/semantic-v2.jsonl"
 VARIANTS = ("ach_semantic", "native_semantic", "hybrid_semantic")
 PRODUCTION_FLAGS = (
     "MEMORY_CAPTURE_ENABLED",
@@ -188,14 +191,149 @@ def run_semantic_repair(env: Mapping[str, str] | None = None) -> dict[str, objec
     }
 
 
-def _semantic_repair_report(scorecard, decisions) -> str:
+def run_semantic_splitter(
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Run the Phase 5.7 matrix with measured projection persistence."""
+    selected_env = os.environ if env is None else env
+    _assert_activation_off(selected_env)
+
+    from .runner import (
+        _atomic_json,
+        _atomic_text,
+        _blind_semantic_artifacts,
+        _measured_hmac_key,
+        preflight,
+    )
+
+    preflight_manifest = preflight(selected_env)
+    run_id = uuid.UUID(preflight_manifest["run_id"])
+    artifact_root = Path(
+        selected_env.get(
+            "MEMORY_BAKEOFF_ARTIFACT_DIR", ".artifacts/memory-quality"
+        )
+    )
+    artifact_dir = artifact_root / str(run_id)
+    if artifact_dir.exists():
+        raise BakeoffRefused("semantic splitter refuses an existing run directory")
+
+    config = BakeoffConfig.from_env(selected_env, run_id=run_id)
+    key = _measured_hmac_key(selected_env)
+    mapping_path = Path(
+        selected_env.get(
+            "HINDSIGHT_BAKEOFF_MAPPING_PATH",
+            artifact_root / ".private" / f"{run_id}.mapping.json",
+        )
+    )
+    if mapping_path.resolve().is_relative_to(artifact_dir.resolve()):
+        raise BakeoffRefused("semantic splitter mapping must stay outside the run directory")
+    if mapping_path.exists():
+        raise BakeoffRefused("semantic splitter mapping already exists")
+
+    cases = load_semantic_cases(SPLITTER_CORPUS)
+    by_id = {case.id: case for case in cases}
+    matrix = semantic_repair_matrix(cases)
+    canaries = tuple(
+        dict.fromkeys(
+            HOST_CANARIES
+            + tuple(
+                canary
+                for case in (
+                    *cases,
+                    *load_delivery_cases(ROOT / "corpus/delivery.jsonl"),
+                )
+                for canary in case.secret_canaries
+            )
+        )
+    )
+    observations: list[dict[str, object]] = []
+    banks = DisposableHindsight(config, artifact_root=artifact_root)
+    cleanup_complete = False
+    cleanup_bank_count = 0
+    disposable_bank_count = 0
+    try:
+        for case_id, variant, repetition in matrix:
+            artifact = (
+                artifact_dir
+                / "semantic"
+                / case_id
+                / f"{variant}-{repetition}.json"
+            )
+            observation = run_semantic_case(
+                by_id[case_id], variant, repetition, banks, artifact
+            )
+            observations.append(observation.model_dump(mode="json"))
+        typed = tuple(RunObservation.model_validate(item) for item in observations)
+        _validate_semantic_observations(typed, matrix)
+        disposable_bank_count = banks.registered_bank_count
+        if disposable_bank_count != 192:
+            raise BakeoffRefused("semantic splitter requires exactly 192 disposable banks")
+        if scan_canaries((artifact_dir,), canaries):
+            raise RuntimeError("semantic splitter artifact canary scan failed")
+        _blind_semantic_artifacts(observations, artifact_dir, key, mapping_path)
+        typed = tuple(RunObservation.model_validate(item) for item in observations)
+        packet = build_blind_packet(typed, key)
+        _atomic_json(
+            artifact_dir / "blind-packet.json", packet.model_dump(mode="json")
+        )
+        _atomic_text(
+            artifact_dir / "observations.jsonl",
+            "\n".join(
+                json.dumps(item, sort_keys=True, separators=(",", ":"))
+                for item in observations
+            )
+            + "\n",
+        )
+        if scan_canaries((artifact_dir,), canaries):
+            raise RuntimeError("semantic splitter artifact canary scan failed")
+    finally:
+        try:
+            cleanup_bank_count = banks.cleanup()
+            cleanup_complete = cleanup_bank_count == disposable_bank_count
+        finally:
+            _protect_artifacts(artifact_dir)
+
+    projection_retain_count = sum(
+        int(item.get("metric_values", {}).get("claim_count", 0))
+        for item in observations
+        if item.get("variant") == "hybrid_semantic"
+    )
+    manifest = SemanticSplitterManifest(
+        run_id=str(run_id),
+        hindsight_version=preflight_manifest["hindsight_version"],
+        official_package_version=preflight_manifest["official_package_version"],
+        corpus_version=SEMANTIC_V2_CORPUS_VERSION,
+        semantic_digest=corpus_digest(cases),
+        observation_count=len(observations),
+        disposable_bank_count=disposable_bank_count,
+        cleanup_bank_count=cleanup_bank_count,
+        native_retain_count=48,
+        projection_retain_count=projection_retain_count,
+        cleanup_complete=cleanup_complete,
+        mutating_requests=(
+            disposable_bank_count * 2 + 48 + projection_retain_count
+        ),
+    )
+    _atomic_json(artifact_dir / "manifest.json", manifest.model_dump(mode="json"))
+    _protect_artifacts(artifact_dir)
+    return {
+        "run_id": str(run_id),
+        "observation_count": len(observations),
+        "artifact_dir": str(artifact_dir),
+        "cleanup_complete": cleanup_complete,
+    }
+
+
+def _semantic_repair_report(
+    scorecard, decisions, *, title: str = "Repaired semantic baseline"
+) -> str:
     rows = "\n".join(
         f"| {decision.component} | {decision.ruling} | "
         f"{','.join(decision.reason_codes)} |"
         for decision in decisions
     )
     return (
-        "# Memory Quality Phase 5.6 — Repaired semantic baseline\n\n"
+        f"# Memory Quality — {title}\n\n"
         f"Run: `{scorecard.run_id}`. Only semantic extraction and scope routing "
         "were measured. No production architecture was changed automatically.\n\n"
         "| Component | Ruling | Reasons |\n"
@@ -221,6 +359,11 @@ def _assert_safe_score_payloads(payloads: Sequence[str], canaries: Sequence[str]
 
 def score_semantic_repair_artifacts(
     env: Mapping[str, str] | None = None,
+    *,
+    corpus_path: Path = CORPUS,
+    manifest_model: type[SemanticRepairManifest | SemanticSplitterManifest] = SemanticRepairManifest,
+    output_suffix: str = "semantic-repair",
+    report_title: str = "Phase 5.6 repaired semantic baseline",
 ) -> dict[str, str]:
     """Unblind and score one complete semantic-repair consensus exactly once."""
     selected_env = os.environ if env is None else env
@@ -232,9 +375,9 @@ def score_semantic_repair_artifacts(
     )
     run_dir = artifact_root / run_id
     targets = {
-        "scorecard": run_dir / "scorecard.semantic-repair.json",
-        "decisions": run_dir / "decisions.semantic-repair.json",
-        "report": run_dir / "report.semantic-repair.md",
+        "scorecard": run_dir / f"scorecard.{output_suffix}.json",
+        "decisions": run_dir / f"decisions.{output_suffix}.json",
+        "report": run_dir / f"report.{output_suffix}.md",
     }
     if any(path.exists() for path in targets.values()):
         raise BakeoffRefused("semantic repair score refuses to overwrite outputs")
@@ -252,9 +395,7 @@ def score_semantic_repair_artifacts(
     if adjudication.run_id != run_id:
         raise BakeoffRefused("semantic repair score refuses consensus for another run")
 
-    manifest = SemanticRepairManifest.model_validate_json(
-        (run_dir / "manifest.json").read_text()
-    )
+    manifest = manifest_model.model_validate_json((run_dir / "manifest.json").read_text())
     if manifest.run_id != run_id or not manifest.cleanup_complete:
         raise BakeoffRefused("semantic repair score requires completed cleanup")
     observations = tuple(
@@ -262,7 +403,7 @@ def score_semantic_repair_artifacts(
         for line in (run_dir / "observations.jsonl").read_text().splitlines()
         if line.strip()
     )
-    cases = load_semantic_cases(CORPUS)
+    cases = load_semantic_cases(corpus_path)
     _validate_semantic_observations(observations, semantic_repair_matrix(cases))
 
     packet_path = run_dir / "blind-packet.json"
@@ -351,7 +492,9 @@ def score_semantic_repair_artifacts(
         sort_keys=True,
         separators=(",", ":"),
     )
-    report_payload = _semantic_repair_report(scorecard, decisions)
+    report_payload = _semantic_repair_report(
+        scorecard, decisions, title=report_title
+    )
     canaries = tuple(
         dict.fromkeys(
             HOST_CANARIES
@@ -369,3 +512,16 @@ def score_semantic_repair_artifacts(
     _atomic_text(targets["report"], report_payload)
     _protect_artifacts(run_dir)
     return {name: str(path) for name, path in targets.items()}
+
+
+def score_semantic_splitter_artifacts(
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Score the measured Phase 5.7 corpus without changing older runs."""
+    return score_semantic_repair_artifacts(
+        env,
+        corpus_path=SPLITTER_CORPUS,
+        manifest_model=SemanticSplitterManifest,
+        output_suffix="semantic-splitter",
+        report_title="Phase 5.7 measured semantic splitter",
+    )

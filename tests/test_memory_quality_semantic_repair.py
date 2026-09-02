@@ -15,8 +15,10 @@ from experiments.memory_quality.scoring import (
 )
 from experiments.memory_quality.semantic_repair import (
     CORPUS,
+    SPLITTER_CORPUS,
     _validate_semantic_observations,
     run_semantic_repair,
+    run_semantic_splitter,
     score_semantic_repair_artifacts,
     semantic_repair_matrix,
 )
@@ -67,6 +69,15 @@ def test_semantic_repair_matrix_is_exact_and_deterministic():
         "hybrid_semantic",
     }
     assert all(repetition in {1, 2, 3} for _, _, repetition in keys)
+
+
+def test_semantic_splitter_uses_the_versioned_v2_corpus():
+    cases = load_semantic_cases(SPLITTER_CORPUS)
+
+    assert len(semantic_repair_matrix(cases)) == 144
+    assert next(case for case in cases if case.id == "S09").expected_units[
+        0
+    ].required_literals == ("finish transcript replay", "run the delivery gate")
 
 
 def _observation(case_id: str, variant: str, repetition: int) -> RunObservation:
@@ -161,6 +172,93 @@ def test_semantic_repair_lifecycle_writes_exact_atomic_outputs_and_cleans_up(
         for path in run_dir.rglob("*")
         if path.is_file()
     )
+
+
+def test_semantic_splitter_lifecycle_records_measured_bank_and_retain_counts(
+    tmp_path, monkeypatch
+):
+    run_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    artifact_root = tmp_path / "artifacts"
+    mapping_path = tmp_path / "private" / "mapping.json"
+    cleanup_counts = []
+
+    class FakeBanks:
+        def __init__(self, config, *, artifact_root):
+            self.artifact_dir = artifact_root / str(config.run_id)
+            self.artifact_dir.mkdir(parents=True)
+            self.created = []
+
+        def create_bank(self, purpose, ordinal):
+            self.created.append((purpose, ordinal))
+
+        @property
+        def registered_bank_count(self):
+            return len(self.created)
+
+        def cleanup(self):
+            cleanup_counts.append(len(self.created))
+            return len(self.created)
+
+    def fake_run(case, variant, repetition, banks, artifact_path):
+        bank_count = 2 if variant == "hybrid_semantic" else 1
+        for index in range(bank_count):
+            banks.create_bank(f"{case.id}-{variant}-{index}", repetition)
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text('{"claims":[]}\n')
+        return _observation(case.id, variant, repetition).model_copy(
+            update={
+                "hard_gate_flags": {
+                    "executed": True,
+                    "no_canary": True,
+                    "no_shared_document": True,
+                },
+                "metric_values": {
+                    "claim_count": 1 if variant == "hybrid_semantic" else 0,
+                    "duration_ms": 7,
+                },
+            }
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "preflight",
+        lambda env: {
+            "run_id": run_id,
+            "hindsight_version": "0.9.2",
+            "official_package_version": "0.5.1",
+        },
+    )
+    monkeypatch.setattr(runner_module, "_measured_hmac_key", lambda env: b"a" * 32)
+    monkeypatch.setattr(repair_module, "DisposableHindsight", FakeBanks)
+    monkeypatch.setattr(repair_module, "run_semantic_case", fake_run)
+
+    result = run_semantic_splitter(
+        {
+            "HINDSIGHT_BAKEOFF_CONFIRM": "disposable-banks-only",
+            "HINDSIGHT_BAKEOFF_RUN_ID": run_id,
+            "HINDSIGHT_BAKEOFF_MAPPING_PATH": str(mapping_path),
+            "MEMORY_BAKEOFF_ARTIFACT_DIR": str(artifact_root),
+        }
+    )
+
+    manifest = json.loads(
+        (artifact_root / run_id / "manifest.json").read_text()
+    )
+    assert result["observation_count"] == 144
+    assert manifest["mode"] == "semantic_splitter"
+    assert manifest["corpus_version"] == "semantic-v2"
+    assert manifest["disposable_bank_count"] == 192
+    assert manifest["cleanup_bank_count"] == 192
+    assert manifest["native_retain_count"] == 48
+    assert manifest["projection_retain_count"] == 48
+    assert manifest["mutating_requests"] == 480
+    assert cleanup_counts == [192]
+    observations = [
+        json.loads(line)
+        for line in (artifact_root / run_id / "observations.jsonl").read_text().splitlines()
+    ]
+    assert all(row["hard_gate_flags"]["executed"] for row in observations)
+    assert all(row["metric_values"]["duration_ms"] != 0 for row in observations)
 
 
 def test_semantic_repair_refuses_serialized_canary_and_still_cleans_up(

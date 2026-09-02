@@ -135,9 +135,16 @@ def run_semantic_case(
             "receipt": receipt.model_dump(mode="json"),
             "objects": [item.model_dump(mode="json") for item in snapshot.objects],
         }
-        user_bank_scope_clean = False
-        project_bank_scope_clean = False
-        no_shared_document = False
+        persisted_documents = tuple(
+            item.original_text
+            for item in snapshot.objects
+            if item.layer == "document" and item.original_text is not None
+        )
+        no_shared_document = all(
+            content not in document for document in persisted_documents
+        )
+        user_bank_scope_clean = not persisted_documents
+        project_bank_scope_clean = not persisted_documents
     else:
         from .splitter import split_and_persist
 

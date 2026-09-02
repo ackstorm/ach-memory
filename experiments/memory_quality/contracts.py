@@ -79,6 +79,23 @@ class SemanticRepairManifest(BaseModel):
     mutating_requests: Literal[336]
 
 
+class SemanticSplitterManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str
+    mode: Literal["semantic_splitter"] = "semantic_splitter"
+    hindsight_version: Literal["0.9.2"]
+    official_package_version: Literal["0.5.1"]
+    corpus_version: Literal["semantic-v2"]
+    semantic_digest: str
+    observation_count: Literal[144]
+    disposable_bank_count: int
+    cleanup_bank_count: int
+    native_retain_count: Literal[48]
+    projection_retain_count: int
+    cleanup_complete: bool
+    mutating_requests: int
+
+
 class GateResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gate: str

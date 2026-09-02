@@ -3,7 +3,12 @@ import json
 import pytest
 
 from experiments.memory_quality import semantic as semantic_module
-from experiments.memory_quality.contracts import SemanticCase
+from experiments.memory_quality.contracts import (
+    BankSnapshot,
+    RetainReceipt,
+    SemanticCase,
+    SnapshotObject,
+)
 from experiments.memory_quality.semantic import (
     _AchHindsightAdapter,
     _canonical,
@@ -144,3 +149,44 @@ def test_semantic_observation_measures_monotonic_elapsed_time(monkeypatch):
     observation = run_semantic_case(case, "ach_semantic", 1, Banks())
 
     assert observation.metric_values["duration_ms"] == 125
+
+
+def test_native_shared_document_gate_is_derived_from_the_snapshot():
+    case = SemanticCase(
+        id="S99",
+        transcript=({"role": "user", "text": "shared source"},),
+        expected_units=(),
+        secret_canaries=("SECRET",),
+    )
+
+    class Banks:
+        def create_bank(self, purpose, repetition):
+            return "mq55-test"
+
+        def retain_and_wait(self, bank_id, content, *, document_id):
+            self.content = content
+            return RetainReceipt(
+                document_id=document_id,
+                operation_id="op",
+                terminal_state="completed",
+                duration_ms=1,
+            )
+
+        def list_bank_objects(self, bank_id):
+            return BankSnapshot(
+                bank_id=bank_id,
+                objects=(
+                    SnapshotObject(
+                        layer="document",
+                        object_id="doc",
+                        text="",
+                        original_text=self.content,
+                    ),
+                ),
+            )
+
+    observation = run_semantic_case(case, "native_semantic", 1, Banks())
+
+    assert observation.hard_gate_flags["no_shared_document"] is False
+    assert observation.hard_gate_flags["user_bank_scope_clean"] is False
+    assert observation.hard_gate_flags["project_bank_scope_clean"] is False

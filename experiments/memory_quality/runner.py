@@ -592,7 +592,7 @@ def render_report() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m experiments.memory_quality.runner")
-    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "semantic-repair-run", "semantic-repair-score", "export-adjudication", "score", "rescore-v2", "rescore-v3", "cleanup", "report"))
+    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "semantic-repair-run", "semantic-repair-score", "semantic-splitter-run", "semantic-splitter-score", "export-adjudication", "score", "rescore-v2", "rescore-v3", "cleanup", "report"))
     args = parser.parse_args(argv)
     if args.command == "preflight":
         try:
@@ -619,6 +619,22 @@ def main(argv=None) -> int:
 
         try:
             print(json.dumps(score_semantic_repair_artifacts(), sort_keys=True))
+        except BakeoffRefused as exc:
+            raise SystemExit(str(exc)) from exc
+        return 0
+    if args.command == "semantic-splitter-run":
+        from .semantic_repair import run_semantic_splitter
+
+        try:
+            print(json.dumps(run_semantic_splitter(), sort_keys=True))
+        except BakeoffRefused as exc:
+            raise SystemExit(str(exc)) from exc
+        return 0
+    if args.command == "semantic-splitter-score":
+        from .semantic_repair import score_semantic_splitter_artifacts
+
+        try:
+            print(json.dumps(score_semantic_splitter_artifacts(), sort_keys=True))
         except BakeoffRefused as exc:
             raise SystemExit(str(exc)) from exc
         return 0

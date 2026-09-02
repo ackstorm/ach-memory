@@ -213,7 +213,11 @@ class DisposableHindsight:
         body = response.json()
         return str(body.get("id", body.get("page_id", "")))
 
-    def cleanup(self) -> None:
+    @property
+    def registered_bank_count(self) -> int:
+        return len(self._registry())
+
+    def cleanup(self) -> int:
         values = self._registry()
         prefix = f"mq55-{self.config.run_id.hex[:12]}-"
         if any(not value.startswith(prefix) for value in values):
@@ -228,6 +232,7 @@ class DisposableHindsight:
                 response.raise_for_status()
         finally:
             self._client.close()
+        return len(values)
 
     def _check_bank(self, value: str) -> None:
         if not value.startswith(f"mq55-{self.config.run_id.hex[:12]}-"):
