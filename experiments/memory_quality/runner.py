@@ -131,11 +131,18 @@ def run_full(env=None) -> dict:
         for case in load_semantic_cases(ROOT / "corpus/semantic.jsonl"):
             for variant in ("ach_semantic", "native_semantic", "hybrid_semantic"):
                 for repetition in range(1, 4):
-                    observations.append(run_semantic_case(case, variant, repetition, banks).model_dump(mode="json"))
+                    semantic_artifact = artifact_dir / "semantic" / case.id / f"{variant}-{repetition}.json"
+                    observations.append(run_semantic_case(case, variant, repetition, banks, semantic_artifact).model_dump(mode="json"))
         for case in load_delivery_cases(ROOT / "corpus/delivery.jsonl"):
             for variant in ("ach_index", "ach_full", "official_reflect", "official_pages", "hybrid_delivery"):
                 for repetition in range(1, 4):
-                    observations.append(build_delivery(case, variant, banks, repetition).model_copy(update={"latency_ms": repetition}).model_dump(mode="json") | {"repetition": repetition, "artifact_relpath": f"delivery/{case.id}/{variant}-{repetition}.json", "hard_gate_flags": {"executed": True}, "metric_values": {}})
+                    delivery = build_delivery(case, variant, banks, repetition)
+                    _atomic_json(artifact_dir / "delivery" / case.id / f"{variant}-{repetition}.json", {
+                        "context": delivery.context,
+                        "source_ids": delivery.source_ids,
+                        "stale": delivery.stale,
+                    })
+                    observations.append(delivery.model_copy(update={"latency_ms": repetition}).model_dump(mode="json") | {"repetition": repetition, "artifact_relpath": f"delivery/{case.id}/{variant}-{repetition}.json", "hard_gate_flags": {"executed": True}, "metric_values": {}})
         for item in reliability_matrix():
             result = run_fault_scenario(item.variant, item.fault)
             observations.append({"case_id": item.fault, "variant": item.variant, "repetition": 1, "artifact_relpath": f"reliability/{item.variant}/{item.fault}.json", "hard_gate_flags": {"executed": True}, "metric_values": {"requests": result.requests, "duplicates": result.duplicate_objects}})
@@ -153,8 +160,8 @@ def score_artifacts() -> dict:
     run_dir = _run_dir()
     observation_path = run_dir / "observations.jsonl"
     adjudication_path = run_dir / "adjudication.json"
-    if not observation_path.exists() or not adjudication_path.exists():
-        raise SystemExit("score requires observations.jsonl and adjudication.json")
+    if not observation_path.exists():
+        raise SystemExit("score requires observations.jsonl")
     observations = []
     for line in observation_path.read_text().splitlines():
         raw = json.loads(line)
@@ -182,6 +189,8 @@ def score_artifacts() -> dict:
     key = os.environ.get("HINDSIGHT_BAKEOFF_HMAC_KEY", "development-only").encode()
     packet = build_blind_packet(observations, key)
     _atomic_json(run_dir / "blind-packet.json", packet.model_dump(mode="json"))
+    if not adjudication_path.exists():
+        raise SystemExit("blind-packet.json written; score requires adjudication.json")
     adjudication = Adjudication.model_validate_json(adjudication_path.read_text())
     scorecard = score_run(packet, adjudication)
     _atomic_json(run_dir / "scorecard.json", scorecard.model_dump(mode="json"))

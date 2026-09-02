@@ -1,6 +1,8 @@
 """Normalized semantic adapters; no worker or production persistence."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -95,7 +97,13 @@ def _canonical(case: SemanticCase) -> str:
     return sanitized
 
 
-def run_semantic_case(case: SemanticCase, variant: str, repetition: int, banks=None) -> RunObservation:
+def run_semantic_case(
+    case: SemanticCase,
+    variant: str,
+    repetition: int,
+    banks=None,
+    artifact_path: Path | None = None,
+) -> RunObservation:
     if variant not in {"ach_semantic", "native_semantic", "hybrid_semantic"}:
         raise ValueError("unknown semantic variant")
     content = _canonical(case)
@@ -109,13 +117,26 @@ def run_semantic_case(case: SemanticCase, variant: str, repetition: int, banks=N
         result = extract(_AchHindsightAdapter(banks), bank, content)
         count = len(result.candidates)
         scopes = tuple(sorted({candidate.bank_kind for candidate in result.candidates}))
+        detail = {
+            "claims": [candidate.model_dump(mode="json") for candidate in result.candidates],
+            "working_state": result.working_state.model_dump(mode="json") if result.working_state else None,
+            "dropped": list(result.dropped),
+        }
     elif variant == "native_semantic":
         receipt = banks.retain_and_wait(bank, content, document_id=f"mq55:{case.id}:{repetition}")
         snapshot = banks.list_bank_objects(bank)
         count = sum(item.layer in {"memory", "observation"} for item in snapshot.objects)
         scopes = ("shared",) if receipt.terminal_state == "completed" else ()
+        detail = {
+            "receipt": receipt.model_dump(mode="json"),
+            "objects": [item.model_dump(mode="json") for item in snapshot.objects],
+        }
     else:
         projection = banks.dry_run_extract(bank, content, retain_extraction_mode="custom", retain_mission="Return only {text, bank, provenance} claims.")
         count = len(projection.get("facts", []))
         scopes = ("user", "project") if count else ()
+        detail = {"facts": projection.get("facts", [])}
+    if artifact_path is not None:
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(json.dumps(detail, sort_keys=True, separators=(",", ":")) + "\n")
     return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags={"no_canary": True, "no_shared_document": variant != "native_semantic"}, metric_values={"byte_count": len(content.encode()), "claim_count": count, "scope_count": len(scopes), "duration_ms": 0}, warning_codes=("NATIVE_SHARED_BASELINE",) if variant == "native_semantic" else ())
