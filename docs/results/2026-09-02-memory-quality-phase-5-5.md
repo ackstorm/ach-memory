@@ -40,3 +40,48 @@ Corrected V3 hashes:
 - `report.v3.md`: `292748c55f7a18a6549b36ec0a5f4a1d1fe145706b694deb108b0f21580dbcf7`
 
 The accepted architectural ruling in this document supersedes the raw semantic component rulings in `decisions.v3.json` because of the prompt-equivalence defect above.
+
+## Phase 5.6 repaired semantic run
+
+Status: **COMPLETE — INSUFFICIENT EVIDENCE FOR REPLACEMENT**
+
+Frozen run: `dd364495-b7fa-4908-ab43-102c35e5cd27`.
+
+Consensus SHA-256: `8e859b2228113979f63980c35eedc3953f0e84f44bc9e5b337096c3ddcbab844`.
+
+Scoring implementation: `e78220b`.
+
+Matrix: 144 semantic observations — 16 cases, 3 variants and 3 repetitions.
+Consensus: 96 required-unit credits, zero unsupported-current claims and 15 wrong-scope claims. Of the closed unit votes, 93 were unanimous and 3 were 4-of-5.
+
+The run used Hindsight 0.9.2 and `hindsight-coding-agents` 0.5.1. Five independent judges received only the opaque export, rubric and output contract. Cleanup removed all 144 disposable banks; no run bank remains. Artifact scans found no canary, raw transcript, bank ID, mapping or HMAC material. Production flags remained off.
+
+Scored artifact hashes:
+
+- `scorecard.semantic-repair.json`: `06a44a5893f0f6d877410b4bb914875ac64d09cc6c7ef0c9935ed6723b59edc0`
+- `decisions.semantic-repair.json`: `cba0422bd8dcd746d0527d9d2b86b9ce6d208ad68f6aa5a3ee8f18566f914ed4`
+- `report.semantic-repair.md`: `1a81ca7f08643c8e4ac8abee03baefcb61b10030c555696f50ad41bcfa8e4958`
+
+### What the run establishes
+
+- Sharing the production semantic rules fixed the original Phase 5.5 prompt-drift defect.
+- ACH still failed `VALID_OUTPUT` in every repetition of S01, S12 and S15. All three failures have one mechanical cause: Hindsight returned `stated` claims with provenance offsets relative to an extra provider role prefix, and the strict parser rejected the whole slice as out of range.
+- ACH assigned the wrong destination in every repetition of S03, S05, S06, S09 and S14.
+- Native Hindsight preserved the measured semantic units without an additional scored regression, but this does not establish replacement: its comparison baseline was mechanically zeroed for three cases, and the experiment did not pre-route source documents.
+- The experimental hybrid was not a credible implementation of the intended hybrid architecture. It used only `Return only {text, bank, provenance} claims.`, did not run the production classifier or persist per-bank projections, fabricated its reported scope set whenever any fact existed, and hardcoded `NO_SHARED_DOCUMENT=true`. It lost critical units in S01, S04, S06, S07, S11, S12 and S14 and had repeatable additional misses in S04, S06, S07, S09, S11 and S14.
+- `duration_ms=0` and empty token arrays are placeholders, not cost or latency evidence.
+- S09's sentence is meta-level commentary about transient progress, not an actual objective, direction, question or next step. Its Working State expectation is invalid and contributed one apparent miss to ACH and hybrid. The frozen run is not rewritten; the next corpus must replace or quarantine this case before execution.
+
+### Accepted architecture ruling
+
+The generated `add_follow_up_guard` rulings are not accepted as authorization to add case-specific heuristics. Architecture review sets both `semantic_extractor` and `scope_router` to `insufficient_evidence`:
+
+1. keep local sanitization, authorization, physical User/Project isolation, the durable post-ACK queue and exact external Working State;
+2. do not replace or expand the production semantic pipeline from this run;
+3. repair invalid-provenance blast radius separately and prove all sibling candidates survive;
+4. replace S09 with a valid Working State case before the next measurement;
+5. make the next hybrid actually route and persist five destinations: durable user, durable project, banked evidence, Working State and discard;
+6. measure isolation from bank contents, not a variant-name constant, and emit unknown cost as `null`, never `0 ms`;
+7. keep a custom semantic component only if its ablation breaks a hard gate or loses at least two distinct valid cases in all repetitions.
+
+Preprocessing, host adapters, profile compiler, delivery protocol, capture reliability and Working State ordering were not rerun. Their Phase 5.5 rulings remain unchanged.
