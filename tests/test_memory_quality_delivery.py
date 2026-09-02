@@ -19,3 +19,9 @@ def test_consumer_boundary_accepts_closed_json(tmp_path):
     script.write_text("import json,sys; print(json.dumps({'answer':'ok','used_source_ids':[],'abstained':False}))")
     answer = run_consumer(build_delivery(case(), "ach_full"), (sys.executable, str(script)))
     assert answer.answer == "ok"
+
+
+def test_live_delivery_variants_refuse_simulated_fallback():
+    import pytest
+    with pytest.raises(ValueError, match="live delivery"):
+        build_delivery(case(), "official_reflect")

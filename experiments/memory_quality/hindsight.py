@@ -144,6 +144,32 @@ class DisposableHindsight:
                     objects.append(SnapshotObject(layer=layer, object_id=str(item.get("id", item.get("document_id", ""))), text=str(item.get("text", item.get("content", ""))), source_ids=tuple(item.get("source_ids", ()))) )
         return BankSnapshot(bank_id=bank_id_value, objects=tuple(objects))
 
+    def dry_run_extract(self, bank_id_value: str, content: str, **options) -> dict:
+        self._check_bank(bank_id_value)
+        payload = {"content": content, **options}
+        response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/memories/dry-run-extract", headers=self._headers(), json=payload)
+        response.raise_for_status()
+        return response.json()
+
+    def reflect(self, bank_id_value: str, query: str, **options) -> dict:
+        self._check_bank(bank_id_value)
+        response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/reflect", headers=self._headers(), json={"query": query, **options})
+        response.raise_for_status()
+        return response.json()
+
+    def search_pages(self, bank_id_value: str, query: str) -> list[dict]:
+        self._check_bank(bank_id_value)
+        response = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/knowledge-base/search", headers=self._headers(), params={"query": query})
+        response.raise_for_status()
+        body = response.json()
+        return body.get("items", body.get("results", []))
+
+    def read_page(self, bank_id_value: str, page_id: str) -> dict:
+        self._check_bank(bank_id_value)
+        response = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/knowledge-base/pages/{page_id}", headers=self._headers())
+        response.raise_for_status()
+        return response.json()
+
     def cleanup(self) -> None:
         values = self._registry()
         prefix = f"mq55-{self.config.run_id.hex[:12]}-"

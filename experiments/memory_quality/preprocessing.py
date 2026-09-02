@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from memory.capture import local
 
@@ -19,13 +19,13 @@ def scan_canaries(paths: tuple[Path, ...], canaries: tuple[str, ...]) -> tuple[s
             found.update(canary for canary in canaries if canary in path.read_text(errors="replace"))
         elif path.is_dir():
             found.update(scan_canaries(tuple(path.rglob("*")), canaries))
-    return tuple(sorted(found))
+    return tuple(f"CANARY_{index:02d}_PRESENT" for index, canary in enumerate(canaries) if canary in found)
 
 
 class Preprocessed(BaseModel):
     model_config = ConfigDict(extra="forbid")
     variant: str
-    content: str
+    content: str = Field(exclude=True)
     byte_count: int
     turn_count: int
     retained_role_count: int

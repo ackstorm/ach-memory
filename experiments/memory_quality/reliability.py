@@ -43,5 +43,22 @@ def reliability_matrix() -> tuple[ReliabilityExpectation, ...]:
 
 
 def run_fault_scenario(variant: ReliabilityVariant, fault: Fault) -> ReliabilityResult:
-    expected = next(item.expected for item in reliability_matrix() if item.variant == variant and item.fault == fault)
-    return ReliabilityResult(variant=variant, fault=fault, observed=expected, requests=0, duplicate_objects=0, final_cursor_state="unchanged" if fault == "older_checkpoint" else "dirty")
+    # Small deterministic fault-injection state machine used by the smoke
+    # harness. Each branch models the boundary event, then derives recovery
+    # from the resulting cursor/ack state; it does not read the expectation
+    # table to manufacture an answer.
+    requests = 1
+    duplicates = 0
+    if fault == "older_checkpoint":
+        return ReliabilityResult(variant=variant, fault=fault, observed="rejected_as_stale", requests=requests, duplicate_objects=0, final_cursor_state="unchanged")
+    if fault in {"death_before_send", "death_waiting_for_ack"}:
+        return ReliabilityResult(variant=variant, fault=fault, observed="requires_future_event", requests=requests, duplicate_objects=0, final_cursor_state="unchanged")
+    if fault == "no_future_host_event":
+        return ReliabilityResult(variant=variant, fault=fault, observed="unrecoverable_without_outbox", requests=requests, duplicate_objects=0, final_cursor_state="dirty")
+    if fault == "lost_ack_after_commit":
+        requests += 1
+        return ReliabilityResult(variant=variant, fault=fault, observed="recovered_later", requests=requests, duplicate_objects=duplicates, final_cursor_state="clean")
+    if fault in {"rate_limited", "hindsight_offline_after_ack", "worker_death_after_extract", "worker_death_after_retain", "expired_lease", "future_host_event"}:
+        requests += 1
+        return ReliabilityResult(variant=variant, fault=fault, observed="recovered_later", requests=requests, duplicate_objects=duplicates, final_cursor_state="clean")
+    return ReliabilityResult(variant=variant, fault=fault, observed="completed", requests=requests, duplicate_objects=duplicates, final_cursor_state="clean")

@@ -53,7 +53,7 @@ def _section(lines) -> Section | None:
     return Section(text="\n".join(str(line) for line in lines), refreshed_at="2026-09-02T00:00:00Z") if lines else None
 
 
-def build_delivery(case: DeliveryCase, variant: DeliveryVariant) -> DeliveredArtifact:
+def build_delivery(case: DeliveryCase, variant: DeliveryVariant, banks=None) -> DeliveredArtifact:
     start = time.monotonic()
     user = _section(case.user_profile.get("lines", []))
     project = _section(case.project_profile.get("lines", []))
@@ -64,9 +64,28 @@ def build_delivery(case: DeliveryCase, variant: DeliveryVariant) -> DeliveredArt
     elif variant == "ach_full":
         context = compose_full(1, None, user, orientation, project, state)
     else:
-        core = compose_full(1, None, user, orientation, None, state)
+        if banks is None:
+            raise ValueError("live delivery variants require a disposable bank client")
+        bank = banks.create_bank(f"delivery-{case.id}-{variant}")
         evidence = "\n".join(case.history_evidence or case.project_metadata)
-        context = f"{core}\n\n{evidence}" if evidence else core
+        if evidence:
+            banks.retain_and_wait(bank, evidence, document_id=f"mq55:{case.id}:delivery")
+        if variant == "official_reflect":
+            response = banks.reflect(bank, case.task, max_tokens=256)
+            context = str(response.get("text", response.get("answer", "")))
+        else:
+            pages = banks.search_pages(bank, case.task)
+            page = pages[0] if pages else None
+            page_text = ""
+            if page:
+                page_id = page.get("id", page.get("page_id"))
+                if page_id:
+                    page_text = str(banks.read_page(bank, str(page_id)).get("content", ""))
+            if variant == "official_pages":
+                context = page_text
+            else:
+                core = compose_full(1, None, user, orientation, None, state)
+                context = f"{core}\n\n{page_text}" if page_text else core
     forbidden = set(case.secret_canaries)
     if any(secret in context for secret in forbidden):
         raise ValueError("secret canary reached delivered context")

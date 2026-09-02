@@ -43,7 +43,31 @@ def split_minimal(content: str, client=None) -> dict:
     return {"claims": claims, "working_state": None}
 
 
-def run_semantic_case(case: SemanticCase, variant: str, repetition: int) -> RunObservation:
+def _canonical(case: SemanticCase) -> str:
+    return "\n".join(f"{turn['role']}: {turn['text']}" for turn in case.transcript)
+
+
+def run_semantic_case(case: SemanticCase, variant: str, repetition: int, banks=None) -> RunObservation:
+    if variant not in {"ach_semantic", "native_semantic", "hybrid_semantic"}:
+        raise ValueError("unknown semantic variant")
     content = "\n".join(f"{turn['role']}: {turn['text']}" for turn in case.transcript)
-    flags = {"no_canary": not any(canary in content for canary in case.secret_canaries), "no_shared_document": variant != "native_semantic"}
-    return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags=flags, metric_values={"byte_count": len(content.encode()), "duration_ms": 0})
+    if any(canary in content for canary in case.secret_canaries):
+        raise ValueError("semantic input contains a declared canary")
+    if banks is None:
+        raise ValueError("semantic variants require a fresh disposable bank client")
+    bank = banks.create_bank(f"semantic-{case.id}-{variant}", repetition)
+    if variant == "ach_semantic":
+        from memory.capture.extractor import extract
+        result = extract(banks, bank, content)
+        count = len(result.candidates)
+        scopes = tuple(sorted({candidate.bank_kind for candidate in result.candidates}))
+    elif variant == "native_semantic":
+        receipt = banks.retain_and_wait(bank, content, document_id=f"mq55:{case.id}:{repetition}")
+        snapshot = banks.list_bank_objects(bank)
+        count = sum(item.layer in {"memory", "observation"} for item in snapshot.objects)
+        scopes = ("shared",) if receipt.terminal_state == "completed" else ()
+    else:
+        projection = banks.dry_run_extract(bank, content, retain_extraction_mode="custom", retain_mission="Return only {text, bank, provenance} claims.")
+        count = len(projection.get("facts", []))
+        scopes = ("user", "project") if count else ()
+    return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags={"no_canary": True, "no_shared_document": variant != "native_semantic"}, metric_values={"byte_count": len(content.encode()), "claim_count": count, "scope_count": len(scopes), "duration_ms": 0}, warning_codes=("NATIVE_SHARED_BASELINE",) if variant == "native_semantic" else ())
