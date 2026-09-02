@@ -52,6 +52,7 @@ class Scorecard(BaseModel):
     total_output_tokens: int
     non_inferior: bool
     approval_required: bool
+    consumer_complete: bool = False
     variant_scores: tuple[VariantScore, ...] = ()
 
 
@@ -62,13 +63,25 @@ class VariantScore(BaseModel):
     named_misses: tuple[str, ...]
 
 
+ADJUDICABLE_VARIANTS = {"ach_semantic", "native_semantic", "hybrid_semantic"}
+
+
 def build_blind_packet(observations: Sequence[RunObservation], key: bytes) -> BlindPacket:
-    items = tuple(sorted((BlindItem(case_id=o.case_id, blind_variant="V-" + hmac.new(key, o.variant.encode(), hashlib.sha256).hexdigest()[:4], repetition=o.repetition, artifact_relpath=o.artifact_relpath) for o in observations), key=lambda x: (x.case_id, x.blind_variant, x.repetition, x.artifact_relpath)))
+    if not key or len(key) < 32 or key == b"development-only":
+        raise ValueError("blind packet requires a random HMAC key of at least 32 bytes")
+    selected = (o for o in observations if o.variant in ADJUDICABLE_VARIANTS)
+    items = []
+    for observation in selected:
+        if observation.variant in observation.artifact_relpath:
+            raise ValueError("blind packet requires opaque artifact paths")
+        label = "V-" + hmac.new(key, observation.variant.encode(), hashlib.sha256).hexdigest()[:16]
+        items.append(BlindItem(case_id=observation.case_id, blind_variant=label, repetition=observation.repetition, artifact_relpath=observation.artifact_relpath))
+    items = tuple(sorted(items, key=lambda x: (x.case_id, x.blind_variant, x.repetition, x.artifact_relpath)))
     digest = hashlib.sha256("\n".join(item.model_dump_json() for item in items).encode()).hexdigest()
     return BlindPacket(corpus_digest=digest, items=items)
 
 
-def score_run(packet: BlindPacket, adjudication: Adjudication) -> Scorecard:
+def score_run(packet: BlindPacket, adjudication: Adjudication, *, consumer_complete: bool = False) -> Scorecard:
     expected = {(item.case_id, item.blind_variant, item.repetition) for item in packet.items}
     actual = {(item.case_id, item.blind_variant, item.repetition) for item in adjudication.items}
     if expected != actual:
@@ -82,7 +95,7 @@ def score_run(packet: BlindPacket, adjudication: Adjudication) -> Scorecard:
         if item.unsupported_current_claims:
             misses.append(f"{item.case_id}:UNSUPPORTED_CURRENT")
     variants = tuple(VariantScore(blind_variant=name, eligible=not misses and not failures, named_misses=tuple(sorted(misses))) for name, misses in sorted(by_variant.items()))
-    return Scorecard(gates=(GateResult(gate="adjudication_complete", passed=not failures, failing_case_ids=failures),), named_misses=failures, median_latency_ms=None, p95_latency_ms=None, total_input_tokens=0, total_output_tokens=0, non_inferior=not failures and all(item.eligible for item in variants), approval_required=bool(failures or any(item.named_misses for item in variants)), variant_scores=variants)
+    return Scorecard(gates=(GateResult(gate="adjudication_complete", passed=not failures, failing_case_ids=failures),), named_misses=failures, median_latency_ms=None, p95_latency_ms=None, total_input_tokens=0, total_output_tokens=0, non_inferior=not failures and all(item.eligible for item in variants), approval_required=bool(failures or any(item.named_misses for item in variants)), consumer_complete=consumer_complete, variant_scores=variants)
 
 
 COMPONENTS = ("host_adapters", "preprocessing", "semantic_extractor", "scope_router", "profile_compiler", "delivery_protocol", "capture_reliability", "working_state_ordering")
@@ -90,7 +103,7 @@ COMPONENTS = ("host_adapters", "preprocessing", "semantic_extractor", "scope_rou
 
 def decide(scorecard: Scorecard) -> tuple[ComponentDecision, ...]:
     decisions = []
-    has_delivery_evidence = any(item.blind_variant.startswith("V-") for item in scorecard.variant_scores)
+    has_delivery_evidence = scorecard.consumer_complete
     for component in COMPONENTS:
         if component in {"profile_compiler", "delivery_protocol"} and not has_delivery_evidence:
             ruling = "insufficient_evidence"

@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
+import shutil
+import subprocess
 import tempfile
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -13,8 +18,13 @@ import httpx
 from .contracts import RunObservation, corpus_digest, load_delivery_cases, load_semantic_cases
 from .delivery import build_delivery
 from .hindsight import BakeoffConfig, BakeoffRefused, DisposableHindsight
-from .preprocessing import run_preprocessing, scan_canaries
-from .reliability import reliability_matrix, run_fault_scenario, run_worker_boundary_verification
+from .preprocessing import HOST_CANARIES, run_preprocessing, scan_canaries
+from .reliability import (
+    reliability_matrix,
+    run_capture_checkpoint_fault,
+    run_fault_scenario,
+    run_worker_boundary_verification,
+)
 from .scoring import Adjudication, build_blind_packet, decide, score_run
 from .semantic import run_semantic_case
 from .upstream import OfficialRuntime, verify_official_source
@@ -57,7 +67,53 @@ def preflight(env=None) -> dict:
     if version != "0.9.2":
         raise BakeoffRefused("Hindsight API version must be 0.9.2")
     _verify_openapi_contract(document)
-    return {"hindsight_version": version, "official_package_version": source.package_version, "official_checkout_commit": source.checkout_commit, "semantic_digest": corpus_digest(semantic), "delivery_digest": corpus_digest(delivery), "mutating_requests": 0, "run_id": str(config.run_id)}
+    repo = ROOT.parents[1]
+    commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout.strip() != ""
+    requested = env.get("HINDSIGHT_BAKEOFF_RUN_ID")
+    run_id = uuid.UUID(requested) if requested else config.run_id
+    now = datetime.now(UTC).isoformat()
+    return {
+        "run_id": str(run_id), "command_mode": env.get("HINDSIGHT_BAKEOFF_MODE", "measured"),
+        "started_at": now, "ended_at": now, "ach_memory_commit": commit, "ach_memory_dirty": dirty,
+        "hindsight_version": version, "hindsight_openapi_sha256": hashlib.sha256(response.content).hexdigest(),
+        "official_package_version": source.package_version, "official_checkout_commit": source.checkout_commit,
+        "official_source_sha256": dict(source.sha256_by_relpath), "semantic_digest": corpus_digest(semantic),
+        "delivery_digest": corpus_digest(delivery), "models": {"hindsight": env.get("HINDSIGHT_BAKEOFF_MODEL", "configured-server-model"), "consumer": bool(env.get("MEMORY_BAKEOFF_CONSUMER_CMD"))},
+        "budgets": {"reflect_max_tokens": 256, "delivery_context_tokens": 1800},
+        "consumer_present": bool(env.get("MEMORY_BAKEOFF_CONSUMER_CMD")), "consumer_complete": False, "mutating_requests": 0,
+    }
+
+
+def _measured_hmac_key(env) -> bytes:
+    value = env.get("HINDSIGHT_BAKEOFF_HMAC_KEY")
+    if not value or value == "development-only":
+        raise BakeoffRefused("measured runs require HINDSIGHT_BAKEOFF_HMAC_KEY")
+    try:
+        key = bytes.fromhex(value)
+    except ValueError as exc:
+        raise BakeoffRefused("HINDSIGHT_BAKEOFF_HMAC_KEY must be hexadecimal") from exc
+    if len(key) < 32:
+        raise BakeoffRefused("HINDSIGHT_BAKEOFF_HMAC_KEY must contain at least 32 random bytes")
+    return key
+
+
+def _blind_semantic_artifacts(observations, artifact_dir: Path, key: bytes) -> None:
+    mapping = {}
+    for observation in observations:
+        if not observation["variant"].endswith("_semantic"):
+            continue
+        source = artifact_dir / observation["artifact_relpath"]
+        opaque = "blind/outputs/o-" + hashlib.sha256(secrets.token_bytes(32)).hexdigest()[:24] + ".json"
+        target = artifact_dir / opaque
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        mapping[opaque] = {"case_id": observation["case_id"], "variant": observation["variant"], "repetition": observation["repetition"]}
+        observation["artifact_relpath"] = opaque
+    mapping_payload = {"seal": hashlib.sha256(key + json.dumps(mapping, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "mapping": mapping}
+    mapping_path = artifact_dir / ".blind-mapping.json"
+    _atomic_json(mapping_path, mapping_payload)
+    mapping_path.chmod(0o600)
 
 
 def _atomic_json(path: Path, value) -> None:
@@ -100,7 +156,7 @@ def run_smoke(env=None) -> dict:
                 handle.write(json.dumps(observation, sort_keys=True, separators=(",", ":")) + "\n")
         semantic_cases = load_semantic_cases(ROOT / "corpus/semantic.jsonl")
         delivery_cases = load_delivery_cases(ROOT / "corpus/delivery.jsonl")
-        canaries = tuple(canary for case in (*semantic_cases, *delivery_cases) for canary in case.secret_canaries)
+        canaries = tuple(dict.fromkeys(HOST_CANARIES + tuple(canary for case in (*semantic_cases, *delivery_cases) for canary in case.secret_canaries)))
         if scan_canaries((artifact_dir,), canaries):
             raise RuntimeError("smoke artifact canary scan failed")
         return {"run_id": str(config.run_id), "observation_count": len(observations), "artifact_dir": str(artifact_dir)}
@@ -120,6 +176,7 @@ def run_full(env=None) -> dict:
     env = env or os.environ
     manifest = preflight(env)
     config = BakeoffConfig.from_env(env, run_id=uuid.UUID(manifest["run_id"]))
+    hmac_key = _measured_hmac_key(env)
     runtime = OfficialRuntime(verify_official_source(Path(env.get("HINDSIGHT_CODING_AGENTS_DIR", ROOT.parents[2] / "hindsight/hindsight-integrations/coding-agents"))))
     artifact_dir = Path(env.get("MEMORY_BAKEOFF_ARTIFACT_DIR", ".artifacts/memory-quality")) / str(config.run_id)
     banks = DisposableHindsight(config, artifact_root=artifact_dir.parent)
@@ -144,11 +201,20 @@ def run_full(env=None) -> dict:
                     })
                     observations.append(delivery.model_copy(update={"latency_ms": repetition}).model_dump(mode="json") | {"repetition": repetition, "artifact_relpath": f"delivery/{case.id}/{variant}-{repetition}.json", "hard_gate_flags": {"executed": True}, "metric_values": {}})
         for item in reliability_matrix():
-            result = run_fault_scenario(item.variant, item.fault)
+            if item.variant == "ach_reliability" and item.fault in {"death_before_send", "death_waiting_for_ack", "lost_ack_after_commit", "rate_limited", "hindsight_offline_after_ack", "future_host_event"}:
+                result = run_capture_checkpoint_fault(
+                    item.fault,
+                    hook_event={"transcript_path": str(ROOT / "corpus/hosts/claude.jsonl"), "session_id": f"mq55-{item.fault}", "cwd": str(ROOT)},
+                    env={"MEMORY_CAPTURE_ENABLED": "true", "ACH_MEMORY_API_KEY": "mq55-test-key", "ACH_MEMORY_URL": "http://mq55.controlled", "ACH_MEMORY_CACHE_DIR": str(artifact_dir / "reliability-cache"), "HOME": str(artifact_dir)},
+                )
+            else:
+                result = run_fault_scenario(item.variant, item.fault)
             observations.append({"case_id": item.fault, "variant": item.variant, "repetition": 1, "artifact_relpath": f"reliability/{item.variant}/{item.fault}.json", "hard_gate_flags": {"executed": True}, "metric_values": {"requests": result.requests, "duplicates": result.duplicate_objects}})
+        _blind_semantic_artifacts(observations, artifact_dir, hmac_key)
+        manifest["ended_at"] = datetime.now(UTC).isoformat()
         _atomic_json(artifact_dir / "manifest.json", manifest)
         (artifact_dir / "observations.jsonl").write_text("\n".join(json.dumps(item, sort_keys=True, separators=(",", ":")) for item in observations) + "\n")
-        canaries = tuple(canary for case in (*load_semantic_cases(ROOT / "corpus/semantic.jsonl"), *load_delivery_cases(ROOT / "corpus/delivery.jsonl")) for canary in case.secret_canaries)
+        canaries = tuple(dict.fromkeys(HOST_CANARIES + tuple(canary for case in (*load_semantic_cases(ROOT / "corpus/semantic.jsonl"), *load_delivery_cases(ROOT / "corpus/delivery.jsonl")) for canary in case.secret_canaries)))
         if scan_canaries((artifact_dir,), canaries):
             raise RuntimeError("artifact canary scan failed")
         return {"run_id": str(config.run_id), "observation_count": len(observations), "artifact_dir": str(artifact_dir)}
@@ -186,13 +252,14 @@ def score_artifacts() -> dict:
     }
     if counts != {"preprocess": 3, "semantic": 144, "delivery": 150, "reliability": 22} or len(observations) != 319:
         raise SystemExit("score refuses anything other than the exact 319-observation matrix")
-    key = os.environ.get("HINDSIGHT_BAKEOFF_HMAC_KEY", "development-only").encode()
+    key = _measured_hmac_key(os.environ)
     packet = build_blind_packet(observations, key)
     _atomic_json(run_dir / "blind-packet.json", packet.model_dump(mode="json"))
     if not adjudication_path.exists():
         raise SystemExit("blind-packet.json written; score requires adjudication.json")
     adjudication = Adjudication.model_validate_json(adjudication_path.read_text())
-    scorecard = score_run(packet, adjudication)
+    manifest = json.loads((run_dir / "manifest.json").read_text()) if (run_dir / "manifest.json").exists() else {}
+    scorecard = score_run(packet, adjudication, consumer_complete=bool(manifest.get("consumer_complete", False)))
     _atomic_json(run_dir / "scorecard.json", scorecard.model_dump(mode="json"))
     _atomic_json(run_dir / "decisions.json", [item.model_dump(mode="json") for item in decide(scorecard)])
     return {"scorecard": str(run_dir / "scorecard.json"), "decisions": str(run_dir / "decisions.json")}
