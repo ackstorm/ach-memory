@@ -1,0 +1,208 @@
+import json
+
+import pytest
+
+from experiments.memory_quality import runner as runner_module
+from experiments.memory_quality import semantic_repair as repair_module
+from experiments.memory_quality.contracts import RunObservation, load_semantic_cases
+from experiments.memory_quality.hindsight import BakeoffRefused
+from experiments.memory_quality.semantic_repair import (
+    CORPUS,
+    _validate_semantic_observations,
+    run_semantic_repair,
+    semantic_repair_matrix,
+)
+
+
+def test_semantic_repair_refuses_without_explicit_authority():
+    with pytest.raises(BakeoffRefused):
+        run_semantic_repair({})
+
+
+def test_semantic_repair_refuses_to_overwrite_external_mapping(tmp_path, monkeypatch):
+    mapping = tmp_path / "mapping.json"
+    mapping.write_text("custodied evidence")
+    monkeypatch.setattr(
+        runner_module,
+        "preflight",
+        lambda env: {
+            "run_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "hindsight_version": "0.9.2",
+            "official_package_version": "0.5.1",
+        },
+    )
+    monkeypatch.setattr(runner_module, "_measured_hmac_key", lambda env: b"a" * 32)
+
+    with pytest.raises(BakeoffRefused, match="mapping already exists"):
+        run_semantic_repair(
+            {
+                "HINDSIGHT_BAKEOFF_CONFIRM": "disposable-banks-only",
+                "HINDSIGHT_BAKEOFF_MAPPING_PATH": str(mapping),
+                "MEMORY_BAKEOFF_ARTIFACT_DIR": str(tmp_path / "artifacts"),
+            }
+        )
+
+    assert mapping.read_text() == "custodied evidence"
+
+
+def test_semantic_repair_matrix_is_exact_and_deterministic():
+    cases = load_semantic_cases(CORPUS)
+
+    keys = semantic_repair_matrix(cases)
+
+    assert len(keys) == 144
+    assert len(set(keys)) == 144
+    assert keys == semantic_repair_matrix(cases)
+    assert {variant for _, variant, _ in keys} == {
+        "ach_semantic",
+        "native_semantic",
+        "hybrid_semantic",
+    }
+    assert all(repetition in {1, 2, 3} for _, _, repetition in keys)
+
+
+def _observation(case_id: str, variant: str, repetition: int) -> RunObservation:
+    return RunObservation(
+        case_id=case_id,
+        variant=variant,
+        repetition=repetition,
+        artifact_relpath=f"semantic/{case_id}/{variant}-{repetition}.json",
+        hard_gate_flags={"executed": True, "no_canary": True},
+        metric_values={},
+    )
+
+
+def test_semantic_observation_validation_rejects_duplicate_missing_and_unexecuted_rows():
+    expected = (("S01", "ach_semantic", 1), ("S01", "ach_semantic", 2))
+    first = _observation(*expected[0])
+    second = _observation(*expected[1])
+
+    _validate_semantic_observations((first, second), expected)
+    with pytest.raises(BakeoffRefused, match="duplicate"):
+        _validate_semantic_observations((first, first), expected)
+    with pytest.raises(BakeoffRefused, match="exact matrix"):
+        _validate_semantic_observations((first,), expected)
+    unexecuted = first.model_copy(
+        update={"hard_gate_flags": {"executed": False, "no_canary": True}}
+    )
+    with pytest.raises(BakeoffRefused, match="executed=false"):
+        _validate_semantic_observations((unexecuted, second), expected)
+
+
+def test_semantic_repair_lifecycle_writes_exact_atomic_outputs_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    artifact_root = tmp_path / "artifacts"
+    mapping_path = tmp_path / "private" / "mapping.json"
+    cleanup_calls: list[bool] = []
+
+    class FakeBanks:
+        def __init__(self, config, *, artifact_root):
+            self.artifact_dir = artifact_root / str(config.run_id)
+            self.artifact_dir.mkdir(parents=True)
+
+        def cleanup(self):
+            cleanup_calls.append(True)
+
+    def fake_preflight(env):
+        return {
+            "run_id": run_id,
+            "hindsight_version": "0.9.2",
+            "official_package_version": "0.5.1",
+        }
+
+    def fake_run(case, variant, repetition, banks, artifact_path):
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text('{"claims":[]}\n')
+        return _observation(case.id, variant, repetition)
+
+    monkeypatch.setattr(runner_module, "preflight", fake_preflight)
+    monkeypatch.setattr(runner_module, "_measured_hmac_key", lambda env: b"a" * 32)
+    monkeypatch.setattr(repair_module, "DisposableHindsight", FakeBanks)
+    monkeypatch.setattr(repair_module, "run_semantic_case", fake_run)
+    env = {
+        "HINDSIGHT_BAKEOFF_CONFIRM": "disposable-banks-only",
+        "HINDSIGHT_BAKEOFF_RUN_ID": run_id,
+        "HINDSIGHT_BAKEOFF_MAPPING_PATH": str(mapping_path),
+        "MEMORY_BAKEOFF_ARTIFACT_DIR": str(artifact_root),
+    }
+
+    result = run_semantic_repair(env)
+
+    run_dir = artifact_root / run_id
+    observations = [
+        json.loads(line)
+        for line in (run_dir / "observations.jsonl").read_text().splitlines()
+    ]
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert result["observation_count"] == 144
+    assert len(observations) == 144
+    assert len({(row["case_id"], row["variant"], row["repetition"]) for row in observations}) == 144
+    assert len(json.loads((run_dir / "blind-packet.json").read_text())["items"]) == 144
+    assert manifest["observation_count"] == 144
+    assert manifest["disposable_bank_count"] == 144
+    assert manifest["native_retain_count"] == 48
+    assert manifest["mutating_requests"] == 336
+    assert manifest["cleanup_complete"] is True
+    assert cleanup_calls == [True]
+    assert mapping_path.stat().st_mode & 0o077 == 0
+    assert not tuple(run_dir.rglob(".*.tmp"))
+    assert all(
+        path.stat().st_mode & 0o077 == 0
+        for path in run_dir.rglob("*")
+        if path.is_file()
+    )
+
+
+def test_semantic_repair_refuses_serialized_canary_and_still_cleans_up(
+    tmp_path, monkeypatch
+):
+    run_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    artifact_root = tmp_path / "artifacts"
+    cleanup_calls: list[bool] = []
+    canary = load_semantic_cases(CORPUS)[0].secret_canaries[0]
+
+    class FakeBanks:
+        def __init__(self, config, *, artifact_root):
+            self.artifact_dir = artifact_root / str(config.run_id)
+            self.artifact_dir.mkdir(parents=True)
+
+        def cleanup(self):
+            cleanup_calls.append(True)
+
+    def fake_run(case, variant, repetition, banks, artifact_path):
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(json.dumps({"claim": canary}))
+        return _observation(case.id, variant, repetition)
+
+    monkeypatch.setattr(
+        runner_module,
+        "preflight",
+        lambda env: {
+            "run_id": run_id,
+            "hindsight_version": "0.9.2",
+            "official_package_version": "0.5.1",
+        },
+    )
+    monkeypatch.setattr(runner_module, "_measured_hmac_key", lambda env: b"a" * 32)
+    monkeypatch.setattr(repair_module, "DisposableHindsight", FakeBanks)
+    monkeypatch.setattr(repair_module, "run_semantic_case", fake_run)
+
+    with pytest.raises(RuntimeError, match="canary"):
+        run_semantic_repair(
+            {
+                "HINDSIGHT_BAKEOFF_CONFIRM": "disposable-banks-only",
+                "HINDSIGHT_BAKEOFF_RUN_ID": run_id,
+                "HINDSIGHT_BAKEOFF_MAPPING_PATH": str(tmp_path / "mapping.json"),
+                "MEMORY_BAKEOFF_ARTIFACT_DIR": str(artifact_root),
+            }
+        )
+
+    assert cleanup_calls == [True]
+    run_dir = artifact_root / run_id
+    assert all(
+        path.stat().st_mode & 0o077 == 0
+        for path in run_dir.rglob("*")
+        if path.is_file()
+    )

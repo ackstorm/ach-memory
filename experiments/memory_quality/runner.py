@@ -592,7 +592,7 @@ def render_report() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m experiments.memory_quality.runner")
-    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "export-adjudication", "score", "rescore-v2", "rescore-v3", "cleanup", "report"))
+    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "semantic-repair-run", "export-adjudication", "score", "rescore-v2", "rescore-v3", "cleanup", "report"))
     args = parser.parse_args(argv)
     if args.command == "preflight":
         try:
@@ -603,6 +603,14 @@ def main(argv=None) -> int:
     if args.command in {"smoke", "run"}:
         try:
             print(json.dumps(run_smoke() if args.command == "smoke" else run_full(), sort_keys=True))
+        except BakeoffRefused as exc:
+            raise SystemExit(str(exc)) from exc
+        return 0
+    if args.command == "semantic-repair-run":
+        from .semantic_repair import run_semantic_repair
+
+        try:
+            print(json.dumps(run_semantic_repair(), sort_keys=True))
         except BakeoffRefused as exc:
             raise SystemExit(str(exc)) from exc
         return 0

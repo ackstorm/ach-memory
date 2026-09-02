@@ -25,11 +25,15 @@ HOST_CANARIES = (
 def scan_canaries(paths: tuple[Path, ...], canaries: tuple[str, ...]) -> tuple[str, ...]:
     """Return only canaries found in serialized experiment artifacts."""
     found = set()
-    for path in paths:
-        if path.is_file() and any(canary in path.read_text(errors="replace") for canary in canaries):
-            found.update(canary for canary in canaries if canary in path.read_text(errors="replace"))
-        elif path.is_dir():
-            found.update(scan_canaries(tuple(path.rglob("*")), canaries))
+    files = (
+        candidate
+        for path in paths
+        for candidate in ((path,) if path.is_file() else path.rglob("*") if path.is_dir() else ())
+        if candidate.is_file()
+    )
+    for path in files:
+        content = path.read_text(errors="replace")
+        found.update(canary for canary in canaries if canary in content)
     return tuple(f"CANARY_{index:02d}_PRESENT" for index, canary in enumerate(canaries) if canary in found)
 
 

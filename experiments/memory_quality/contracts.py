@@ -63,6 +63,20 @@ class RunObservation(BaseModel):
     warning_codes: tuple[str, ...] = ()
 
 
+class SemanticRepairManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str
+    mode: Literal["semantic_repair"] = "semantic_repair"
+    hindsight_version: Literal["0.9.2"]
+    official_package_version: Literal["0.5.1"]
+    semantic_digest: str
+    observation_count: Literal[144]
+    disposable_bank_count: Literal[144]
+    native_retain_count: Literal[48]
+    cleanup_complete: bool
+    mutating_requests: Literal[336]
+
+
 class GateResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gate: str
