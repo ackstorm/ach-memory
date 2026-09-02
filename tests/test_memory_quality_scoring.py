@@ -214,6 +214,62 @@ def test_v3_routes_scope_failures_only_to_scope_router():
     assert "native_semantic:S01:WRONG_SCOPE" in router.hard_gate_failures
 
 
+def test_v3_rejects_a_silent_router_even_without_wrong_scope_claims():
+    observations, unblinded, adjudication = _v3_semantic_fixture(
+        met_by_variant={
+            "ach_semantic": ("S01-U1",),
+            "native_semantic": ("S01-U1",),
+            "hybrid_semantic": (),
+        }
+    )
+
+    score = scoring_module.score_run_v3(
+        observations,
+        unblinded,
+        adjudication,
+        expected_units={"S01": ("S01-U1",)},
+        critical_units={},
+        consumer_complete=False,
+    )
+
+    native = score.components["scope_router"].challengers["native_semantic"]
+    hybrid = score.components["scope_router"].challengers["hybrid_semantic"]
+    assert native.non_inferior is True
+    assert hybrid.non_inferior is False
+    assert hybrid.hard_gate_failures == (
+        "hybrid_semantic:S01:MISSING_ROUTEABLE_S01-U1",
+    )
+
+
+def test_v3_attributes_measured_bank_scope_gates_to_the_router():
+    observations, unblinded, adjudication = _v3_semantic_fixture(
+        met_by_variant={
+            variant: ("S01-U1",)
+            for variant in ("ach_semantic", "native_semantic", "hybrid_semantic")
+        },
+        flags_by_variant={
+            "hybrid_semantic": {
+                "executed": True,
+                "no_shared_document": True,
+                "user_bank_scope_clean": False,
+                "project_bank_scope_clean": True,
+            }
+        },
+    )
+
+    score = scoring_module.score_run_v3(
+        observations,
+        unblinded,
+        adjudication,
+        expected_units={"S01": ("S01-U1",)},
+        critical_units={},
+        consumer_complete=False,
+    )
+
+    hybrid = score.components["scope_router"].challengers["hybrid_semantic"]
+    assert "hybrid_semantic:S01:USER_BANK_SCOPE_CLEAN" in hybrid.hard_gate_failures
+
+
 def test_v3_attributes_preprocessing_secret_gate_to_the_failed_variant():
     observations = tuple(
         RunObservation(

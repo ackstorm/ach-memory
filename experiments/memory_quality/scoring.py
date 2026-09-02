@@ -443,6 +443,13 @@ def score_run_v3(
             variant_atoms.setdefault(atom, set()).add(item.repetition)
             if unit in critical:
                 extractor_hard.setdefault(item.variant, set()).add(f"{item.variant}:{atom}")
+            route_atom = f"{item.case_id}:MISSING_ROUTEABLE_{unit}"
+            router_atoms.setdefault(item.variant, {}).setdefault(
+                route_atom, set()
+            ).add(item.repetition)
+            router_hard.setdefault(item.variant, set()).add(
+                f"{item.variant}:{route_atom}"
+            )
         if adjudicated.unsupported_current_claims:
             atom = f"{item.case_id}:UNSUPPORTED_CURRENT"
             variant_atoms.setdefault(atom, set()).add(item.repetition)
@@ -463,7 +470,11 @@ def score_run_v3(
                 if passed:
                     continue
                 failure = f"{item.variant}:{item.case_id}:{gate.upper()}"
-                if gate == "no_shared_document":
+                if gate in {
+                    "no_shared_document",
+                    "user_bank_scope_clean",
+                    "project_bank_scope_clean",
+                }:
                     router_hard.setdefault(item.variant, set()).add(failure)
                 else:
                     extractor_hard.setdefault(item.variant, set()).add(failure)
