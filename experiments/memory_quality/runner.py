@@ -150,7 +150,13 @@ def run_smoke(env=None) -> dict:
                 observations.append(build_delivery(delivery, variant, banks).model_dump(mode="json"))
             except (RuntimeError, ValueError, TimeoutError, httpx.HTTPError) as exc:
                 raise RuntimeError(f"smoke delivery variant failed: {variant}") from exc
-        observations.extend({"case_id": item.fault, "variant": item.variant, "repetition": 1, "artifact_relpath": f"reliability/{item.variant}/{item.fault}.json", "hard_gate_flags": {"executed": True, "recovered": run_fault_scenario(item.variant, item.fault).observed in {"completed", "recovered_later", "requires_future_event", "unrecoverable_without_outbox", "rejected_as_stale"}}, "metric_values": {"requests": run_fault_scenario(item.variant, item.fault).requests}} for item in reliability_matrix())
+        for item in reliability_matrix():
+            if item.variant == "official_reliability":
+                bank = banks.create_bank(f"smoke-reliability-{item.fault}")
+                result = run_official_fault_scenario(root, bank, config.base_url, item.fault)
+            else:
+                result = run_fault_scenario(item.variant, item.fault)
+            observations.append({"case_id": item.fault, "variant": item.variant, "repetition": 1, "artifact_relpath": f"reliability/{item.variant}/{item.fault}.json", "hard_gate_flags": {"executed": True, "recovered": result.observed in {"completed", "recovered_later", "requires_future_event", "unrecoverable_without_outbox", "rejected_as_stale", "not_applicable"}}, "metric_values": {"requests": result.requests}})
         _atomic_json(artifact_dir / "manifest.json", manifest)
         with (artifact_dir / "observations.jsonl").open("w") as handle:
             for observation in observations:
