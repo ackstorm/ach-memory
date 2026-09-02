@@ -561,10 +561,44 @@ def score_run_v3(
     )
 
 
-def decide_v3(scorecard: ScorecardV3) -> tuple[ComponentDecision, ...]:
-    """Apply the Phase 5.5 per-component survival rule to V3 evidence."""
+def score_semantic_repair(
+    observations: Sequence[RunObservation],
+    unblinded: Sequence[UnblindedItem],
+    adjudication: Adjudication,
+    *,
+    expected_units: Mapping[str, Sequence[str]],
+    critical_units: Mapping[str, Sequence[str]],
+    ignored_units: Mapping[str, Sequence[str]] | None = None,
+    critical_rejection_cases: Sequence[str] = (),
+    run_id: str | None = None,
+) -> ScorecardV3:
+    """Score only the two components measured by the repaired semantic run."""
+    complete = score_run_v3(
+        observations,
+        unblinded,
+        adjudication,
+        expected_units=expected_units,
+        critical_units=critical_units,
+        ignored_units=ignored_units,
+        critical_rejection_cases=critical_rejection_cases,
+        consumer_complete=False,
+        run_id=run_id,
+    )
+    return complete.model_copy(
+        update={
+            "components": {
+                component: complete.components[component]
+                for component in ("semantic_extractor", "scope_router")
+            }
+        }
+    )
+
+
+def _decide_v3_components(
+    scorecard: ScorecardV3, components: Sequence[str]
+) -> tuple[ComponentDecision, ...]:
     decisions = []
-    for component in COMPONENTS:
+    for component in components:
         evidence = scorecard.components[component]
         challenger_failures = {
             failure
@@ -610,3 +644,13 @@ def decide_v3(scorecard: ScorecardV3) -> tuple[ComponentDecision, ...]:
             reason_codes=reasons,
         ))
     return tuple(decisions)
+
+
+def decide_v3(scorecard: ScorecardV3) -> tuple[ComponentDecision, ...]:
+    """Apply the Phase 5.5 per-component survival rule to V3 evidence."""
+    return _decide_v3_components(scorecard, COMPONENTS)
+
+
+def decide_semantic_repair(scorecard: ScorecardV3) -> tuple[ComponentDecision, ...]:
+    """Issue rulings only for components the semantic repair measured."""
+    return _decide_v3_components(scorecard, ("semantic_extractor", "scope_router"))

@@ -15,6 +15,7 @@ from experiments.memory_quality.scoring import (
     decide_v2,
     score_run,
     score_run_v2,
+    score_semantic_repair,
     unblind,
 )
 
@@ -339,3 +340,41 @@ def test_v3_keeps_unmeasured_delivery_and_reliability_insufficient():
     assert decisions["delivery_protocol"].ruling == "insufficient_evidence"
     assert decisions["capture_reliability"].ruling == "insufficient_evidence"
     assert decisions["working_state_ordering"].ruling == "insufficient_evidence"
+
+
+def test_semantic_repair_score_contains_only_the_two_measured_components():
+    observations, unblinded, adjudication = _v3_semantic_fixture(
+        case_id="S16",
+        met_by_variant={
+            variant: ()
+            for variant in ("ach_semantic", "native_semantic", "hybrid_semantic")
+        },
+        unsupported_by_variant={"native_semantic": 1},
+        wrong_scope_by_variant={"hybrid_semantic": 1},
+    )
+
+    score = score_semantic_repair(
+        observations,
+        unblinded,
+        adjudication,
+        expected_units={"S16": ("S16-U1",)},
+        critical_units={"S16": ("S16-U1",)},
+        ignored_units={"S16": ("S16-U1",)},
+        critical_rejection_cases=("S16",),
+        run_id="repair-run",
+    )
+
+    assert set(score.components) == {"semantic_extractor", "scope_router"}
+    assert not any(
+        "MISSING_S16-U1" in failure
+        for failure in score.components["semantic_extractor"].hard_gate_failures
+    )
+    assert score.components["semantic_extractor"].challengers[
+        "native_semantic"
+    ].hard_gate_failures == ("native_semantic:S16:UNSUPPORTED_CURRENT",)
+    assert score.components["semantic_extractor"].challengers[
+        "hybrid_semantic"
+    ].hard_gate_failures == ()
+    assert score.components["scope_router"].challengers[
+        "hybrid_semantic"
+    ].hard_gate_failures == ("hybrid_semantic:S16:WRONG_SCOPE",)

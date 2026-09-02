@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import uuid
@@ -18,7 +19,14 @@ from .contracts import (
 )
 from .hindsight import BakeoffConfig, BakeoffRefused, DisposableHindsight
 from .preprocessing import HOST_CANARIES, scan_canaries
-from .scoring import build_blind_packet
+from .scoring import (
+    Adjudication,
+    BlindPacket,
+    build_blind_packet,
+    decide_semantic_repair,
+    score_semantic_repair,
+    unblind,
+)
 from .semantic import run_semantic_case
 
 ROOT = Path(__file__).parent
@@ -177,3 +185,176 @@ def run_semantic_repair(env: Mapping[str, str] | None = None) -> dict[str, objec
         "artifact_dir": str(artifact_dir),
         "cleanup_complete": cleanup_complete,
     }
+
+
+def _semantic_repair_report(scorecard, decisions) -> str:
+    rows = "\n".join(
+        f"| {decision.component} | {decision.ruling} | "
+        f"{','.join(decision.reason_codes)} |"
+        for decision in decisions
+    )
+    return (
+        "# Memory Quality Phase 5.6 — Repaired semantic baseline\n\n"
+        f"Run: `{scorecard.run_id}`. Only semantic extraction and scope routing "
+        "were measured. No production architecture was changed automatically.\n\n"
+        "| Component | Ruling | Reasons |\n"
+        "|---|---|---|\n"
+        f"{rows}\n"
+    )
+
+
+def _assert_safe_score_payloads(payloads: Sequence[str], canaries: Sequence[str]) -> None:
+    forbidden = (
+        *canaries,
+        "mq55-",
+        '"bank_id"',
+        '"mapping"',
+        '"seal"',
+        '"hmac_key"',
+        '"raw_content"',
+        '"transcript"',
+    )
+    if any(value in payload for payload in payloads for value in forbidden):
+        raise BakeoffRefused("semantic repair score contains forbidden material")
+
+
+def score_semantic_repair_artifacts(
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Unblind and score one complete semantic-repair consensus exactly once."""
+    selected_env = os.environ if env is None else env
+    run_id = selected_env.get("HINDSIGHT_BAKEOFF_RUN_ID")
+    if not run_id:
+        raise BakeoffRefused("semantic repair score requires a run ID")
+    artifact_root = Path(
+        selected_env.get("MEMORY_BAKEOFF_ARTIFACT_DIR", ".artifacts/memory-quality")
+    )
+    run_dir = artifact_root / run_id
+    targets = {
+        "scorecard": run_dir / "scorecard.semantic-repair.json",
+        "decisions": run_dir / "decisions.semantic-repair.json",
+        "report": run_dir / "report.semantic-repair.md",
+    }
+    if any(path.exists() for path in targets.values()):
+        raise BakeoffRefused("semantic repair score refuses to overwrite outputs")
+
+    consensus_path = artifact_root / f"{run_id}-adjudication.CONSENSUS.json"
+    expected_consensus = selected_env.get("HINDSIGHT_ADJUDICATION_CONSENSUS_SHA256")
+    if (
+        not expected_consensus
+        or not consensus_path.is_file()
+        or hashlib.sha256(consensus_path.read_bytes()).hexdigest()
+        != expected_consensus
+    ):
+        raise BakeoffRefused("semantic repair score refuses a missing or altered consensus")
+    adjudication = Adjudication.model_validate_json(consensus_path.read_text())
+    if adjudication.run_id != run_id:
+        raise BakeoffRefused("semantic repair score refuses consensus for another run")
+
+    manifest = SemanticRepairManifest.model_validate_json(
+        (run_dir / "manifest.json").read_text()
+    )
+    if manifest.run_id != run_id or not manifest.cleanup_complete:
+        raise BakeoffRefused("semantic repair score requires completed cleanup")
+    observations = tuple(
+        RunObservation.model_validate_json(line)
+        for line in (run_dir / "observations.jsonl").read_text().splitlines()
+        if line.strip()
+    )
+    cases = load_semantic_cases(CORPUS)
+    _validate_semantic_observations(observations, semantic_repair_matrix(cases))
+
+    packet_path = run_dir / "blind-packet.json"
+    packet_before = hashlib.sha256(packet_path.read_bytes()).hexdigest()
+    packet = BlindPacket.model_validate_json(packet_path.read_text())
+    packet_keys = {
+        (item.case_id, item.blind_variant, item.repetition) for item in packet.items
+    }
+    adjudication_keys = {
+        (item.case_id, item.blind_variant, item.repetition)
+        for item in adjudication.items
+    }
+    if (
+        len(packet.items) != 144
+        or len(packet_keys) != 144
+        or len(adjudication.items) != 144
+        or len(adjudication_keys) != 144
+        or packet_keys != adjudication_keys
+    ):
+        raise BakeoffRefused("semantic repair score requires exact 144-item coverage")
+
+    from .runner import _atomic_json, _atomic_text, _measured_hmac_key
+
+    key = _measured_hmac_key(selected_env)
+    rebuilt = build_blind_packet(observations, key)
+    if rebuilt != packet:
+        raise BakeoffRefused("semantic repair score refuses an altered blind packet")
+    mapping_value = selected_env.get("HINDSIGHT_BAKEOFF_MAPPING_PATH")
+    if not mapping_value:
+        raise BakeoffRefused("semantic repair score requires the external mapping")
+    mapping_path = Path(mapping_value)
+    if (
+        not mapping_path.is_file()
+        or mapping_path.resolve().is_relative_to(run_dir.resolve())
+        or mapping_path.stat().st_mode & 0o077
+    ):
+        raise BakeoffRefused("semantic repair score requires a private external mapping")
+    unblinded = unblind(packet, adjudication, mapping_path, key)
+    if hashlib.sha256(packet_path.read_bytes()).hexdigest() != packet_before:
+        raise BakeoffRefused("semantic repair packet changed during validation")
+
+    expected_units = {
+        case.id: tuple(unit.unit_id for unit in case.expected_units) for case in cases
+    }
+    critical_units = {
+        case.id: tuple(unit.unit_id for unit in case.expected_units if unit.critical)
+        for case in cases
+    }
+    ignored_units = {
+        case.id: tuple(
+            unit.unit_id for unit in case.expected_units if unit.scope == "ignore"
+        )
+        for case in cases
+    }
+    critical_rejection_cases = tuple(
+        case.id
+        for case in cases
+        if any(unit.critical and not unit.current for unit in case.expected_units)
+    )
+    scorecard = score_semantic_repair(
+        observations,
+        unblinded,
+        adjudication,
+        expected_units=expected_units,
+        critical_units=critical_units,
+        ignored_units=ignored_units,
+        critical_rejection_cases=critical_rejection_cases,
+        run_id=run_id,
+    )
+    decisions = decide_semantic_repair(scorecard)
+    score_payload = json.dumps(
+        scorecard.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    decision_payload = json.dumps(
+        [item.model_dump(mode="json") for item in decisions],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    report_payload = _semantic_repair_report(scorecard, decisions)
+    canaries = tuple(
+        dict.fromkeys(
+            HOST_CANARIES
+            + tuple(canary for case in cases for canary in case.secret_canaries)
+        )
+    )
+    _assert_safe_score_payloads(
+        (score_payload, decision_payload, report_payload), canaries
+    )
+    _atomic_json(targets["scorecard"], scorecard.model_dump(mode="json"))
+    _atomic_json(
+        targets["decisions"],
+        [item.model_dump(mode="json") for item in decisions],
+    )
+    _atomic_text(targets["report"], report_payload)
+    _protect_artifacts(run_dir)
+    return {name: str(path) for name, path in targets.items()}

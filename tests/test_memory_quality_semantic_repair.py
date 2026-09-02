@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 
 import pytest
@@ -6,10 +8,16 @@ from experiments.memory_quality import runner as runner_module
 from experiments.memory_quality import semantic_repair as repair_module
 from experiments.memory_quality.contracts import RunObservation, load_semantic_cases
 from experiments.memory_quality.hindsight import BakeoffRefused
+from experiments.memory_quality.scoring import (
+    Adjudication,
+    AdjudicationItem,
+    build_blind_packet,
+)
 from experiments.memory_quality.semantic_repair import (
     CORPUS,
     _validate_semantic_observations,
     run_semantic_repair,
+    score_semantic_repair_artifacts,
     semantic_repair_matrix,
 )
 
@@ -206,3 +214,142 @@ def test_semantic_repair_refuses_serialized_canary_and_still_cleans_up(
         for path in run_dir.rglob("*")
         if path.is_file()
     )
+
+
+def _semantic_scoring_fixture(tmp_path):
+    run_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    artifact_root = tmp_path / "artifacts"
+    run_dir = artifact_root / run_id
+    run_dir.mkdir(parents=True)
+    key = b"k" * 32
+    cases = load_semantic_cases(CORPUS)
+    observations = []
+    mapping = {}
+    for index, (case_id, variant, repetition) in enumerate(
+        semantic_repair_matrix(cases)
+    ):
+        opaque = f"blind/outputs/o-{index:03d}.json"
+        target = run_dir / opaque
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('{"claims":[]}')
+        observation = _observation(case_id, variant, repetition).model_copy(
+            update={
+                "artifact_relpath": opaque,
+                "hard_gate_flags": {
+                    "executed": True,
+                    "no_canary": True,
+                    "no_shared_document": variant != "native_semantic",
+                },
+            }
+        )
+        observations.append(observation)
+        mapping[opaque] = {
+            "case_id": case_id,
+            "variant": variant,
+            "repetition": repetition,
+        }
+    packet = build_blind_packet(observations, key)
+    units = {
+        case.id: tuple(
+            unit.unit_id for unit in case.expected_units if unit.scope != "ignore"
+        )
+        for case in cases
+    }
+    adjudication = Adjudication(
+        run_id=run_id,
+        items=tuple(
+            AdjudicationItem(
+                case_id=item.case_id,
+                blind_variant=item.blind_variant,
+                repetition=item.repetition,
+                required_units_met=units[item.case_id],
+                unsupported_current_claims=0,
+                wrong_scope_claims=0,
+                notes_code="NONE",
+            )
+            for item in packet.items
+        ),
+    )
+    consensus_path = artifact_root / f"{run_id}-adjudication.CONSENSUS.json"
+    consensus_path.write_text(adjudication.model_dump_json())
+    (run_dir / "blind-packet.json").write_text(packet.model_dump_json())
+    (run_dir / "observations.jsonl").write_text(
+        "\n".join(item.model_dump_json() for item in observations) + "\n"
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "mode": "semantic_repair",
+                "hindsight_version": "0.9.2",
+                "official_package_version": "0.5.1",
+                "semantic_digest": "fixture",
+                "observation_count": 144,
+                "disposable_bank_count": 144,
+                "native_retain_count": 48,
+                "cleanup_complete": True,
+                "mutating_requests": 336,
+            }
+        )
+    )
+    encoded = json.dumps(mapping, sort_keys=True, separators=(",", ":")).encode()
+    mapping_path = tmp_path / "mapping.json"
+    mapping_path.write_text(
+        json.dumps(
+            {
+                "mapping": mapping,
+                "seal": hmac.new(key, encoded, hashlib.sha256).hexdigest(),
+            }
+        )
+    )
+    mapping_path.chmod(0o600)
+    env = {
+        "MEMORY_BAKEOFF_ARTIFACT_DIR": str(artifact_root),
+        "HINDSIGHT_BAKEOFF_RUN_ID": run_id,
+        "HINDSIGHT_BAKEOFF_HMAC_KEY": key.hex(),
+        "HINDSIGHT_BAKEOFF_MAPPING_PATH": str(mapping_path),
+        "HINDSIGHT_ADJUDICATION_CONSENSUS_SHA256": hashlib.sha256(
+            consensus_path.read_bytes()
+        ).hexdigest(),
+    }
+    return env, run_dir, consensus_path
+
+
+def test_semantic_repair_scoring_validates_consensus_and_writes_only_semantic_decisions(
+    tmp_path,
+):
+    env, run_dir, _ = _semantic_scoring_fixture(tmp_path)
+
+    result = score_semantic_repair_artifacts(env)
+
+    decisions = json.loads((run_dir / "decisions.semantic-repair.json").read_text())
+    scorecard = json.loads((run_dir / "scorecard.semantic-repair.json").read_text())
+    assert set(result) == {"scorecard", "decisions", "report"}
+    assert set(scorecard["components"]) == {"semantic_extractor", "scope_router"}
+    assert {item["component"] for item in decisions} == {
+        "semantic_extractor",
+        "scope_router",
+    }
+    with pytest.raises(BakeoffRefused, match="refuses to overwrite"):
+        score_semantic_repair_artifacts(env)
+
+
+def test_semantic_repair_scoring_refuses_consensus_sha_mismatch(tmp_path):
+    env, _, _ = _semantic_scoring_fixture(tmp_path)
+    env["HINDSIGHT_ADJUDICATION_CONSENSUS_SHA256"] = "0" * 64
+
+    with pytest.raises(BakeoffRefused, match="consensus"):
+        score_semantic_repair_artifacts(env)
+
+
+def test_semantic_repair_scoring_refuses_incomplete_consensus(tmp_path):
+    env, _, consensus_path = _semantic_scoring_fixture(tmp_path)
+    payload = json.loads(consensus_path.read_text())
+    payload["items"].pop()
+    consensus_path.write_text(json.dumps(payload))
+    env["HINDSIGHT_ADJUDICATION_CONSENSUS_SHA256"] = hashlib.sha256(
+        consensus_path.read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(BakeoffRefused, match="144-item"):
+        score_semantic_repair_artifacts(env)
