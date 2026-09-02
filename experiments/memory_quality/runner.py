@@ -27,7 +27,16 @@ from .reliability import (
     run_official_fault_scenario,
     run_worker_boundary_verification,
 )
-from .scoring import Adjudication, BlindPacket, build_blind_packet, decide, score_run, unblind
+from .scoring import (
+    Adjudication,
+    BlindPacket,
+    build_blind_packet,
+    decide,
+    decide_v2,
+    score_run,
+    score_run_v2,
+    unblind,
+)
 from .semantic import run_semantic_case
 from .upstream import OfficialRuntime, verify_official_source
 
@@ -348,6 +357,64 @@ def score_artifacts() -> dict:
     return {"scorecard": str(run_dir / "scorecard.json"), "decisions": str(run_dir / "decisions.json")}
 
 
+def rescore_v2() -> dict:
+    run_dir = _run_dir()
+    expected_consensus = "04717dfe9b08ae165c3aafb52e6ef2e1d72d22dd09a0be44f1cf979b61a13633"
+    consensus_path = run_dir.parent / f"{run_dir.name}-adjudication.CONSENSUS.json"
+    if not consensus_path.is_file() or hashlib.sha256(consensus_path.read_bytes()).hexdigest() != expected_consensus:
+        raise SystemExit("rescore-v2 refuses a missing or altered consensus")
+    adjudication = Adjudication.model_validate_json((run_dir / "adjudication.json").read_text())
+    observation_path = run_dir / "observations.jsonl"
+    observations = []
+    for line in observation_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line)
+        # The frozen pilot/run writer carried legacy measurement fields at the
+        # top level. Normalize them in memory; the frozen evidence is not
+        # rewritten and no new experiment is performed.
+        metrics = dict(raw.get("metric_values") or {})
+        for source, target in (("latency_ms", "duration_ms"), ("input_tokens", "input_tokens"), ("output_tokens", "output_tokens")):
+            if source in raw and target not in metrics and raw[source] is not None:
+                metrics[target] = raw[source]
+        observations.append(RunObservation.model_validate({key: raw[key] for key in ("case_id", "variant", "repetition", "artifact_relpath", "hard_gate_flags", "warning_codes") if key in raw} | {"metric_values": metrics}))
+    if len(observations) != 319:
+        raise SystemExit("rescore-v2 requires exactly 319 frozen observations")
+    observation_keys = [(item.case_id, item.variant, item.repetition) for item in observations]
+    if len(set(observation_keys)) != len(observation_keys):
+        raise SystemExit("rescore-v2 refuses duplicate observations")
+    if any(item.hard_gate_flags.get("executed") is False for item in observations):
+        raise SystemExit("rescore-v2 refuses unexecuted observations")
+    key = _measured_hmac_key(os.environ)
+    packet = BlindPacket.model_validate_json((run_dir / "blind-packet.json").read_text())
+    packet_digest = hashlib.sha256((run_dir / "blind-packet.json").read_bytes()).hexdigest()
+    if adjudication.run_id != run_dir.name:
+        raise SystemExit("rescore-v2 refuses adjudication for another run")
+    semantic_packet_keys = {
+        (item.case_id, item.blind_variant, item.repetition)
+        for item in packet.items
+    }
+    adjudication_keys = {
+        (item.case_id, item.blind_variant, item.repetition)
+        for item in adjudication.items
+    }
+    if len(packet.items) != 144 or len(adjudication.items) != 144 or semantic_packet_keys != adjudication_keys:
+        raise SystemExit("rescore-v2 requires exactly 144 adjudicated semantic items")
+    mapping_path = Path(os.environ.get("HINDSIGHT_BAKEOFF_MAPPING_PATH", run_dir.parent / ".private" / f"{run_dir.name}.mapping.json"))
+    unblinded = unblind(packet, adjudication, mapping_path, key)
+    expected_units = {case.id: tuple(unit.unit_id for unit in case.expected_units) for case in load_semantic_cases(ROOT / "corpus/semantic.jsonl")}
+    if hashlib.sha256((run_dir / "blind-packet.json").read_bytes()).hexdigest() != packet_digest:
+        raise SystemExit("rescore-v2 packet changed during validation")
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    scorecard = score_run_v2(observations, unblinded, adjudication, expected_units=expected_units, consumer_complete=bool(manifest.get("consumer_complete", False)), run_id=run_dir.name)
+    decisions = decide_v2(scorecard)
+    _atomic_json(run_dir / "scorecard.v2.json", scorecard.model_dump(mode="json"))
+    _atomic_json(run_dir / "decisions.v2.json", [item.model_dump(mode="json") for item in decisions])
+    report = "# Memory Quality Phase 5.5 — v2\n\n| Component | Ruling | Evidence cases | Reasons |\n|---|---|---|---|\n" + "\n".join(f"| {item.component} | {item.ruling} | {','.join(item.evidence_case_ids)} | {','.join(item.reason_codes)} |" for item in decisions) + "\n"
+    (run_dir / "report.v2.md").write_text(report)
+    return {"scorecard": str(run_dir / "scorecard.v2.json"), "decisions": str(run_dir / "decisions.v2.json"), "report": str(run_dir / "report.v2.md")}
+
+
 def render_report() -> Path:
     run_dir = _run_dir()
     path = run_dir / "decisions.json"
@@ -364,7 +431,7 @@ def render_report() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m experiments.memory_quality.runner")
-    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "export-adjudication", "score", "cleanup", "report"))
+    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "export-adjudication", "score", "rescore-v2", "cleanup", "report"))
     args = parser.parse_args(argv)
     if args.command == "preflight":
         try:
@@ -380,6 +447,9 @@ def main(argv=None) -> int:
         return 0
     if args.command == "export-adjudication":
         print(export_adjudication())
+        return 0
+    if args.command == "rescore-v2":
+        print(json.dumps(rescore_v2(), sort_keys=True))
         return 0
     if args.command == "cleanup":
         run_id = os.environ.get("HINDSIGHT_BAKEOFF_RUN_ID")
