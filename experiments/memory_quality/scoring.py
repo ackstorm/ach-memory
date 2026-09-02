@@ -97,6 +97,17 @@ class ScorecardV2(BaseModel):
     components: dict[str, ComponentScoreV2]
 
 
+class ScorecardV3(BaseModel):
+    """Component scorecard with attributable gates and named miss atoms."""
+
+    model_config = ConfigDict(extra="forbid")
+    scorecard_version: Literal["3"] = "3"
+    run_id: str
+    observation_count: int
+    consumer_complete: bool
+    components: dict[str, ComponentScoreV2]
+
+
 class VariantScore(BaseModel):
     model_config = ConfigDict(extra="forbid")
     blind_variant: str
@@ -317,4 +328,282 @@ def decide_v2(scorecard: ScorecardV2) -> tuple[ComponentDecision, ...]:
         else:
             ruling, reason = "keep", f"{component.upper()}_BASELINE_COMPARISON"
         decisions.append(ComponentDecision(component=component, ruling=ruling, approval_required=any(challenger.approval_required for challenger in evidence.challengers.values()) or ruling == "insufficient_evidence", evidence_case_ids=evidence.evidence_case_ids, reason_codes=(reason,)))
+    return tuple(decisions)
+
+
+def _challenger_score_v3(
+    variant: str,
+    baseline_atoms: Mapping[str, set[int]],
+    atoms: Mapping[str, set[int]],
+    hard_gate_failures: Sequence[str],
+    observations: Sequence[RunObservation],
+) -> ChallengerScoreV2:
+    """Compare exact miss atoms so unlike errors in one case cannot cancel."""
+    additional = {
+        atom: repetitions - baseline_atoms.get(atom, set())
+        for atom, repetitions in atoms.items()
+    }
+    additional = {atom: repetitions for atom, repetitions in additional.items() if repetitions}
+    quality = tuple(sorted(additional))
+    repeatable = tuple(sorted(atom for atom, repetitions in additional.items() if len(repetitions) >= 2))
+    variant_observations = [item for item in observations if item.variant == variant]
+    latencies = [float(item.metric_values["duration_ms"]) for item in variant_observations if item.metric_values.get("duration_ms") is not None]
+    input_tokens = [int(item.metric_values["input_tokens"]) for item in variant_observations if item.metric_values.get("input_tokens") is not None]
+    output_tokens = [int(item.metric_values["output_tokens"]) for item in variant_observations if item.metric_values.get("output_tokens") is not None]
+    evidence_cases = {
+        atom.split(":", 1)[0]
+        for atom in (*baseline_atoms, *atoms)
+    }
+    return ChallengerScoreV2(
+        variant=variant,
+        non_inferior=not repeatable and not hard_gate_failures,
+        approval_required=bool(quality or hard_gate_failures),
+        hard_gate_failures=tuple(sorted(set(hard_gate_failures))),
+        quality_regressions=quality,
+        repeatable_regressions=repeatable,
+        evidence_case_ids=tuple(sorted(evidence_cases)),
+        repetitions_observed=len(variant_observations),
+        latency_ms=tuple(latencies),
+        input_tokens=tuple(input_tokens),
+        output_tokens=tuple(output_tokens),
+    )
+
+
+def _empty_component(component: str, *, observation_count: int = 0, case_ids: Sequence[str] = ()) -> ComponentScoreV2:
+    return ComponentScoreV2(
+        component=component,
+        observation_count=observation_count,
+        evidence_case_ids=tuple(sorted(set(case_ids))),
+        hard_gate_failures=(),
+        quality_misses=(),
+        median_latency_ms=None,
+        p95_latency_ms=None,
+        total_input_tokens=None,
+        total_output_tokens=None,
+        evidence_available=False,
+    )
+
+
+def score_run_v3(
+    observations: Sequence[RunObservation],
+    unblinded: Sequence[UnblindedItem],
+    adjudication: Adjudication,
+    *,
+    expected_units: Mapping[str, Sequence[str]],
+    critical_units: Mapping[str, Sequence[str]],
+    critical_rejection_cases: Sequence[str] = (),
+    consumer_complete: bool,
+    run_id: str | None = None,
+) -> ScorecardV3:
+    """Rescore frozen evidence without collapsing component or failure identity."""
+    adjudication_by_key = {
+        (item.case_id, item.blind_variant, item.repetition): item
+        for item in adjudication.items
+    }
+    observation_by_artifact = {item.artifact_relpath: item for item in observations}
+    critical_rejections = set(critical_rejection_cases)
+    semantic_observations = [item for item in observations if item.variant in ADJUDICABLE_VARIANTS]
+    extractor_atoms: dict[str, dict[str, set[int]]] = {}
+    router_atoms: dict[str, dict[str, set[int]]] = {}
+    extractor_hard: dict[str, set[str]] = {}
+    router_hard: dict[str, set[str]] = {}
+
+    for item in unblinded:
+        adjudicated = adjudication_by_key.get((item.case_id, item.blind_variant, item.repetition))
+        if adjudicated is None:
+            raise ValueError("unblinded item has no matching adjudication")
+        expected = set(expected_units.get(item.case_id, ()))
+        critical = set(critical_units.get(item.case_id, ()))
+        missing = expected - set(adjudicated.required_units_met)
+        variant_atoms = extractor_atoms.setdefault(item.variant, {})
+        for unit in sorted(missing):
+            atom = f"{item.case_id}:MISSING_{unit}"
+            variant_atoms.setdefault(atom, set()).add(item.repetition)
+            if unit in critical:
+                extractor_hard.setdefault(item.variant, set()).add(f"{item.variant}:{atom}")
+        if adjudicated.unsupported_current_claims:
+            atom = f"{item.case_id}:UNSUPPORTED_CURRENT"
+            variant_atoms.setdefault(atom, set()).add(item.repetition)
+            if item.case_id in critical_rejections:
+                extractor_hard.setdefault(item.variant, set()).add(f"{item.variant}:{atom}")
+        if adjudicated.notes_code == "ADJUDICATION_BLOCKED":
+            atom = f"{item.case_id}:ADJUDICATION_BLOCKED"
+            variant_atoms.setdefault(atom, set()).add(item.repetition)
+            extractor_hard.setdefault(item.variant, set()).add(f"{item.variant}:{atom}")
+        if adjudicated.wrong_scope_claims:
+            atom = f"{item.case_id}:WRONG_SCOPE"
+            router_atoms.setdefault(item.variant, {}).setdefault(atom, set()).add(item.repetition)
+            router_hard.setdefault(item.variant, set()).add(f"{item.variant}:{atom}")
+
+        observation = observation_by_artifact.get(item.artifact_relpath)
+        if observation is not None:
+            for gate, passed in observation.hard_gate_flags.items():
+                if passed:
+                    continue
+                failure = f"{item.variant}:{item.case_id}:{gate.upper()}"
+                if gate == "no_shared_document":
+                    router_hard.setdefault(item.variant, set()).add(failure)
+                else:
+                    extractor_hard.setdefault(item.variant, set()).add(failure)
+
+    semantic_variants = {item.variant for item in unblinded}
+    semantic_evidence = bool(unblinded) and semantic_variants == ADJUDICABLE_VARIANTS
+    semantic_cases = tuple(sorted({item.case_id for item in unblinded}))
+    semantic_latencies = [float(item.metric_values["duration_ms"]) for item in semantic_observations if item.metric_values.get("duration_ms") is not None]
+
+    def semantic_component(
+        component: str,
+        atoms_by_variant: Mapping[str, Mapping[str, set[int]]],
+        hard_by_variant: Mapping[str, set[str]],
+    ) -> ComponentScoreV2:
+        baseline = atoms_by_variant.get("ach_semantic", {})
+        challengers = {
+            variant: _challenger_score_v3(
+                variant,
+                baseline,
+                atoms_by_variant.get(variant, {}),
+                tuple(hard_by_variant.get(variant, set())),
+                semantic_observations,
+            )
+            for variant in sorted(ADJUDICABLE_VARIANTS - {"ach_semantic"})
+        }
+        return ComponentScoreV2(
+            component=component,
+            observation_count=len(semantic_observations),
+            evidence_case_ids=semantic_cases,
+            hard_gate_failures=tuple(sorted({failure for failures in hard_by_variant.values() for failure in failures})),
+            quality_misses=tuple(sorted({atom for atoms in atoms_by_variant.values() for atom in atoms})),
+            median_latency_ms=_percentile(semantic_latencies, 0.5),
+            p95_latency_ms=_percentile(semantic_latencies, 0.95),
+            total_input_tokens=None,
+            total_output_tokens=None,
+            evidence_available=semantic_evidence,
+            challengers=challengers,
+        )
+
+    components: dict[str, ComponentScoreV2] = {
+        "semantic_extractor": semantic_component("semantic_extractor", extractor_atoms, extractor_hard),
+        "scope_router": semantic_component("scope_router", router_atoms, router_hard),
+    }
+
+    preprocessing = [item for item in observations if item.variant.endswith("preprocess")]
+    preprocessing_variants = {item.variant for item in preprocessing}
+    preprocessing_hard: dict[str, set[str]] = {}
+    for item in preprocessing:
+        for gate, passed in item.hard_gate_flags.items():
+            if not passed:
+                preprocessing_hard.setdefault(item.variant, set()).add(
+                    f"{item.variant}:{item.case_id}:{gate.upper()}"
+                )
+    preprocessing_latencies = [float(item.metric_values["duration_ms"]) for item in preprocessing if item.metric_values.get("duration_ms") is not None]
+    preprocess_challengers = {
+        variant: _challenger_score_v3(
+            variant,
+            {},
+            {},
+            tuple(preprocessing_hard.get(variant, set())),
+            preprocessing,
+        )
+        for variant in ("official_preprocess", "hybrid_preprocess")
+    }
+    components["preprocessing"] = ComponentScoreV2(
+        component="preprocessing",
+        observation_count=len(preprocessing),
+        evidence_case_ids=tuple(sorted({item.case_id for item in preprocessing})),
+        hard_gate_failures=tuple(sorted({failure for failures in preprocessing_hard.values() for failure in failures})),
+        quality_misses=(),
+        median_latency_ms=_percentile(preprocessing_latencies, 0.5),
+        p95_latency_ms=_percentile(preprocessing_latencies, 0.95),
+        total_input_tokens=None,
+        total_output_tokens=None,
+        evidence_available=preprocessing_variants == {"ach_preprocess", "official_preprocess", "hybrid_preprocess"},
+        challengers=preprocess_challengers,
+    )
+
+    delivery = [item for item in observations if item.variant in {"ach_index", "ach_full", "official_reflect", "official_pages", "hybrid_delivery"}]
+    delivery_cases = tuple(sorted({item.case_id for item in delivery}))
+    delivery_score = _empty_component("delivery_protocol", observation_count=len(delivery), case_ids=delivery_cases)
+    if consumer_complete:
+        delivery_failures = tuple(sorted(
+            f"{item.variant}:{item.case_id}:{gate.upper()}"
+            for item in delivery
+            for gate, passed in item.hard_gate_flags.items()
+            if not passed
+        ))
+        delivery_score = delivery_score.model_copy(update={
+            "hard_gate_failures": delivery_failures,
+            "evidence_available": len(delivery) == 150,
+        })
+    components["delivery_protocol"] = delivery_score
+    components["profile_compiler"] = delivery_score.model_copy(update={"component": "profile_compiler"})
+
+    reliability = [item for item in observations if item.variant in {"ach_reliability", "official_reliability"}]
+    reliability_cases = tuple(sorted({item.case_id for item in reliability}))
+    reliability_score = _empty_component("capture_reliability", observation_count=len(reliability), case_ids=reliability_cases)
+    components["capture_reliability"] = reliability_score
+    components["working_state_ordering"] = reliability_score.model_copy(update={"component": "working_state_ordering"})
+
+    # The run contains one host fixture and no adapter challenger. Preprocessing
+    # evidence cannot be repurposed as comparative host-adapter evidence.
+    components["host_adapters"] = _empty_component(
+        "host_adapters",
+        observation_count=len(preprocessing),
+        case_ids=tuple(item.case_id for item in preprocessing),
+    )
+    return ScorecardV3(
+        run_id=run_id or adjudication.run_id,
+        observation_count=len(observations),
+        consumer_complete=consumer_complete,
+        components=components,
+    )
+
+
+def decide_v3(scorecard: ScorecardV3) -> tuple[ComponentDecision, ...]:
+    """Apply the Phase 5.5 per-component survival rule to V3 evidence."""
+    decisions = []
+    for component in COMPONENTS:
+        evidence = scorecard.components[component]
+        challenger_failures = {
+            failure
+            for challenger in evidence.challengers.values()
+            for failure in challenger.hard_gate_failures
+        }
+        baseline_failures = set(evidence.hard_gate_failures) - challenger_failures
+        if component == "host_adapters" and not evidence.evidence_available:
+            ruling, reasons = "insufficient_evidence", ("NO_COMPARATIVE_HOST_ADAPTER_EVIDENCE",)
+        elif component in {"profile_compiler", "delivery_protocol"} and not scorecard.consumer_complete:
+            ruling, reasons = "insufficient_evidence", ("NO_CONSUMER_EVIDENCE",)
+        elif component == "capture_reliability" and not evidence.evidence_available:
+            ruling, reasons = "insufficient_evidence", ("NO_STRUCTURED_RELIABILITY_OUTCOMES",)
+        elif component == "working_state_ordering" and not evidence.evidence_available:
+            ruling, reasons = "insufficient_evidence", ("NO_STRUCTURED_ORDERING_OUTCOMES",)
+        elif not evidence.evidence_available:
+            ruling, reasons = "insufficient_evidence", (f"INSUFFICIENT_{component.upper()}_EVIDENCE",)
+        elif baseline_failures:
+            ruling, reasons = "add_follow_up_guard", ("BASELINE_HARD_GATE_FAILURE",)
+        elif component == "preprocessing" and any(
+            "NO_CANARY" in failure
+            for challenger in evidence.challengers.values()
+            for failure in challenger.hard_gate_failures
+        ):
+            ruling, reasons = "keep", ("OFFICIAL_PREPROCESS_SECRET_GATE_FAILURE",)
+        elif any(not challenger.non_inferior for challenger in evidence.challengers.values()):
+            reason = "CHALLENGER_HARD_GATE_FAILURE" if challenger_failures else "REPEATABLE_NAMED_ATOM_REGRESSION"
+            ruling, reasons = "keep", (reason,)
+        elif component == "semantic_extractor" and evidence.challengers.get("native_semantic") and not evidence.challengers["native_semantic"].approval_required:
+            ruling, reasons = "replace_with_official", ("OFFICIAL_NON_INFERIOR",)
+        elif component in {"semantic_extractor", "scope_router"} and evidence.challengers.get("hybrid_semantic") and not evidence.challengers["hybrid_semantic"].approval_required:
+            ruling, reasons = "simplify_to_hybrid", ("HYBRID_NON_INFERIOR",)
+        else:
+            ruling, reasons = "keep", (f"{component.upper()}_BASELINE_COMPARISON",)
+        approval_required = ruling == "insufficient_evidence" or bool(baseline_failures) or any(
+            challenger.approval_required for challenger in evidence.challengers.values()
+        )
+        decisions.append(ComponentDecision(
+            component=component,
+            ruling=ruling,
+            approval_required=approval_required,
+            evidence_case_ids=evidence.evidence_case_ids,
+            reason_codes=reasons,
+        ))
     return tuple(decisions)

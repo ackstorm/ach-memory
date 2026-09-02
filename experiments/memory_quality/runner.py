@@ -33,8 +33,10 @@ from .scoring import (
     build_blind_packet,
     decide,
     decide_v2,
+    decide_v3,
     score_run,
     score_run_v2,
+    score_run_v3,
     unblind,
 )
 from .semantic import run_semantic_case
@@ -130,6 +132,16 @@ def _atomic_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
         json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    os.replace(temporary, path)
+
+
+def _atomic_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+        handle.write(value)
         handle.flush()
         os.fsync(handle.fileno())
         temporary = Path(handle.name)
@@ -415,6 +427,150 @@ def rescore_v2() -> dict:
     return {"scorecard": str(run_dir / "scorecard.v2.json"), "decisions": str(run_dir / "decisions.v2.json"), "report": str(run_dir / "report.v2.md")}
 
 
+def _render_v3_report(scorecard, decisions) -> str:
+    rows = []
+    details = []
+    for decision in decisions:
+        evidence = scorecard.components[decision.component]
+        rows.append(
+            f"| {decision.component} | {decision.ruling} | "
+            f"{','.join(decision.reason_codes)} | {evidence.observation_count} |"
+        )
+        hard = ", ".join(evidence.hard_gate_failures) or "none"
+        details.extend((
+            f"### {decision.component}",
+            "",
+            f"- Evidence available: `{str(evidence.evidence_available).lower()}`",
+            f"- Hard-gate failures: {hard}",
+        ))
+        for variant, challenger in sorted(evidence.challengers.items()):
+            details.append(
+                f"- `{variant}`: non-inferior=`{str(challenger.non_inferior).lower()}`; "
+                f"hard gates={','.join(challenger.hard_gate_failures) or 'none'}; "
+                f"repeatable regressions={','.join(challenger.repeatable_regressions) or 'none'}"
+            )
+        details.append("")
+    return (
+        "# Memory Quality Phase 5.5 — V3\n\n"
+        f"Frozen run: `{scorecard.run_id}`. This report only rescores existing evidence; "
+        "it does not rerun Hindsight, model inference, or adjudication.\n\n"
+        "| Component | Ruling | Reasons | Observations |\n"
+        "|---|---|---|---:|\n"
+        + "\n".join(rows)
+        + "\n\n## Attributable evidence\n\n"
+        + "\n".join(details)
+    )
+
+
+def _write_v3_artifacts(run_dir: Path, scorecard, decisions) -> dict[str, str]:
+    targets = {
+        "scorecard": run_dir / "scorecard.v3.json",
+        "decisions": run_dir / "decisions.v3.json",
+        "report": run_dir / "report.v3.md",
+    }
+    if any(path.exists() for path in targets.values()):
+        raise SystemExit("rescore-v3 refuses to overwrite existing V3 artifacts")
+    _atomic_json(targets["scorecard"], scorecard.model_dump(mode="json"))
+    _atomic_json(targets["decisions"], [item.model_dump(mode="json") for item in decisions])
+    _atomic_text(targets["report"], _render_v3_report(scorecard, decisions))
+    return {name: str(path) for name, path in targets.items()}
+
+
+def rescore_v3() -> dict:
+    """Correct V2's attribution errors using only the immutable frozen run."""
+    run_dir = _run_dir()
+    expected_consensus = "04717dfe9b08ae165c3aafb52e6ef2e1d72d22dd09a0be44f1cf979b61a13633"
+    consensus_path = run_dir.parent / f"{run_dir.name}-adjudication.CONSENSUS.json"
+    if not consensus_path.is_file() or hashlib.sha256(consensus_path.read_bytes()).hexdigest() != expected_consensus:
+        raise SystemExit("rescore-v3 refuses a missing or altered consensus")
+    adjudication = Adjudication.model_validate_json(consensus_path.read_text())
+    if adjudication.run_id != run_dir.name:
+        raise SystemExit("rescore-v3 refuses consensus for another run")
+
+    protected_paths = tuple(
+        run_dir / name
+        for name in (
+            "scorecard.json", "decisions.json", "report.md",
+            "scorecard.v2.json", "decisions.v2.json", "report.v2.md",
+        )
+    )
+    if not all(path.is_file() for path in protected_paths):
+        raise SystemExit("rescore-v3 requires preserved V1 and V2 artifacts")
+    protected_hashes = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in protected_paths}
+
+    observation_path = run_dir / "observations.jsonl"
+    observations = []
+    for line in observation_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line)
+        metrics = dict(raw.get("metric_values") or {})
+        for source, target in (("latency_ms", "duration_ms"), ("input_tokens", "input_tokens"), ("output_tokens", "output_tokens")):
+            if source in raw and target not in metrics and raw[source] is not None:
+                metrics[target] = raw[source]
+        observations.append(RunObservation.model_validate(
+            {key: raw[key] for key in ("case_id", "variant", "repetition", "artifact_relpath", "hard_gate_flags", "warning_codes") if key in raw}
+            | {"metric_values": metrics}
+        ))
+    counts = {
+        "preprocess": sum(item.variant.endswith("preprocess") for item in observations),
+        "semantic": sum(item.variant.endswith("semantic") for item in observations),
+        "delivery": sum(item.variant in {"ach_index", "ach_full", "official_reflect", "official_pages", "hybrid_delivery"} for item in observations),
+        "reliability": sum(item.variant in {"ach_reliability", "official_reliability"} for item in observations),
+    }
+    if counts != {"preprocess": 3, "semantic": 144, "delivery": 150, "reliability": 22} or len(observations) != 319:
+        raise SystemExit("rescore-v3 requires exactly 319 frozen observations")
+    observation_keys = [(item.case_id, item.variant, item.repetition) for item in observations]
+    if len(set(observation_keys)) != len(observation_keys):
+        raise SystemExit("rescore-v3 refuses duplicate observations")
+    if any(item.hard_gate_flags.get("executed") is False for item in observations):
+        raise SystemExit("rescore-v3 refuses unexecuted observations")
+
+    packet_path = run_dir / "blind-packet.json"
+    packet_digest = hashlib.sha256(packet_path.read_bytes()).hexdigest()
+    packet = BlindPacket.model_validate_json(packet_path.read_text())
+    packet_keys = {(item.case_id, item.blind_variant, item.repetition) for item in packet.items}
+    adjudication_keys = {(item.case_id, item.blind_variant, item.repetition) for item in adjudication.items}
+    if len(packet.items) != 144 or len(adjudication.items) != 144 or packet_keys != adjudication_keys:
+        raise SystemExit("rescore-v3 requires exact 144-item packet and consensus coverage")
+
+    key = _measured_hmac_key(os.environ)
+    mapping_path = Path(os.environ.get("HINDSIGHT_BAKEOFF_MAPPING_PATH", run_dir.parent / ".private" / f"{run_dir.name}.mapping.json"))
+    if not mapping_path.is_file() or mapping_path.resolve().is_relative_to(run_dir.resolve()) or mapping_path.stat().st_mode & 0o077:
+        raise SystemExit("rescore-v3 requires a private mapping outside the run root")
+    unblinded = unblind(packet, adjudication, mapping_path, key)
+    if hashlib.sha256(packet_path.read_bytes()).hexdigest() != packet_digest:
+        raise SystemExit("rescore-v3 packet changed during validation")
+
+    semantic_cases = load_semantic_cases(ROOT / "corpus/semantic.jsonl")
+    expected_units = {case.id: tuple(unit.unit_id for unit in case.expected_units) for case in semantic_cases}
+    critical_units = {
+        case.id: tuple(unit.unit_id for unit in case.expected_units if unit.critical)
+        for case in semantic_cases
+    }
+    critical_rejection_cases = tuple(
+        case.id
+        for case in semantic_cases
+        if any(unit.critical and not unit.current for unit in case.expected_units)
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    scorecard = score_run_v3(
+        observations,
+        unblinded,
+        adjudication,
+        expected_units=expected_units,
+        critical_units=critical_units,
+        critical_rejection_cases=critical_rejection_cases,
+        consumer_complete=bool(manifest.get("consumer_complete", False)),
+        run_id=run_dir.name,
+    )
+    decisions = decide_v3(scorecard)
+    result = _write_v3_artifacts(run_dir, scorecard, decisions)
+    if any(hashlib.sha256(path.read_bytes()).hexdigest() != digest for path, digest in protected_hashes.items()):
+        raise SystemExit("rescore-v3 detected a modified V1 or V2 artifact")
+    return result
+
+
 def render_report() -> Path:
     run_dir = _run_dir()
     path = run_dir / "decisions.json"
@@ -431,7 +587,7 @@ def render_report() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m experiments.memory_quality.runner")
-    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "export-adjudication", "score", "rescore-v2", "cleanup", "report"))
+    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "export-adjudication", "score", "rescore-v2", "rescore-v3", "cleanup", "report"))
     args = parser.parse_args(argv)
     if args.command == "preflight":
         try:
@@ -450,6 +606,9 @@ def main(argv=None) -> int:
         return 0
     if args.command == "rescore-v2":
         print(json.dumps(rescore_v2(), sort_keys=True))
+        return 0
+    if args.command == "rescore-v3":
+        print(json.dumps(rescore_v3(), sort_keys=True))
         return 0
     if args.command == "cleanup":
         run_id = os.environ.get("HINDSIGHT_BAKEOFF_RUN_ID")
