@@ -12,3 +12,4 @@ __pycache__/
 !.env.example
 .claude/
 .worktrees/
+/.artifacts/memory-quality/
