@@ -75,3 +75,42 @@ def test_semantic_canonical_input_redacts_declared_fixture_canaries():
     assert "Bearer TOKEN" not in content
     assert "private-key header" not in content
     assert "[redacted]" in content
+
+
+def test_ach_model_contract_failure_is_measured_instead_of_aborting_matrix(tmp_path):
+    case = SemanticCase(
+        id="S02",
+        transcript=(
+            {
+                "role": "user",
+                "text": "The accepted project decision is to use the staged rollout.",
+            },
+        ),
+        expected_units=(),
+        secret_canaries=("CANARY-S02",),
+    )
+
+    class Banks:
+        def create_bank(self, purpose, repetition):
+            return "mq55-test"
+
+        def dry_run_extract(self, bank_id, content, **options):
+            return {
+                "facts": [
+                    {
+                        "text": '{"record":"candidate","text":"staged rollout",'
+                        '"kind":"decision","origin":"stated","subject":"project",'
+                        '"provenance":{"type":"transcript","start":47,"end":104}}'
+                    }
+                ]
+            }
+
+    artifact = tmp_path / "S02.json"
+    observation = run_semantic_case(
+        case, "ach_semantic", 1, Banks(), artifact
+    )
+
+    assert observation.hard_gate_flags["executed"] is True
+    assert observation.hard_gate_flags["valid_output"] is False
+    assert observation.metric_values["claim_count"] == 0
+    assert artifact.read_text() == '{"error_code":"EXTRACTION_FAILED"}\n'

@@ -8,7 +8,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict
 
 from memory.capture import local
-from memory.capture.extractor import build_extraction_prompt
+from memory.capture.extractor import ExtractionFailed, build_extraction_prompt
 
 from .contracts import RunObservation, SemanticCase
 
@@ -98,16 +98,28 @@ def run_semantic_case(
     if banks is None:
         raise ValueError("semantic variants require a fresh disposable bank client")
     bank = banks.create_bank(f"semantic-{case.id}-{variant}", repetition)
+    valid_output = True
     if variant == "ach_semantic":
         from memory.capture.extractor import extract
-        result = extract(_AchHindsightAdapter(banks), bank, content)
-        count = len(result.candidates)
-        scopes = tuple(sorted({candidate.bank_kind for candidate in result.candidates}))
-        detail = {
-            "claims": [candidate.model_dump(mode="json") for candidate in result.candidates],
-            "working_state": result.working_state.model_dump(mode="json") if result.working_state else None,
-            "dropped": result.dropped,
-        }
+
+        try:
+            result = extract(_AchHindsightAdapter(banks), bank, content)
+        except ExtractionFailed:
+            # A provider response that violates the production contract is a
+            # measured semantic failure, not permission to rerun until a
+            # favourable sample appears. Infrastructure errors still abort.
+            valid_output = False
+            count = 0
+            scopes = ()
+            detail = {"error_code": "EXTRACTION_FAILED"}
+        else:
+            count = len(result.candidates)
+            scopes = tuple(sorted({candidate.bank_kind for candidate in result.candidates}))
+            detail = {
+                "claims": [candidate.model_dump(mode="json") for candidate in result.candidates],
+                "working_state": result.working_state.model_dump(mode="json") if result.working_state else None,
+                "dropped": result.dropped,
+            }
     elif variant == "native_semantic":
         receipt = banks.retain_and_wait(bank, content, document_id=f"mq55:{case.id}:{repetition}")
         snapshot = banks.list_bank_objects(bank)
@@ -125,4 +137,4 @@ def run_semantic_case(
     if artifact_path is not None:
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(json.dumps(detail, sort_keys=True, separators=(",", ":")) + "\n")
-    return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags={"no_canary": True, "no_shared_document": variant != "native_semantic"}, metric_values={"byte_count": len(content.encode()), "claim_count": count, "scope_count": len(scopes), "duration_ms": 0}, warning_codes=("NATIVE_SHARED_BASELINE",) if variant == "native_semantic" else ())
+    return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags={"executed": True, "valid_output": valid_output, "no_canary": True, "no_shared_document": variant != "native_semantic"}, metric_values={"byte_count": len(content.encode()), "claim_count": count, "scope_count": len(scopes), "duration_ms": 0}, warning_codes=("NATIVE_SHARED_BASELINE",) if variant == "native_semantic" else ())
