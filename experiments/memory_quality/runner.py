@@ -24,6 +24,7 @@ from .reliability import (
     reliability_matrix,
     run_capture_checkpoint_fault,
     run_fault_scenario,
+    run_official_fault_scenario,
     run_worker_boundary_verification,
 )
 from .scoring import Adjudication, BlindPacket, build_blind_packet, decide, score_run, unblind
@@ -250,7 +251,15 @@ def run_full(env=None) -> dict:
                     })
                     observations.append(delivery.model_copy(update={"latency_ms": repetition}).model_dump(mode="json") | {"repetition": repetition, "artifact_relpath": f"delivery/{case.id}/{variant}-{repetition}.json", "hard_gate_flags": {"executed": True}, "metric_values": {}})
         for item in reliability_matrix():
-            if item.variant == "ach_reliability" and item.fault in {"death_before_send", "death_waiting_for_ack", "lost_ack_after_commit", "rate_limited", "hindsight_offline_after_ack", "future_host_event"}:
+            if item.variant == "official_reliability":
+                official_bank = banks.create_bank(f"reliability-{item.fault}")
+                result = run_official_fault_scenario(
+                    Path(env.get("HINDSIGHT_CODING_AGENTS_DIR", ROOT.parents[2] / "hindsight/hindsight-integrations/coding-agents")),
+                    official_bank,
+                    config.base_url,
+                    item.fault,
+                )
+            elif item.variant == "ach_reliability" and item.fault in {"death_before_send", "death_waiting_for_ack", "lost_ack_after_commit", "rate_limited", "hindsight_offline_after_ack", "future_host_event"}:
                 result = run_capture_checkpoint_fault(
                     item.fault,
                     hook_event={"transcript_path": str(ROOT / "corpus/hosts/claude.jsonl"), "session_id": f"mq55-{item.fault}", "cwd": str(ROOT)},
