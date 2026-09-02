@@ -147,9 +147,14 @@ class DisposableHindsight:
     def dry_run_extract(self, bank_id_value: str, content: str, **options) -> dict:
         self._check_bank(bank_id_value)
         payload = {"content": content, **options}
-        response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/memories/dry-run-extract", headers=self._headers(), json=payload)
-        response.raise_for_status()
-        return response.json()
+        url = f"{self.config.base_url}/v1/default/banks/{bank_id_value}/memories/dry-run-extract"
+        for attempt in range(2):
+            response = self._client.post(url, headers=self._headers(), json=payload)
+            if response.status_code < 500 or attempt:
+                response.raise_for_status()
+                return response.json()
+            time.sleep(0.25)
+        raise AssertionError("unreachable")
 
     def reflect(self, bank_id_value: str, query: str, **options) -> dict:
         self._check_bank(bank_id_value)
