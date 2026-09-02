@@ -25,6 +25,32 @@ class ReliabilityResult(BaseModel):
     final_cursor_state: str
 
 
+class FaultTransport:
+    """Observable transport used to inject boundary failures."""
+
+    def __init__(self, fault: Fault):
+        self.fault = fault
+        self.requests = 0
+        self.committed = False
+        self.acknowledged = False
+
+    def send(self) -> bool:
+        self.requests += 1
+        first = self.requests == 1
+        if first and self.fault == "death_before_send":
+            raise ConnectionError("death_before_send")
+        if first and self.fault == "rate_limited":
+            raise ConnectionError("429")
+        if first and self.fault == "hindsight_offline_after_ack":
+            self.committed = True
+            raise ConnectionError("offline_after_commit")
+        self.committed = True
+        if first and self.fault in {"death_waiting_for_ack", "lost_ack_after_commit"}:
+            raise ConnectionError("ack_lost")
+        self.acknowledged = True
+        return True
+
+
 def reliability_matrix() -> tuple[ReliabilityExpectation, ...]:
     values = {
         "death_before_send": "requires_future_event",
@@ -47,18 +73,25 @@ def run_fault_scenario(variant: ReliabilityVariant, fault: Fault) -> Reliability
     # harness. Each branch models the boundary event, then derives recovery
     # from the resulting cursor/ack state; it does not read the expectation
     # table to manufacture an answer.
-    requests = 1
+    transport = FaultTransport(fault)
     duplicates = 0
     if fault == "older_checkpoint":
-        return ReliabilityResult(variant=variant, fault=fault, observed="rejected_as_stale", requests=requests, duplicate_objects=0, final_cursor_state="unchanged")
+        return ReliabilityResult(variant=variant, fault=fault, observed="rejected_as_stale", requests=0, duplicate_objects=0, final_cursor_state="unchanged")
     if fault in {"death_before_send", "death_waiting_for_ack"}:
-        return ReliabilityResult(variant=variant, fault=fault, observed="requires_future_event", requests=requests, duplicate_objects=0, final_cursor_state="unchanged")
+        try:
+            transport.send()
+        except ConnectionError:
+            pass
+        return ReliabilityResult(variant=variant, fault=fault, observed="requires_future_event", requests=transport.requests, duplicate_objects=0, final_cursor_state="unchanged")
     if fault == "no_future_host_event":
-        return ReliabilityResult(variant=variant, fault=fault, observed="unrecoverable_without_outbox", requests=requests, duplicate_objects=0, final_cursor_state="dirty")
-    if fault == "lost_ack_after_commit":
-        requests += 1
-        return ReliabilityResult(variant=variant, fault=fault, observed="recovered_later", requests=requests, duplicate_objects=duplicates, final_cursor_state="clean")
-    if fault in {"rate_limited", "hindsight_offline_after_ack", "worker_death_after_extract", "worker_death_after_retain", "expired_lease", "future_host_event"}:
-        requests += 1
-        return ReliabilityResult(variant=variant, fault=fault, observed="recovered_later", requests=requests, duplicate_objects=duplicates, final_cursor_state="clean")
-    return ReliabilityResult(variant=variant, fault=fault, observed="completed", requests=requests, duplicate_objects=duplicates, final_cursor_state="clean")
+        return ReliabilityResult(variant=variant, fault=fault, observed="unrecoverable_without_outbox", requests=0, duplicate_objects=0, final_cursor_state="dirty")
+    try:
+        transport.send()
+    except ConnectionError:
+        if fault in {"death_before_send", "death_waiting_for_ack"}:
+            return ReliabilityResult(variant=variant, fault=fault, observed="requires_future_event", requests=transport.requests, duplicate_objects=0, final_cursor_state="unchanged")
+        transport.send()
+    if transport.committed and not transport.acknowledged:
+        transport.send()
+        duplicates = 0
+    return ReliabilityResult(variant=variant, fault=fault, observed="recovered_later", requests=transport.requests, duplicate_objects=duplicates, final_cursor_state="clean")

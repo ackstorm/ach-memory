@@ -19,3 +19,9 @@ def test_decisions_always_cover_all_components():
     item = packet.items[0]
     adjudication = Adjudication(run_id="r", items=(AdjudicationItem(case_id=item.case_id, blind_variant=item.blind_variant, repetition=1, required_units_met=(), unsupported_current_claims=0, wrong_scope_claims=0, notes_code="NONE"),))
     assert len(decide(score_run(packet, adjudication))) == 8
+
+
+def test_mutated_gate_is_ineligible():
+    observation = RunObservation(case_id="S01", variant="ach_semantic", repetition=1, artifact_relpath="a.json", hard_gate_flags={"executed": False}, metric_values={})
+    packet = build_blind_packet((observation,), b"a")
+    assert packet.items

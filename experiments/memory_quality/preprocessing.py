@@ -10,6 +10,17 @@ from memory.capture import local
 
 from .contracts import RunObservation
 
+HOST_CANARIES = (
+    "CANARY-INJECTED",
+    "CANARY-HOST",
+    "CANARY-HOST-ASSISTANT",
+    "CANARY-FILE",
+    "private-key header",
+    "assignment-secret",
+    "credential URL",
+    "CANARYTOKEN123456",
+)
+
 
 def scan_canaries(paths: tuple[Path, ...], canaries: tuple[str, ...]) -> tuple[str, ...]:
     """Return only canaries found in serialized experiment artifacts."""
@@ -50,7 +61,7 @@ def _measure(variant: str, content: str, raw: list[dict], canaries: tuple[str, .
 
 def run_preprocessing(case_path: Path, runtime) -> tuple[RunObservation, ...]:
     raw = _records(case_path)
-    canaries = tuple({word for record in raw for word in _strings(record) if "CANARY" in word})
+    canaries = HOST_CANARIES
     results: list[RunObservation] = []
     ach = local.sanitize(raw)
     official_turns = runtime.normalize_claude(case_path)
@@ -60,13 +71,3 @@ def run_preprocessing(case_path: Path, runtime) -> tuple[RunObservation, ...]:
         measured = _measure(variant, content, raw, canaries)
         results.append(RunObservation(case_id=case_path.stem, variant=variant, repetition=1, artifact_relpath=f"preprocessing/{variant}.json", hard_gate_flags={"no_canary": not any(measured.canary_present.values())}, metric_values={"byte_count": measured.byte_count, "turn_count": measured.turn_count, "retained_role_count": measured.retained_role_count, "tool_action_count": measured.tool_action_count, "source_span_count": measured.source_span_count, "duration_ms": measured.duration_ms}))
     return tuple(results)
-
-
-def _strings(value) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, dict):
-        return [item for child in value.values() for item in _strings(child)]
-    if isinstance(value, list):
-        return [item for child in value for item in _strings(child)]
-    return []
