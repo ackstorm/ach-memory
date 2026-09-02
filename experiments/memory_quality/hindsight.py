@@ -159,7 +159,7 @@ class DisposableHindsight:
 
     def search_pages(self, bank_id_value: str, query: str) -> list[dict]:
         self._check_bank(bank_id_value)
-        response = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/knowledge-base/search", headers=self._headers(), params={"query": query})
+        response = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/knowledge-base/search", headers=self._headers(), params={"q": query})
         response.raise_for_status()
         body = response.json()
         return body.get("items", body.get("results", []))
@@ -169,6 +169,13 @@ class DisposableHindsight:
         response = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/knowledge-base/pages/{page_id}", headers=self._headers())
         response.raise_for_status()
         return response.json()
+
+    def create_page(self, bank_id_value: str, name: str, source_query: str) -> str:
+        self._check_bank(bank_id_value)
+        response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/knowledge-base/pages", headers=self._headers(), json={"name": name, "source_query": source_query})
+        response.raise_for_status()
+        body = response.json()
+        return str(body.get("id", body.get("page_id", "")))
 
     def cleanup(self) -> None:
         values = self._registry()

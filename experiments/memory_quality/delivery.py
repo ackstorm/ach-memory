@@ -74,6 +74,7 @@ def build_delivery(case: DeliveryCase, variant: DeliveryVariant, banks=None) -> 
             response = banks.reflect(bank, case.task, max_tokens=256)
             context = str(response.get("text", response.get("answer", "")))
         else:
+            banks.create_page(bank, f"memory-quality-{case.id}", case.task)
             pages = banks.search_pages(bank, case.task)
             page = pages[0] if pages else None
             page_text = ""

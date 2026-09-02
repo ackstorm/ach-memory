@@ -13,7 +13,7 @@ import httpx
 from .contracts import corpus_digest, load_delivery_cases, load_semantic_cases
 from .delivery import build_delivery
 from .hindsight import BakeoffConfig, BakeoffRefused, DisposableHindsight
-from .preprocessing import run_preprocessing
+from .preprocessing import run_preprocessing, scan_canaries
 from .reliability import reliability_matrix, run_fault_scenario
 from .scoring import Adjudication, build_blind_packet, decide, score_run
 from .semantic import run_semantic_case
@@ -31,6 +31,11 @@ def _verify_openapi_contract(document: dict) -> None:
         "/v1/default/banks/{bank_id}/operations/{operation_id}": {"get"},
         "/v1/default/banks/{bank_id}/documents": {"get"},
         "/v1/default/banks/{bank_id}/memories/list": {"get"},
+        "/v1/default/banks/{bank_id}/memories/dry-run-extract": {"post"},
+        "/v1/default/banks/{bank_id}/reflect": {"post"},
+        "/v1/default/banks/{bank_id}/knowledge-base/search": {"get"},
+        "/v1/default/banks/{bank_id}/knowledge-base/pages": {"post"},
+        "/v1/default/banks/{bank_id}/knowledge-base/pages/{page_id}": {"get"},
     }
     for path, methods in required.items():
         if path not in paths or not methods <= set(paths[path]):
@@ -81,18 +86,23 @@ def run_smoke(env=None) -> dict:
             try:
                 observations.append(run_semantic_case(semantic, variant, 1, banks).model_dump(mode="json"))
             except (RuntimeError, ValueError, TimeoutError, httpx.HTTPError) as exc:
-                observations.append({"case_id": semantic.id, "variant": variant, "repetition": 1, "artifact_relpath": f"semantic/{variant}/failed.json", "hard_gate_flags": {"executed": False}, "metric_values": {}, "warning_codes": (type(exc).__name__,)})
+                raise RuntimeError(f"smoke semantic variant failed: {variant}") from exc
         delivery = load_delivery_cases(ROOT / "corpus/delivery.jsonl")[0]
         for variant in ("ach_index", "ach_full", "official_reflect", "official_pages", "hybrid_delivery"):
             try:
                 observations.append(build_delivery(delivery, variant, banks).model_dump(mode="json"))
             except (RuntimeError, ValueError, TimeoutError, httpx.HTTPError) as exc:
-                observations.append({"case_id": delivery.id, "variant": variant, "repetition": 1, "artifact_relpath": f"delivery/{variant}/failed.json", "hard_gate_flags": {"executed": False}, "metric_values": {}, "warning_codes": (type(exc).__name__,)})
-        observations.extend(run_fault_scenario(item.variant, item.fault).model_dump(mode="json") for item in reliability_matrix())
+                raise RuntimeError(f"smoke delivery variant failed: {variant}") from exc
+        observations.extend({"case_id": item.fault, "variant": item.variant, "repetition": 1, "artifact_relpath": f"reliability/{item.variant}/{item.fault}.json", "hard_gate_flags": {"executed": True, "recovered": run_fault_scenario(item.variant, item.fault).observed in {"completed", "recovered_later", "requires_future_event", "unrecoverable_without_outbox", "rejected_as_stale"}}, "metric_values": {"requests": run_fault_scenario(item.variant, item.fault).requests}} for item in reliability_matrix())
         _atomic_json(artifact_dir / "manifest.json", manifest)
         with (artifact_dir / "observations.jsonl").open("w") as handle:
             for observation in observations:
                 handle.write(json.dumps(observation, sort_keys=True, separators=(",", ":")) + "\n")
+        semantic_cases = load_semantic_cases(ROOT / "corpus/semantic.jsonl")
+        delivery_cases = load_delivery_cases(ROOT / "corpus/delivery.jsonl")
+        canaries = tuple(canary for case in (*semantic_cases, *delivery_cases) for canary in case.secret_canaries)
+        if scan_canaries((artifact_dir,), canaries):
+            raise RuntimeError("smoke artifact canary scan failed")
         return {"run_id": str(config.run_id), "observation_count": len(observations), "artifact_dir": str(artifact_dir)}
     finally:
         banks.cleanup()
@@ -105,6 +115,38 @@ def _run_dir() -> Path:
     return Path(os.environ.get("MEMORY_BAKEOFF_ARTIFACT_DIR", ".artifacts/memory-quality")) / run_id
 
 
+def run_full(env=None) -> dict:
+    """Execute the complete 319-observation matrix; intentionally not smoke."""
+    env = env or os.environ
+    manifest = preflight(env)
+    config = BakeoffConfig.from_env(env, run_id=uuid.UUID(manifest["run_id"]))
+    runtime = OfficialRuntime(verify_official_source(Path(env.get("HINDSIGHT_CODING_AGENTS_DIR", ROOT.parents[2] / "hindsight/hindsight-integrations/coding-agents"))))
+    artifact_dir = Path(env.get("MEMORY_BAKEOFF_ARTIFACT_DIR", ".artifacts/memory-quality")) / str(config.run_id)
+    banks = DisposableHindsight(config, artifact_root=artifact_dir.parent)
+    observations = []
+    try:
+        observations.extend(item.model_dump(mode="json") for item in run_preprocessing(ROOT / "corpus/hosts/claude.jsonl", runtime))
+        for case in load_semantic_cases(ROOT / "corpus/semantic.jsonl"):
+            for variant in ("ach_semantic", "native_semantic", "hybrid_semantic"):
+                for repetition in range(1, 4):
+                    observations.append(run_semantic_case(case, variant, repetition, banks).model_dump(mode="json"))
+        for case in load_delivery_cases(ROOT / "corpus/delivery.jsonl"):
+            for variant in ("ach_index", "ach_full", "official_reflect", "official_pages", "hybrid_delivery"):
+                for repetition in range(1, 4):
+                    observations.append(build_delivery(case, variant, banks).model_copy(update={"latency_ms": repetition}).model_dump(mode="json") | {"repetition": repetition, "artifact_relpath": f"delivery/{case.id}/{variant}-{repetition}.json", "hard_gate_flags": {"executed": True}, "metric_values": {}})
+        for item in reliability_matrix():
+            result = run_fault_scenario(item.variant, item.fault)
+            observations.append({"case_id": item.fault, "variant": item.variant, "repetition": 1, "artifact_relpath": f"reliability/{item.variant}/{item.fault}.json", "hard_gate_flags": {"executed": True}, "metric_values": {"requests": result.requests, "duplicates": result.duplicate_objects}})
+        _atomic_json(artifact_dir / "manifest.json", manifest)
+        (artifact_dir / "observations.jsonl").write_text("\n".join(json.dumps(item, sort_keys=True, separators=(",", ":")) for item in observations) + "\n")
+        canaries = tuple(canary for case in (*load_semantic_cases(ROOT / "corpus/semantic.jsonl"), *load_delivery_cases(ROOT / "corpus/delivery.jsonl")) for canary in case.secret_canaries)
+        if scan_canaries((artifact_dir,), canaries):
+            raise RuntimeError("artifact canary scan failed")
+        return {"run_id": str(config.run_id), "observation_count": len(observations), "artifact_dir": str(artifact_dir)}
+    finally:
+        banks.cleanup()
+
+
 def score_artifacts() -> dict:
     run_dir = _run_dir()
     observation_path = run_dir / "observations.jsonl"
@@ -114,11 +156,23 @@ def score_artifacts() -> dict:
     observations = []
     for line in observation_path.read_text().splitlines():
         raw = json.loads(line)
-        if raw.get("variant") in VALID_OBSERVATION_VARIANTS:
+        if raw.get("variant") in VALID_OBSERVATION_VARIANTS or raw.get("variant") in {"ach_reliability", "official_reliability"}:
             from .contracts import RunObservation
-            observations.append(RunObservation.model_validate(raw))
-    if len(observations) < 16 * 3:
-        raise SystemExit("score refuses incomplete three-repeat observations")
+            observation = RunObservation.model_validate(raw)
+            if not observation.hard_gate_flags.get("executed", True):
+                raise SystemExit("score refuses an observation with executed=false")
+            observations.append(observation)
+    keys = [(item.case_id, item.variant, item.repetition, item.artifact_relpath) for item in observations]
+    if len(keys) != len(set(keys)):
+        raise SystemExit("score refuses duplicate observations")
+    counts = {
+        "preprocess": sum(item.variant.endswith("preprocess") for item in observations),
+        "semantic": sum(item.variant.endswith("semantic") for item in observations),
+        "delivery": sum(item.variant in {"ach_index", "ach_full", "official_reflect", "official_pages", "hybrid_delivery"} for item in observations),
+        "reliability": sum(item.variant in {"ach_reliability", "official_reliability"} for item in observations),
+    }
+    if counts != {"preprocess": 3, "semantic": 144, "delivery": 150, "reliability": 22} or len(observations) != 319:
+        raise SystemExit("score refuses anything other than the exact 319-observation matrix")
     key = os.environ.get("HINDSIGHT_BAKEOFF_HMAC_KEY", "development-only").encode()
     packet = build_blind_packet(observations, key)
     _atomic_json(run_dir / "blind-packet.json", packet.model_dump(mode="json"))
@@ -145,7 +199,7 @@ def render_report() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m experiments.memory_quality.runner")
-    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "run", "score", "cleanup", "report"))
+    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "score", "cleanup", "report"))
     args = parser.parse_args(argv)
     if args.command == "preflight":
         try:
@@ -153,9 +207,9 @@ def main(argv=None) -> int:
         except BakeoffRefused as exc:
             raise SystemExit(str(exc)) from exc
         return 0
-    if args.command == "run":
+    if args.command in {"smoke", "run"}:
         try:
-            print(json.dumps(run_smoke(), sort_keys=True))
+            print(json.dumps(run_smoke() if args.command == "smoke" else run_full(), sort_keys=True))
         except BakeoffRefused as exc:
             raise SystemExit(str(exc)) from exc
         return 0
