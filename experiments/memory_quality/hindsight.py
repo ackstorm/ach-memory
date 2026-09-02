@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +39,8 @@ class BakeoffConfig:
             raise BakeoffRefused("invalid Hindsight bake-off URL")
         host = parsed.hostname.casefold().strip("[]")
         allowed = {"localhost", "127.0.0.1", "::1"}
-        if host not in allowed and not _is_private_host(host):
+        extra = {item.strip().casefold() for item in env.get("HINDSIGHT_BAKEOFF_ALLOWLIST", "").split(",") if item.strip()}
+        if host not in allowed and host not in extra:
             raise BakeoffRefused("production URL is not an allowed isolated endpoint")
         production = env.get("MEMORY_HINDSIGHT_URL")
         if production and _normalize_url(production) == _normalize_url(base_url) and host not in allowed:
@@ -50,13 +51,6 @@ class BakeoffConfig:
             tenant=env.get("HINDSIGHT_BAKEOFF_TENANT", "default"),
             run_id=run_id or uuid.uuid4(),
         )
-
-
-def _is_private_host(host: str) -> bool:
-    try:
-        return not ipaddress.ip_address(host).is_global
-    except ValueError:
-        return False
 
 
 def _normalize_url(value: str) -> str:
@@ -104,35 +98,50 @@ class DisposableHindsight:
 
     def create_bank(self, purpose: str, ordinal: int = 1) -> str:
         value = bank_id(self.config.run_id, purpose, ordinal)
-        response = self._client.post(f"{self.config.base_url}/v1/banks", headers=self._headers(), json={"bank_id": value})
+        response = self._client.put(f"{self.config.base_url}/v1/default/banks/{value}", headers=self._headers(), json={})
         response.raise_for_status()
         self._record_bank(value)
         return value
 
     def import_template(self, bank_id_value: str, template: dict) -> None:
         self._check_bank(bank_id_value)
-        response = self._client.post(f"{self.config.base_url}/v1/banks/{bank_id_value}/mental-models", headers=self._headers(), json=template)
+        response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/import", headers=self._headers(), json=template)
         response.raise_for_status()
 
     def retain_and_wait(self, bank_id_value: str, content: str, *, document_id: str, operation_id: str | None = None) -> RetainReceipt:
         self._check_bank(bank_id_value)
         operation_id = operation_id or str(uuid.uuid5(self.config.run_id, f"{bank_id_value}:{document_id}"))
-        payload = {"content": content, "document_id": document_id, "operation_id": operation_id}
-        response = self._client.post(f"{self.config.base_url}/v1/banks/{bank_id_value}/retain", headers=self._headers(), json=payload)
+        payload = {"items": [{"content": content, "document_id": document_id, "context": "memory-quality", "strategy": "conversation", "tags": ["source:chat"]}], "async": True, "operation_id": operation_id}
+        response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/memories", headers=self._headers(), json=payload)
         response.raise_for_status()
         record = response.json() if response.content else {}
-        return RetainReceipt(document_id=document_id, operation_id=operation_id, terminal_state="completed", duration_ms=int(record.get("duration_ms", 0)))
+        operation_id = record.get("operation_id") or operation_id
+        started = time.monotonic()
+        deadline = started + self.config.operation_timeout_seconds
+        state = "pending"
+        while time.monotonic() < deadline:
+            status = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/operations/{operation_id}", headers=self._headers())
+            status.raise_for_status()
+            state = str(status.json().get("status", "pending")).casefold()
+            if state in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.05)
+        if state not in {"completed", "failed"}:
+            raise TimeoutError("Hindsight operation did not reach a terminal state")
+        return RetainReceipt(document_id=document_id, operation_id=operation_id, terminal_state=state, duration_ms=int((time.monotonic() - started) * 1000))
 
     def list_bank_objects(self, bank_id_value: str) -> BankSnapshot:
         self._check_bank(bank_id_value)
-        response = self._client.get(f"{self.config.base_url}/v1/banks/{bank_id_value}/objects", headers=self._headers())
-        response.raise_for_status()
-        body = response.json()
+        documents = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/documents", headers=self._headers())
+        memories = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/memories/list", headers=self._headers())
+        documents.raise_for_status()
+        memories.raise_for_status()
+        body = {"documents": documents.json(), "memories": memories.json()}
         objects = []
-        for layer in ("documents", "memories", "observations", "mental_models", "pages"):
-            for item in body.get(layer, []):
+        for layer, source in (("document", body["documents"].get("items", [])), ("memory", body["memories"].get("items", []))):
+            for item in source:
                 if isinstance(item, dict):
-                    objects.append(SnapshotObject(layer=layer.rstrip("s"), object_id=str(item.get("id", item.get("document_id", ""))), text=str(item.get("text", item.get("content", ""))), source_ids=tuple(item.get("source_ids", ()))) )
+                    objects.append(SnapshotObject(layer=layer, object_id=str(item.get("id", item.get("document_id", ""))), text=str(item.get("text", item.get("content", ""))), source_ids=tuple(item.get("source_ids", ()))) )
         return BankSnapshot(bank_id=bank_id_value, objects=tuple(objects))
 
     def cleanup(self) -> None:
@@ -141,7 +150,7 @@ class DisposableHindsight:
         if any(not value.startswith(prefix) for value in values):
             raise BakeoffRefused("bank registry contains a foreign bank ID")
         for value in values:
-            response = self._client.delete(f"{self.config.base_url}/v1/banks/{value}", headers=self._headers())
+            response = self._client.delete(f"{self.config.base_url}/v1/default/banks/{value}", headers=self._headers())
             response.raise_for_status()
 
     def _check_bank(self, value: str) -> None:

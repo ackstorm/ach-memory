@@ -43,6 +43,12 @@ def test_confirmed_loopback_service_is_allowed():
     assert BakeoffConfig.from_env(env).base_url == "http://127.0.0.1:8888"
 
 
+def test_private_non_loopback_requires_explicit_allowlist():
+    env = bakeoff_env(HINDSIGHT_BAKEOFF_URL="http://10.0.0.2:8888")
+    with pytest.raises(BakeoffRefused):
+        BakeoffConfig.from_env(env)
+
+
 def test_bank_ids_are_run_scoped():
     run = uuid.uuid4()
     assert bank_id(run, "Semantic User", 1).startswith(f"mq55-{run.hex[:12]}-")

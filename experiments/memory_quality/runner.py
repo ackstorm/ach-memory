@@ -15,6 +15,20 @@ from .upstream import verify_official_source
 ROOT = Path(__file__).parent
 
 
+def _verify_openapi_contract(document: dict) -> None:
+    paths = document.get("paths", {})
+    required = {
+        "/v1/default/banks/{bank_id}": {"put", "delete"},
+        "/v1/default/banks/{bank_id}/memories": {"post"},
+        "/v1/default/banks/{bank_id}/operations/{operation_id}": {"get"},
+        "/v1/default/banks/{bank_id}/documents": {"get"},
+        "/v1/default/banks/{bank_id}/memories/list": {"get"},
+    }
+    for path, methods in required.items():
+        if path not in paths or not methods <= set(paths[path]):
+            raise BakeoffRefused(f"Hindsight OpenAPI contract missing: {path}")
+
+
 def preflight(env=None) -> dict:
     env = env or os.environ
     config = BakeoffConfig.from_env(env)
@@ -25,9 +39,11 @@ def preflight(env=None) -> dict:
     with httpx.Client(timeout=config.request_timeout_seconds) as client:
         response = client.get(f"{config.base_url}/openapi.json")
         response.raise_for_status()
-        version = response.json().get("info", {}).get("version")
+        document = response.json()
+        version = document.get("info", {}).get("version")
     if version != "0.9.2":
         raise BakeoffRefused("Hindsight API version must be 0.9.2")
+    _verify_openapi_contract(document)
     return {"hindsight_version": version, "official_package_version": source.package_version, "official_checkout_commit": source.checkout_commit, "semantic_digest": corpus_digest(semantic), "delivery_digest": corpus_digest(delivery), "mutating_requests": 0, "run_id": str(config.run_id)}
 
 

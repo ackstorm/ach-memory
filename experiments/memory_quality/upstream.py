@@ -98,5 +98,6 @@ class OfficialRuntime:
         return tuple(NormalizedTurn.model_validate(item) for item in body.get("turns", []))
 
     def retain_claude(self, event: dict, env: Mapping[str, str]) -> RuntimeReceipt:
+        event = {**event, "runPrefix": event.get("runPrefix", "")}
         body = self._invoke(event, env)
         return RuntimeReceipt.model_validate(body)

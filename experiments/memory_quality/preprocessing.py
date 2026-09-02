@@ -11,6 +11,17 @@ from memory.capture import local
 from .contracts import RunObservation
 
 
+def scan_canaries(paths: tuple[Path, ...], canaries: tuple[str, ...]) -> tuple[str, ...]:
+    """Return only canaries found in serialized experiment artifacts."""
+    found = set()
+    for path in paths:
+        if path.is_file() and any(canary in path.read_text(errors="replace") for canary in canaries):
+            found.update(canary for canary in canaries if canary in path.read_text(errors="replace"))
+        elif path.is_dir():
+            found.update(scan_canaries(tuple(path.rglob("*")), canaries))
+    return tuple(sorted(found))
+
+
 class Preprocessed(BaseModel):
     model_config = ConfigDict(extra="forbid")
     variant: str
