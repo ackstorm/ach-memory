@@ -7,6 +7,37 @@ from pydantic import BaseModel, ConfigDict
 
 from .contracts import RunObservation, SemanticCase
 
+_HINDSIGHT_COMPATIBLE_ACH_MISSION = """\
+Extract every durable semantic claim from the input. Return exactly one JSON
+object with a `facts` array. Each fact must use only the `text` field, whose
+value is one minified JSON object matching the ACH envelope: `record` is
+`candidate` or `working_state`; candidates use `text`, `kind`, `origin`, and
+`subject`; working state uses `objective`, `current_direction`,
+`recent_decisions`, `open_questions`, and `next_steps`. Use only candidate
+kind values preference, decision, convention, gotcha, or technical_claim;
+only origin values stated, confirmed, observed, or inferred; and only subject
+values user or project. Emit no JSONL, markdown, or text outside the outer
+object. Do not emit any canary or raw-span marker.
+"""
+
+
+class _AchHindsightAdapter:
+    """Adapt the ACH envelope request to Hindsight's single JSON response schema.
+
+    The production extractor deliberately asks its provider for JSONL. Hindsight
+    0.9.2 parses the provider response as one JSON document before returning
+    facts, so passing that mission verbatim makes multi-claim cases fail with
+    ``JSONDecodeError: Extra data``. The input and production parser remain the
+    same; only the transport-facing response envelope is adapted here.
+    """
+
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+
+    def dry_run_extract(self, bank_id, content, **options):
+        options["retain_mission"] = _HINDSIGHT_COMPATIBLE_ACH_MISSION
+        return self._delegate.dry_run_extract(bank_id, content, **options)
+
 
 class NormalizedClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -58,7 +89,7 @@ def run_semantic_case(case: SemanticCase, variant: str, repetition: int, banks=N
     bank = banks.create_bank(f"semantic-{case.id}-{variant}", repetition)
     if variant == "ach_semantic":
         from memory.capture.extractor import extract
-        result = extract(banks, bank, content)
+        result = extract(_AchHindsightAdapter(banks), bank, content)
         count = len(result.candidates)
         scopes = tuple(sorted({candidate.bank_kind for candidate in result.candidates}))
     elif variant == "native_semantic":
