@@ -302,6 +302,28 @@ def test_v3_treats_unsupported_current_claim_in_a_critical_rejection_case_as_a_g
     assert native.hard_gate_failures == ("native_semantic:S16:UNSUPPORTED_CURRENT",)
 
 
+def test_v3_does_not_require_an_ignore_scope_unit_to_be_emitted():
+    observations, unblinded, adjudication = _v3_semantic_fixture(
+        case_id="S16",
+        met_by_variant={variant: () for variant in ("ach_semantic", "native_semantic", "hybrid_semantic")},
+    )
+
+    score = scoring_module.score_run_v3(
+        observations,
+        unblinded,
+        adjudication,
+        expected_units={"S16": ("S16-U1",)},
+        critical_units={"S16": ("S16-U1",)},
+        ignored_units={"S16": ("S16-U1",)},
+        critical_rejection_cases=("S16",),
+        consumer_complete=False,
+    )
+
+    extractor = score.components["semantic_extractor"]
+    assert "S16:MISSING_S16-U1" not in extractor.quality_misses
+    assert not any("MISSING_S16-U1" in failure for failure in extractor.hard_gate_failures)
+
+
 def test_v3_keeps_unmeasured_delivery_and_reliability_insufficient():
     score = scoring_module.score_run_v3(
         (),

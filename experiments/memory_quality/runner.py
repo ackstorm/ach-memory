@@ -548,6 +548,10 @@ def rescore_v3() -> dict:
         case.id: tuple(unit.unit_id for unit in case.expected_units if unit.critical)
         for case in semantic_cases
     }
+    ignored_units = {
+        case.id: tuple(unit.unit_id for unit in case.expected_units if unit.scope == "ignore")
+        for case in semantic_cases
+    }
     critical_rejection_cases = tuple(
         case.id
         for case in semantic_cases
@@ -560,6 +564,7 @@ def rescore_v3() -> dict:
         adjudication,
         expected_units=expected_units,
         critical_units=critical_units,
+        ignored_units=ignored_units,
         critical_rejection_cases=critical_rejection_cases,
         consumer_complete=bool(manifest.get("consumer_complete", False)),
         run_id=run_dir.name,

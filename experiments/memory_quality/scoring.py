@@ -391,6 +391,7 @@ def score_run_v3(
     *,
     expected_units: Mapping[str, Sequence[str]],
     critical_units: Mapping[str, Sequence[str]],
+    ignored_units: Mapping[str, Sequence[str]] | None = None,
     critical_rejection_cases: Sequence[str] = (),
     consumer_complete: bool,
     run_id: str | None = None,
@@ -402,6 +403,7 @@ def score_run_v3(
     }
     observation_by_artifact = {item.artifact_relpath: item for item in observations}
     critical_rejections = set(critical_rejection_cases)
+    ignored_by_case = ignored_units or {}
     semantic_observations = [item for item in observations if item.variant in ADJUDICABLE_VARIANTS]
     extractor_atoms: dict[str, dict[str, set[int]]] = {}
     router_atoms: dict[str, dict[str, set[int]]] = {}
@@ -412,8 +414,9 @@ def score_run_v3(
         adjudicated = adjudication_by_key.get((item.case_id, item.blind_variant, item.repetition))
         if adjudicated is None:
             raise ValueError("unblinded item has no matching adjudication")
-        expected = set(expected_units.get(item.case_id, ()))
-        critical = set(critical_units.get(item.case_id, ()))
+        ignored = set(ignored_by_case.get(item.case_id, ()))
+        expected = set(expected_units.get(item.case_id, ())) - ignored
+        critical = set(critical_units.get(item.case_id, ())) - ignored
         missing = expected - set(adjudicated.required_units_met)
         variant_atoms = extractor_atoms.setdefault(item.variant, {})
         for unit in sorted(missing):
