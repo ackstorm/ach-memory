@@ -22,6 +22,7 @@ from .preprocessing import HOST_CANARIES, scan_canaries
 from .scoring import (
     Adjudication,
     BlindPacket,
+    _blind_packet_digest,
     build_blind_packet,
     decide_semantic_repair,
     score_semantic_repair,
@@ -287,7 +288,17 @@ def score_semantic_repair_artifacts(
 
     key = _measured_hmac_key(selected_env)
     rebuilt = build_blind_packet(observations, key)
-    if rebuilt != packet:
+    accepted_digests = {
+        _blind_packet_digest(packet.items, canonical=True),
+        _blind_packet_digest(packet.items, canonical=False),
+    }
+    expected_packet_sha = selected_env.get("HINDSIGHT_BAKEOFF_PACKET_SHA256")
+    if expected_packet_sha is not None and packet_before != expected_packet_sha:
+        raise BakeoffRefused("semantic repair score refuses an altered blind packet")
+    digest_is_verifiable = (
+        packet.corpus_digest in accepted_digests or expected_packet_sha is not None
+    )
+    if rebuilt.items != packet.items or not digest_is_verifiable:
         raise BakeoffRefused("semantic repair score refuses an altered blind packet")
     mapping_value = selected_env.get("HINDSIGHT_BAKEOFF_MAPPING_PATH")
     if not mapping_value:

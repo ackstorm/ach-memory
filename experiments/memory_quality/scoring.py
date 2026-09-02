@@ -128,6 +128,25 @@ class UnblindedItem(BaseModel):
 ADJUDICABLE_VARIANTS = {"ach_semantic", "native_semantic", "hybrid_semantic"}
 
 
+def _blind_packet_digest(
+    items: Sequence[BlindItem],
+    *,
+    canonical: bool,
+) -> str:
+    if canonical:
+        serialized = (
+            json.dumps(
+                item.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for item in items
+        )
+    else:
+        serialized = (item.model_dump_json() for item in items)
+    return hashlib.sha256("\n".join(serialized).encode()).hexdigest()
+
+
 def build_blind_packet(observations: Sequence[RunObservation], key: bytes) -> BlindPacket:
     if not key or len(key) < 32 or key == b"development-only":
         raise ValueError("blind packet requires a random HMAC key of at least 32 bytes")
@@ -139,7 +158,7 @@ def build_blind_packet(observations: Sequence[RunObservation], key: bytes) -> Bl
         label = "V-" + hmac.new(key, observation.variant.encode(), hashlib.sha256).hexdigest()[:16]
         items.append(BlindItem(case_id=observation.case_id, blind_variant=label, repetition=observation.repetition, artifact_relpath=observation.artifact_relpath, automatic_gates=dict(observation.hard_gate_flags)))
     items = tuple(sorted(items, key=lambda x: (x.case_id, x.blind_variant, x.repetition, x.artifact_relpath)))
-    digest = hashlib.sha256("\n".join(item.model_dump_json() for item in items).encode()).hexdigest()
+    digest = _blind_packet_digest(items, canonical=True)
     return BlindPacket(corpus_digest=digest, items=items)
 
 

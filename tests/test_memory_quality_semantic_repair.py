@@ -216,7 +216,13 @@ def test_semantic_repair_refuses_serialized_canary_and_still_cleans_up(
     )
 
 
-def _semantic_scoring_fixture(tmp_path):
+def _semantic_scoring_fixture(
+    tmp_path,
+    *,
+    sorted_observation_keys=False,
+    sorted_packet_keys=False,
+    legacy_packet_digest=False,
+):
     run_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
     artifact_root = tmp_path / "artifacts"
     run_dir = artifact_root / run_id
@@ -236,9 +242,9 @@ def _semantic_scoring_fixture(tmp_path):
             update={
                 "artifact_relpath": opaque,
                 "hard_gate_flags": {
-                    "executed": True,
-                    "no_canary": True,
                     "no_shared_document": variant != "native_semantic",
+                    "no_canary": True,
+                    "executed": True,
                 },
             }
         )
@@ -249,6 +255,11 @@ def _semantic_scoring_fixture(tmp_path):
             "repetition": repetition,
         }
     packet = build_blind_packet(observations, key)
+    if legacy_packet_digest:
+        legacy_digest = hashlib.sha256(
+            "\n".join(item.model_dump_json() for item in packet.items).encode()
+        ).hexdigest()
+        packet = packet.model_copy(update={"corpus_digest": legacy_digest})
     units = {
         case.id: tuple(
             unit.unit_id for unit in case.expected_units if unit.scope != "ignore"
@@ -272,10 +283,28 @@ def _semantic_scoring_fixture(tmp_path):
     )
     consensus_path = artifact_root / f"{run_id}-adjudication.CONSENSUS.json"
     consensus_path.write_text(adjudication.model_dump_json())
-    (run_dir / "blind-packet.json").write_text(packet.model_dump_json())
-    (run_dir / "observations.jsonl").write_text(
-        "\n".join(item.model_dump_json() for item in observations) + "\n"
+    packet_payload = (
+        json.dumps(
+            packet.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if sorted_packet_keys
+        else packet.model_dump_json()
     )
+    (run_dir / "blind-packet.json").write_text(packet_payload)
+    if sorted_observation_keys:
+        observation_lines = (
+            json.dumps(
+                item.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for item in observations
+        )
+    else:
+        observation_lines = (item.model_dump_json() for item in observations)
+    (run_dir / "observations.jsonl").write_text("\n".join(observation_lines) + "\n")
     (run_dir / "manifest.json").write_text(
         json.dumps(
             {
@@ -331,6 +360,43 @@ def test_semantic_repair_scoring_validates_consensus_and_writes_only_semantic_de
         "scope_router",
     }
     with pytest.raises(BakeoffRefused, match="refuses to overwrite"):
+        score_semantic_repair_artifacts(env)
+
+
+def test_semantic_repair_scoring_accepts_equivalent_gate_key_order(tmp_path):
+    """Catch order-sensitive packet digests after sorted observation persistence."""
+    env, run_dir, _ = _semantic_scoring_fixture(
+        tmp_path,
+        sorted_observation_keys=True,
+        sorted_packet_keys=True,
+        legacy_packet_digest=True,
+    )
+    packet_path = run_dir / "blind-packet.json"
+    env["HINDSIGHT_BAKEOFF_PACKET_SHA256"] = hashlib.sha256(
+        packet_path.read_bytes()
+    ).hexdigest()
+
+    score_semantic_repair_artifacts(env)
+
+    assert (run_dir / "scorecard.semantic-repair.json").is_file()
+
+
+def test_semantic_repair_scoring_refuses_a_forged_packet_digest(tmp_path):
+    env, run_dir, _ = _semantic_scoring_fixture(tmp_path)
+    packet_path = run_dir / "blind-packet.json"
+    packet = json.loads(packet_path.read_text())
+    packet["corpus_digest"] = "0" * 64
+    packet_path.write_text(json.dumps(packet))
+
+    with pytest.raises(BakeoffRefused, match="altered blind packet"):
+        score_semantic_repair_artifacts(env)
+
+
+def test_semantic_repair_scoring_refuses_external_packet_sha_mismatch(tmp_path):
+    env, _, _ = _semantic_scoring_fixture(tmp_path)
+    env["HINDSIGHT_BAKEOFF_PACKET_SHA256"] = "0" * 64
+
+    with pytest.raises(BakeoffRefused, match="altered blind packet"):
         score_semantic_repair_artifacts(env)
 
 
