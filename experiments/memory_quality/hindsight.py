@@ -164,7 +164,10 @@ class DisposableHindsight:
 
     def reflect(self, bank_id_value: str, query: str, **options) -> dict:
         self._check_bank(bank_id_value)
-        response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/reflect", headers=self._headers(), json={"query": query, **options})
+        # Agentic reflect may perform several internal LLM/tool calls; its
+        # response can legitimately exceed the short CRUD timeout.  This is
+        # a single read-like operation, so do not retry the POST.
+        response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/reflect", headers=self._headers(), json={"query": query, **options}, timeout=max(self.config.request_timeout_seconds, 120.0))
         response.raise_for_status()
         return response.json()
 
