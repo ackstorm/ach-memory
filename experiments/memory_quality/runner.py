@@ -262,7 +262,11 @@ def score_artifacts() -> dict:
     mapping_path = Path(os.environ.get("HINDSIGHT_BAKEOFF_MAPPING_PATH", run_dir.parent / ".private" / f"{run_dir.name}.mapping.json"))
     unblind(packet, adjudication, mapping_path, key)
     manifest = json.loads((run_dir / "manifest.json").read_text()) if (run_dir / "manifest.json").exists() else {}
-    scorecard = score_run(packet, adjudication, consumer_complete=bool(manifest.get("consumer_complete", False)))
+    expected_units = {
+        case.id: tuple(unit.unit_id for unit in case.expected_units)
+        for case in load_semantic_cases(ROOT / "corpus/semantic.jsonl")
+    }
+    scorecard = score_run(packet, adjudication, expected_units=expected_units, consumer_complete=bool(manifest.get("consumer_complete", False)))
     _atomic_json(run_dir / "scorecard.json", scorecard.model_dump(mode="json"))
     _atomic_json(run_dir / "decisions.json", [item.model_dump(mode="json") for item in decide(scorecard)])
     return {"scorecard": str(run_dir / "scorecard.json"), "decisions": str(run_dir / "decisions.json")}
