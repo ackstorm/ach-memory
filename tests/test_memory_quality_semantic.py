@@ -24,7 +24,7 @@ def test_ach_adapter_uses_hindsight_single_document_envelope():
     class Delegate:
         def dry_run_extract(self, bank_id, content, **options):
             assert options["retain_extraction_mode"] == "custom"
-            assert "one JSON" in options["retain_mission"]
+            assert "one outer object" in options["retain_mission"]
             assert "facts" in options["retain_mission"]
             return {"facts": []}
 

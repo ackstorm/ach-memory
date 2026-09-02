@@ -7,12 +7,14 @@ from pydantic import BaseModel, ConfigDict
 
 from .contracts import RunObservation, SemanticCase
 
-_HINDSIGHT_COMPATIBLE_ACH_MISSION = """\
-Extract every durable semantic claim from the input. Return exactly one JSON
-object with a `facts` array. Each fact must use only the `text` field, whose
-value is one minified JSON object matching the ACH envelope: `record` is
-`candidate` or `working_state`; candidates use `text`, `kind`, `origin`, and
-`subject`; working state uses `objective`, `current_direction`,
+_HINDSIGHT_COMPATIBLE_ACH_MISSION = r"""
+Extract every durable semantic claim from the input. The response MUST be
+exactly one outer object shaped like
+{"facts":[{"what":"{\"record\":\"candidate\",\"text\":\"claim\",\"kind\":\"preference\",\"origin\":\"stated\",\"subject\":\"user\"}","when":"N/A","where":"N/A","who":"N/A","why":"N/A","fact_type":"world"}]}
+Each fact's `what` is a string containing the escaped, minified ACH envelope;
+it is never a nested object. Replace the example claim with claims from the
+input and add one fact per claim. Candidates use `text`, `kind`, `origin`,
+and `subject`; working state uses `objective`, `current_direction`,
 `recent_decisions`, `open_questions`, and `next_steps`. Use only candidate
 kind values preference, decision, convention, gotcha, or technical_claim;
 only origin values stated, confirmed, observed, or inferred; and only subject
