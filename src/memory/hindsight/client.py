@@ -382,7 +382,19 @@ class HindsightClient:
             timeout=None if is_async else self._llm_timeout,
         )
 
-    def recall(self, bank_id: str, query: str, with_entities: bool = True) -> dict:
+    def recall(
+        self,
+        bank_id: str,
+        query: str,
+        with_entities: bool = True,
+        *,
+        types: list[str] | None = None,
+        prefer_observations: bool = False,
+        tags: list[str] | None = None,
+        tags_match: str | None = None,
+        tag_groups: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+    ) -> dict:
         """`with_entities=False` turns off a map we would only throw away.
 
         Hindsight's `include.entities` defaults to ENABLED (`IncludeOptions` in
@@ -392,11 +404,74 @@ class HindsightClient:
         assembling it -- unlike dropping the key on the way out, which only
         saves the payload. The default stays True so a caller asking for the
         verbose shape gets exactly what it got before.
+
+        The keyword-only filters below are pinned against `RecallRequest` in
+        hindsight-api 0.9.2's own openapi.json (this file's docstrings
+        otherwise cite 0.9.1, the version elsewhere in this codebase; the two
+        agree on every field used here). Every one of them is omitted, not
+        sent as an explicit default, when the caller does not set it -- a
+        call with none of them produces the exact same body this method sent
+        before they existed, so nothing about an existing caller's request
+        changes:
+
+        - `types`: which of "world"/"experience"/"observation" to recall.
+          Omitted (upstream default: all three).
+        - `prefer_observations`: when both "observation" and a raw type are
+          requested, drop a raw fact an observation already consolidated and
+          backfill from the next result instead of returning both. Upstream
+          default is False, matching the parameter default here, so passing
+          nothing changes nothing.
+        - `tags`/`tags_match`/`tag_groups`: upstream's own tag filter
+          (`tags_match` is one of "any"/"all"/"any_strict"/"all_strict"/
+          "exact"; `tag_groups` is upstream's compound and/or/not shape,
+          passed through verbatim like `create_mental_model`'s `trigger`).
+          Omitted, all three: upstream default is no tag filtering at all.
+        - `max_tokens`: upstream's own result-budget cap (default 4096
+          upstream; never set here, so omitting it keeps that default).
+
+        None of these is caller-supplied Hindsight syntax on any surface that
+        reaches this method: the read-only recall surface only ever offers a
+        closed `view`/`kinds` choice, mapped to these upstream fields by
+        `read_models.resolve_filters` server-side.
         """
         body: dict[str, Any] = {"query": query}
         if not with_entities:
             body["include"] = {"entities": None}
+        if types is not None:
+            body["types"] = types
+        if prefer_observations:
+            body["prefer_observations"] = True
+        if tags is not None:
+            body["tags"] = tags
+        if tags_match is not None:
+            body["tags_match"] = tags_match
+        if tag_groups is not None:
+            body["tag_groups"] = tag_groups
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         return self._request("POST", paths.recall(self._tenant, bank_id), body)
+
+    def get_memory_history(self, bank_id: str, memory_id: str) -> Any:
+        """An observation's past revisions (openapi.json "Get observation
+        history"), each change's source facts already resolved to their
+        text by Hindsight.
+
+        Returned UNRESHAPED, like `list_mental_model_history`: the response
+        is untyped in hindsight-api 0.9.2's own openapi.json (`schema: {}`,
+        no component ref), so there is no pinned shape here to reshape
+        against, and inventing one would just be a second, competing guess
+        at a contract only the caller's own defensive normalization
+        (read_service.py, Task 5's plan) should own. Annotated `Any`, not
+        `dict`, for the same reason `list_mental_model_history` is annotated
+        `list[dict]` despite `_request`'s own `-> dict`: whatever JSON shape
+        comes back (object or array) arrives intact.
+        """
+        _require_uuid(memory_id, MemoryNotFound)
+        return self._request(
+            "GET",
+            paths.memory_history(self._tenant, bank_id, memory_id),
+            not_found=MemoryNotFound,
+        )
 
     def reflect(self, bank_id: str, query: str) -> dict:
         return self._request(

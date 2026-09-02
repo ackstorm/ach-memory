@@ -34,6 +34,8 @@ EXPECTED_ROUTES = {
     ("POST", "/v1/memory/retain"),
     ("POST", "/v1/memory/sync_retain"),
     ("POST", "/v1/memory/recall"),
+    ("POST", "/v1/read/recall"),
+    ("POST", "/v1/read/history"),
     ("POST", "/v1/memory/reflect"),
     ("POST", "/v1/memory/list"),
     ("POST", "/v1/memory/get"),

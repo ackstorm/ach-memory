@@ -368,7 +368,10 @@ def test_oversize_git_locator_on_retain_is_a_typed_422(client, user_key, tenant)
 def test_recall_returns_the_upstream_payload(client, user_key, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
-        return_value=httpx.Response(200, json={"memories": [{"content": "we use uv"}]})
+        return_value=httpx.Response(
+            200,
+            json={"results": [{"id": "mem-1", "text": "we use uv", "type": "world"}]},
+        )
     )
     _, key = user_key
 
@@ -378,7 +381,7 @@ def test_recall_returns_the_upstream_payload(client, user_key, tenant):
         headers=_headers(key),
     ).json()
 
-    assert body["result"]["memories"][0]["content"] == "we use uv"
+    assert body["result"]["hits"][0]["text"] == "we use uv"
 
 
 @respx.mock
@@ -388,8 +391,13 @@ def test_nested_bank_id_is_stripped_from_recall(client, user_key, tenant):
         return_value=httpx.Response(
             200,
             json={
-                "memories": [
-                    {"content": "we use uv", "bank_id": "user_leaked_nested"}
+                "results": [
+                    {
+                        "id": "mem-1",
+                        "text": "we use uv",
+                        "type": "world",
+                        "metadata": {"bank_id": "user_leaked_nested"},
+                    }
                 ],
                 "meta": {"inner": {"bank_id": "user_leaked_deep"}},
             },
@@ -406,7 +414,7 @@ def test_nested_bank_id_is_stripped_from_recall(client, user_key, tenant):
     assert "bank_id" not in str(body)
     assert "user_leaked_nested" not in str(body)
     assert "user_leaked_deep" not in str(body)
-    assert body["result"]["memories"][0]["content"] == "we use uv"
+    assert body["result"]["hits"][0]["text"] == "we use uv"
 
 
 @respx.mock
@@ -450,12 +458,10 @@ def test_retain_project_row_survives_a_failed_hindsight_call(
 
 
 @respx.mock
-def test_recall_project_row_survives_a_failed_hindsight_call(
+def test_recall_does_not_create_a_project_on_a_missing_slug(
     client, two_users, tenant, session
 ):
-    """Same guarantee as test_retain_project_row_survives_a_failed_hindsight_call,
-    for recall: it is a write path too (resolve_project_bank can lazily
-    create the project), and its upstream call can fail the same way."""
+    """Legacy recall is now an existing-only read."""
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
         return_value=httpx.Response(500, json={"error": "boom"})
     )
@@ -471,7 +477,7 @@ def test_recall_project_row_survives_a_failed_hindsight_call(
         headers=_headers(juan["key"]),
     )
 
-    assert response.status_code == 502
+    assert response.status_code == 404
 
     from memory.models import Project
 
@@ -480,8 +486,7 @@ def test_recall_project_row_survives_a_failed_hindsight_call(
         .filter_by(tenant_id=tenant, project_slug="first-touch-recall")
         .one_or_none()
     )
-    assert project is not None
-    assert project.bank_id
+    assert project is None
 
 
 @respx.mock
@@ -750,6 +755,10 @@ def test_retain_with_a_traversal_document_id_is_rejected_not_created(
 @respx.mock
 def test_reflect_reaches_the_reflect_endpoint_of_the_right_bank(client, juan, tenant):
     _mock_hindsight()
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+    assert setup.status_code == 201
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
         return_value=httpx.Response(200, json={"answer": "use uv"})
     )
@@ -794,6 +803,10 @@ def test_reflect_is_denied_on_someone_elses_project(client, juan, alice, tenant)
 @respx.mock
 def test_bank_id_is_stripped_from_reflect(client, juan, tenant):
     _mock_hindsight()
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+    assert setup.status_code == 201
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
         return_value=httpx.Response(
             200, json={"answer": "use uv", "bank_id": "user_leaked_reflect"}
@@ -815,9 +828,7 @@ def test_bank_id_is_stripped_from_reflect(client, juan, tenant):
 def test_reflect_project_row_survives_a_failed_hindsight_call(
     client, two_users, tenant, session
 ):
-    """Same guarantee as test_retain_project_row_survives_a_failed_hindsight_call,
-    for reflect: it is a write path too (resolve_project_bank can lazily
-    create the project), and its upstream call can fail the same way."""
+    """Reflect is now existing-only and cannot mint a project on failure."""
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
         return_value=httpx.Response(500, json={"error": "boom"})
     )
@@ -833,7 +844,7 @@ def test_reflect_project_row_survives_a_failed_hindsight_call(
         headers=_headers(juan["key"]),
     )
 
-    assert response.status_code == 502
+    assert response.status_code == 404
 
     from memory.models import Project
 
@@ -842,8 +853,7 @@ def test_reflect_project_row_survives_a_failed_hindsight_call(
         .filter_by(tenant_id=tenant, project_slug="first-touch-reflect")
         .one_or_none()
     )
-    assert project is not None
-    assert project.bank_id
+    assert project is None
 
 
 @respx.mock

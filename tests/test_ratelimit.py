@@ -199,16 +199,10 @@ def test_a_read_route_is_not_rate_limited(client, master_headers, tenant, monkey
 
 
 @respx.mock
-def test_a_recall_loop_is_rate_limited(client, master_headers, tenant, monkeypatch):
-    """recall defaults create=True: unmetered, it mints one Project row per
-    call against a random project_slug, each one permanently squatting a
-    tenant-unique slug (invariant 8 -- unique across live AND retired names,
-    never recoverable). Measured live at 80 projects in 5.1s against one key
-    with no limiter on this route. recall is now is_write=True for exactly
-    that reason, the same rationale reflect already used for spending model
-    tokens on an unattributed server-level key."""
-    _lower_the_limit(monkeypatch)
-    _mock_bank()
+def test_recall_missing_projects_are_not_created_or_rate_limited(
+    client, master_headers, tenant, monkeypatch
+):
+    """Recall is a read and refuses unknown projects before Hindsight."""
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
         return_value=httpx.Response(200, json={"results": []})
     )
@@ -220,15 +214,15 @@ def test_a_recall_loop_is_rate_limited(client, master_headers, tenant, monkeypat
         json={"scope": "project", "project_slug": "loop-1", "query": "x"},
         headers=headers,
     )
-    assert ok.status_code == 200
+    assert ok.status_code == 404
 
     refused = client.post(
         "/v1/memory/recall",
         json={"scope": "project", "project_slug": "loop-2", "query": "x"},
         headers=headers,
     )
-    assert refused.status_code == 429
-    assert refused.json()["error"]["code"] == "RATE_LIMITED"
+    assert refused.status_code == 404
+    assert refused.json()["error"]["code"] == "PROJECT_NOT_FOUND"
 
 
 @respx.mock

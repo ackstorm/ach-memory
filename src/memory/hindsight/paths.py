@@ -171,6 +171,17 @@ def memory(tenant: str, bank_id: str, memory_id: str) -> str:
     return f"{bank(tenant, bank_id)}/memories/{memory_id}"
 
 
+def memory_history(tenant: str, bank_id: str, memory_id: str) -> str:
+    """"Get observation history" (openapi.json operationId
+    get_observation_history, hindsight-api 0.9.2): an observation's past
+    revisions, each change's source facts resolved to their text. No
+    traversal guard here, same as memory() above: memory_id is UUID-shaped
+    and validated by `HindsightClient._require_uuid` before this is ever
+    called, unlike document_id/mental_model_id, which are caller-managed and
+    arbitrary."""
+    return f"{memory(tenant, bank_id, memory_id)}/history"
+
+
 def documents(tenant: str, bank_id: str) -> str:
     return f"{bank(tenant, bank_id)}/documents"
 

@@ -134,10 +134,11 @@ def test_a_master_key_reaching_a_project_bank_is_audited(
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
         return_value=httpx.Response(200, json={"results": []})
     )
-    # juan creates and owns the project first (lazy first-touch creation).
+    # juan creates and owns the project first through the project-management
+    # surface; recall itself is existing-only.
     client.post(
-        "/v1/memory/recall",
-        json={"scope": "project", "project_slug": "juans-secret", "query": "x"},
+        "/v1/projects",
+        json={"project_slug": "juans-secret"},
         headers=juan["headers"],
     )
 

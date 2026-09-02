@@ -307,7 +307,6 @@ async def test_stdio_http_bridge_forwards_protocol_and_injects_project_context()
         "scope": "project",
         "query": "decisions",
         "project_slug": "acme-api",
-        "git_locator": "git@github.com:acme/api.git",
     }
     assert seen[2][1]["authorization"] == "Bearer secret"
     assert "application/json" in seen[2][1]["accept"]

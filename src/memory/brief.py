@@ -20,6 +20,7 @@ bank one exploratory GET happened to name.
 """
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -281,7 +282,11 @@ def _older_than(timestamp: str | None, now: datetime) -> bool:
 # render-2: a gotcha's `failure` joined the line (render-1 dropped it, which
 # lost the observable symptom on every gotcha whose claim states only the
 # trigger condition).
-PROFILE_RENDER_VERSION = "profile-v1-render-2"
+# render-3: `_restates` compares by normalized equality, not containment
+# (render-2's containment check let an unrelated failure whose normalized
+# text happened to be a substring of the claim -- "Stall" inside "Install" --
+# suppress a real symptom the claim never stated).
+PROFILE_RENDER_VERSION = "profile-v1-render-3"
 
 
 def _find_profile(client, bank_id: str) -> dict | None:
@@ -300,23 +305,22 @@ def _find_profile(client, bank_id: str) -> dict | None:
 
 
 def _restates(claim: str, failure: str) -> bool:
-    """Whether `claim` already contains `failure`'s sentence.
+    """Whether `claim` already says exactly what `failure` says.
 
-    The schema lets a synthesizing model file one sentence in both fields, and
-    a line that says the same thing twice spends scarce budget on nothing. But
-    this is deliberately crude containment -- casefolded, whitespace-collapsed,
-    trailing-period-stripped -- and not a similarity measure: the cost of
-    suppressing too eagerly is losing what breaking actually looks like, which
-    is the whole reason `failure` is delivered. Anything the claim does not
-    literally contain is kept.
-
-    One direction only. A claim that is a PREFIX of the failure ("Deploy
-    fails." / "Deploy fails after the migration step, leaving the schema half
-    applied.") has not stated it, so the failure still has something to add.
+    The schema lets a synthesizing model file the same sentence in both
+    fields, and a line that says the same thing twice spends scarce budget on
+    nothing. This used to be containment, but containment is not a similarity
+    measure: two different sentences can have one be a normalized substring of
+    the other ("Stall" inside "Install"), or a negated claim can contain a
+    plain restatement of the symptom it denies, and suppressing on that basis
+    throws away what breaking actually looks like, which is the whole reason
+    `failure` is delivered. Equality -- casefolded, whitespace-collapsed,
+    terminal-punctuation-stripped -- only matches the one case the check
+    exists for: the same sentence filed in both fields.
     """
-    normalized_claim = " ".join(claim.split()).casefold()
-    normalized_failure = " ".join(failure.split()).casefold().rstrip(".")
-    return bool(normalized_failure) and normalized_failure in normalized_claim
+    normalized_claim = " ".join(claim.split()).casefold().rstrip(".!?")
+    normalized_failure = " ".join(failure.split()).casefold().rstrip(".!?")
+    return bool(normalized_failure) and normalized_failure == normalized_claim
 
 
 def _profile_line(compiled: profiles.CompiledProfileItem) -> str:
@@ -372,16 +376,50 @@ def _profile_line(compiled: profiles.CompiledProfileItem) -> str:
     return inert(" -- ".join(parts))
 
 
-def _content_fingerprint(text: str) -> str:
-    """A digest of the rendered profile plus the rendering version.
+def _content_fingerprint(
+    scope: profiles.ProfileScope, items: list[profiles.CompiledProfileItem]
+) -> str:
+    """A digest of the canonical typed truth this profile compiles.
 
-    Over the rendered text, not the raw response: `compile_profile` already
-    puts the items in a canonical order, so this is stable under an upstream
-    permutation, and it also cannot be moved by anything the response carries
-    that never reaches a line.
+    Over the compiled items, not the rendered text: `_profile_line` never
+    renders `origin` or `evidence_ids` (a gotcha's failure/cause/reproduction
+    and a negative's provenance are the only representative fields that reach
+    a line), so a `stated -> confirmed` correction or an evidence swap left
+    the old text-keyed fingerprint -- and the revision it feeds -- unmoved
+    even though what memory actually asserts had changed. Hashing the
+    compiled items means anything that changes the underlying truth moves the
+    fingerprint, whether or not it happens to change a rendered character.
+
+    `compile_profile` already puts the items in a canonical order, so this is
+    stable under an upstream permutation. `PROFILE_SCHEMA_VERSION` and
+    `PROFILE_RENDER_VERSION` are mixed in too: either can change what a given
+    set of compiled fields is entitled to say without any field itself
+    moving.
     """
-    payload = f"{PROFILE_RENDER_VERSION}\x1f{text}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    payload = {
+        "scope": scope,
+        "schema_version": profiles.PROFILE_SCHEMA_VERSION,
+        "render_version": PROFILE_RENDER_VERSION,
+        "items": [
+            {
+                "category": item.category,
+                "claim_key": item.claim_key,
+                "claim": item.claim,
+                "kind": item.representative.kind,
+                "origin": item.representative.origin,
+                "negative": item.representative.negative,
+                "failure": item.representative.failure,
+                "cause": item.representative.cause,
+                "reproduction": item.representative.reproduction,
+                "provenance": item.representative.provenance,
+                "evidence_ids": sorted(item.evidence_ids),
+                "support_count": item.support_count,
+            }
+            for item in items
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def get_structured_section(
@@ -409,7 +447,13 @@ def get_structured_section(
         return None
 
     refreshed_at = model.get("last_refreshed_at")
-    if model.get("is_stale") and _older_than(refreshed_at, now):
+    # Fail closed on ANY staleness, not after a grace period: `get_section`'s
+    # `_older_than` grace period exists for legacy prose because a slightly
+    # stale narrative summary degrades gracefully. A structured item is
+    # delivered as current typed truth with no room for the agent to hedge
+    # it, so a stale one -- even seconds stale -- must not be served as
+    # current at all.
+    if model.get("is_stale"):
         return None
 
     items = profiles.compile_profile(scope, reflect_response)
@@ -420,7 +464,7 @@ def get_structured_section(
     return Section(
         text=text,
         refreshed_at=refreshed_at,
-        content_fingerprint=_content_fingerprint(text),
+        content_fingerprint=_content_fingerprint(scope, items),
     )
 
 
@@ -463,6 +507,16 @@ INDEX_CAPS = {"user": 5, "project": 5, "working_state": 1}
 #
 # Both tiers EMIT in the order `_sections` returns, which is authority order.
 _FILL_ORDER = ("user", "project", "working_state")
+
+# Floor RESERVATION, not emission, order. Working State is last in
+# `_FILL_ORDER` (it renders after both profiles), but its floor must be
+# promised before either profile's: a profile is optional context, Working
+# State is what the agent is doing right now, and "may disappear to honour
+# the budget" applies to the former, never the latter. With floors promised
+# in `_FILL_ORDER` instead, two near-maximum profile floors could each fit
+# on their own and together leave no room for Working State's -- both
+# profiles present, the one section that must not disappear, gone.
+_FLOOR_ORDER = ("working_state", "user", "project")
 
 
 def budget_for(host: str | None) -> int:
@@ -642,7 +696,9 @@ def compose_index(
        tier (`INDEX_CAPS`) -- and a FLOOR held back for each, because a cap in
        lines is not a cap in characters: five 300-character user lines spent
        the project's room before the project was looked at, which put the
-       measured defect back with 171 characters left unspent.
+       measured defect back with 171 characters left unspent. Floors are
+       promised in `_FLOOR_ORDER`, Working State first: a profile may lose
+       its floor to the budget, Working State may not.
     3. The leftover, one line per section per lap, so a user with three lines
        of profile does not get a half-empty tier while the project has thirty
        more lines to give -- and so the surplus is not all handed to whoever
@@ -666,12 +722,13 @@ def compose_index(
         remaining = left
 
     # A heading and one line for every section that has something to say, held
-    # back before any section spends. Promised in priority order and only
-    # while the budget covers them: a section that cannot be promised a floor
-    # is not promised one, rather than taking it from a section ahead of it.
+    # back before any section spends. Promised in `_FLOOR_ORDER` -- Working
+    # State first, then the profiles -- and only while the budget covers them:
+    # a section that cannot be promised a floor is not promised one, rather
+    # than taking it from a section ahead of it.
     floors: dict[str, int] = {}
     room = remaining
-    for name in _FILL_ORDER:
+    for name in _FLOOR_ORDER:
         if not bodies[name]:
             continue
         floor = headings[name] + len(bodies[name][0]) + 1
@@ -767,7 +824,12 @@ def compose_full(
             middles[name] = body[1:]
             tails[name] = []
 
-    for name, prefix, body in dynamic:
+    # Reserved in `_FLOOR_ORDER`, not `dynamic`'s emission order: each floor
+    # here is evaluated independently against whatever `remaining` is left
+    # over from the ones tried before it, so trying user/project first could
+    # spend the budget two near-maximum profile floors could each cover on
+    # their own before Working State's short floor was ever considered.
+    for name, prefix, body in sorted(dynamic, key=lambda item: _FLOOR_ORDER.index(item[0])):
         floor_lines = [body[0], *tails[name]]
         floor_cost = part_cost([*prefix, *floor_lines])
         if floor_cost > remaining:

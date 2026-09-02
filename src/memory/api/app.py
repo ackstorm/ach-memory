@@ -140,6 +140,7 @@ def create_app() -> FastAPI:
     from memory.api import mental_models as mental_model_routes
     from memory.api import operations as operation_routes
     from memory.api import projects as project_routes
+    from memory.api import read as read_routes
     from memory.api import users as user_routes
     from memory.api import working_state as working_state_routes
     from memory.mcp.server import build_mcp
@@ -214,6 +215,7 @@ def create_app() -> FastAPI:
     app.include_router(operation_routes.router)
     app.include_router(group_routes.router)
     app.include_router(project_routes.router)
+    app.include_router(read_routes.router)
     app.include_router(admin_routes.router)
     app.include_router(directive_routes.router)
     app.include_router(mental_model_routes.router)

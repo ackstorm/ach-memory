@@ -95,6 +95,271 @@ def test_recall_posts_the_query(client):
     )
 
 
+@respx.mock
+def test_recall_with_no_new_filter_sends_the_exact_pre_phase_5_body(client):
+    """An existing caller that never learns about the new keyword-only
+    filters must see its request unchanged: this pins the body to exactly
+    `{"query": ...}`, no key added by default for any of them."""
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+
+    client.recall(BANK, "how do we do migrations")
+
+    import json
+
+    assert json.loads(route.calls.last.request.read()) == {
+        "query": "how do we do migrations"
+    }
+
+
+@respx.mock
+def test_recall_forwards_types_and_prefer_observations(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+
+    client.recall(
+        BANK,
+        "q",
+        types=["observation", "world", "experience"],
+        prefer_observations=True,
+    )
+
+    import json
+
+    body = json.loads(route.calls.last.request.read())
+    assert body["types"] == ["observation", "world", "experience"]
+    assert body["prefer_observations"] is True
+
+
+@respx.mock
+def test_recall_omits_prefer_observations_when_left_at_its_upstream_default(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+
+    client.recall(BANK, "q", types=["world"])
+
+    import json
+
+    assert "prefer_observations" not in json.loads(route.calls.last.request.read())
+
+
+@respx.mock
+def test_recall_forwards_tags_and_tags_match(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+
+    client.recall(BANK, "q", tags=["evidence_only", "kind:gotcha"], tags_match="all_strict")
+
+    import json
+
+    body = json.loads(route.calls.last.request.read())
+    assert body["tags"] == ["evidence_only", "kind:gotcha"]
+    assert body["tags_match"] == "all_strict"
+
+
+@respx.mock
+def test_recall_forwards_tag_groups_verbatim(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    groups = [{"or": [{"tags": ["a"], "match": "any"}, {"tags": ["b"], "match": "any"}]}]
+
+    client.recall(BANK, "q", tag_groups=groups)
+
+    import json
+
+    assert json.loads(route.calls.last.request.read())["tag_groups"] == groups
+
+
+@respx.mock
+def test_recall_forwards_max_tokens(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+
+    client.recall(BANK, "q", max_tokens=1200)
+
+    import json
+
+    assert json.loads(route.calls.last.request.read())["max_tokens"] == 1200
+
+
+@respx.mock
+def test_recall_still_disables_entities_alongside_the_new_filters(client):
+    """`with_entities` and the new keyword filters are independent knobs on
+    the same request body; setting one must not disturb the other."""
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+
+    client.recall(BANK, "q", with_entities=False, types=["world"])
+
+    import json
+
+    body = json.loads(route.calls.last.request.read())
+    assert body["include"] == {"entities": None}
+    assert body["types"] == ["world"]
+
+
+@respx.mock
+def test_get_memory_history_hits_the_history_subpath(client):
+    route = respx.get(f"{BASE}/v1/default/banks/{BANK}/memories/{MEM_ID}/history").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    client.get_memory_history(BANK, MEM_ID)
+
+    assert route.calls.last.request.url.path == (
+        f"/v1/default/banks/{BANK}/memories/{MEM_ID}/history"
+    )
+
+
+@respx.mock
+def test_get_memory_history_returns_whatever_shape_upstream_sends_unreshaped(client):
+    """The response is untyped in hindsight-api 0.9.2's own openapi.json, so
+    this method reshapes nothing -- a bare array survives as a list, an
+    object survives as a dict. Defensive normalization against either shape
+    is `read_service.py`'s job, not this client's."""
+    route = respx.get(f"{BASE}/v1/default/banks/{BANK}/memories/{MEM_ID}/history").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"text": "old value", "changed_at": "2026-08-01T00:00:00Z"}],
+        )
+    )
+
+    result = client.get_memory_history(BANK, MEM_ID)
+
+    assert route.called
+    assert result == [{"text": "old value", "changed_at": "2026-08-01T00:00:00Z"}]
+
+
+@respx.mock
+def test_a_non_uuid_memory_id_is_rejected_locally_for_history_with_no_http_call(client):
+    # No route mocked: an unmocked request means the local guard did not run.
+    with pytest.raises(MemoryNotFound):
+        client.get_memory_history(BANK, "ghost")
+
+
+@respx.mock
+def test_get_memory_history_404_is_memory_not_found(client):
+    respx.get(f"{BASE}/v1/default/banks/{BANK}/memories/{ABSENT_ID}/history").mock(
+        return_value=httpx.Response(404, json={"detail": "no such memory"})
+    )
+
+    with pytest.raises(MemoryNotFound):
+        client.get_memory_history(BANK, ABSENT_ID)
+
+
+@respx.mock
+def test_get_memory_history_not_found_never_carries_the_bank_id(client):
+    respx.get(f"{BASE}/v1/default/banks/{BANK}/memories/{ABSENT_ID}/history").mock(
+        return_value=httpx.Response(404, json={"detail": f"bank {BANK} lacks it"})
+    )
+
+    with pytest.raises(MemoryNotFound) as caught:
+        client.get_memory_history(BANK, ABSENT_ID)
+
+    rendered = f"{caught.value!r} {caught.value.details} {caught.value.__context__!r}"
+    assert BANK not in rendered
+    assert caught.value.__cause__ is None
+
+
+# -- Hostile upstream payloads: this client layer only parses JSON and maps
+# -- status codes, never field-level shape. Interpreting a recall/history
+# -- payload into typed hits -- and failing closed or dropping one malformed
+# -- entry when a field is missing, oversized, wrongly typed or a nested bank
+# -- ID leaked into a fact's own metadata -- is read_service.py's job (Task
+# -- 4 of this plan), which owns the only layer that actually reads these
+# -- fields. What this client must prove is narrower and structural: it never
+# -- inspects, mutates, validates or crashes on the response body, for any of
+# -- these, so nothing here silently reshapes hostile data into something
+# -- that merely looks safe.
+
+
+@respx.mock
+def test_recall_passes_through_a_nested_bank_id_untouched(client):
+    hostile = {
+        "results": [
+            {
+                "id": MEM_ID,
+                "text": "t",
+                "type": "world",
+                "metadata": {"bank_id": "project_should_not_leak_here"},
+            }
+        ]
+    }
+    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json=hostile)
+    )
+
+    result = client.recall(BANK, "q")
+
+    assert result == hostile
+
+
+@respx.mock
+def test_recall_passes_through_an_oversized_result_array_untouched(client):
+    hostile = {"results": [{"id": f"m{n}", "text": "x" * 10_000} for n in range(500)]}
+    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json=hostile)
+    )
+
+    result = client.recall(BANK, "q")
+
+    assert len(result["results"]) == 500
+
+
+@respx.mock
+def test_recall_passes_through_a_result_missing_its_id_untouched(client):
+    hostile = {"results": [{"text": "no id field at all"}]}
+    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json=hostile)
+    )
+
+    result = client.recall(BANK, "q")
+
+    assert "id" not in result["results"][0]
+
+
+@respx.mock
+def test_recall_passes_through_an_undocumented_fact_type_untouched(client):
+    hostile = {"results": [{"id": MEM_ID, "text": "t", "type": "tool_trace_dump"}]}
+    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json=hostile)
+    )
+
+    result = client.recall(BANK, "q")
+
+    assert result["results"][0]["type"] == "tool_trace_dump"
+
+
+@respx.mock
+def test_get_memory_history_passes_through_a_self_referential_source_fact(client):
+    """JSON itself cannot encode a true reference cycle -- `json.loads`
+    always produces a tree -- but a change can still list its OWN memory_id
+    as one of its source facts, a logical cycle a consumer that walks
+    `source_facts` must guard against. This client neither notices nor
+    cares: it returns the structure exactly as sent."""
+    hostile = [
+        {
+            "text": "t",
+            "changed_at": "2026-08-01T00:00:00Z",
+            "source_facts": [{"id": MEM_ID, "text": "cites itself"}],
+        }
+    ]
+    respx.get(f"{BASE}/v1/default/banks/{BANK}/memories/{MEM_ID}/history").mock(
+        return_value=httpx.Response(200, json=hostile)
+    )
+
+    result = client.get_memory_history(BANK, MEM_ID)
+
+    assert result == hostile
+
+
 def test_ensure_bank_is_a_bare_upsert_with_no_config_patch(client, respx_mock):
     """The bank upsert survives; the config PATCH does not.
 

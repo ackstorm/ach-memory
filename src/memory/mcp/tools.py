@@ -29,7 +29,16 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field, ValidationError, model_serializer
 
-from memory import activity, metrics, projects, provenance, ratelimit
+from memory import (
+    activity,
+    metrics,
+    projects,
+    provenance,
+    ratelimit,
+    read_context,
+    read_models,
+    read_service,
+)
 from memory import working_state as working_state_domain
 from memory.api.curation import CorrectRequest, ListMemoriesRequest
 from memory.api.documents import ListDocumentsRequest
@@ -304,6 +313,41 @@ def _run(
         activity.finish("mcp")
 
 
+def _read_run(ctx: Context, body_factory, action: str, call) -> ToolResult:
+    """MCP pipeline for the genuinely read-only recall/history tools."""
+    activity.new_call()
+    try:
+        with tool_session(ctx) as tc:
+            body = body_factory()
+            resolved = read_context.resolve_read_bank(
+                tc.db, tc.principal, None, action, body.scope,
+                user_id=body.user_id, project_slug=body.project_slug,
+            )
+            tc.db.commit()
+            result = call(resolved, tc.db, tc.principal, body)
+            payload = result.model_dump() if isinstance(result, BaseModel) else result
+            return ToolResult(
+                result=payload, project_slug=resolved.current_slug,
+                resolved_from=resolved.resolved_from,
+                notice="PROJECT_RENAMED" if resolved.resolved_from else None,
+            )
+    except DomainError as exc:
+        metrics.ERRORS.labels(code=exc.code).inc()
+        activity.set_error(exc.code)
+        raise MCPToolError(exc.code, exc.message, exc.details) from None
+    except ValidationError as exc:
+        metrics.ERRORS.labels(code="INVALID_REQUEST").inc()
+        activity.set_error("INVALID_REQUEST")
+        raise MCPToolError("INVALID_REQUEST", _validation_message(exc)) from None
+    except Exception as exc:
+        logger.error("unhandled MCP read tool error", exc_info=exc)
+        metrics.ERRORS.labels(code="INTERNAL_ERROR").inc()
+        activity.set_error("INTERNAL_ERROR")
+        raise MCPToolError("INTERNAL_ERROR", "internal error") from None
+    finally:
+        activity.finish("mcp")
+
+
 def _run_working_state(ctx: Context, body_factory, call) -> ToolResult:
     """Working State's own pipeline, never `_run`: these two tools have no
     bank, and routing them through `_resolve_bank` would resolve or create
@@ -477,52 +521,63 @@ def register(mcp: MCPServer) -> None:
         )
 
     @mcp.tool(
-        # No readOnlyHint. `create=True` below mints a Project row for an
-        # unseen slug -- permanently, since invariant 8 makes a slug unique
-        # across live AND retired names, so none is ever recoverable.
-        # readOnlyHint is what an MCP client uses to skip confirmation and
-        # auto-approve inside an agent loop, so advertising it here invited
-        # exactly the squat the comment below measures (80 projects in 5.1s).
-        description="Search memory and return the matching facts.",
+        description="Search memory and return bounded, grounded matching facts.",
+        annotations=ToolAnnotations(
+            readOnlyHint=True, destructiveHint=False,
+            idempotentHint=True, openWorldHint=False,
+        ),
     )
     def recall(
         scope: Scope,
         query: str,
         ctx: Context,
         project_slug: str | None = None,
-        git_locator: str | None = None,
         verbose: Verbose = False,
+        view: read_models.View = "current",
+        kinds: list[read_models.ProfileKind] | None = None,
+        max_results: int = read_models.DEFAULT_MAX_RESULTS,
     ) -> ToolResult:
-        # is_write=True: with create=True (the default), an unmetered loop of
-        # recall(scope="project", project_slug=<random>) mints one Project row
-        # per call -- each permanently squatting a tenant-unique slug
-        # (invariant 8: unique across live AND retired names, never
-        # recoverable). Measured live at 80 projects in 5.1s against one key.
-        # recall spends embedding tokens on the same server-level credential
-        # `reflect` is gated for, plus this persistent side effect `reflect`
-        # doesn't have -- so the same gate applies here, even though the read
-        # itself is free.
-        def body_factory() -> ScopedRequest:
-            body = ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            )
-            # Same MEMORY_MAX_CONTENT_BYTES ceiling REST's recall carries
-            # (SPEC §20) -- REST's _check_content_size(body.query) was never
-            # mirrored here, so MCP forwarded an oversize query straight to
-            # Hindsight.
+        def body_factory() -> read_models.RecallRequest:
             _check_content_size(query)
-            return body
+            return read_models.RecallRequest(
+                scope=scope, project_slug=project_slug, query=query, view=view,
+                kinds=tuple(kinds) if kinds else None, max_results=max_results,
+            )
 
-        return _run(
+        def call(resolved, _db, _principal, body):
+            hits = read_service._recall_hits(
+                resolved.bank_id, body.query, body.view, body.kinds
+            )
+            return read_models.build_recall_response(
+                project_slug=resolved.current_slug,
+                resolved_from=resolved.resolved_from,
+                hits=hits[:body.max_results],
+            )
+
+        return _read_run(ctx, body_factory, "read.recall", call)
+
+    @mcp.tool(
+        description="Fetch bounded history and rationale for a recalled memory.",
+        annotations=ToolAnnotations(
+            readOnlyHint=True, destructiveHint=False,
+            idempotentHint=True, openWorldHint=False,
+        ),
+    )
+    def memory_history(
+        scope: Scope,
+        memory_id: str,
+        ctx: Context,
+        project_slug: str | None = None,
+    ) -> ToolResult:
+        return _read_run(
             ctx,
-            body_factory,
-            "memory.recall",
-            lambda bank, db, p, slug: get_client().recall(
-                bank, query, with_entities=verbose
+            lambda: read_models.HistoryRequest(
+                scope=scope, project_slug=project_slug, memory_id=memory_id
             ),
-            create=True,
-            is_write=True,
-            verbose=verbose,
+            "read.history",
+            lambda _resolved, db, principal, body: read_service.history(
+                db, principal, None, body
+            ),
         )
 
     @mcp.tool(
@@ -530,8 +585,7 @@ def register(mcp: MCPServer) -> None:
             "Ask memory a question and get a synthesized answer rather than "
             "a list of facts. Costs more than recall."
         ),
-        # No readOnlyHint, same reason as recall: create=True mints a
-        # permanent Project row for an unseen slug.
+        # Reflect still spends LLM tokens and keeps confirmation/rate limiting.
     )
     def reflect(
         scope: Scope,
@@ -556,7 +610,7 @@ def register(mcp: MCPServer) -> None:
             body_factory,
             "memory.reflect",
             lambda bank, db, p, slug: get_client().reflect(bank, query),
-            create=True,
+            create=False,
             is_write=True,
             verbose=verbose,
         )
@@ -969,6 +1023,7 @@ def register(mcp: MCPServer) -> None:
         reflect=reflect,
         list_memories=list_memories,
         get_memory=get_memory,
+        memory_history=memory_history,
         forget=forget,
         correct=correct,
         restore=restore,

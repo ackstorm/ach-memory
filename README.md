@@ -14,7 +14,7 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
   after renames.
 - User keys for agents and a separate master key for provisioning and admin
   operations.
-- REST endpoints for memory, users, projects, groups, documents, operations,
+- REST endpoints for memory, read-only recall/history, users, projects, groups, documents, operations,
   curation, directives, mental models, and audit access.
 - A 15-tool streamable HTTP MCP surface backed by the same authorization and
   memory operations as REST.
@@ -137,6 +137,9 @@ Two transport flags cover the non-default cases (`init <target> --local|--http`)
 
 Memory is explicit: installation adds memory tools, but agents do not retain or
 recall anything automatically. Ask an agent to use memory when you want it to.
+`recall` and `memory_history` are read-only and do not create projects or
+enrich repository metadata; `reflect` remains a confirmation-requiring,
+rate-limited LLM operation.
 
 ## MCP
 

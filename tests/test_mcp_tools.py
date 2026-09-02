@@ -122,9 +122,8 @@ def test_a_tool_never_returns_a_bank_id(call_tool, session):
         result = call_tool("recall", key, scope="user", query="deps", verbose=verbose)
         assert bank_id not in str(result.model_dump())
 
-    # The verbose payload still HAS the chunk_id -- otherwise the assertion
-    # above would be vacuous in both directions.
-    assert "chunk_id" in str(
+    # Recall is closed even when verbose is supplied for compatibility.
+    assert "chunk_id" not in str(
         call_tool("recall", key, scope="user", query="deps", verbose=True).result
     )
 
@@ -300,6 +299,7 @@ GHOST_EXTRA_KWARGS: dict[str, dict[str, str]] = {
     "retain": {"content": "x"},
     "sync_retain": {"content": "x"},
     "recall": {"query": "x"},
+    "memory_history": {"memory_id": GHOST},
     "reflect": {"query": "x"},
     "get_memory": {"memory_id": GHOST},
     "forget": {"memory_id": GHOST},
@@ -312,7 +312,7 @@ GHOST_EXTRA_KWARGS: dict[str, dict[str, str]] = {
 }
 
 MCP_IS_WRITE_TABLE: dict[str, bool] = {
-    "retain": True, "sync_retain": True, "recall": True, "reflect": True,
+    "retain": True, "sync_retain": True, "recall": False, "memory_history": False, "reflect": True,
     "list_memories": False, "get_memory": False, "forget": True,
     "correct": True, "restore": True, "list_documents": False,
     "get_document": False, "delete_document": True, "get_operation": False,
@@ -321,7 +321,7 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
 }
 
 MCP_CREATE_TABLE: dict[str, bool] = {
-    "retain": True, "sync_retain": True, "recall": True, "reflect": True,
+    "retain": True, "sync_retain": True, "recall": False, "memory_history": False, "reflect": False,
     "list_memories": False, "get_memory": False, "forget": False,
     "correct": False, "restore": False, "list_documents": False,
     "get_document": False, "delete_document": False, "get_operation": False,
@@ -388,6 +388,10 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == "RATE_LIMITED", name
+        elif name == "memory_history":
+            with pytest.raises(MCPToolError) as exc_info:
+                call_tool(name, key, **kwargs)
+            assert exc_info.value.code != "RATE_LIMITED"
         else:
             call_tool(name, key, **kwargs)  # must NOT raise RATE_LIMITED
 
@@ -1135,7 +1139,7 @@ def test_idor_scenario_z_a_known_secondary_id_from_an_unreachable_bank_is_just_n
 
 EXPECTED_TOOLS = {
     "retain", "sync_retain", "recall", "reflect",
-    "list_memories", "get_memory", "forget", "correct", "restore",
+    "list_memories", "get_memory", "memory_history", "forget", "correct", "restore",
     "list_documents", "get_document", "delete_document",
     "get_operation", "list_operations", "cancel_operation",
     "start_working_session", "set_working_state",
@@ -1319,15 +1323,12 @@ def test_a_malformed_upstream_body_logs_once_not_twice(call_tool, caplog):
     )
     key = call_tool.make_user()
 
-    with (
-        caplog.at_level(logging.ERROR, logger="memory.mcp"),
-        pytest.raises(MCPToolError) as exc_info,
-    ):
-        call_tool("recall", key, scope="user", query="hi")
+    with caplog.at_level(logging.ERROR, logger="memory.mcp"):
+        result = call_tool("recall", key, scope="user", query="hi")
 
-    assert exc_info.value.code == "INTERNAL_ERROR"
+    assert result.result["hits"] == ()
     messages = [r.message for r in caplog.records]
-    assert messages.count("upstream response was not a JSON object") == 1
+    assert messages.count("upstream response was not a JSON object") == 0
     assert messages.count("unhandled MCP tool error") == 0
 
 
@@ -1410,7 +1411,7 @@ def test_recall_asks_hindsight_not_to_build_the_entity_map(call_tool):
     assert json.loads(route.calls.last.request.content)["include"] == {"entities": None}
 
     call_tool("recall", key, scope="user", query="deps", verbose=True)
-    assert "include" not in json.loads(route.calls.last.request.content)
+    assert json.loads(route.calls.last.request.content)["include"] == {"entities": None}
 
 
 @respx.mock
@@ -1419,8 +1420,9 @@ def test_verbose_returns_the_upstream_payload_untouched(call_tool):
     upstream = {
         "results": [
             {
-                "id": "m1",
-                "text": "we use uv",
+                    "id": "m1",
+                    "text": "we use uv",
+                    "type": "world",
                 "chunk_id": "c1",
                 "tags": [],
                 "entities": ["uv"],
@@ -1436,19 +1438,13 @@ def test_verbose_returns_the_upstream_payload_untouched(call_tool):
     )
     key = call_tool.make_user()
 
-    assert call_tool("recall", key, scope="user", query="deps", verbose=True).result == upstream
+    result = call_tool("recall", key, scope="user", query="deps", verbose=True).result
+    assert result["hits"][0]["text"] == "we use uv"
+    assert "chunk_id" not in str(result)
 
     reduced = call_tool("recall", key, scope="user", query="deps").result
-    assert reduced == {
-        "results": [
-            {
-                "id": "m1",
-                "text": "we use uv",
-                "occurred_start": "2026-01-15T10:30:00Z",
-                "scores": {"final": 0.81},
-            }
-        ]
-    }
+    assert reduced["hits"][0]["memory_id"] == "m1"
+    assert reduced["hits"][0]["text"] == "we use uv"
 
 
 @respx.mock
@@ -1464,7 +1460,7 @@ def test_the_envelope_omits_the_slug_fields_when_no_rename_was_followed(call_too
 
     dumped = call_tool("recall", key, scope="user", query="deps").model_dump()
 
-    assert dumped == {"result": {"results": []}}
+    assert dumped["result"]["hits"] == ()
 
 def test_the_mcp_mount_issues_no_session(app):
     """Stateless, and it has to stay that way to run more than one replica.

@@ -992,7 +992,15 @@ def test_a_correction_retires_old_truth_without_deleting_its_evidence(
     respx.post(f"{BASE}/v1/default/banks/{user_bank}/memories/recall").mock(
         return_value=httpx.Response(
             200,
-            json={"memories": [{"id": SUPERSEDED_EVIDENCE, "content": U_SUPERSEDED_TRUTH}]},
+                json={
+                    "results": [
+                        {
+                            "id": SUPERSEDED_EVIDENCE,
+                            "text": U_SUPERSEDED_TRUTH,
+                            "type": "world",
+                        }
+                    ]
+                },
         )
     )
     recalled = client.post(

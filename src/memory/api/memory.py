@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -12,7 +12,7 @@ from pydantic import (
 )
 from sqlalchemy.orm import Session
 
-from memory import activity, audit, provenance, ratelimit
+from memory import activity, audit, provenance, ratelimit, read_context, read_models, read_service
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.common import RenameForwarding
 from memory.auth.principal import Principal
@@ -422,37 +422,57 @@ def _retain(
     )
 
 
+# SPEC-cited elsewhere in this file, repeated here so the deprecation
+# header's rationale is legible from this route alone: superseded by
+# POST /v1/read/recall (Phase 5 plan), which returns the same closed, bounded
+# hit shape without a legacy envelope, and is never itself a write (no
+# first-touch project creation, no rate limit -- it cannot be, since it never
+# creates anything to squat with).
+_DEPRECATED_RECALL_HEADERS = {
+    "Deprecation": "true",
+    "Link": '</v1/read/recall>; rel="successor-version"',
+}
+
+
 @router.post("/recall", response_model=MemoryResponse)
 def recall(
     body: RecallRequest,
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
+    response: Response,
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
     # Same MEMORY_MAX_CONTENT_BYTES ceiling `retain` and `correct` carry
     # (SPEC §20), reused rather than a new bound: `query` is the same shared
     # field `reflect` below spends model tokens on.
     _check_content_size(body.query)
-    bank_id, resolved_from, project_slug = _resolve_bank(
-        body, db, principal, on_behalf_of, "memory.recall", is_write=True
+    read_bank = read_context.resolve_read_bank(
+        db,
+        principal,
+        on_behalf_of,
+        "memory.recall",
+        body.scope,
+        user_id=body.user_id,
+        project_slug=body.project_slug,
     )
-    # recall is a write path too: resolve_project_bank -> projects.resolve
-    # defaults create=True, so a recall against an unknown slug creates the
-    # project (intended first-touch behavior, SPEC §8) -- and, unmetered,
-    # that lets one credential mint permanent projects (each squatting a
-    # tenant-unique slug forever, invariant 8) at whatever rate it can call
-    # this route. `is_write=True` closes that the same way `reflect` below
-    # is gated on spending tokens rather than on writing to Hindsight: the
-    # side effect that matters here is the Project row, not the upstream
-    # call. Same commit-before-the-upstream-call reasoning as _retain
-    # applies here.
     db.commit()
 
-    result = get_client().recall(bank_id, body.query)
+    response.headers.update(_DEPRECATED_RECALL_HEADERS)
+    hits = read_service._recall_hits(read_bank.bank_id, body.query, "current", None)
+    capped = hits[: read_models.DEFAULT_MAX_RESULTS]
+    recalled = read_models.build_recall_response(
+        project_slug=read_bank.current_slug,
+        resolved_from=read_bank.resolved_from,
+        hits=capped,
+    )
+    truncated = recalled.truncated or len(hits) > len(capped)
     return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
+        result={
+            "hits": [hit.model_dump() for hit in recalled.hits],
+            "truncated": truncated,
+        },
+        resolved_from=read_bank.resolved_from,
+        project_slug=read_bank.current_slug,
     )
 
 
@@ -468,14 +488,32 @@ def reflect(
     # attribution (SPEC §19.4) -- the actual thing the write limiter defends
     # against. `retain` was capped and this token-spending route was not.
     _check_content_size(body.query)
-    bank_id, resolved_from, project_slug = _resolve_bank(
-        body, db, principal, on_behalf_of, "memory.reflect", is_write=True
+    # The rate-limit gate, kept: `_resolve_bank`'s own `is_write=True` path
+    # is exactly this one call (memory/api/memory.py's own `_resolve_bank`,
+    # a few dozen lines up), invoked here directly because bank resolution
+    # itself is switching below to a resolver with no rate-limit concept of
+    # its own (Phase 5 plan Task 4 Step 3, "keep its LLM-spend limiter").
+    ratelimit.check(principal, on_behalf_of)
+    # Bank resolution switched to the existing-only resolver (create=False,
+    # no git_locator forwarded): unlike `recall` above, this route's write
+    # is entirely LLM spend, not a Project row, so there is nothing here
+    # that first-touch project creation is protecting -- switching away from
+    # it immediately, rather than keeping it "for symmetry" with `recall`,
+    # closes the same squatting surface `recall`'s own `is_write=True`
+    # guard exists for, one call sooner.
+    read_bank = read_context.resolve_read_bank(
+        db,
+        principal,
+        on_behalf_of,
+        "memory.reflect",
+        body.scope,
+        user_id=body.user_id,
+        project_slug=body.project_slug,
     )
-    # reflect is a write path too: resolve_project_bank -> projects.resolve
-    # defaults create=True, so a reflect against an unknown slug creates the
-    # project (intended first-touch behavior, SPEC §8). Same commit-before-
-    # the-upstream-call reasoning as _retain applies here.
     db.commit()
+    bank_id = read_bank.bank_id
+    resolved_from = read_bank.resolved_from
+    project_slug = read_bank.current_slug if read_bank.scope == "project" else None
     result = get_client().reflect(bank_id, body.query)
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),

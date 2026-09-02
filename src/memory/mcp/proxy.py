@@ -115,6 +115,7 @@ def resolve_workspace_context(cwd: str | None = None) -> str | None:
 
 
 _WORKING_STATE_TOOLS = frozenset({"start_working_session", "set_working_state"})
+_READ_TOOLS = frozenset({"recall", "memory_history"})
 
 
 def fill_working_state_arguments(
@@ -219,7 +220,11 @@ class StdioHttpBridge:
                         arguments, self._slug, self._locator, self._workspace_id
                     )
                 else:
-                    fill_project_arguments(arguments, self._slug, self._locator)
+                    fill_project_arguments(
+                        arguments,
+                        self._slug,
+                        None if tool_name in _READ_TOOLS else self._locator,
+                    )
 
         headers = {
             "Authorization": f"Bearer {self._api_key}",

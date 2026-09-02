@@ -816,6 +816,14 @@ _KIND_RANK: dict[tuple[ProfileKind, bool], int] = {
     ("preference", False): 3,
 }
 
+# Bumped whenever a change here could alter what a `CompiledProfileItem`
+# means without changing a single one of its field values -- a new closed
+# enum member, a new field, a changed durability/category rule. Brief
+# fingerprints (src/memory/brief.py `_content_fingerprint`) mix this in
+# alongside `PROFILE_RENDER_VERSION` so a schema change invalidates cached
+# revisions even when no already-delivered item's compiled fields moved.
+PROFILE_SCHEMA_VERSION = "profile-schema-v1"
+
 
 @dataclass(frozen=True)
 class CompiledProfileItem:

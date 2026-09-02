@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import Field, field_validator
 from sqlalchemy.orm import Session
 
+from memory import read_context
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import (
     MAX_PAGE_SIZE,
@@ -88,10 +89,9 @@ def _bank(
 
     create=False: a memory cannot exist in a bank the lookup call just
     created (SPEC §11.3 -- these are maintenance routes over an existing
-    bank, unlike retain/recall/reflect's first-touch creation under §16.2).
-    So resolve() here never creates a Project row -- but it can still ENRICH
-    an existing one's git_locator (ScopedRequest carries it too), which is
-    the only mutation left for db.commit() to persist.
+    bank). List/get use the dedicated read resolver so they also cannot
+    enrich an existing project's git_locator; mutating routes retain the
+    legacy resolver because their project-management behavior is intentional.
 
     `is_write` forwards to `_resolve_bank`'s rate-limit gate (SPEC §20) --
     forget/correct/restore pass it, list/get don't.
@@ -101,6 +101,32 @@ def _bank(
     )
     db.commit()
     return bank_id, resolved_from, project_slug
+
+
+def _read_bank(
+    body: ScopedRequest,
+    db: Session,
+    principal: Principal,
+    on_behalf_of: str | None,
+    action: str,
+) -> tuple[str, str | None, str | None]:
+    """Resolve list/get through the non-enriching read boundary.
+
+    The legacy request still accepts ``git_locator`` for wire compatibility,
+    but it is intentionally not forwarded: listing or fetching a memory must
+    never bind repository metadata onto an existing project.
+    """
+    resolved = read_context.resolve_read_bank(
+        db,
+        principal,
+        on_behalf_of,
+        action,
+        body.scope,
+        user_id=body.user_id,
+        project_slug=body.project_slug,
+    )
+    db.commit()
+    return resolved.bank_id, resolved.resolved_from, resolved.current_slug
 
 
 @router.post("/list", response_model=MemoryResponse)
@@ -114,7 +140,7 @@ def list_memories(
     # recall's query; optional, so guarded like the UPDATE routes.
     if body.q is not None:
         _check_content_size(body.q)
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = _read_bank(
         body, db, principal, on_behalf_of, "memory.list"
     )
     result = get_client().list_memories(
@@ -140,7 +166,7 @@ def get_memory(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = _read_bank(
         body, db, principal, on_behalf_of, "memory.get"
     )
     result = get_client().get_memory(bank_id, body.memory_id)

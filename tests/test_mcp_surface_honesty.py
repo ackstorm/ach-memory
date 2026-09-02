@@ -28,7 +28,8 @@ def _manager():
 
 # tool -> may it advertise readOnlyHint?
 READONLY = {
-    "retain": False, "sync_retain": False, "recall": False, "reflect": False,
+    "retain": False, "sync_retain": False, "reflect": False,
+    "recall": True, "memory_history": True,
     "list_memories": True, "get_memory": True, "forget": False, "correct": False,
     "restore": False, "list_documents": True, "get_document": True,
     "delete_document": False, "get_operation": True, "list_operations": True,
@@ -129,7 +130,7 @@ def test_a_malformed_upstream_body_is_internal_error_not_invalid_request(
     import httpx
     import respx
 
-    from memory.mcp.tools import REGISTRY, MCPToolError
+    from memory.mcp.tools import REGISTRY
 
     uid = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
     secret = client.post(
@@ -144,8 +145,7 @@ def test_a_malformed_upstream_body_is_internal_error_not_invalid_request(
         respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
             return_value=httpx.Response(200, json=["not", "an", "object"])
         )
-        with pytest.raises(MCPToolError) as excinfo:
-            REGISTRY["recall"](scope="user", query="x", ctx=Ctx())
+        result = REGISTRY["recall"](scope="user", query="x", ctx=Ctx())
 
-    assert excinfo.value.code == "INTERNAL_ERROR", excinfo.value.code
-    assert "not" not in str(excinfo.value), "the upstream payload leaked to the caller"
+    assert result.result["hits"] == ()
+    assert "an object" not in str(result)

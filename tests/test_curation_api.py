@@ -486,12 +486,10 @@ def test_correct_rejects_oversize_content(client, juan, tenant):
 
 
 @respx.mock
-def test_curation_route_still_enriches_git_locator_on_an_existing_project(
+def test_curation_read_route_does_not_enrich_git_locator_on_an_existing_project(
     client, juan, tenant, session
 ):
-    """The db.commit() in _bank has nothing left to persist for project
-    CREATION (create=False, finding 1) -- but resolve() can still enrich an
-    existing project's git_locator, and that mutation still needs a commit."""
+    """List/get are reads: locator metadata is ignored and not persisted."""
     client.post(
         "/v1/projects",
         json={"project_slug": "payments-api"},
@@ -521,7 +519,7 @@ def test_curation_route_still_enriches_git_locator_on_an_existing_project(
         .filter_by(tenant_id=tenant, project_slug="payments-api")
         .one()
     )
-    assert project.git_locator == "github.com/acme/payments-api"
+    assert project.git_locator is None
 
 
 @respx.mock

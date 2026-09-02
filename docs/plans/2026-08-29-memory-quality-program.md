@@ -118,6 +118,15 @@ Production memory and configuration were not mutated by this phase: nothing PATC
 
 ## Phase 5 — Truly Read-Only Recall
 
+**Status:** Implementation and compatibility gate complete. Added existing-only
+read resolution, closed/bounded REST recall and history, migrated legacy REST
+recall/reflect and curation list/get, and added MCP `memory_history` plus
+read-only annotations. Q&A remains absent because no behavioral evidence yet
+justifies synthesized answers over grounded recall. Focused and full suites pass
+(`2048 passed, 2 skipped`); the sole remaining live integration prerequisite is
+the expected `MEMORY_MASTER_KEY` requirement. Production memory/configuration
+and all Phase 0 activation switches remain untouched.
+
 **Purpose:** Make deep history and rationale safely available without the current possibility that a read resolves or creates project state.
 
 **Detailed plan must cover:**
