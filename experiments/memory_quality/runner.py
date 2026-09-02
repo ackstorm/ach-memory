@@ -26,7 +26,7 @@ from .reliability import (
     run_fault_scenario,
     run_worker_boundary_verification,
 )
-from .scoring import Adjudication, build_blind_packet, decide, score_run, unblind
+from .scoring import Adjudication, BlindPacket, build_blind_packet, decide, score_run, unblind
 from .semantic import run_semantic_case
 from .upstream import OfficialRuntime, verify_official_source
 
@@ -171,6 +171,55 @@ def _run_dir() -> Path:
     return Path(os.environ.get("MEMORY_BAKEOFF_ARTIFACT_DIR", ".artifacts/memory-quality")) / run_id
 
 
+def export_adjudication() -> Path:
+    run_dir = _run_dir().resolve()
+    packet_path = run_dir / "blind-packet.json"
+    if not packet_path.is_file():
+        raise SystemExit("export requires blind-packet.json")
+    try:
+        packet = BlindPacket.model_validate_json(packet_path.read_text())
+    except ValueError as exc:
+        raise SystemExit("export refuses malformed blind-packet.json") from exc
+    if len(packet.items) != 144:
+        raise SystemExit("export requires exactly 144 semantic items")
+    source_files = []
+    for item in packet.items:
+        relative = Path(item.artifact_relpath)
+        if relative.is_absolute() or ".." in relative.parts or relative.parts[:2] != ("blind", "outputs"):
+            raise SystemExit("export refuses non-opaque or out-of-run artifact path")
+        if any(name in item.artifact_relpath for name in ("ach_semantic", "native_semantic", "hybrid_semantic", "mq55-", "token", "credential", "private-key")):
+            raise SystemExit("export refuses variant, bank or credential identity")
+        source = (run_dir / relative).resolve()
+        if run_dir not in source.parents or not source.is_file():
+            raise SystemExit("export refuses missing or out-of-run artifact")
+        source_files.append((relative, source))
+    target = Path(os.environ.get("HINDSIGHT_BAKEOFF_EXPORT_DIR", str(run_dir.parent / f"{run_dir.name}-adjudication-export"))).resolve()
+    if target == run_dir or run_dir in target.parents:
+        raise SystemExit("export target must be outside the artifact root")
+    if target.exists():
+        raise SystemExit("export target already exists")
+    target.mkdir(parents=True)
+    try:
+        shutil.copyfile(packet_path, target / "blind-packet.json")
+        for relative, source in source_files:
+            destination = target / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+        _atomic_json(target / "export-manifest.json", {
+            "run_id": run_dir.name,
+            "packet_sha256": hashlib.sha256(packet_path.read_bytes()).hexdigest(),
+            "item_count": len(packet.items),
+            "files": [str(relative) for relative, _ in source_files],
+        })
+        canaries = tuple(dict.fromkeys(HOST_CANARIES + tuple(canary for case in (*load_semantic_cases(ROOT / "corpus/semantic.jsonl"), *load_delivery_cases(ROOT / "corpus/delivery.jsonl")) for canary in case.secret_canaries)))
+        if scan_canaries((target,), canaries):
+            raise SystemExit("export artifact canary scan failed")
+        return target
+    except Exception:
+        shutil.rmtree(target)
+        raise
+
+
 def run_full(env=None) -> dict:
     """Execute the complete 319-observation matrix; intentionally not smoke."""
     env = env or os.environ
@@ -255,11 +304,23 @@ def score_artifacts() -> dict:
         raise SystemExit("score refuses anything other than the exact 319-observation matrix")
     key = _measured_hmac_key(os.environ)
     packet = build_blind_packet(observations, key)
-    _atomic_json(run_dir / "blind-packet.json", packet.model_dump(mode="json"))
+    existing_packet = run_dir / "blind-packet.json"
+    if existing_packet.exists():
+        try:
+            if BlindPacket.model_validate_json(existing_packet.read_text()) != packet:
+                raise SystemExit("score refuses an altered blind packet")
+        except ValueError as exc:
+            raise SystemExit("score refuses malformed blind-packet.json") from exc
+    else:
+        _atomic_json(existing_packet, packet.model_dump(mode="json"))
     if not adjudication_path.exists():
         raise SystemExit("blind-packet.json written; score requires adjudication.json")
     adjudication = Adjudication.model_validate_json(adjudication_path.read_text())
     mapping_path = Path(os.environ.get("HINDSIGHT_BAKEOFF_MAPPING_PATH", run_dir.parent / ".private" / f"{run_dir.name}.mapping.json"))
+    if mapping_path.resolve().is_relative_to(run_dir) or mapping_path.stat().st_mode & 0o077:
+        raise SystemExit("score requires a private mapping outside the run root")
+    if adjudication.run_id != run_dir.name:
+        raise SystemExit("score refuses adjudication for another run")
     unblind(packet, adjudication, mapping_path, key)
     manifest = json.loads((run_dir / "manifest.json").read_text()) if (run_dir / "manifest.json").exists() else {}
     expected_units = {
@@ -288,7 +349,7 @@ def render_report() -> Path:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m experiments.memory_quality.runner")
-    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "score", "cleanup", "report"))
+    parser.add_argument("command", choices=("preflight", "legacy-calibrate", "smoke", "run", "export-adjudication", "score", "cleanup", "report"))
     args = parser.parse_args(argv)
     if args.command == "preflight":
         try:
@@ -301,6 +362,9 @@ def main(argv=None) -> int:
             print(json.dumps(run_smoke() if args.command == "smoke" else run_full(), sort_keys=True))
         except BakeoffRefused as exc:
             raise SystemExit(str(exc)) from exc
+        return 0
+    if args.command == "export-adjudication":
+        print(export_adjudication())
         return 0
     if args.command == "cleanup":
         run_id = os.environ.get("HINDSIGHT_BAKEOFF_RUN_ID")
