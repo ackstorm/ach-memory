@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -99,6 +100,7 @@ def run_semantic_case(
         raise ValueError("semantic variants require a fresh disposable bank client")
     bank = banks.create_bank(f"semantic-{case.id}-{variant}", repetition)
     valid_output = True
+    started = time.monotonic()
     if variant == "ach_semantic":
         from memory.capture.extractor import extract
 
@@ -134,7 +136,8 @@ def run_semantic_case(
         count = len(projection.get("facts", []))
         scopes = ("user", "project") if count else ()
         detail = {"facts": projection.get("facts", [])}
+    duration_ms = int((time.monotonic() - started) * 1000)
     if artifact_path is not None:
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(json.dumps(detail, sort_keys=True, separators=(",", ":")) + "\n")
-    return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags={"executed": True, "valid_output": valid_output, "no_canary": True, "no_shared_document": variant != "native_semantic"}, metric_values={"byte_count": len(content.encode()), "claim_count": count, "scope_count": len(scopes), "duration_ms": 0}, warning_codes=("NATIVE_SHARED_BASELINE",) if variant == "native_semantic" else ())
+    return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags={"executed": True, "valid_output": valid_output, "no_canary": True, "no_shared_document": variant != "native_semantic"}, metric_values={"byte_count": len(content.encode()), "claim_count": count, "scope_count": len(scopes), "duration_ms": duration_ms}, warning_codes=("NATIVE_SHARED_BASELINE",) if variant == "native_semantic" else ())

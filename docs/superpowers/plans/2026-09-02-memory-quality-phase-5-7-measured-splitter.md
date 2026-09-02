@@ -113,7 +113,7 @@ git commit -m "fix(capture): isolate invalid provenance to its candidate"
 - Modify: `experiments/memory_quality/contracts.py`
 - Modify: `experiments/memory_quality/hindsight.py`
 - Modify: `experiments/memory_quality/semantic.py`
-- Modify: `tests/test_memory_quality_hindsight.py`
+- Modify: `tests/test_memory_quality_upstream.py`
 - Modify: `tests/test_memory_quality_semantic.py`
 
 **Interfaces:**
@@ -128,7 +128,7 @@ Use respx to return a document list followed by `GET /documents/{document_id}` w
 - [ ] **Step 2: Verify RED**
 
 ```bash
-pytest tests/test_memory_quality_hindsight.py tests/test_memory_quality_semantic.py -q
+pytest tests/test_memory_quality_upstream.py tests/test_memory_quality_semantic.py -q
 ```
 
 - [ ] **Step 3: Implement the measured boundary**
@@ -138,10 +138,10 @@ Fetch each listed document through the OpenAPI-confirmed `GET /v1/default/banks/
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-pytest tests/test_memory_quality_hindsight.py tests/test_memory_quality_semantic.py -q
-ruff check experiments/memory_quality/contracts.py experiments/memory_quality/hindsight.py experiments/memory_quality/semantic.py tests/test_memory_quality_hindsight.py tests/test_memory_quality_semantic.py
+pytest tests/test_memory_quality_upstream.py tests/test_memory_quality_semantic.py -q
+ruff check experiments/memory_quality/contracts.py experiments/memory_quality/hindsight.py experiments/memory_quality/semantic.py tests/test_memory_quality_upstream.py tests/test_memory_quality_semantic.py
 git diff --check
-git add experiments/memory_quality/contracts.py experiments/memory_quality/hindsight.py experiments/memory_quality/semantic.py tests/test_memory_quality_hindsight.py tests/test_memory_quality_semantic.py
+git add experiments/memory_quality/contracts.py experiments/memory_quality/hindsight.py experiments/memory_quality/semantic.py tests/test_memory_quality_upstream.py tests/test_memory_quality_semantic.py
 git commit -m "fix(quality): measure semantic bank effects"
 ```
 

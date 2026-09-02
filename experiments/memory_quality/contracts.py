@@ -115,6 +115,7 @@ class SnapshotObject(BaseModel):
     layer: Literal["document", "memory", "observation", "mental_model", "page"]
     object_id: str
     text: str
+    original_text: str | None = None
     source_ids: tuple[str, ...] = ()
 
 

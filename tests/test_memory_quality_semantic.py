@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from experiments.memory_quality import semantic as semantic_module
 from experiments.memory_quality.contracts import SemanticCase
 from experiments.memory_quality.semantic import (
     _AchHindsightAdapter,
@@ -120,3 +121,26 @@ def test_ach_out_of_range_stated_provenance_is_recovered(tmp_path):
     assert rendered["claims"][0]["text"] == "staged rollout"
     assert rendered["claims"][0]["origin"] == "stated"
     assert rendered["claims"][0]["provenance"] is None
+
+
+def test_semantic_observation_measures_monotonic_elapsed_time(monkeypatch):
+    case = SemanticCase(
+        id="S99",
+        transcript=({"role": "user", "text": "safe"},),
+        expected_units=(),
+        secret_canaries=("SECRET",),
+    )
+
+    class Banks:
+        def create_bank(self, purpose, repetition):
+            return "mq55-test"
+
+        def dry_run_extract(self, bank_id, content, **options):
+            return {"facts": []}
+
+    values = iter((10.0, 10.125))
+    monkeypatch.setattr(semantic_module.time, "monotonic", lambda: next(values))
+
+    observation = run_semantic_case(case, "ach_semantic", 1, Banks())
+
+    assert observation.metric_values["duration_ms"] == 125

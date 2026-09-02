@@ -1,5 +1,7 @@
+import json
 import uuid
 
+import httpx
 import pytest
 
 from experiments.memory_quality.hindsight import (
@@ -91,3 +93,58 @@ def test_retain_poll_retries_transient_status_errors(tmp_path, respx_mock):
     receipt = client.retain_and_wait(bank, "safe", document_id="doc")
     assert receipt.terminal_state == "completed"
     assert status.call_count == 2
+
+
+def test_retain_can_use_verbatim_strategy(tmp_path, respx_mock):
+    run = uuid.uuid4()
+    config = BakeoffConfig.from_env(bakeoff_env(), run_id=run)
+    client = DisposableHindsight(config, artifact_root=tmp_path)
+    bank = bank_id(run, "retain", 1)
+    operation = str(uuid.uuid4())
+    respx_mock.put(f"http://127.0.0.1:8888/v1/default/banks/{bank}").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    retain = respx_mock.post(
+        f"http://127.0.0.1:8888/v1/default/banks/{bank}/memories"
+    ).mock(return_value=httpx.Response(202, json={"operation_id": operation}))
+    respx_mock.get(
+        f"http://127.0.0.1:8888/v1/default/banks/{bank}/operations/{operation}"
+    ).mock(return_value=httpx.Response(200, json={"status": "completed"}))
+
+    client.create_bank("retain")
+    client.retain_and_wait(bank, "safe", document_id="doc", strategy="verbatim")
+
+    assert retain.calls[0].request.read()
+    payload = json.loads(retain.calls[0].request.content)
+    assert payload["items"][0]["strategy"] == "verbatim"
+
+
+def test_list_bank_objects_reads_document_original_text(tmp_path, respx_mock):
+    run = uuid.uuid4()
+    config = BakeoffConfig.from_env(bakeoff_env(), run_id=run)
+    client = DisposableHindsight(config, artifact_root=tmp_path)
+    bank = bank_id(run, "snapshot", 1)
+    document_id = "doc-1"
+    respx_mock.put(f"http://127.0.0.1:8888/v1/default/banks/{bank}").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx_mock.get(
+        f"http://127.0.0.1:8888/v1/default/banks/{bank}/documents"
+    ).mock(return_value=httpx.Response(200, json={"items": [{"id": document_id}]}))
+    detail = respx_mock.get(
+        f"http://127.0.0.1:8888/v1/default/banks/{bank}/documents/{document_id}"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": document_id, "original_text": "project-only projection"},
+        )
+    )
+    respx_mock.get(
+        f"http://127.0.0.1:8888/v1/default/banks/{bank}/memories/list"
+    ).mock(return_value=httpx.Response(200, json={"items": []}))
+
+    client.create_bank("snapshot")
+    snapshot = client.list_bank_objects(bank)
+
+    assert detail.called
+    assert snapshot.objects[0].original_text == "project-only projection"

@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -111,10 +112,18 @@ class DisposableHindsight:
         response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/import", headers=self._headers(), json=template)
         response.raise_for_status()
 
-    def retain_and_wait(self, bank_id_value: str, content: str, *, document_id: str, operation_id: str | None = None) -> RetainReceipt:
+    def retain_and_wait(
+        self,
+        bank_id_value: str,
+        content: str,
+        *,
+        document_id: str,
+        operation_id: str | None = None,
+        strategy: Literal["conversation", "verbatim"] = "conversation",
+    ) -> RetainReceipt:
         self._check_bank(bank_id_value)
         operation_id = operation_id or str(uuid.uuid5(self.config.run_id, f"{bank_id_value}:{document_id}"))
-        payload = {"items": [{"content": content, "document_id": document_id, "context": "memory-quality", "strategy": "conversation", "tags": ["source:chat"]}], "async": True, "operation_id": operation_id}
+        payload = {"items": [{"content": content, "document_id": document_id, "context": "memory-quality", "strategy": strategy, "tags": ["source:chat"]}], "async": True, "operation_id": operation_id}
         response = self._client.post(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/memories", headers=self._headers(), json=payload)
         response.raise_for_status()
         record = response.json() if response.content else {}
@@ -150,7 +159,17 @@ class DisposableHindsight:
         for layer, source in (("document", body["documents"].get("items", [])), ("memory", body["memories"].get("items", []))):
             for item in source:
                 if isinstance(item, dict):
-                    objects.append(SnapshotObject(layer=layer, object_id=str(item.get("id", item.get("document_id", ""))), text=str(item.get("text", item.get("content", ""))), source_ids=tuple(item.get("source_ids", ()))) )
+                    object_id = str(item.get("id", item.get("document_id", "")))
+                    original_text = None
+                    if layer == "document":
+                        detail = self._client.get(
+                            f"{self.config.base_url}/v1/default/banks/{bank_id_value}/documents/{object_id}",
+                            headers=self._headers(),
+                        )
+                        detail.raise_for_status()
+                        value = detail.json().get("original_text")
+                        original_text = value if isinstance(value, str) else None
+                    objects.append(SnapshotObject(layer=layer, object_id=object_id, text=str(item.get("text", item.get("content", ""))), original_text=original_text, source_ids=tuple(item.get("source_ids", ()))))
         return BankSnapshot(bank_id=bank_id_value, objects=tuple(objects))
 
     def dry_run_extract(self, bank_id_value: str, content: str, **options) -> dict:
