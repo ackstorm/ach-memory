@@ -190,3 +190,45 @@ def test_native_shared_document_gate_is_derived_from_the_snapshot():
     assert observation.hard_gate_flags["no_shared_document"] is False
     assert observation.hard_gate_flags["user_bank_scope_clean"] is False
     assert observation.hard_gate_flags["project_bank_scope_clean"] is False
+
+
+def test_invalid_hybrid_contract_is_measured_instead_of_aborting(tmp_path):
+    case = SemanticCase(
+        id="S13",
+        transcript=({"role": "user", "text": "nothing durable"},),
+        expected_units=(),
+        secret_canaries=("SECRET",),
+    )
+
+    class Banks:
+        def create_bank(self, purpose, repetition):
+            return purpose
+
+        def dry_run_extract(self, bank_id, content, **options):
+            return {
+                "facts": [
+                    {
+                        "text": json.dumps(
+                            {
+                                "destination": "discard",
+                                "subject": None,
+                                "text": "",
+                                "current": False,
+                            }
+                        )
+                    }
+                ]
+            }
+
+    artifact = tmp_path / "S13.json"
+    observation = run_semantic_case(
+        case, "hybrid_semantic", 1, Banks(), artifact
+    )
+
+    assert observation.hard_gate_flags["executed"] is True
+    assert observation.hard_gate_flags["valid_output"] is False
+    assert observation.hard_gate_flags["no_shared_document"] is False
+    assert observation.metric_values["claim_count"] == 0
+    assert json.loads(artifact.read_text()) == {
+        "error_code": "SPLITTER_CONTRACT_FAILED"
+    }

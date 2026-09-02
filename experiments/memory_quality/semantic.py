@@ -148,16 +148,28 @@ def run_semantic_case(
     else:
         from .splitter import split_and_persist
 
-        split = split_and_persist(case, repetition, banks)
-        count = len(split.output.claims)
-        scopes = split.output.document_scopes
-        detail = {
-            "claims": [claim.model_dump(mode="json") for claim in split.output.claims],
-            "working_state": split.output.working_state,
-        }
-        user_bank_scope_clean = split.user_bank_scope_clean
-        project_bank_scope_clean = split.project_bank_scope_clean
-        no_shared_document = split.no_shared_document
+        try:
+            split = split_and_persist(case, repetition, banks)
+        except (TypeError, ValueError):
+            valid_output = False
+            count = 0
+            scopes = ()
+            detail = {"error_code": "SPLITTER_CONTRACT_FAILED"}
+            user_bank_scope_clean = False
+            project_bank_scope_clean = False
+            no_shared_document = False
+        else:
+            count = len(split.output.claims)
+            scopes = split.output.document_scopes
+            detail = {
+                "claims": [
+                    claim.model_dump(mode="json") for claim in split.output.claims
+                ],
+                "working_state": split.output.working_state,
+            }
+            user_bank_scope_clean = split.user_bank_scope_clean
+            project_bank_scope_clean = split.project_bank_scope_clean
+            no_shared_document = split.no_shared_document
     duration_ms = int((time.monotonic() - started) * 1000)
     if artifact_path is not None:
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
