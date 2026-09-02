@@ -15,10 +15,12 @@ from .delivery import build_delivery
 from .hindsight import BakeoffConfig, BakeoffRefused, DisposableHindsight
 from .preprocessing import run_preprocessing
 from .reliability import reliability_matrix, run_fault_scenario
+from .scoring import Adjudication, build_blind_packet, decide, score_run
 from .semantic import run_semantic_case
 from .upstream import OfficialRuntime, verify_official_source
 
 ROOT = Path(__file__).parent
+VALID_OBSERVATION_VARIANTS = {"ach_semantic", "native_semantic", "hybrid_semantic", "ach_index", "ach_full", "official_reflect", "official_pages", "hybrid_delivery", "ach_preprocess", "official_preprocess", "hybrid_preprocess"}
 
 
 def _verify_openapi_contract(document: dict) -> None:
@@ -96,6 +98,51 @@ def run_smoke(env=None) -> dict:
         banks.cleanup()
 
 
+def _run_dir() -> Path:
+    run_id = os.environ.get("HINDSIGHT_BAKEOFF_RUN_ID")
+    if not run_id:
+        raise SystemExit("HINDSIGHT_BAKEOFF_RUN_ID is required")
+    return Path(os.environ.get("MEMORY_BAKEOFF_ARTIFACT_DIR", ".artifacts/memory-quality")) / run_id
+
+
+def score_artifacts() -> dict:
+    run_dir = _run_dir()
+    observation_path = run_dir / "observations.jsonl"
+    adjudication_path = run_dir / "adjudication.json"
+    if not observation_path.exists() or not adjudication_path.exists():
+        raise SystemExit("score requires observations.jsonl and adjudication.json")
+    observations = []
+    for line in observation_path.read_text().splitlines():
+        raw = json.loads(line)
+        if raw.get("variant") in VALID_OBSERVATION_VARIANTS:
+            from .contracts import RunObservation
+            observations.append(RunObservation.model_validate(raw))
+    if len(observations) < 16 * 3:
+        raise SystemExit("score refuses incomplete three-repeat observations")
+    key = os.environ.get("HINDSIGHT_BAKEOFF_HMAC_KEY", "development-only").encode()
+    packet = build_blind_packet(observations, key)
+    _atomic_json(run_dir / "blind-packet.json", packet.model_dump(mode="json"))
+    adjudication = Adjudication.model_validate_json(adjudication_path.read_text())
+    scorecard = score_run(packet, adjudication)
+    _atomic_json(run_dir / "scorecard.json", scorecard.model_dump(mode="json"))
+    _atomic_json(run_dir / "decisions.json", [item.model_dump(mode="json") for item in decide(scorecard)])
+    return {"scorecard": str(run_dir / "scorecard.json"), "decisions": str(run_dir / "decisions.json")}
+
+
+def render_report() -> Path:
+    run_dir = _run_dir()
+    path = run_dir / "decisions.json"
+    if not path.exists():
+        raise SystemExit("report requires decisions.json")
+    decisions = [item for item in json.loads(path.read_text())]
+    if {item.get("component") for item in decisions} != {"host_adapters", "preprocessing", "semantic_extractor", "scope_router", "profile_compiler", "delivery_protocol", "capture_reliability", "working_state_ordering"}:
+        raise SystemExit("report requires exactly one decision for each component")
+    report = "# Memory Quality Phase 5.5\n\n| Component | Ruling | Approval required |\n|---|---|---|\n" + "\n".join(f"| {item['component']} | {item['ruling']} | {item['approval_required']} |" for item in sorted(decisions, key=lambda item: item["component"])) + "\n"
+    target = run_dir / "report.md"
+    target.write_text(report)
+    return target
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m experiments.memory_quality.runner")
     parser.add_argument("command", choices=("preflight", "legacy-calibrate", "run", "score", "cleanup", "report"))
@@ -118,6 +165,12 @@ def main(argv=None) -> int:
             raise SystemExit("HINDSIGHT_BAKEOFF_RUN_ID is required")
         config = BakeoffConfig.from_env(os.environ, run_id=uuid.UUID(run_id))
         DisposableHindsight(config).cleanup()
+        return 0
+    if args.command == "score":
+        print(json.dumps(score_artifacts(), sort_keys=True))
+        return 0
+    if args.command == "report":
+        print(render_report())
         return 0
     raise SystemExit(f"{args.command} requires a completed measured run")
 
