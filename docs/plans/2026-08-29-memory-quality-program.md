@@ -138,6 +138,12 @@ and all Phase 0 activation switches remain untouched.
 
 **Gate:** A read against absent or unauthorized project context creates no state, while eligible history and rationale remain retrievable.
 
+## Phase 5.5 — Hindsight Compatibility Bake-off
+
+**Status:** The measured run and five-judge blind adjudication are complete for run `36b90ba4-9644-4bfa-a956-f4a350d0d86c`; see `docs/results/2026-09-02-memory-quality-phase-5-5.md`. Preprocessing proves that local ACH sanitization must remain: the official-only variant leaked the planted canary, while ACH and hybrid passed. Native semantic ingestion cannot replace physical User/Project routing because every native case used a shared document. Delivery/compiler, reliability/ordering and host adapters remain `insufficient_evidence` for replacement.
+
+The ACH semantic comparison is not accepted as a production-baseline result. The experiment adapter replaced the production extraction prompt with a transport-compatible mission that omitted its semantic rules, so its apparent ACH misses cannot authorize production extractor or classifier changes. Phase 5.6 is a narrow experiment repair: share one semantic rule body between the production and Hindsight-compatible transports, prove prompt parity, and repeat only the semantic matrix. No production activation or Phase 0 mutation is authorized.
+
 ## Phase 0 — Production Hygiene (Executed Last)
 
 **Purpose:** Clean the known live-data defects only after the mechanisms that make their effects measurable are in place.
