@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -25,7 +26,7 @@ from .reliability import (
     run_fault_scenario,
     run_worker_boundary_verification,
 )
-from .scoring import Adjudication, build_blind_packet, decide, score_run
+from .scoring import Adjudication, build_blind_packet, decide, score_run, unblind
 from .semantic import run_semantic_case
 from .upstream import OfficialRuntime, verify_official_source
 
@@ -98,7 +99,7 @@ def _measured_hmac_key(env) -> bytes:
     return key
 
 
-def _blind_semantic_artifacts(observations, artifact_dir: Path, key: bytes) -> None:
+def _blind_semantic_artifacts(observations, artifact_dir: Path, key: bytes, mapping_path: Path) -> None:
     mapping = {}
     for observation in observations:
         if not observation["variant"].endswith("_semantic"):
@@ -110,8 +111,7 @@ def _blind_semantic_artifacts(observations, artifact_dir: Path, key: bytes) -> N
         shutil.copyfile(source, target)
         mapping[opaque] = {"case_id": observation["case_id"], "variant": observation["variant"], "repetition": observation["repetition"]}
         observation["artifact_relpath"] = opaque
-    mapping_payload = {"seal": hashlib.sha256(key + json.dumps(mapping, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "mapping": mapping}
-    mapping_path = artifact_dir / ".blind-mapping.json"
+    mapping_payload = {"seal": hmac.new(key, json.dumps(mapping, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest(), "mapping": mapping}
     _atomic_json(mapping_path, mapping_payload)
     mapping_path.chmod(0o600)
 
@@ -210,7 +210,8 @@ def run_full(env=None) -> dict:
             else:
                 result = run_fault_scenario(item.variant, item.fault)
             observations.append({"case_id": item.fault, "variant": item.variant, "repetition": 1, "artifact_relpath": f"reliability/{item.variant}/{item.fault}.json", "hard_gate_flags": {"executed": True}, "metric_values": {"requests": result.requests, "duplicates": result.duplicate_objects}})
-        _blind_semantic_artifacts(observations, artifact_dir, hmac_key)
+        mapping_path = Path(env.get("HINDSIGHT_BAKEOFF_MAPPING_PATH", artifact_dir.parent / ".private" / f"{config.run_id}.mapping.json"))
+        _blind_semantic_artifacts(observations, artifact_dir, hmac_key, mapping_path)
         manifest["ended_at"] = datetime.now(UTC).isoformat()
         _atomic_json(artifact_dir / "manifest.json", manifest)
         (artifact_dir / "observations.jsonl").write_text("\n".join(json.dumps(item, sort_keys=True, separators=(",", ":")) for item in observations) + "\n")
@@ -258,6 +259,8 @@ def score_artifacts() -> dict:
     if not adjudication_path.exists():
         raise SystemExit("blind-packet.json written; score requires adjudication.json")
     adjudication = Adjudication.model_validate_json(adjudication_path.read_text())
+    mapping_path = Path(os.environ.get("HINDSIGHT_BAKEOFF_MAPPING_PATH", run_dir.parent / ".private" / f"{run_dir.name}.mapping.json"))
+    unblind(packet, adjudication, mapping_path, key)
     manifest = json.loads((run_dir / "manifest.json").read_text()) if (run_dir / "manifest.json").exists() else {}
     scorecard = score_run(packet, adjudication, consumer_complete=bool(manifest.get("consumer_complete", False)))
     _atomic_json(run_dir / "scorecard.json", scorecard.model_dump(mode="json"))
