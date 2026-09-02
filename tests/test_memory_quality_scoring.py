@@ -12,6 +12,7 @@ from experiments.memory_quality.scoring import (
     UnblindedItem,
     build_blind_packet,
     decide,
+    decide_semantic_splitter,
     decide_v2,
     score_run,
     score_run_v2,
@@ -434,3 +435,30 @@ def test_semantic_repair_score_contains_only_the_two_measured_components():
     assert score.components["scope_router"].challengers[
         "hybrid_semantic"
     ].hard_gate_failures == ("hybrid_semantic:S16:WRONG_SCOPE",)
+
+
+def test_splitter_decision_keeps_baseline_when_hybrid_fails_even_if_baseline_has_debt():
+    observations, unblinded, adjudication = _v3_semantic_fixture(
+        met_by_variant={
+            "ach_semantic": (),
+            "native_semantic": (),
+            "hybrid_semantic": (),
+        }
+    )
+    score = score_semantic_repair(
+        observations,
+        unblinded,
+        adjudication,
+        expected_units={"S01": ("S01-U1",)},
+        critical_units={"S01": ("S01-U1",)},
+    )
+
+    decisions = {item.component: item for item in decide_semantic_splitter(score)}
+
+    assert decisions["semantic_extractor"].ruling == "keep"
+    assert decisions["scope_router"].ruling == "keep"
+    assert decisions["semantic_extractor"].approval_required is False
+    assert decisions["semantic_extractor"].reason_codes == (
+        "HYBRID_HARD_GATE_FAILURE",
+        "BASELINE_GUARDS_REMAIN",
+    )

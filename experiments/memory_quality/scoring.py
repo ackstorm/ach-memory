@@ -684,3 +684,47 @@ def decide_v3(scorecard: ScorecardV3) -> tuple[ComponentDecision, ...]:
 def decide_semantic_repair(scorecard: ScorecardV3) -> tuple[ComponentDecision, ...]:
     """Issue rulings only for components the semantic repair measured."""
     return _decide_v3_components(scorecard, ("semantic_extractor", "scope_router"))
+
+
+def decide_semantic_splitter(
+    scorecard: ScorecardV3,
+) -> tuple[ComponentDecision, ...]:
+    """Answer the Phase 5.7 replacement question without hiding baseline debt."""
+    decisions = []
+    for component in ("semantic_extractor", "scope_router"):
+        evidence = scorecard.components[component]
+        hybrid = evidence.challengers.get("hybrid_semantic")
+        challenger_failures = {
+            failure
+            for challenger in evidence.challengers.values()
+            for failure in challenger.hard_gate_failures
+        }
+        baseline_failures = set(evidence.hard_gate_failures) - challenger_failures
+        if not evidence.evidence_available or hybrid is None:
+            ruling = "insufficient_evidence"
+            reasons = ("INSUFFICIENT_MEASURED_SPLITTER_EVIDENCE",)
+            approval_required = True
+        elif hybrid.hard_gate_failures:
+            ruling = "keep"
+            reasons = ("HYBRID_HARD_GATE_FAILURE",)
+            approval_required = False
+        elif hybrid.repeatable_regressions:
+            ruling = "keep"
+            reasons = ("HYBRID_REPEATABLE_REGRESSION",)
+            approval_required = False
+        else:
+            ruling = "simplify_to_hybrid"
+            reasons = ("MEASURED_SPLITTER_NON_INFERIOR",)
+            approval_required = True
+        if baseline_failures:
+            reasons = (*reasons, "BASELINE_GUARDS_REMAIN")
+        decisions.append(
+            ComponentDecision(
+                component=component,
+                ruling=ruling,
+                approval_required=approval_required,
+                evidence_case_ids=evidence.evidence_case_ids,
+                reason_codes=reasons,
+            )
+        )
+    return tuple(decisions)

@@ -1,6 +1,6 @@
 # Memory Quality Phase 5.7 Measured Splitter Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Replace Phase 5.6's fabricated hybrid gates with a real five-destination pre-retain splitter and produce valid evidence for keeping or removing ach-memory semantic machinery.
 
@@ -34,11 +34,11 @@
 - Produces: `SEMANTIC_V2_CORPUS_VERSION = "semantic-v2"`
 - Preserves: `semantic.jsonl` unchanged for the frozen Phase 5.6 run
 
-- [ ] **Step 1: Write the failing corpus test**
+- [x] **Step 1: Write the failing corpus test**
 
 Add a test that loads `semantic-v2.jsonl`, requires exactly S01–S16, and asserts S09 contains a concrete objective or next step rather than the literal `Transient progress is not durable memory`. Assert S09-U1 remains critical, current and `scope="working_state"`.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -48,11 +48,11 @@ pytest tests/test_memory_quality_corpus.py -q
 
 Expected: FAIL because `semantic-v2.jsonl` does not exist.
 
-- [ ] **Step 3: Create the versioned corpus**
+- [x] **Step 3: Create the versioned corpus**
 
 Copy all 16 closed cases. Replace only S09 with a concrete statement such as `Current objective: finish transcript replay. Next step: run the delivery gate.` and require `finish transcript replay` plus `run the delivery gate` in S09-U1. Do not change the original corpus.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 pytest tests/test_memory_quality_corpus.py -q
@@ -75,7 +75,7 @@ git commit -m "test(quality): version the semantic splitter corpus"
 - Produces: `_without_invalid_provenance(envelope: dict, candidate: NormalizedCandidate, slice_length: int) -> NormalizedCandidate`
 - Preserves: strict malformed-envelope and multiple-Working-State failures
 
-- [ ] **Step 1: Write failing behavior tests**
+- [x] **Step 1: Write failing behavior tests**
 
 Add one extractor test whose provider returns a `stated` candidate with an out-of-range span followed by a valid sibling. Require both candidates to survive and the first candidate's provenance to become `None`.
 
@@ -83,7 +83,7 @@ Add one test whose provider returns an `observed` convention with an out-of-rang
 
 Extend prompt parity coverage to require both envelopes to say that transcript-span provenance is required for `observed` and omitted for all other origins.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 pytest tests/test_capture_extractor.py tests/test_memory_quality_semantic.py -q
@@ -91,11 +91,11 @@ pytest tests/test_capture_extractor.py tests/test_memory_quality_semantic.py -q
 
 Expected: the current whole-slice `ExtractionFailed` behavior fails both new extractor tests.
 
-- [ ] **Step 3: Implement the candidate-local repair**
+- [x] **Step 3: Implement the candidate-local repair**
 
 After structural classification, preserve an in-range span. For an out-of-range span, shallow-copy the already validated envelope, remove `provenance`, and call `classify` again. The existing classifier then degrades `observed` to `inferred` and recalculates eligibility. Do not inspect claim text and do not modify `classifier.py`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 pytest tests/test_capture_extractor.py tests/test_memory_quality_semantic.py tests/test_phase3_review_closure.py -q
@@ -121,21 +121,21 @@ git commit -m "fix(capture): isolate invalid provenance to its candidate"
 - Extends: `SnapshotObject` with `original_text: str | None`
 - Produces: actual monotonic `duration_ms: int`; unknown token counts remain `None`
 
-- [ ] **Step 1: Write failing boundary tests**
+- [x] **Step 1: Write failing boundary tests**
 
 Use respx to return a document list followed by `GET /documents/{document_id}` with `original_text`. Require `list_bank_objects` to expose that exact value. Add a retain test proving `strategy="verbatim"` is sent per item. Add a semantic test that patches `time.monotonic` to two non-zero values and asserts the observation records their delta.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 pytest tests/test_memory_quality_upstream.py tests/test_memory_quality_semantic.py -q
 ```
 
-- [ ] **Step 3: Implement the measured boundary**
+- [x] **Step 3: Implement the measured boundary**
 
 Fetch each listed document through the OpenAPI-confirmed `GET /v1/default/banks/{bank_id}/documents/{document_id}` route and copy `original_text` into the snapshot. Accept only the two closed retain strategies. Wrap each semantic variant in `started = time.monotonic()` / `elapsed` and never substitute zero for missing provider token data.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 pytest tests/test_memory_quality_upstream.py tests/test_memory_quality_semantic.py -q
@@ -159,27 +159,27 @@ git commit -m "fix(quality): measure semantic bank effects"
 - Produces: `SplitEnvelope` and `SplitResult`
 - Produces: `split_and_persist(case, repetition, banks) -> SplitResult`, carrying the normalized `SemanticOutput` plus measured isolation gates
 
-- [ ] **Step 1: Write strict-schema and isolation tests**
+- [x] **Step 1: Write strict-schema and isolation tests**
 
 Cover extra fields, an evidence item without `subject`, a durable item with the wrong subject, more than one Working State item and malformed outer facts. Use a fake disposable boundary to prove the raw transcript is never passed to `retain_and_wait`, user/project projection texts go only to their respective bank, evidence follows its explicit subject, and discard/Working State are never retained.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 pytest tests/test_memory_quality_splitter.py -q
 ```
 
-- [ ] **Step 3: Implement the minimum route contract**
+- [x] **Step 3: Implement the minimum route contract**
 
 Ask Hindsight dry-run extraction for one outer `facts` object whose fact text is an escaped `SplitEnvelope`. Include only the SPEC rules needed to choose the five destinations. Do not request or emit kind, origin, eligibility, ranking, displacement, tags or proof count.
 
 Create separate disposable User and Project banks. Serialize one semantic claim per projection document and retain it with `strategy="verbatim"`. Build `SemanticOutput.claims` from parsed envelopes and Working State from the single Working State envelope.
 
-- [ ] **Step 4: Derive isolation gates from bank snapshots**
+- [x] **Step 4: Derive isolation gates from bank snapshots**
 
 After retain completion, load both banks. Fail `no_shared_document` unless all persisted `original_text` values are exact members of that bank's projection and none equals or contains the canonical raw transcript. Emit separate `user_bank_scope_clean` and `project_bank_scope_clean` gates.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 pytest tests/test_memory_quality_splitter.py tests/test_memory_quality_semantic.py -q
@@ -201,21 +201,21 @@ git commit -m "feat(quality): measure a five-destination splitter"
 - Extends: `score_run_v3(...)` router hard gates with missing routeable expected units
 - Preserves: extraction and routing atoms as separate report fields
 
-- [ ] **Step 1: Write the failing silent-router mutation test**
+- [x] **Step 1: Write the failing silent-router mutation test**
 
 Construct a challenger with no wrong-scope claims but no credited required unit. Assert its scope-router challenger is not eligible and contains `MISSING_ROUTEABLE_UNIT`. Keep a complete correctly scoped challenger eligible.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 pytest tests/test_memory_quality_scoring.py -q
 ```
 
-- [ ] **Step 3: Implement the composed eligibility gate**
+- [x] **Step 3: Implement the composed eligibility gate**
 
 For `scope_router`, retain the existing wrong-scope atom. Additionally add a hard `variant:case:MISSING_ROUTEABLE_<unit>` failure for every non-ignored expected unit absent from the adjudication. This is an adoption gate; do not remove the extractor's independent missing-unit atom.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 pytest tests/test_memory_quality_scoring.py tests/test_memory_quality_semantic_repair.py -q
@@ -241,11 +241,11 @@ git commit -m "fix(quality): reject silent semantic routers"
 - Consumes: `semantic-v2.jsonl`
 - Produces: fresh exact semantic matrix and final component ruling
 
-- [ ] **Step 1: Write the failing runner test**
+- [x] **Step 1: Write the failing runner test**
 
 Require a new run ID, exact 144 observations over repaired ACH, native reference and measured splitter, corpus version/digest in the manifest, actual cleanup counts, no `executed=false`, and no hard gate derived solely from a variant name.
 
-- [ ] **Step 2: Implement and verify the lifecycle**
+- [x] **Step 2: Implement and verify the lifecycle**
 
 Reuse the existing authority, loopback allow-list, atomic artifact, canary scan, external mapping and cleanup boundaries. Do not rerun Phase 5.5/5.6 artifacts.
 
@@ -255,19 +255,19 @@ ruff check experiments/memory_quality/semantic_repair.py experiments/memory_qual
 git diff --check
 ```
 
-- [ ] **Step 3: Execute preflight and the live matrix**
+- [x] **Step 3: Execute preflight and the live matrix**
 
 If `127.0.0.1:8888` is absent, run `kubectl port-forward -n hindsight service/hindsight-api 8888:8888`. Require Hindsight 0.9.2, fresh disposable prefix and all production flags off. Execute once, verify exact observation cardinality, bank cleanup and canary absence.
 
-- [ ] **Step 4: Obtain independent semantic judgments and score**
+- [x] **Step 4: Obtain independent semantic judgments and score**
 
 Judges must not see implementation identity or another judgment. Cryptographic ceremony is not a product gate; exact tuple coverage and independent access are. Score once after complete judgments.
 
-- [ ] **Step 5: Apply the decision rule**
+- [x] **Step 5: Apply the decision rule**
 
 The splitter may replace custom machinery only if every hard gate passes and it loses fewer than two distinct valid cases across all repetitions. Native remains ineligible as a router if bank inspection finds the raw/shared source. Otherwise retain the failed component and record exact atoms without adding heuristics.
 
-- [ ] **Step 6: Verify, document and commit**
+- [x] **Step 6: Verify, document and commit**
 
 ```bash
 pytest tests/test_memory_quality*.py tests/test_capture_extractor.py tests/test_phase3_review_closure.py -q

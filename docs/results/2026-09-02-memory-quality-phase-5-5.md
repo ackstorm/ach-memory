@@ -85,3 +85,46 @@ The generated `add_follow_up_guard` rulings are not accepted as authorization to
 7. keep a custom semantic component only if its ablation breaks a hard gate or loses at least two distinct valid cases in all repetitions.
 
 Preprocessing, host adapters, profile compiler, delivery protocol, capture reliability and Working State ordering were not rerun. Their Phase 5.5 rulings remain unchanged.
+
+## Phase 5.7 measured splitter run
+
+Status: **COMPLETE — KEEP THE ACH SEMANTIC EXTRACTOR AND SCOPE ROUTER**
+
+Frozen run: `fa142ba9-d706-4df8-b8ac-83764b8d480e`.
+
+Consensus SHA-256: `29a616429b1461eac3bc7111de40bc069a017afe427b7592cb762fd6d83c8fa0`.
+
+Phase 5.7 used the versioned `semantic-v2` corpus and completed 144 observations: 16 cases, repaired ACH, native Hindsight as an informational reference, a real five-destination splitter, three repetitions each. It created exactly 192 disposable banks, issued 48 native retains and 42 hybrid projection retains, read the stored document bodies back through Hindsight, and removed all 192 banks. No duration is a fabricated zero. No run bank or declared canary remained after cleanup.
+
+Three independent adjudications were produced by Gemini 3.7 Flash, GPT-5.6 Terra and Claude Opus. None read another adjudication or the blind mapping. Required-unit consensus used a 2-of-3 majority, numeric claim counts used the median and tied note codes used the conservative order `ADJUDICATION_BLOCKED`, `AMBIGUOUS_OUTPUT`, `PARAPHRASE_ACCEPTED`, `NONE`. All three covered the exact same 144 tuples. Consensus contains 51 required-unit credits, 11 unsupported-current claims and 54 wrong-scope claims.
+
+Scored artifact hashes:
+
+- `scorecard.semantic-splitter.v2.json`: `4faa0841ac9c252e97d5c19fa158e2ac822bd41677ae1275f792d9e3d7f2d63c`
+- `decisions.semantic-splitter.v2.json`: `5836953dd02778fb95cd7e198a9f81848029e4a0fced1ff5a57b260b30df933a`
+- `report.semantic-splitter.v2.md`: `5a115af2c6e7b7602eb0b5b81fd6d32628a8bdd0b489f168e0255cd822e8425d`
+- `manifest.json`: `9e1cd2bc7ec955ae01cce488c6d99128a86bec4663dac5a7ab432fb782037886`
+
+The first generated splitter score is preserved without overwrite. Its generic decision policy again returned `add_follow_up_guard` when it saw baseline defects. V2 changes only the component decision policy over the same frozen observations and adjudication: baseline quality debt is reported separately from the replacement question.
+
+### Result by arm
+
+| Arm | Measured result | Architecture consequence |
+|---|---|---|
+| Repaired ACH | Retained the expected meaning and scope in S01, S02, S04, S07–S12 and S15. It still misclassified S03, S05, S06, S14 and S16; the critical baseline guards are S03, S06 and S14. | Keep it as the current baseline, with those named cases as bounded quality debt. The result does not justify more taxonomy or free-text heuristics. |
+| Measured splitter | Matched ACH on S01, S02, S04, S11 and both S12 units. It lost additional valid cases S07, S08, S09, S10 and S15 in every repetition; it also misrouted S03, S05, S06 and S14, emitted active User truth for S16 and returned an invalid empty discard envelope on all three S13 repetitions. | It fails both the hard-gate and the two-distinct-case adoption rules. Do not replace or simplify the ACH extractor/router with this splitter. |
+| Native Hindsight | Retained one complete sanitized source document in a single shared bank in every repetition. Bank inspection derived `NO_SHARED_DOCUMENT=false` and both scope-clean gates false; no judge treated the unscoped objects as proof of correct User/Project routing. | Useful as extraction/consolidation infrastructure, but ineligible as the physical scope router. This run does not claim that its content extraction is intrinsically worse, only that it cannot prove the required route. |
+
+### Accepted architecture ruling
+
+`semantic_extractor=keep` and `scope_router=keep`, both without a replacement approval requirement. Reason codes are `HYBRID_HARD_GATE_FAILURE` and `BASELINE_GUARDS_REMAIN`.
+
+This closes the overengineering question at the granularity the experiment can support:
+
+1. Hindsight remains the extraction/consolidation/knowledge engine and its official runtime remains reusable.
+2. ach-memory keeps the thin but real pre-retain semantic boundary because neither native ingestion nor the minimal splitter preserved the measured isolation and semantic gates.
+3. Local sanitization, authorization/ownership, physical User/Project separation, the durable post-ACK queue and exact fenced Working State remain non-negotiable ACH responsibilities.
+4. Ranking, displacement, profile compilation and INDEX/FULL delivery were not justified by this semantic experiment. Their Phase 5.5 `insufficient_evidence` rulings remain unchanged until a real consumer evaluation exists.
+5. S03, S06 and S14 are named baseline quality work, not permission to grow a general epistemic framework or add case-specific string rules.
+
+No production activation flag or Phase 0 operation was executed.

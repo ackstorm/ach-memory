@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from .contracts import (
@@ -27,6 +27,7 @@ from .scoring import (
     _blind_packet_digest,
     build_blind_packet,
     decide_semantic_repair,
+    decide_semantic_splitter,
     score_semantic_repair,
     unblind,
 )
@@ -364,6 +365,7 @@ def score_semantic_repair_artifacts(
     manifest_model: type[SemanticRepairManifest | SemanticSplitterManifest] = SemanticRepairManifest,
     output_suffix: str = "semantic-repair",
     report_title: str = "Phase 5.6 repaired semantic baseline",
+    decision_function: Callable = decide_semantic_repair,
 ) -> dict[str, str]:
     """Unblind and score one complete semantic-repair consensus exactly once."""
     selected_env = os.environ if env is None else env
@@ -483,7 +485,7 @@ def score_semantic_repair_artifacts(
         critical_rejection_cases=critical_rejection_cases,
         run_id=run_id,
     )
-    decisions = decide_semantic_repair(scorecard)
+    decisions = decision_function(scorecard)
     score_payload = json.dumps(
         scorecard.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
     )
@@ -522,6 +524,7 @@ def score_semantic_splitter_artifacts(
         env,
         corpus_path=SPLITTER_CORPUS,
         manifest_model=SemanticSplitterManifest,
-        output_suffix="semantic-splitter",
+        output_suffix="semantic-splitter.v2",
         report_title="Phase 5.7 measured semantic splitter",
+        decision_function=decide_semantic_splitter,
     )
