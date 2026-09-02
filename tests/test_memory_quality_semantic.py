@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from experiments.memory_quality.contracts import SemanticCase
@@ -45,6 +47,7 @@ def test_ach_adapter_uses_hindsight_single_document_envelope():
         "Repository-local wording",
         "Preserve a negative constraint",
         "provenance names the exact transcript span",
+        "omit provenance for stated, confirmed and inferred claims",
         "At most one working_state object total",
     ),
 )
@@ -77,7 +80,7 @@ def test_semantic_canonical_input_redacts_declared_fixture_canaries():
     assert "[redacted]" in content
 
 
-def test_ach_model_contract_failure_is_measured_instead_of_aborting_matrix(tmp_path):
+def test_ach_out_of_range_stated_provenance_is_recovered(tmp_path):
     case = SemanticCase(
         id="S02",
         transcript=(
@@ -111,6 +114,9 @@ def test_ach_model_contract_failure_is_measured_instead_of_aborting_matrix(tmp_p
     )
 
     assert observation.hard_gate_flags["executed"] is True
-    assert observation.hard_gate_flags["valid_output"] is False
-    assert observation.metric_values["claim_count"] == 0
-    assert artifact.read_text() == '{"error_code":"EXTRACTION_FAILED"}\n'
+    assert observation.hard_gate_flags["valid_output"] is True
+    assert observation.metric_values["claim_count"] == 1
+    rendered = json.loads(artifact.read_text())
+    assert rendered["claims"][0]["text"] == "staged rollout"
+    assert rendered["claims"][0]["origin"] == "stated"
+    assert rendered["claims"][0]["provenance"] is None

@@ -93,7 +93,8 @@ as a claim.
 Never set bank, profile_eligible, tags, or observation_scopes -- those are \
 derived, not proposed. Use "observed" only when provenance names the exact \
 transcript span, as character offsets into this slice text (not the byte \
-numbers in the markers). Use "gotcha" only when failure and (cause or \
+numbers in the markers). Omit provenance for stated, confirmed and inferred \
+claims. Use "gotcha" only when failure and (cause or \
 reproduction) are also given. At most one working_state object total.\
 """
 
@@ -200,7 +201,11 @@ def extract(
                 raise ExtractionFailed("more than one working_state record")
             working_state = classified
         else:
-            _check_provenance_span(classified, len(sanitized_content))
+            classified = _without_invalid_provenance(
+                envelope,
+                classified,
+                len(sanitized_content),
+            )
             candidates.append(classified)
 
     return ExtractionResult(
@@ -208,19 +213,27 @@ def extract(
     )
 
 
-def _check_provenance_span(candidate: NormalizedCandidate, slice_length: int) -> None:
-    """A provenance span must point into the slice it was extracted from.
+def _without_invalid_provenance(
+    envelope: dict,
+    candidate: NormalizedCandidate,
+    slice_length: int,
+) -> NormalizedCandidate:
+    """Remove a false span without discarding sibling candidates.
 
     `observed` is the origin that survives on the strength of its artifact
     (SPEC §6.1, harness rule #3), so a span that runs off the end of the
-    slice is not a citation -- it is a model inventing an anchor for a claim
-    it did not actually witness. This is the only check with the slice
-    length in scope, which is why it lives here and not in `classify()`.
+    slice is not a citation. Reclassification after removing the span makes
+    an `observed` claim inferred and recalculates its eligibility. Other
+    origins keep their structural meaning, and the rest of the slice survives.
     """
     span = candidate.provenance
     if span is None:
-        return
-    if span.start >= slice_length or span.end > slice_length:
-        raise ExtractionFailed(
-            "provenance span falls outside the slice it was extracted from"
-        )
+        return candidate
+    if span.start < slice_length and span.end <= slice_length:
+        return candidate
+    repaired = dict(envelope)
+    repaired.pop("provenance", None)
+    reclassified = classify(repaired)
+    if isinstance(reclassified, WorkingStateEnvelope):
+        raise TypeError("a candidate changed record type during reclassification")
+    return reclassified

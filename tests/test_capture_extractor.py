@@ -243,6 +243,56 @@ def test_malformed_provenance_fails_the_whole_extraction(client):
 
 
 @respx.mock
+def test_out_of_range_stated_provenance_is_removed_without_losing_sibling(client):
+    _mock(
+        {
+            "record": "candidate",
+            "text": "Use concise updates.",
+            "kind": "preference",
+            "origin": "stated",
+            "subject": "user",
+            "provenance": {"type": "transcript", "start": 100, "end": 120},
+        },
+        {
+            "record": "candidate",
+            "text": "The project uses JSONL.",
+            "kind": "convention",
+            "origin": "stated",
+            "subject": "project",
+        },
+    )
+
+    result = extract(client, BANK, "user: concise updates; project uses JSONL")
+
+    assert len(result.candidates) == 2
+    assert result.candidates[0].origin == "stated"
+    assert result.candidates[0].eligible == "profile_eligible"
+    assert result.candidates[0].provenance is None
+    assert result.candidates[1].text == "The project uses JSONL."
+
+
+@respx.mock
+def test_out_of_range_observed_provenance_degrades_to_inferred(client):
+    _mock(
+        {
+            "record": "candidate",
+            "text": "The project uses JSONL.",
+            "kind": "convention",
+            "origin": "observed",
+            "subject": "project",
+            "provenance": {"type": "transcript", "start": 100, "end": 120},
+        }
+    )
+
+    result = extract(client, BANK, "tool_result: JSONL output observed")
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].origin == "inferred"
+    assert result.candidates[0].eligible == "evidence_only"
+    assert result.candidates[0].provenance is None
+
+
+@respx.mock
 def test_more_than_one_working_state_record_fails_the_whole_extraction(client):
     _mock(
         {"record": "working_state", "objective": "first"},

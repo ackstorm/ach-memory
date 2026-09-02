@@ -748,9 +748,8 @@ def test_repository_local_wording_cannot_widen_into_user_scope():
 
 
 @respx.mock
-def test_a_provenance_span_outside_the_slice_fails_the_extraction():
-    """An `observed` claim survives on the strength of its artifact, so a
-    span that runs off the end of the slice is an invented anchor."""
+def test_a_provenance_span_outside_the_slice_degrades_observed_to_inferred():
+    """An invented anchor cannot make an observation durable."""
     client = _stub_extractor(
         _envelope(
             text="CI runs on every push.",
@@ -759,8 +758,12 @@ def test_a_provenance_span_outside_the_slice_fails_the_extraction():
         )
     )
 
-    with pytest.raises(ExtractionFailed, match="provenance span"):
-        extract(client, EXTRACT_BANK, "user: a short slice")
+    result = extract(client, EXTRACT_BANK, "user: a short slice")
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].origin == "inferred"
+    assert result.candidates[0].eligible == "evidence_only"
+    assert result.candidates[0].provenance is None
 
 
 @respx.mock
