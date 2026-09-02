@@ -199,9 +199,16 @@ class DisposableHindsight:
         prefix = f"mq55-{self.config.run_id.hex[:12]}-"
         if any(not value.startswith(prefix) for value in values):
             raise BakeoffRefused("bank registry contains a foreign bank ID")
-        for value in values:
-            response = self._client.delete(f"{self.config.base_url}/v1/default/banks/{value}", headers=self._headers())
-            response.raise_for_status()
+        try:
+            for value in values:
+                response = self._client.delete(
+                    f"{self.config.base_url}/v1/default/banks/{value}",
+                    headers=self._headers(),
+                    timeout=max(self.config.request_timeout_seconds, 30.0),
+                )
+                response.raise_for_status()
+        finally:
+            self._client.close()
 
     def _check_bank(self, value: str) -> None:
         if not value.startswith(f"mq55-{self.config.run_id.hex[:12]}-"):
