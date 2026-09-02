@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 
-from .contracts import corpus_digest, load_delivery_cases, load_semantic_cases
+from .contracts import RunObservation, corpus_digest, load_delivery_cases, load_semantic_cases
 from .delivery import build_delivery
 from .hindsight import BakeoffConfig, BakeoffRefused, DisposableHindsight
 from .preprocessing import run_preprocessing, scan_canaries
@@ -159,8 +159,12 @@ def score_artifacts() -> dict:
     for line in observation_path.read_text().splitlines():
         raw = json.loads(line)
         if raw.get("variant") in VALID_OBSERVATION_VARIANTS or raw.get("variant") in {"ach_reliability", "official_reliability"}:
-            from .contracts import RunObservation
-            observation = RunObservation.model_validate(raw)
+            observation = RunObservation.model_validate(
+                {field: raw[field] for field in (
+                    "case_id", "variant", "repetition", "artifact_relpath",
+                    "hard_gate_flags", "metric_values", "warning_codes",
+                ) if field in raw}
+            )
             if not observation.hard_gate_flags.get("executed", True):
                 raise SystemExit("score refuses an observation with executed=false")
             observations.append(observation)
