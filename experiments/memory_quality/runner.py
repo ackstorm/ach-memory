@@ -135,7 +135,7 @@ def run_full(env=None) -> dict:
         for case in load_delivery_cases(ROOT / "corpus/delivery.jsonl"):
             for variant in ("ach_index", "ach_full", "official_reflect", "official_pages", "hybrid_delivery"):
                 for repetition in range(1, 4):
-                    observations.append(build_delivery(case, variant, banks).model_copy(update={"latency_ms": repetition}).model_dump(mode="json") | {"repetition": repetition, "artifact_relpath": f"delivery/{case.id}/{variant}-{repetition}.json", "hard_gate_flags": {"executed": True}, "metric_values": {}})
+                    observations.append(build_delivery(case, variant, banks, repetition).model_copy(update={"latency_ms": repetition}).model_dump(mode="json") | {"repetition": repetition, "artifact_relpath": f"delivery/{case.id}/{variant}-{repetition}.json", "hard_gate_flags": {"executed": True}, "metric_values": {}})
         for item in reliability_matrix():
             result = run_fault_scenario(item.variant, item.fault)
             observations.append({"case_id": item.fault, "variant": item.variant, "repetition": 1, "artifact_relpath": f"reliability/{item.variant}/{item.fault}.json", "hard_gate_flags": {"executed": True}, "metric_values": {"requests": result.requests, "duplicates": result.duplicate_objects}})

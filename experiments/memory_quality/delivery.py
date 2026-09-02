@@ -53,7 +53,7 @@ def _section(lines) -> Section | None:
     return Section(text="\n".join(str(line) for line in lines), refreshed_at="2026-09-02T00:00:00Z") if lines else None
 
 
-def build_delivery(case: DeliveryCase, variant: DeliveryVariant, banks=None) -> DeliveredArtifact:
+def build_delivery(case: DeliveryCase, variant: DeliveryVariant, banks=None, repetition: int = 1) -> DeliveredArtifact:
     start = time.monotonic()
     user = _section(case.user_profile.get("lines", []))
     project = _section(case.project_profile.get("lines", []))
@@ -66,7 +66,7 @@ def build_delivery(case: DeliveryCase, variant: DeliveryVariant, banks=None) -> 
     else:
         if banks is None:
             raise ValueError("live delivery variants require a disposable bank client")
-        bank = banks.create_bank(f"delivery-{case.id}-{variant}")
+        bank = banks.create_bank(f"delivery-{case.id}-{variant}", repetition)
         evidence = "\n".join(case.history_evidence or case.project_metadata)
         if evidence:
             banks.retain_and_wait(bank, evidence, document_id=f"mq55:{case.id}:delivery")
