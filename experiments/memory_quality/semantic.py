@@ -8,23 +8,9 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict
 
 from memory.capture import local
+from memory.capture.extractor import build_extraction_prompt
 
 from .contracts import RunObservation, SemanticCase
-
-_HINDSIGHT_COMPATIBLE_ACH_MISSION = r"""
-Extract every durable semantic claim from the input. The response MUST be
-exactly one outer object shaped like
-{"facts":[{"what":"{\"record\":\"candidate\",\"text\":\"claim\",\"kind\":\"preference\",\"origin\":\"stated\",\"subject\":\"user\"}","when":"N/A","where":"N/A","who":"N/A","why":"N/A","fact_type":"world"}]}
-Each fact's `what` is a string containing the escaped, minified ACH envelope;
-it is never a nested object. Replace the example claim with claims from the
-input and add one fact per claim. Candidates use `text`, `kind`, `origin`,
-and `subject`; working state uses `objective`, `current_direction`,
-`recent_decisions`, `open_questions`, and `next_steps`. Use only candidate
-kind values preference, decision, convention, gotcha, or technical_claim;
-only origin values stated, confirmed, observed, or inferred; and only subject
-values user or project. Emit no JSONL, markdown, or text outside the outer
-object. Do not emit any canary or raw-span marker.
-"""
 
 
 class _AchHindsightAdapter:
@@ -41,7 +27,7 @@ class _AchHindsightAdapter:
         self._delegate = delegate
 
     def dry_run_extract(self, bank_id, content, **options):
-        options["retain_mission"] = _HINDSIGHT_COMPATIBLE_ACH_MISSION
+        options["retain_mission"] = build_extraction_prompt("hindsight_object")
         return self._delegate.dry_run_extract(bank_id, content, **options)
 
 

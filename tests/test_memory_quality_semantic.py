@@ -7,6 +7,7 @@ from experiments.memory_quality.semantic import (
     run_semantic_case,
     split_minimal,
 )
+from memory.capture.extractor import build_extraction_prompt
 
 
 def test_minimal_projection_has_only_scope_and_provenance():
@@ -27,11 +28,40 @@ def test_ach_adapter_uses_hindsight_single_document_envelope():
             assert options["retain_extraction_mode"] == "custom"
             assert "one outer object" in options["retain_mission"]
             assert "facts" in options["retain_mission"]
+            assert "permission to execute, test or explore" in options["retain_mission"].casefold()
+            assert "repository-local wording" in options["retain_mission"].casefold()
             return {"facts": []}
 
     _AchHindsightAdapter(Delegate()).dry_run_extract(
         "mq55-test-bank", "user: safe", retain_extraction_mode="custom", retain_mission="ignored"
     )
+
+
+@pytest.mark.parametrize(
+    "rule",
+    (
+        "Plans, proposals, research output and next steps are Working State",
+        "Permission to execute, test or explore a proposal is authorization",
+        "Repository-local wording",
+        "Preserve a negative constraint",
+        "provenance names the exact transcript span",
+        "At most one working_state object total",
+    ),
+)
+def test_both_extraction_transports_share_every_semantic_rule(rule):
+    assert rule.casefold() in build_extraction_prompt("jsonl").casefold()
+    assert rule.casefold() in build_extraction_prompt("hindsight_object").casefold()
+
+
+def test_transport_envelopes_do_not_leak_into_each_other():
+    jsonl = build_extraction_prompt("jsonl")
+    hindsight = build_extraction_prompt("hindsight_object")
+    assert "one minified JSON object per line" in jsonl
+    assert 'one outer object shaped like {"facts"' not in jsonl
+    assert 'one outer object shaped like {"facts"' in hindsight
+    assert '\\"record\\":\\"candidate\\"' in hindsight
+    assert "replace the example claim" in hindsight.casefold()
+    assert "one minified JSON object per line" not in hindsight
 
 
 def test_semantic_canonical_input_redacts_declared_fixture_canaries():

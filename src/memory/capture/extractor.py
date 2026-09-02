@@ -8,6 +8,7 @@ whatever happened to parse.
 
 import json
 from dataclasses import dataclass, field
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -15,7 +16,7 @@ from memory.capture.classifier import CandidateDropped, CandidateRejected, class
 from memory.capture.contracts import NormalizedCandidate, WorkingStateEnvelope
 from memory.hindsight.client import HindsightClient
 
-EXTRACTION_PROMPT = """\
+_EXTRACTION_INTRO = """\
 Extract only semantic claims worth remembering from this transcript slice: \
 stated or observed user preferences, project conventions, decisions, \
 gotchas and technical facts -- plus, at most once, a Working State update \
@@ -25,20 +26,48 @@ steps).
 Exclude greetings, small talk, session logistics, canaries, and anything \
 cheaply reproduced by reading the repository (file contents, directory \
 listings, command output already visible in the slice).
+"""
 
-Emit exactly one minified JSON object per line, matching one of these two \
-shapes -- nothing else:
-
+_CANDIDATE_SHAPE = """\
 {"record":"candidate","text":"...","kind":"preference|decision|convention\
 |gotcha|technical_claim","origin":"stated|confirmed|observed|inferred",\
 "subject":"user|project","provenance":{"type":"transcript","start":N,\
 "end":N} or omitted,"negative":true or false,"correction":true or false,\
 "failure":"..." or omitted,"cause":"..." or omitted,"reproduction":"..." \
-or omitted}
+or omitted}"""
 
+_WORKING_STATE_SHAPE = """\
 {"record":"working_state","objective":"...","current_direction":"..." or \
 omitted,"recent_decisions":[...],"open_questions":[...],"next_steps":[...]}
+"""
 
+_HINDSIGHT_CANDIDATE_EXAMPLE = json.dumps(
+    {
+        "record": "candidate",
+        "text": "claim",
+        "kind": "preference",
+        "origin": "stated",
+        "subject": "user",
+    },
+    separators=(",", ":"),
+)
+_HINDSIGHT_OUTER_EXAMPLE = json.dumps(
+    {
+        "facts": [
+            {
+                "what": _HINDSIGHT_CANDIDATE_EXAMPLE,
+                "when": "N/A",
+                "where": "N/A",
+                "who": "N/A",
+                "why": "N/A",
+                "fact_type": "world",
+            }
+        ]
+    },
+    separators=(",", ":"),
+)
+
+EXTRACTION_RULES = """\
 Plans, proposals, research output and next steps are Working State, never \
 decisions. Permission to execute, test or explore a proposal is \
 authorization, not confirmation of a decision: use "confirmed" only when \
@@ -67,6 +96,43 @@ transcript span, as character offsets into this slice text (not the byte \
 numbers in the markers). Use "gotcha" only when failure and (cause or \
 reproduction) are also given. At most one working_state object total.\
 """
+
+_JSONL_ENVELOPE = f"""\
+Emit exactly one minified JSON object per line, matching one of these two \
+shapes -- nothing else:
+
+{_CANDIDATE_SHAPE}
+
+{_WORKING_STATE_SHAPE}\
+"""
+
+_HINDSIGHT_OBJECT_ENVELOPE = f"""\
+Emit exactly one outer object shaped like {_HINDSIGHT_OUTER_EXAMPLE} -- \
+nothing else. Replace the example claim with a claim from the input and add \
+one fact per claim. Each fact's `what` is a string containing one escaped, \
+minified ACH envelope matching one of these two shapes; it is never a nested \
+object:
+
+{_CANDIDATE_SHAPE}
+
+{_WORKING_STATE_SHAPE}\
+"""
+
+ExtractionTransport = Literal["jsonl", "hindsight_object"]
+
+
+def build_extraction_prompt(transport: ExtractionTransport) -> str:
+    """Render one semantic contract through a transport-specific envelope."""
+    if transport == "jsonl":
+        envelope = _JSONL_ENVELOPE
+    elif transport == "hindsight_object":
+        envelope = _HINDSIGHT_OBJECT_ENVELOPE
+    else:
+        raise ValueError(f"unsupported extraction transport: {transport}")
+    return f"{_EXTRACTION_INTRO}\n{envelope}\n\n{EXTRACTION_RULES}"
+
+
+EXTRACTION_PROMPT = build_extraction_prompt("jsonl")
 
 
 class ExtractionFailed(Exception):
