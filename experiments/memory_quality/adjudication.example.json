@@ -1,0 +1,14 @@
+{
+  "run_id": "00000000-0000-0000-0000-000000000000",
+  "items": [
+    {
+      "case_id": "S01",
+      "blind_variant": "V-a1b2",
+      "repetition": 1,
+      "required_units_met": ["S01-U1"],
+      "unsupported_current_claims": 0,
+      "wrong_scope_claims": 0,
+      "notes_code": "NONE"
+    }
+  ]
+}
