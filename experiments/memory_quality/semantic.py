@@ -98,12 +98,15 @@ def run_semantic_case(
         raise ValueError("semantic input contains a declared canary")
     if banks is None:
         raise ValueError("semantic variants require a fresh disposable bank client")
-    bank = banks.create_bank(f"semantic-{case.id}-{variant}", repetition)
     valid_output = True
     started = time.monotonic()
+    user_bank_scope_clean = True
+    project_bank_scope_clean = True
+    no_shared_document = True
     if variant == "ach_semantic":
         from memory.capture.extractor import extract
 
+        bank = banks.create_bank(f"semantic-{case.id}-{variant}", repetition)
         try:
             result = extract(_AchHindsightAdapter(banks), bank, content)
         except ExtractionFailed:
@@ -123,6 +126,7 @@ def run_semantic_case(
                 "dropped": result.dropped,
             }
     elif variant == "native_semantic":
+        bank = banks.create_bank(f"semantic-{case.id}-{variant}", repetition)
         receipt = banks.retain_and_wait(bank, content, document_id=f"mq55:{case.id}:{repetition}")
         snapshot = banks.list_bank_objects(bank)
         count = sum(item.layer in {"memory", "observation"} for item in snapshot.objects)
@@ -131,13 +135,24 @@ def run_semantic_case(
             "receipt": receipt.model_dump(mode="json"),
             "objects": [item.model_dump(mode="json") for item in snapshot.objects],
         }
+        user_bank_scope_clean = False
+        project_bank_scope_clean = False
+        no_shared_document = False
     else:
-        projection = banks.dry_run_extract(bank, content, retain_extraction_mode="custom", retain_mission="Return only {text, bank, provenance} claims.")
-        count = len(projection.get("facts", []))
-        scopes = ("user", "project") if count else ()
-        detail = {"facts": projection.get("facts", [])}
+        from .splitter import split_and_persist
+
+        split = split_and_persist(case, repetition, banks)
+        count = len(split.output.claims)
+        scopes = split.output.document_scopes
+        detail = {
+            "claims": [claim.model_dump(mode="json") for claim in split.output.claims],
+            "working_state": split.output.working_state,
+        }
+        user_bank_scope_clean = split.user_bank_scope_clean
+        project_bank_scope_clean = split.project_bank_scope_clean
+        no_shared_document = split.no_shared_document
     duration_ms = int((time.monotonic() - started) * 1000)
     if artifact_path is not None:
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(json.dumps(detail, sort_keys=True, separators=(",", ":")) + "\n")
-    return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags={"executed": True, "valid_output": valid_output, "no_canary": True, "no_shared_document": variant != "native_semantic"}, metric_values={"byte_count": len(content.encode()), "claim_count": count, "scope_count": len(scopes), "duration_ms": duration_ms}, warning_codes=("NATIVE_SHARED_BASELINE",) if variant == "native_semantic" else ())
+    return RunObservation(case_id=case.id, variant=variant, repetition=repetition, artifact_relpath=f"semantic/{case.id}/{variant}-{repetition}.json", hard_gate_flags={"executed": True, "valid_output": valid_output, "no_canary": True, "no_shared_document": no_shared_document, "user_bank_scope_clean": user_bank_scope_clean, "project_bank_scope_clean": project_bank_scope_clean}, metric_values={"byte_count": len(content.encode()), "claim_count": count, "scope_count": len(scopes), "duration_ms": duration_ms}, warning_codes=("NATIVE_SHARED_BASELINE",) if variant == "native_semantic" else ())

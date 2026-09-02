@@ -157,7 +157,7 @@ git commit -m "fix(quality): measure semantic bank effects"
 **Interfaces:**
 - Produces: `SplitDestination = Literal["durable_user", "durable_project", "evidence", "working_state", "discard"]`
 - Produces: `SplitEnvelope` and `SplitResult`
-- Produces: `split_and_persist(case, repetition, banks) -> SemanticOutput`
+- Produces: `split_and_persist(case, repetition, banks) -> SplitResult`, carrying the normalized `SemanticOutput` plus measured isolation gates
 
 - [ ] **Step 1: Write strict-schema and isolation tests**
 
