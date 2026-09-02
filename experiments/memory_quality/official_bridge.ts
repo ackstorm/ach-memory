@@ -21,6 +21,25 @@ async function main() {
   const turns = transcript.readClaudeTranscript(command.transcriptPath);
   const client = new HindsightClient({ apiUrl: command.apiUrl, apiToken: command.apiToken, bank: command.bankId });
   const cursors = memoryCursorStore();
+  if (command.op === "fault-sequence") {
+    const outcomes: unknown[] = [];
+    for (const event of command.events ?? []) {
+      client.opIds.length = 0;
+      const eventTurns = turns.slice(0, event.turnCount ?? turns.length);
+      try {
+        await retainLiveSession(client, command.sessionId, eventTurns, command.startTs ?? new Date().toISOString(), "memory-quality", {
+          cursors,
+          retryUntil: Date.now() + (event.retryMs ?? 250),
+        });
+        await client.drain(client.opIds, "memory-quality", event.drainMs ?? 2_000);
+        outcomes.push({ ok: true, cursor: cursors.read(command.sessionId), opIds: [...client.opIds] });
+      } catch (error) {
+        outcomes.push({ ok: false, error: error instanceof Error ? error.name : "unknown", cursor: cursors.read(command.sessionId), opIds: [...client.opIds] });
+      }
+    }
+    process.stdout.write(JSON.stringify({ ok: outcomes.every((item: any) => item.ok), turn_count: turns.length, outcomes }));
+    return;
+  }
   try {
     await retainLiveSession(client, command.sessionId, turns, command.startTs ?? new Date().toISOString(), "memory-quality", { cursors });
     await client.drain(client.opIds, "memory-quality", 120_000);

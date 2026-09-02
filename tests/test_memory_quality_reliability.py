@@ -30,3 +30,8 @@ def test_real_checkpoint_boundary_retries_lost_ack(tmp_path):
 
 def test_worker_fault_matrix_is_bound_to_real_repository_tests():
     assert set(WORKER_BOUNDARY_TESTS) >= {"worker_death_after_extract", "worker_death_after_retain", "expired_lease", "older_checkpoint"}
+
+
+def test_official_worker_and_checkpoint_faults_are_explicitly_not_applicable():
+    expectations = {(item.fault, item.variant): item.expected for item in reliability_matrix()}
+    assert expectations[("worker_death_after_extract", "official_reliability")] == "not_applicable"
