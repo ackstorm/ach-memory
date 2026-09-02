@@ -66,3 +66,28 @@ def test_cleanup_validates_entire_registry_before_deleting(tmp_path, respx_mock)
     with pytest.raises(BakeoffRefused):
         client.cleanup()
     assert not respx_mock.calls
+
+
+def test_retain_poll_retries_transient_status_errors(tmp_path, respx_mock):
+    run = uuid.uuid4()
+    config = BakeoffConfig.from_env(bakeoff_env(), run_id=run)
+    client = DisposableHindsight(config, artifact_root=tmp_path)
+    bank = bank_id(run, "retain", 1)
+    operation = str(uuid.uuid4())
+    respx_mock.put(f"http://127.0.0.1:8888/v1/default/banks/{bank}").mock(
+        return_value=__import__("httpx").Response(200, json={})
+    )
+    respx_mock.post(f"http://127.0.0.1:8888/v1/default/banks/{bank}/memories").mock(
+        return_value=__import__("httpx").Response(202, json={"operation_id": operation})
+    )
+    status = respx_mock.get(
+        f"http://127.0.0.1:8888/v1/default/banks/{bank}/operations/{operation}"
+    )
+    status.side_effect = [
+        __import__("httpx").Response(500),
+        __import__("httpx").Response(200, json={"status": "completed"}),
+    ]
+    client.create_bank("retain")
+    receipt = client.retain_and_wait(bank, "safe", document_id="doc")
+    assert receipt.terminal_state == "completed"
+    assert status.call_count == 2

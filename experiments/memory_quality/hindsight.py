@@ -121,6 +121,12 @@ class DisposableHindsight:
         state = "pending"
         while time.monotonic() < deadline:
             status = self._client.get(f"{self.config.base_url}/v1/default/banks/{bank_id_value}/operations/{operation_id}", headers=self._headers())
+            if status.status_code >= 500:
+                # A transient API/DB outage must not turn a committed async
+                # retain into a false failure.  Keep polling the same
+                # operation ID; persistent outages still end in timeout.
+                time.sleep(0.25)
+                continue
             status.raise_for_status()
             state = str(status.json().get("status", "pending")).casefold()
             if state in {"completed", "failed", "cancelled"}:
