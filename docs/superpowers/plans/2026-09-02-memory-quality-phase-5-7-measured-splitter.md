@@ -28,7 +28,7 @@
 **Files:**
 - Create: `experiments/memory_quality/corpus/semantic-v2.jsonl`
 - Modify: `experiments/memory_quality/contracts.py`
-- Modify: `tests/test_memory_quality_contracts.py`
+- Modify: `tests/test_memory_quality_corpus.py`
 
 **Interfaces:**
 - Produces: `SEMANTIC_V2_CORPUS_VERSION = "semantic-v2"`
@@ -43,7 +43,7 @@ Add a test that loads `semantic-v2.jsonl`, requires exactly S01–S16, and asser
 Run:
 
 ```bash
-pytest tests/test_memory_quality_contracts.py -q
+pytest tests/test_memory_quality_corpus.py -q
 ```
 
 Expected: FAIL because `semantic-v2.jsonl` does not exist.
@@ -55,10 +55,10 @@ Copy all 16 closed cases. Replace only S09 with a concrete statement such as `Cu
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-pytest tests/test_memory_quality_contracts.py -q
-ruff check experiments/memory_quality/contracts.py tests/test_memory_quality_contracts.py
+pytest tests/test_memory_quality_corpus.py -q
+ruff check experiments/memory_quality/contracts.py tests/test_memory_quality_corpus.py
 git diff --check
-git add experiments/memory_quality/corpus/semantic-v2.jsonl experiments/memory_quality/contracts.py tests/test_memory_quality_contracts.py
+git add experiments/memory_quality/corpus/semantic-v2.jsonl experiments/memory_quality/contracts.py tests/test_memory_quality_corpus.py
 git commit -m "test(quality): version the semantic splitter corpus"
 ```
 

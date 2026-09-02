@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+SEMANTIC_V2_CORPUS_VERSION = "semantic-v2"
+
 Scope = Literal["user", "project", "working_state", "ignore"]
 Variant = Literal[
     "ach_preprocess", "official_preprocess", "hybrid_preprocess",
