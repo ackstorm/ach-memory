@@ -3,6 +3,7 @@ import pytest
 from experiments.memory_quality.contracts import SemanticCase
 from experiments.memory_quality.semantic import (
     _AchHindsightAdapter,
+    _canonical,
     run_semantic_case,
     split_minimal,
 )
@@ -31,3 +32,16 @@ def test_ach_adapter_uses_hindsight_single_document_envelope():
     _AchHindsightAdapter(Delegate()).dry_run_extract(
         "mq55-test-bank", "user: safe", retain_extraction_mode="custom", retain_mission="ignored"
     )
+
+
+def test_semantic_canonical_input_redacts_declared_fixture_canaries():
+    case = SemanticCase(
+        id="S13",
+        transcript=({"role": "user", "text": "Bearer TOKEN and private-key header"},),
+        expected_units=(),
+        secret_canaries=("Bearer TOKEN", "private-key header"),
+    )
+    content = _canonical(case)
+    assert "Bearer TOKEN" not in content
+    assert "private-key header" not in content
+    assert "[redacted]" in content

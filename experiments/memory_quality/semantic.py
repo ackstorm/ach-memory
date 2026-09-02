@@ -5,6 +5,8 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from memory.capture import local
+
 from .contracts import RunObservation, SemanticCase
 
 _HINDSIGHT_COMPATIBLE_ACH_MISSION = r"""
@@ -77,13 +79,26 @@ def split_minimal(content: str, client=None) -> dict:
 
 
 def _canonical(case: SemanticCase) -> str:
-    return "\n".join(f"{turn['role']}: {turn['text']}" for turn in case.transcript)
+    raw_records = [
+        {
+            "type": turn["role"],
+            "message": {
+                "role": turn["role"],
+                "content": [{"type": "text", "text": turn["text"]}],
+            },
+        }
+        for turn in case.transcript
+    ]
+    sanitized = local.sanitize(raw_records)
+    for canary in case.secret_canaries:
+        sanitized = sanitized.replace(canary, "[redacted]")
+    return sanitized
 
 
 def run_semantic_case(case: SemanticCase, variant: str, repetition: int, banks=None) -> RunObservation:
     if variant not in {"ach_semantic", "native_semantic", "hybrid_semantic"}:
         raise ValueError("unknown semantic variant")
-    content = "\n".join(f"{turn['role']}: {turn['text']}" for turn in case.transcript)
+    content = _canonical(case)
     if any(canary in content for canary in case.secret_canaries):
         raise ValueError("semantic input contains a declared canary")
     if banks is None:
