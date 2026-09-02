@@ -120,7 +120,7 @@ def run_semantic_case(
         detail = {
             "claims": [candidate.model_dump(mode="json") for candidate in result.candidates],
             "working_state": result.working_state.model_dump(mode="json") if result.working_state else None,
-            "dropped": list(result.dropped),
+            "dropped": result.dropped,
         }
     elif variant == "native_semantic":
         receipt = banks.retain_and_wait(bank, content, document_id=f"mq55:{case.id}:{repetition}")
