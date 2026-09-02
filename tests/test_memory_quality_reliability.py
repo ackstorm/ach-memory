@@ -1,6 +1,7 @@
 import subprocess
 
 from experiments.memory_quality.reliability import (
+    WORKER_BOUNDARY_TESTS,
     reliability_matrix,
     run_capture_checkpoint_fault,
     run_fault_scenario,
@@ -25,3 +26,7 @@ def test_real_checkpoint_boundary_retries_lost_ack(tmp_path):
     result = run_capture_checkpoint_fault("lost_ack_after_commit", hook_event=event, env=env)
     assert result.observed == "recovered_later"
     assert result.requests == 2
+
+
+def test_worker_fault_matrix_is_bound_to_real_repository_tests():
+    assert set(WORKER_BOUNDARY_TESTS) >= {"worker_death_after_extract", "worker_death_after_retain", "expired_lease", "older_checkpoint"}

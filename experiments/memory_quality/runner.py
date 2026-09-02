@@ -14,7 +14,7 @@ from .contracts import corpus_digest, load_delivery_cases, load_semantic_cases
 from .delivery import build_delivery
 from .hindsight import BakeoffConfig, BakeoffRefused, DisposableHindsight
 from .preprocessing import run_preprocessing, scan_canaries
-from .reliability import reliability_matrix, run_fault_scenario
+from .reliability import reliability_matrix, run_fault_scenario, run_worker_boundary_verification
 from .scoring import Adjudication, build_blind_packet, decide, score_run
 from .semantic import run_semantic_case
 from .upstream import OfficialRuntime, verify_official_source
@@ -125,6 +125,8 @@ def run_full(env=None) -> dict:
     banks = DisposableHindsight(config, artifact_root=artifact_dir.parent)
     observations = []
     try:
+        if not run_worker_boundary_verification():
+            raise RuntimeError("real worker fault-boundary verification failed")
         observations.extend(item.model_dump(mode="json") for item in run_preprocessing(ROOT / "corpus/hosts/claude.jsonl", runtime))
         for case in load_semantic_cases(ROOT / "corpus/semantic.jsonl"):
             for variant in ("ach_semantic", "native_semantic", "hybrid_semantic"):

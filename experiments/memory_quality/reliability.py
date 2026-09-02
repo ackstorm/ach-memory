@@ -1,4 +1,5 @@
 """Explicit reliability expectations and conservative fault outcomes."""
+import subprocess
 from collections.abc import Mapping
 from typing import Literal
 
@@ -51,6 +52,21 @@ class FaultTransport:
             raise ConnectionError("ack_lost")
         self.acknowledged = True
         return True
+
+
+WORKER_BOUNDARY_TESTS = {
+    "worker_death_after_extract": "test_crash_after_extraction_persistence_does_not_re_extract",
+    "worker_death_after_retain": "test_crash_after_retain_acknowledgement_does_not_retain_twice",
+    "expired_lease": "test_crash_after_lease_leaves_the_row_untouched_and_recoverable",
+    "older_checkpoint": "test_a_stale_earlier_slice_cannot_overwrite_a_later_offset",
+}
+
+
+def run_worker_boundary_verification() -> bool:
+    """Run the repository's real DB-backed worker crash boundaries."""
+    tests = [f"tests/test_capture_worker.py::{name}" for name in WORKER_BOUNDARY_TESTS.values()]
+    result = subprocess.run(["uv", "run", "pytest", "-q", *tests], capture_output=True, text=True, check=False, timeout=180)
+    return result.returncode == 0
 
 
 def reliability_matrix() -> tuple[ReliabilityExpectation, ...]:
