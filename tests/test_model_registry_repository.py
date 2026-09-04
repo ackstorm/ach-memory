@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from memory import ids
-from memory.errors import ModelQuotaExceeded
+from memory.errors import MentalModelQuotaExceeded
 from memory.model_registry import (
     list_registered_models,
     ready_model,
@@ -72,7 +72,7 @@ def test_builtin_does_not_consume_five_custom_slots(session, model_bank):
             **CUSTOM,
         )
 
-    with pytest.raises(ModelQuotaExceeded):
+    with pytest.raises(MentalModelQuotaExceeded):
         register_model(
             session,
             model_bank,
@@ -98,7 +98,7 @@ def test_a_bank_has_at_most_one_builtin(session, model_bank):
         **BUILTIN,
     )
 
-    with pytest.raises(ModelQuotaExceeded):
+    with pytest.raises(MentalModelQuotaExceeded):
         register_model(
             session,
             model_bank,
@@ -211,7 +211,7 @@ def test_concurrent_custom_registration_cannot_exceed_five(engine):
                     name="loser",
                     **CUSTOM,
                 )
-            except ModelQuotaExceeded:
+            except MentalModelQuotaExceeded:
                 db.rollback()
                 return "quota"
             db.commit()

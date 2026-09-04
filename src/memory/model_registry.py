@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from memory.errors import MentalModelNotFound, ModelQuotaExceeded
+from memory.errors import MentalModelNotFound, MentalModelQuotaExceeded
 from memory.models import MentalModelRegistration
 from memory.retained_records import LogicalBankRef, _bank_filters, _lock_bank
 
@@ -57,9 +57,9 @@ def register_model(
     existing = list(db.scalars(_models_query(bank).with_for_update()).all())
     live = [row for row in existing if row.lifecycle_state != "deleted"]
     if origin == "builtin" and any(row.origin == "builtin" for row in live):
-        raise ModelQuotaExceeded("a logical bank may register only one built-in model")
+        raise MentalModelQuotaExceeded("a logical bank may register only one built-in model")
     if origin == "user" and sum(row.origin == "user" for row in live) >= MAX_CUSTOM_MODELS:
-        raise ModelQuotaExceeded(
+        raise MentalModelQuotaExceeded(
             f"a logical bank may register at most {MAX_CUSTOM_MODELS} custom models"
         )
 

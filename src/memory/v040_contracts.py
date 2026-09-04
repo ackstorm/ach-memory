@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from memory.contracts import WorkspaceId
-from memory.memory_types import EvidenceBasis, EvidenceKind, MemoryType, RetainTrigger
+from memory.memory_types import EvidenceBasis, EvidenceKind, Lifecycle, MemoryType, RetainTrigger
 
 
 class RetainEvidence(BaseModel):
@@ -47,6 +47,7 @@ class TypedRetainResponse(BaseModel):
     status: Literal["pending", "accepted", "completed", "failed"]
     recorded_at: datetime
     valid_until: datetime | None
+    lifecycle: Lifecycle
 
 
 class LoadContextRequest(BaseModel):

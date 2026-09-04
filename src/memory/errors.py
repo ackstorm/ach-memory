@@ -254,7 +254,7 @@ class ContentRejectedBySanitizer(DomainError):
     status = 422
 
 
-class ModelQuotaExceeded(DomainError):
+class MentalModelQuotaExceeded(DomainError):
     code = "MODEL_QUOTA_EXCEEDED"
     status = 409
 

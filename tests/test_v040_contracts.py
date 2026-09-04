@@ -5,7 +5,12 @@ import pytest
 from pydantic import ValidationError
 
 from memory.ids import new_model_key
-from memory.v040_contracts import LoadContextRequest, RetainEvidence, TypedRetainRequest
+from memory.v040_contracts import (
+    LoadContextRequest,
+    RetainEvidence,
+    TypedRetainRequest,
+    TypedRetainResponse,
+)
 
 
 @pytest.fixture
@@ -49,6 +54,20 @@ def test_typed_retain_accepts_future_expiry_with_offset(valid_uuid):
         ],
     )
     assert body.valid_until is not None and body.valid_until.utcoffset() is not None
+
+
+def test_typed_retain_response_requires_derived_lifecycle(valid_uuid):
+    response = TypedRetainResponse(
+        record_id="rec_123",
+        operation_id=valid_uuid,
+        document_id="doc_123",
+        status="completed",
+        recorded_at=datetime.now(UTC),
+        valid_until=None,
+        lifecycle="active",
+    )
+
+    assert response.lifecycle == "active"
 
 
 def test_load_context_requires_project_when_workspace_is_present(valid_workspace_id):
