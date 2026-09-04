@@ -51,7 +51,7 @@ class TypedRetainResponse(BaseModel):
 
 class LoadContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    project_slug: str | None = Field(default=None, max_length=128)
+    project_slug: str | None = Field(default=None, min_length=1, max_length=128)
     workspace_id: WorkspaceId | None = None
 
     @model_validator(mode="after")

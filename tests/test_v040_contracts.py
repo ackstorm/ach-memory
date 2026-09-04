@@ -56,6 +56,11 @@ def test_load_context_requires_project_when_workspace_is_present(valid_workspace
         LoadContextRequest(workspace_id=valid_workspace_id)
 
 
+def test_load_context_rejects_empty_project_when_workspace_is_present(valid_workspace_id):
+    with pytest.raises(ValidationError):
+        LoadContextRequest(project_slug="", workspace_id=valid_workspace_id)
+
+
 def test_model_key_is_public_stable_shape():
     assert new_model_key().startswith("mm_")
     assert len(new_model_key()) == 35

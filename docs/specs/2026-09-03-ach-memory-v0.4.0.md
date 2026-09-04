@@ -929,8 +929,8 @@ unavailable, unauthorized or stale model output is omitted rather than replayed.
 is only enqueued inside that deadline; `load_context` never waits for it to finish. `0.4.0` has no
 persistent last-good context cache. Model content is included whole, never cut mid-line. Selection
 is never silently changed by an allocator; enabling a flag that would exceed the separately
-configured User or Project budget is rejected. The declared budgets are 512 model-output tokens
-for the User Bank, 1,024 for the active Project Bank, 256 for Project Metadata, 256 for Active
+configured User or Project budget is rejected. The declared budgets are 1,024 model-output tokens
+for the User Bank, 2,048 for the active Project Bank, 256 for Project Metadata, 256 for Active
 Time-Bounded Claims and 512 for Working State. A further 512 tokens are reserved for headings,
 omission markers and response framing, giving the complete `load_context` response a hard ceiling
 of 4,608 tokens.
