@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 
 from memory import projects
 from memory.auth.principal import Principal
-from memory.brief import Section, inert
 from memory.contracts import WORKSPACE_ID_PATTERN as _WORKSPACE_ID_PATTERN_SOURCE
 from memory.contracts import (
     CheckpointSeq,
@@ -32,6 +31,7 @@ from memory.contracts import (
 )
 from memory.errors import WorkingSessionNotFound, WorkingStateConflict, WorkingStateStale
 from memory.models import WorkingSession, WorkingState
+from memory.rendering import RenderedSection, format_age, render_inert
 
 # Compiled form kept here (rather than only the pattern string in
 # contracts.py) because api/brief.py's Query(pattern=...) already imports
@@ -220,54 +220,43 @@ def _bounded(text: str, limit: int = _INDEX_FIELD_MAX) -> str:
     """Sanitized (inert) and shortened for the one line INDEX_CAPS allows.
     Never used for Full, whose own budget-fitting drops whole lines instead
     of truncating one."""
-    text = inert(text)
+    text = render_inert(" ".join(text.split()))
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
 
 
-def _format_age(elapsed_seconds: float) -> str:
-    """A compact, always-present duration -- no expiry or freshness
-    classification, only how long ago updated_at was."""
-    seconds = max(int(elapsed_seconds), 0)
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"{minutes}m"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours}h"
-    return f"{hours // 24}d"
-
-
-def render_index_headline(state: WorkingState, now: datetime) -> Section:
+def render_index_headline(state: WorkingState, now: datetime) -> RenderedSection:
     """The one line INDEX_CAPS["working_state"] allows: objective, the
     first next step and age, each bounded so the compiler is never forced
     to drop this line whole for being too long (see compose_index's
     whole-line-only rule)."""
     next_step = _bounded(state.next_steps[0]) if state.next_steps else "none"
-    age = _format_age((now - state.updated_at).total_seconds())
+    age = format_age(state.updated_at, now)
     line = f"objective: {_bounded(state.objective)}; next: {next_step}; age: {age}"
-    return Section(text=line, refreshed_at=state.updated_at.isoformat())
+    return RenderedSection(text=line, refreshed_at=state.updated_at.isoformat())
 
 
-def render_full_section(state: WorkingState, now: datetime) -> Section:
+def render_full_section(state: WorkingState, now: datetime) -> RenderedSection:
     """Every stored field, unbounded here: compose_full()'s own budget
     fitting drops whole lines from the end if it does not all fit, never a
     partial one."""
-    lines = [f"objective: {inert(state.objective)}"]
+    lines = [f"objective: {_render_text(state.objective)}"]
     if state.current_direction:
-        lines.append(f"current direction: {inert(state.current_direction)}")
-    lines += [f"recent decision: {inert(item)}" for item in state.recent_decisions]
-    lines += [f"open question: {inert(item)}" for item in state.open_questions]
-    lines += [f"next step: {inert(item)}" for item in state.next_steps]
-    lines.append(f"age: {_format_age((now - state.updated_at).total_seconds())}")
+        lines.append(f"current direction: {_render_text(state.current_direction)}")
+    lines += [f"recent decision: {_render_text(item)}" for item in state.recent_decisions]
+    lines += [f"open question: {_render_text(item)}" for item in state.open_questions]
+    lines += [f"next step: {_render_text(item)}" for item in state.next_steps]
+    lines.append(f"age: {format_age(state.updated_at, now)}")
     lines.append(
-        f"source session: {inert(state.session_id)} "
+        f"source session: {_render_text(state.session_id)} "
         f"(epoch {state.session_epoch}, checkpoint {state.checkpoint_seq})"
     )
-    return Section(text="\n".join(lines), refreshed_at=state.updated_at.isoformat())
+    return RenderedSection(text="\n".join(lines), refreshed_at=state.updated_at.isoformat())
+
+
+def _render_text(text: str) -> str:
+    return render_inert(" ".join(text.split()))
 
 
 def _apply(
