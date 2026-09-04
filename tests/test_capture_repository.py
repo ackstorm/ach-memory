@@ -6,7 +6,7 @@ from memory import ids
 from memory.auth.principal import Principal
 from memory.capture import repository
 from memory.errors import CaptureConflict, ProjectNotFound
-from memory.models import CaptureSlice, Project, User
+from memory.models import CaptureSlice, Project, ProjectSlug, User
 
 WS = "ws_" + "a" * 32
 
@@ -16,10 +16,12 @@ def _user_and_project(session, tenant, *, user_id: str = "usr_cap", slug: str = 
     project = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id=tenant,
-        project_slug=slug,
         owner_type="user",
         owner_id=user_id,
         bank_id=ids.new_project_bank_id(),
+    )
+    project.slug_rows.append(
+        ProjectSlug(tenant_id=tenant, slug=slug, is_canonical=True)
     )
     session.add_all([user, project])
     session.flush()
@@ -60,7 +62,7 @@ def test_accept_checkpoint_creates_a_new_row_and_allocates_a_session(session, te
     assert result.row.status == "pending"
     assert result.row.session_epoch >= 0
     assert result.row.project_internal_id == project.internal_id
-    assert result.resolution.project.project_slug == "acme-api"
+    assert result.resolution.current_slug == "acme-api"
 
 
 def test_accept_checkpoint_reuses_the_working_session_across_two_slices(session, tenant):

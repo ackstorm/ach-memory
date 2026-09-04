@@ -191,7 +191,7 @@ def test_idor_an_operation_id_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert cancel.call_count == 0
 
 
@@ -228,7 +228,7 @@ def test_idor_get_operation_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert get.call_count == 0
 
 
@@ -258,7 +258,7 @@ def test_idor_list_operations_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert listed.call_count == 0
 
 
@@ -272,7 +272,7 @@ def test_operations_route_on_an_unknown_slug_creates_no_project(
     test_documents_route_on_an_unknown_slug_creates_no_project in
     test_documents_api.py -- the operations router copied the shape but not
     this test, so create=False on this router went unguarded."""
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     response = client.post(
         "/v1/memory/operations/list",
@@ -283,12 +283,8 @@ def test_operations_route_on_an_unknown_slug_creates_no_project(
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="typo-slug")
-        .one_or_none()
-    )
-    assert project is None
+    assert session.get(ProjectSlug, (tenant, "typo-slug")) is None
+    assert session.query(Project).count() == 0
 
 
 @respx.mock

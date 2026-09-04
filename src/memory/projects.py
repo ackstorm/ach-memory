@@ -16,49 +16,53 @@ from memory.errors import (
     UserNotFound,
 )
 from memory.identifiers import reject_control_characters
-from memory.models import Group, GroupMember, Project, RetiredSlug, User
+from memory.models import Group, GroupMember, Project, ProjectSlug, User
 from memory.slugs import canonical_locator, normalize_slug
 
 
 @dataclass(frozen=True)
 class Resolution:
     project: Project
+    current_slug: str
     # The slug the caller asked for, when it was a retired one (SPEC §8.6).
     # None when they used the project's current slug.
     resolved_from: str | None
 
 
-def _live(db: Session, tenant_id: str, slug: str) -> Project | None:
+def _raise_missing_canonical(project_internal_id: str) -> None:
+    raise RuntimeError(f"project {project_internal_id} has no canonical slug")
+
+
+def canonical_slug(db: Session, project: Project) -> str:
     return db.scalar(
-        select(Project).where(
-            Project.tenant_id == tenant_id, Project.project_slug == slug
+        select(ProjectSlug.slug).where(
+            ProjectSlug.tenant_id == project.tenant_id,
+            ProjectSlug.project_internal_id == project.internal_id,
+            ProjectSlug.is_canonical.is_(True),
         )
-    )
+    ) or _raise_missing_canonical(project.internal_id)
 
 
-def _forwarded(db: Session, tenant_id: str, slug: str) -> Project | None:
-    tombstone = db.get(RetiredSlug, (tenant_id, slug))
-    if tombstone is None:
-        return None
-    # Tenant-filtered again rather than a bare PK load: the tombstone key is
-    # already tenant-scoped, so this is redundant today, but it keeps the
-    # isolation guarantee local to this function instead of inferred from a
-    # caller three layers up.
+def _mapping(db: Session, tenant_id: str, slug: str) -> ProjectSlug | None:
+    return db.get(ProjectSlug, (tenant_id, slug))
+
+
+def _project_for_mapping(
+    db: Session, tenant_id: str, mapping: ProjectSlug
+) -> Project | None:
+    # Tenant-filtered rather than a bare PK load so tenant isolation stays
+    # local even if a corrupt mapping ever points across tenants.
     return db.scalar(
         select(Project).where(
-            Project.internal_id == tombstone.project_internal_id,
+            Project.internal_id == mapping.project_internal_id,
             Project.tenant_id == tenant_id,
         )
     )
 
 
 def _slug_taken(db: Session, tenant_id: str, slug: str) -> bool:
-    """Uniqueness spans live projects AND tombstones (inv. 13): a retired
-    name stays reserved, or a forward would start pointing somewhere new.
-    Shared by create() and rename() so the rule has one definition."""
-    return _live(db, tenant_id, slug) is not None or (
-        db.get(RetiredSlug, (tenant_id, slug)) is not None
-    )
+    """All live and alias names occupy the same tenant-global namespace."""
+    return _mapping(db, tenant_id, slug) is not None
 
 
 def _validate_owner(
@@ -131,9 +135,26 @@ def authorize(
         return
     raise ProjectAccessDenied(
         "no access to that project",
-        project_slug=requested_slug or project.project_slug,
+        project_slug=requested_slug or canonical_slug(db, project),
         owner_type=project.owner_type,
     )
+
+
+def _authorize_resolution(
+    db: Session, principal: Principal, project: Project, requested_slug: str
+) -> None:
+    """Hide whether a requested project name exists from unauthorized callers.
+
+    Direct mutations still use ``authorize`` and its actionable 403. Slug
+    resolution is the discovery boundary, so its denial deliberately has the
+    same code, message and public details as an absent mapping.
+    """
+    try:
+        authorize(db, principal, project, requested_slug=requested_slug)
+    except ProjectAccessDenied as exc:
+        raise ProjectNotFound(
+            "no such project", project_slug=requested_slug
+        ) from exc
 
 
 def resolve(
@@ -145,26 +166,29 @@ def resolve(
 ) -> Resolution:
     """Slug -> project, creating it lazily for a user credential.
 
-    Order matters: live projects, then retired slugs, then creation. Checking
-    tombstones before creating is what stops a rename from silently producing a
-    second, empty project (SPEC §8.6).
+    One lookup covers both canonical names and forwarding aliases. Checking
+    that namespace before creating is what stops a rename from silently
+    producing a second, empty project (SPEC §8.6).
     """
     slug = normalize_slug(slug)
 
-    project = _live(db, principal.tenant_id, slug)
-    resolved_from = None
-    if project is None:
-        project = _forwarded(db, principal.tenant_id, slug)
-        if project is not None:
-            resolved_from = slug
+    mapping = _mapping(db, principal.tenant_id, slug)
+    project = (
+        _project_for_mapping(db, principal.tenant_id, mapping)
+        if mapping is not None
+        else None
+    )
 
     if project is None:
         if not create or principal.is_master:
             # A master key has no identity, so there is no owner to assign.
             raise ProjectNotFound("no such project", project_slug=slug)
-        return Resolution(_create(db, principal, slug, git_locator), None)
+        project = _create(db, principal, slug, git_locator)
+        return Resolution(project, canonical_slug(db, project), None)
 
-    authorize(db, principal, project, requested_slug=slug)
+    _authorize_resolution(db, principal, project, slug)
+    current_slug = slug if mapping.is_canonical else canonical_slug(db, project)
+    resolved_from = None if mapping.is_canonical else slug
 
     if git_locator:
         # Canonicalize before comparing: the same repository spelled two ways
@@ -176,13 +200,13 @@ def resolve(
         if project.git_locator and project.git_locator != git_locator:
             raise ProjectLocatorMismatch(
                 "that project is bound to a different repository",
-                project_slug=project.project_slug,
+                project_slug=current_slug,
             )
         if not project.git_locator:
             # Enrichment, only for a caller already authorized (SPEC §8.3).
             project.git_locator = git_locator
 
-    return Resolution(project, resolved_from)
+    return Resolution(project, current_slug, resolved_from)
 
 
 def create(
@@ -213,7 +237,6 @@ def create(
     project = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id=principal.tenant_id,
-        project_slug=slug,
         git_locator=git_locator,
         owner_type=owner_type,
         owner_id=owner_id,
@@ -222,6 +245,14 @@ def create(
     try:
         with db.begin_nested():
             db.add(project)
+            db.add(
+                ProjectSlug(
+                    tenant_id=principal.tenant_id,
+                    slug=slug,
+                    project_internal_id=project.internal_id,
+                    is_canonical=True,
+                )
+            )
     except IntegrityError as exc:
         # A savepoint, not a bare rollback, so any earlier write in this
         # request survives the lost race.
@@ -245,10 +276,13 @@ def _create(
         # Lost the creation race (SPEC §9). The winner's project is now the
         # truth; reload it and authorize this caller against it — which is
         # usually a denial, and correctly so.
-        existing = _live(db, principal.tenant_id, slug)
+        mapping = _mapping(db, principal.tenant_id, slug)
+        if mapping is None:
+            raise
+        existing = _project_for_mapping(db, principal.tenant_id, mapping)
         if existing is None:
             raise
-        authorize(db, principal, existing)
+        _authorize_resolution(db, principal, existing, slug)
         return existing
 
 
@@ -262,40 +296,46 @@ def rename(
     """Change the public slug, leaving a forwarding tombstone (SPEC §8.6)."""
     authorize(db, principal, project)
     new_slug = normalize_slug(new_slug)
-    if new_slug == project.project_slug:
-        return project
 
-    if _slug_taken(db, principal.tenant_id, new_slug):
-        raise ProjectSlugConflict("that slug is taken", project_slug=new_slug)
-
-    old_slug = project.project_slug
-
-    # A savepoint, exactly like create() four functions up, and for the same
-    # reason: `_slug_taken` above is a check-then-act, and TWO unique
-    # constraints can lose the race here -- projects (tenant_id,
-    # project_slug) and retired_slugs' composite PK. Unguarded, the loser's
-    # IntegrityError reached api/app.py's catch-all as a 500 where SPEC §18
-    # requires PROJECT_SLUG_CONFLICT, and get_session's rollback also
-    # discarded any git_locator repair carried in the same PATCH.
+    # The project-row lock serializes two concurrent renames before the fresh
+    # canonical-row lookup; locking only the old canonical row can wake the
+    # loser after that row was demoted, with the winner's new row absent from
+    # the original SELECT snapshot. Demotion and insertion then share the
+    # savepoint. The explicit flush orders the partial-unique transition; if
+    # the new name loses a race, rolling back restores the old row.
     try:
         with db.begin_nested():
-            project.project_slug = new_slug
-            # Nothing repoints existing tombstones, and nothing needs to: a
-            # rename mutates the slug on the same Project row, so internal_id
-            # never changes. Every tombstone already points at the row, so
-            # resolution after a chain of renames is still ONE lookup -- no
-            # transitive walk, no cycles.
+            db.scalar(
+                select(Project.internal_id)
+                .where(Project.internal_id == project.internal_id)
+                .with_for_update()
+            )
+            current = db.scalar(
+                select(ProjectSlug)
+                .where(
+                    ProjectSlug.tenant_id == project.tenant_id,
+                    ProjectSlug.project_internal_id == project.internal_id,
+                    ProjectSlug.is_canonical.is_(True),
+                )
+                .with_for_update()
+            )
+            if current is None:
+                _raise_missing_canonical(project.internal_id)
+            old_slug = current.slug
+            if new_slug == old_slug:
+                return project
+            if _slug_taken(db, principal.tenant_id, new_slug):
+                raise ProjectSlugConflict("that slug is taken", project_slug=new_slug)
+            current.is_canonical = False
+            db.flush()
             db.add(
-                RetiredSlug(
-                    tenant_id=principal.tenant_id,
-                    retired_slug=old_slug,
+                ProjectSlug(
+                    tenant_id=project.tenant_id,
+                    slug=new_slug,
                     project_internal_id=project.internal_id,
+                    is_canonical=True,
                 )
             )
-            # No explicit db.flush() here: `begin_nested()`'s context manager
-            # commits the savepoint on exit, which flushes -- verified at the
-            # route level, a lost race answers 409 with or without one. The
-            # line was in the plan and is redundant; do not re-add it.
     except IntegrityError as exc:
         raise ProjectSlugConflict("that slug is taken", project_slug=new_slug) from exc
 
@@ -328,13 +368,14 @@ def transfer(
     _validate_owner(db, principal, owner_type, owner_id)
 
     previous = f"{project.owner_type}:{project.owner_id}"
+    slug = canonical_slug(db, project)
     project.owner_type = owner_type
     project.owner_id = owner_id
     audit.record(
         db,
         principal,
         "project.transfer",
-        f"{project.project_slug}: {previous} -> {owner_type}:{owner_id}",
+        f"{slug}: {previous} -> {owner_type}:{owner_id}",
         on_behalf_of=on_behalf_of,
     )
     return project

@@ -93,6 +93,6 @@ def submit_checkpoint(
         duplicate=result.duplicate,
         session_epoch=row.session_epoch,
         checkpoint_seq=row.end_offset,
-        project_slug=result.resolution.project.project_slug,
+        project_slug=result.resolution.current_slug,
         resolved_from=result.resolution.resolved_from,
     )

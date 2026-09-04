@@ -501,7 +501,7 @@ def test_patch_rename_and_locator_together_apply_both_and_audit_both(
     client, juan, tenant, session
 ):
     """A rename and a locator update in the same request must both apply,
-    in the right order: `update_project` reads `project.project_slug` for
+    in the right order: `update_project` reads the current canonical slug for
     the locator's audit event AFTER the rename branch already mutated it, so
     the locator event's resource is the NEW slug, not the old one.
 
@@ -555,13 +555,15 @@ def test_an_outsider_cannot_rename_a_project(client, juan, master_headers, tenan
         headers={"Authorization": f"Bearer {bob_key}"},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
+    assert "owner_type" not in str(response.json())
 
 
 def test_an_outsider_cannot_patch_the_locator_before_any_write(
     client, juan, master_headers, tenant, session
 ):
-    """A locator-only PATCH (no rename) from a non-owner must 403 too, and
+    """A locator-only PATCH (no rename) from a non-owner must be hidden, and
     must not mutate the column or write an audit event first --
     `domain.resolve(..., create=False)` calls `authorize()` unconditionally
     before either `if` branch in `update_project` runs.
@@ -588,7 +590,9 @@ def test_an_outsider_cannot_patch_the_locator_before_any_write(
         headers={"Authorization": f"Bearer {bob_key}"},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
+    assert "owner_type" not in str(response.json())
     stored = client.get("/v1/projects/payments-api", headers=juan["headers"]).json()
     assert stored["git_locator"] == "github.com/acme/payments-api"
     actions = [e.action for e in session.query(AuditEvent).all()]
@@ -610,7 +614,9 @@ def test_an_outsider_cannot_transfer_a_project(client, juan, master_headers, ten
         headers={"Authorization": f"Bearer {bob_key}"},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
+    assert "owner_type" not in str(response.json())
 
 
 def test_transfer_to_a_group_lets_a_member_in(client, juan, master_headers, tenant):
@@ -637,7 +643,7 @@ def test_transfer_to_a_group_lets_a_member_in(client, juan, master_headers, tena
     assert for_alice.status_code == 200
 
 
-def test_an_outsider_is_denied_without_learning_the_owner(
+def test_an_outsider_sees_the_same_error_as_an_unknown_project(
     client, juan, master_headers, tenant
 ):
     bob = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
@@ -651,11 +657,14 @@ def test_an_outsider_is_denied_without_learning_the_owner(
     response = client.get(
         "/v1/projects/payments-api", headers={"Authorization": f"Bearer {bob_key}"}
     )
+    unknown = client.get(
+        "/v1/projects/no-such-project", headers={"Authorization": f"Bearer {bob_key}"}
+    )
 
-    assert response.status_code == 403
-    details = response.json()["error"]["details"]
-    assert details["project_slug"] == "payments-api"
-    assert details["owner_type"] == "user"
+    assert response.status_code == unknown.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
+    assert response.json()["error"]["message"] == unknown.json()["error"]["message"]
+    assert "owner_type" not in str(response.json())
     assert juan["user_id"] not in str(response.json())
 
 
@@ -716,18 +725,25 @@ def test_listing_is_scoped_to_the_callers_tenant(client, juan, tenant, session):
     cannot tell tenants apart, so the query's tenant filter is the only thing
     that can."""
     from memory import ids
-    from memory.models import Project, Tenant
+    from memory.models import Project, ProjectSlug, Tenant
 
     session.add(Tenant(id="ten_other"))
     session.flush()
+    other_project = Project(
+        internal_id=ids.new_project_internal_id(),
+        tenant_id="ten_other",
+        owner_type="user",
+        owner_id=juan["user_id"],
+        bank_id=ids.new_project_bank_id(),
+    )
+    session.add(other_project)
+    session.flush()
     session.add(
-        Project(
-            internal_id=ids.new_project_internal_id(),
+        ProjectSlug(
             tenant_id="ten_other",
-            project_slug="not-mine",
-            owner_type="user",
-            owner_id=juan["user_id"],
-            bank_id=ids.new_project_bank_id(),
+            slug="not-mine",
+            project_internal_id=other_project.internal_id,
+            is_canonical=True,
         )
     )
     session.flush()

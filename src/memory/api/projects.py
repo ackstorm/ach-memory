@@ -13,7 +13,7 @@ from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.errors import Forbidden, ProjectAccessDenied
 from memory.identifiers import has_control_character
-from memory.models import Project
+from memory.models import Project, ProjectSlug
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
 
@@ -105,11 +105,13 @@ class ProjectResponse(RenameForwarding):
     purpose: str | None = None
 
 
-def _response(project: Project, resolved_from: str | None = None) -> ProjectResponse:
+def _response(
+    project: Project, current_slug: str, resolved_from: str | None = None
+) -> ProjectResponse:
     """Built field by field. Never serialize the row: it carries bank_id and
     internal_id, neither of which may cross the boundary (inv. 29, inv. 34)."""
     return ProjectResponse(
-        project_slug=project.project_slug,
+        project_slug=current_slug,
         owner=Owner(type=project.owner_type, id=project.owner_id),
         git_locator=project.git_locator,
         name=project.name,
@@ -160,7 +162,7 @@ def create_project(
         on_behalf_of=on_behalf_of,
     )
     db.commit()
-    return _response(project)
+    return _response(project, domain.canonical_slug(db, project))
 
 
 @router.get("", response_model=list[ProjectResponse])
@@ -174,19 +176,25 @@ def list_projects(
     # what get_project() would allow for the same caller. The master-key
     # bypass falls out of authorize() for free. The tenant clause stays
     # because authorize() itself does not check tenant.
-    rows = db.scalars(
-        select(Project)
+    rows = db.execute(
+        select(Project, ProjectSlug.slug)
+        .join(
+            ProjectSlug,
+            (ProjectSlug.tenant_id == Project.tenant_id)
+            & (ProjectSlug.project_internal_id == Project.internal_id)
+            & ProjectSlug.is_canonical.is_(True),
+        )
         .where(Project.tenant_id == principal.tenant_id)
-        .order_by(Project.project_slug)
+        .order_by(ProjectSlug.slug)
     ).all()
     visible = []
-    for p in rows:
+    for project, current_slug in rows:
         try:
-            domain.authorize(db, principal, p)
+            domain.authorize(db, principal, project)
         except ProjectAccessDenied:
             continue
-        visible.append(p)
-    return [_response(p) for p in visible]
+        visible.append((project, current_slug))
+    return [_response(project, current_slug) for project, current_slug in visible]
 
 
 @router.get("/{project_slug}", response_model=ProjectResponse)
@@ -196,7 +204,7 @@ def get_project(
     db: Session = Depends(get_session),
 ) -> ProjectResponse:
     result = domain.resolve(db, principal, project_slug, create=False)
-    return _response(result.project, result.resolved_from)
+    return _response(result.project, result.current_slug, result.resolved_from)
 
 
 @router.patch("/{project_slug}", response_model=ProjectResponse)
@@ -216,18 +224,20 @@ def update_project(
     """
     result = domain.resolve(db, principal, project_slug, create=False)
     project = result.project
+    current_slug = result.current_slug
 
     if body.project_slug is not None:
         project = domain.rename(
             db, principal, project, body.project_slug, on_behalf_of=on_behalf_of
         )
+        current_slug = domain.canonical_slug(db, project)
 
     if "git_locator" in body.model_fields_set:
         project.git_locator = (
             domain.canonical_locator(body.git_locator) if body.git_locator else None
         )
         audit.record(
-            db, principal, "project.locator.update", project.project_slug,
+            db, principal, "project.locator.update", current_slug,
             on_behalf_of=on_behalf_of,
         )
 
@@ -252,7 +262,7 @@ def update_project(
     # get_project. Dropping it meant a client keying off `notice` to update a
     # stale MEMORY_PROJECT never learned it had followed one -- which is the
     # entire purpose of the tombstone.
-    return _response(project, result.resolved_from)
+    return _response(project, current_slug, result.resolved_from)
 
 
 @router.patch("/{project_slug}/owner", response_model=ProjectResponse)
@@ -269,4 +279,4 @@ def transfer_project(
     )
     db.commit()
     # Same SPEC §8.6 forwarding annotation as update_project above.
-    return _response(project, result.resolved_from)
+    return _response(project, result.current_slug, result.resolved_from)

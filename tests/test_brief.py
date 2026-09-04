@@ -1494,10 +1494,12 @@ def test_a_capture_worker_completed_slice_delivers_automatic_state_in_the_brief(
     import hashlib
     import json
 
+    from sqlalchemy import select
+
     from memory.capture import worker
     from memory.config import get_settings
     from memory.hindsight.client import HindsightClient
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     get_settings.cache_clear()
     monkeypatch.setenv("MEMORY_CAPTURE_WORKER_ENABLED", "true")
@@ -1506,7 +1508,12 @@ def test_a_capture_worker_completed_slice_delivers_automatic_state_in_the_brief(
     _mock_user_model()
     headers = two_users[0]["headers"]
     client.post("/v1/projects", json={"project_slug": "acme-api"}, headers=headers)
-    project = session.query(Project).filter_by(project_slug="acme-api").one()
+    project = session.scalar(
+        select(Project)
+        .join(ProjectSlug, ProjectSlug.project_internal_id == Project.internal_id)
+        .where(ProjectSlug.tenant_id == Project.tenant_id)
+        .where(ProjectSlug.slug == "acme-api", ProjectSlug.is_canonical.is_(True))
+    )
 
     content = "assistant: next I'll wire the capture CLI"
     body = {
@@ -2219,12 +2226,20 @@ def _mock_models(bank_id, models):
 
 
 def _bank_ids(session, user_id, project_slug=None):
-    from memory.models import Project, User
+    from sqlalchemy import select
+
+    from memory.models import Project, ProjectSlug, User
 
     user_bank = session.get(User, user_id).bank_id
     if project_slug is None:
         return user_bank, None
-    return user_bank, session.query(Project).filter_by(project_slug=project_slug).one().bank_id
+    project = session.scalar(
+        select(Project)
+        .join(ProjectSlug, ProjectSlug.project_internal_id == Project.internal_id)
+        .where(ProjectSlug.tenant_id == Project.tenant_id)
+        .where(ProjectSlug.slug == project_slug, ProjectSlug.is_canonical.is_(True))
+    )
+    return user_bank, project.bank_id
 
 
 def _block(instructions, heading):

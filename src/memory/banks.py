@@ -77,4 +77,4 @@ def resolve_project_bank(
             "scope=project needs a project: pass project_slug"
         )
     result = projects.resolve(db, principal, slug, git_locator, create=create)
-    return result.project.bank_id, result.resolved_from, result.project.project_slug
+    return result.project.bank_id, result.resolved_from, result.current_slug

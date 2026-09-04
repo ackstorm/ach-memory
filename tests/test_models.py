@@ -65,44 +65,68 @@ def test_api_key_row_without_a_user_is_rejected(session, tenant):
 
 
 def test_project_slug_is_unique_per_tenant(session, tenant):
-    from memory.models import Project
+    from sqlalchemy import insert
+
+    from memory.models import Project, ProjectSlug
 
     def _project(slug: str) -> Project:
-        return Project(
+        project = Project(
             internal_id=ids.new_project_internal_id(),
             tenant_id=tenant,
-            project_slug=slug,
             owner_type="user",
             owner_id="usr_x",
             bank_id=ids.new_project_bank_id(),
         )
+        project.slug_rows.append(
+            ProjectSlug(tenant_id=tenant, slug=slug, is_canonical=True)
+        )
+        return project
 
-    session.add(_project("payments-api"))
+    first = _project("payments-api")
+    session.add(first)
     session.flush()
-    session.add(_project("payments-api"))
+    second = Project(
+        internal_id=ids.new_project_internal_id(),
+        tenant_id=tenant,
+        owner_type="user",
+        owner_id="usr_x",
+        bank_id=ids.new_project_bank_id(),
+    )
+    session.add(second)
+    session.flush()
 
     with pytest.raises(IntegrityError):
-        session.flush()
+        session.execute(
+            insert(ProjectSlug).values(
+                tenant_id=tenant,
+                slug="payments-api",
+                project_internal_id=second.internal_id,
+                is_canonical=True,
+            )
+        )
 
 
 def test_the_same_slug_may_exist_in_two_tenants(session, tenant):
     """Proves the constraint is composite, not global."""
-    from memory.models import Project, Tenant
+    from memory.models import Project, ProjectSlug, Tenant
 
     session.add(Tenant(id="ten_other"))
     session.flush()
 
     for tenant_id in (tenant, "ten_other"):
-        session.add(
-            Project(
-                internal_id=ids.new_project_internal_id(),
-                tenant_id=tenant_id,
-                project_slug="payments-api",
-                owner_type="user",
-                owner_id="usr_x",
-                bank_id=ids.new_project_bank_id(),
+        project = Project(
+            internal_id=ids.new_project_internal_id(),
+            tenant_id=tenant_id,
+            owner_type="user",
+            owner_id="usr_x",
+            bank_id=ids.new_project_bank_id(),
+        )
+        project.slug_rows.append(
+            ProjectSlug(
+                tenant_id=tenant_id, slug="payments-api", is_canonical=True
             )
         )
+        session.add(project)
     session.flush()
 
     assert session.query(Project).count() == 2
@@ -110,49 +134,54 @@ def test_the_same_slug_may_exist_in_two_tenants(session, tenant):
 
 def test_git_locator_is_not_unique(session, tenant):
     """Two projects may legitimately record the same locator (SPEC §17)."""
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     for slug in ("one", "two"):
-        session.add(
-            Project(
-                internal_id=ids.new_project_internal_id(),
-                tenant_id=tenant,
-                project_slug=slug,
-                git_locator="github.com/acme/payments-api",
-                owner_type="user",
-                owner_id="usr_x",
-                bank_id=ids.new_project_bank_id(),
-            )
+        project = Project(
+            internal_id=ids.new_project_internal_id(),
+            tenant_id=tenant,
+            git_locator="github.com/acme/payments-api",
+            owner_type="user",
+            owner_id="usr_x",
+            bank_id=ids.new_project_bank_id(),
         )
+        project.slug_rows.append(
+            ProjectSlug(tenant_id=tenant, slug=slug, is_canonical=True)
+        )
+        session.add(project)
     session.flush()
 
     assert session.query(Project).count() == 2
 
 
-def test_retired_slug_points_at_a_project(session, tenant):
-    from memory.models import Project, RetiredSlug
+def test_alias_slug_points_at_a_project(session, tenant):
+    from memory.models import Project, ProjectSlug
 
     project = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id=tenant,
-        project_slug="payments-service",
         owner_type="user",
         owner_id="usr_x",
         bank_id=ids.new_project_bank_id(),
     )
+    project.slug_rows.append(
+        ProjectSlug(tenant_id=tenant, slug="payments-service", is_canonical=True)
+    )
     session.add(project)
     session.flush()
     session.add(
-        RetiredSlug(
+        ProjectSlug(
             tenant_id=tenant,
-            retired_slug="github.com-acme-payments-api",
+            slug="github.com-acme-payments-api",
             project_internal_id=project.internal_id,
+            is_canonical=False,
         )
     )
     session.flush()
 
-    stored = session.get(RetiredSlug, (tenant, "github.com-acme-payments-api"))
+    stored = session.get(ProjectSlug, (tenant, "github.com-acme-payments-api"))
     assert stored.project_internal_id == project.internal_id
+    assert stored.is_canonical is False
 
 
 def test_audit_event_records_the_actor(session, tenant):
@@ -318,16 +347,18 @@ def test_activity_event_stamps_created_at_from_the_database(session, tenant):
 
 
 def _capture_user_and_project(session, tenant, *, user_id: str = "usr_cap", slug: str = "acme-api"):
-    from memory.models import Project, User
+    from memory.models import Project, ProjectSlug, User
 
     user = User(id=user_id, tenant_id=tenant, bank_id=ids.new_user_bank_id())
     project = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id=tenant,
-        project_slug=slug,
         owner_type="user",
         owner_id=user_id,
         bank_id=ids.new_project_bank_id(),
+    )
+    project.slug_rows.append(
+        ProjectSlug(tenant_id=tenant, slug=slug, is_canonical=True)
     )
     session.add_all([user, project])
     session.flush()

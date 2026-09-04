@@ -465,6 +465,12 @@ def fake_bank(monkeypatch):
         bank_id = BANK
 
     class _FakeQuery:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
         def filter_by(self, **kwargs):
             return self
 
@@ -640,6 +646,12 @@ def test_profile_check_rejects_an_unknown_project(monkeypatch, configured_env, c
     from memory import cli
 
     class _FakeQuery:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
         def filter_by(self, **kwargs):
             return self
 
@@ -677,6 +689,12 @@ def test_profile_check_needs_a_user_owned_project_for_the_user_scope(
         owner_id = "grp_1"
 
     class _FakeQuery:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
         def filter_by(self, **kwargs):
             return self
 
@@ -804,6 +822,12 @@ def test_no_content_or_identifier_reaches_anything_profile_check_writes(
         bank_id = canary_bank
 
     class _FakeQuery:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
         def filter_by(self, **kwargs):
             return self
 

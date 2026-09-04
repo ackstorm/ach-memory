@@ -13,6 +13,10 @@ def new_key_id() -> str:
     return f"key_{uuid.uuid4().hex}"
 
 
+def new_model_key() -> str:
+    return f"mm_{uuid.uuid4().hex}"
+
+
 def new_user_bank_id() -> str:
     """Opaque bank ID. The prefix is a diagnostic hint and nothing more:
     it must never encode tenant, user, project or repository names (SPEC §4.7).

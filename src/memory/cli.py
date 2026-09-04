@@ -866,12 +866,18 @@ def _capture_check(*, scope: str, project_slug: str) -> int:
     from memory.config import get_settings
     from memory.db import session_scope
     from memory.hindsight.client import get_client
-    from memory.models import Project, User
+    from memory.models import Project, ProjectSlug, User
 
     with session_scope() as db:
         project = (
             db.query(Project)
-            .filter_by(tenant_id=get_settings().tenant_id, project_slug=project_slug)
+            .join(ProjectSlug, ProjectSlug.project_internal_id == Project.internal_id)
+            .filter(
+                Project.tenant_id == get_settings().tenant_id,
+                ProjectSlug.tenant_id == Project.tenant_id,
+                ProjectSlug.slug == project_slug,
+                ProjectSlug.is_canonical.is_(True),
+            )
             .first()
         )
         if project is None:
@@ -999,7 +1005,7 @@ def _profile_check(*, scope: str, project_slug: str, as_json: bool) -> int:
     from memory.db import session_scope
     from memory.errors import DomainError
     from memory.hindsight.client import get_client
-    from memory.models import Project, User
+    from memory.models import Project, ProjectSlug, User
 
     # httpx logs the full request URL at INFO and our Hindsight URLs carry
     # the bank ID -- `create_app()` mutes it for the same reason. This
@@ -1019,7 +1025,13 @@ def _profile_check(*, scope: str, project_slug: str, as_json: bool) -> int:
     with session_scope() as db:
         project = (
             db.query(Project)
-            .filter_by(tenant_id=get_settings().tenant_id, project_slug=project_slug)
+            .join(ProjectSlug, ProjectSlug.project_internal_id == Project.internal_id)
+            .filter(
+                Project.tenant_id == get_settings().tenant_id,
+                ProjectSlug.tenant_id == Project.tenant_id,
+                ProjectSlug.slug == project_slug,
+                ProjectSlug.is_canonical.is_(True),
+            )
             .first()
         )
         if project is None:

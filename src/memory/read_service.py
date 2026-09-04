@@ -27,7 +27,7 @@ from memory import read_context
 from memory.auth.principal import Principal
 from memory.errors import MemoryNotFound
 from memory.hindsight.client import get_client
-from memory.profiles import ProfileKind, ProfileOrigin
+from memory.memory_types import EvidenceBasis, MemoryType
 from memory.read_models import (
     CurrentFact,
     Eligibility,
@@ -46,8 +46,8 @@ from memory.read_models import (
     resolve_filters,
 )
 
-_KINDS = set(get_args(ProfileKind))
-_ORIGINS = set(get_args(ProfileOrigin))
+_MEMORY_TYPES = set(get_args(MemoryType))
+_BASES = set(get_args(EvidenceBasis))
 _FACT_TYPES = set(get_args(FactType))
 _STATES = set(get_args(MemoryState))
 
@@ -60,32 +60,28 @@ _MAX_RAW_RESULTS_CONSIDERED = 200
 _MAX_RAW_CHANGES_CONSIDERED = 50
 
 
-def _metadata(raw: Any) -> dict:
-    metadata = raw.get("metadata") if isinstance(raw, dict) else None
-    return metadata if isinstance(metadata, dict) else {}
+def _tag_value(tags: Any, prefix: str, allowed: set[str]) -> str | None:
+    if not isinstance(tags, list):
+        return None
+    for tag in tags:
+        if isinstance(tag, str) and tag.startswith(prefix):
+            value = tag.removeprefix(prefix)
+            if value in allowed:
+                return value
+    return None
 
 
-def _kind_of(metadata: dict) -> ProfileKind | None:
-    # Only ever populated for a raw world/experience fact OUR OWN capture/
-    # explicit-retain pipeline wrote (filer.py stamps `metadata["kind"]` on
-    # every retained item). A Hindsight-synthesized observation carries no
-    # such metadata (measured live, hindsight-api 0.9.2, 2026-09-02: a
-    # consolidated observation's `metadata` is `{}`) -- kind classification
-    # lives on evidence, not on what Hindsight itself derives from it.
-    value = metadata.get("kind")
-    return value if value in _KINDS else None
+def _kind_of(tags: Any) -> MemoryType | None:
+    return _tag_value(tags, "type:", _MEMORY_TYPES)
 
 
-def _origin_of(metadata: dict) -> ProfileOrigin | None:
-    value = metadata.get("origin")
-    return value if value in _ORIGINS else None
+def _origin_of(tags: Any) -> EvidenceBasis | None:
+    return _tag_value(tags, "basis:", _BASES)
 
 
 def _eligibility_of(tags: Any) -> Eligibility | None:
     if not isinstance(tags, list):
         return None
-    if "profile_eligible" in tags:
-        return "profile_eligible"
     if "evidence_only" in tags:
         return "evidence_only"
     return None
@@ -105,7 +101,7 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
     fact_type = raw.get("type")
     if memory_id is None or text is None or fact_type not in _FACT_TYPES:
         return None
-    metadata = _metadata(raw)
+    tags = raw.get("tags")
     try:
         return RecallHit(
             memory_id=memory_id,
@@ -116,9 +112,9 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
             # surfaces an invalidated memory, so every hit is current by
             # construction.
             state="valid",
-            kind=_kind_of(metadata),
-            origin=_origin_of(metadata),
-            eligibility=_eligibility_of(raw.get("tags")),
+            kind=_kind_of(tags),
+            origin=_origin_of(tags),
+            eligibility=_eligibility_of(tags),
             occurred_at=(
                 _str_or_none(raw.get("occurred_start"))
                 or _str_or_none(raw.get("mentioned_at"))
@@ -130,7 +126,7 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
 
 
 def _recall_hits(
-    bank_id: str, query: str, view: View, kinds: tuple[ProfileKind, ...] | None
+    bank_id: str, query: str, view: View, kinds: tuple[MemoryType, ...] | None
 ) -> list[RecallHit]:
     """Everything AFTER a bank is already resolved and authorized: build the
     server-owned filter set, call Hindsight, normalize every candidate hit.
@@ -209,7 +205,7 @@ def _normalize_current(raw: Any) -> CurrentFact | None:
     if text is None or state not in _STATES:
         return None
     try:
-        return CurrentFact(text=text, state=state, kind=_kind_of(_metadata(raw)))
+        return CurrentFact(text=text, state=state, kind=_kind_of(raw.get("tags")))
     except ValidationError:
         return None
 
@@ -225,7 +221,7 @@ def _normalize_source_fact(raw: Any) -> SourceFact | None:
         return SourceFact(
             memory_id=memory_id,
             text=text,
-            origin=_origin_of(_metadata(raw)),
+            origin=_origin_of(raw.get("tags")),
         )
     except ValidationError:
         return None

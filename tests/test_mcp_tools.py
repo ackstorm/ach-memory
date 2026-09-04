@@ -1,3 +1,4 @@
+import hashlib
 import json
 from typing import ClassVar
 
@@ -131,9 +132,8 @@ def test_a_tool_never_returns_a_bank_id(call_tool, session):
 @respx.mock
 def test_a_tool_cannot_reach_another_users_project(call_tool):
     """A DomainError raised inside `_run` must surface as `MCPToolError`, not
-    escape as the raw `ProjectAccessDenied` -- and it must keep the SPEC §18
-    disclosure (code + project_slug + owner_type) REST's JSON envelope makes,
-    not just a bare sentence with no code an MCP client could act on."""
+    escape raw. Resolution hides the existing project behind the same typed
+    not-found result as an absent slug, including omitting owner metadata."""
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
@@ -144,8 +144,8 @@ def test_a_tool_cannot_reach_another_users_project(call_tool):
     with pytest.raises(MCPToolError) as exc_info:
         call_tool("recall", alice, scope="project", project_slug="payments", query="x")
 
-    assert exc_info.value.code == "PROJECT_ACCESS_DENIED"
-    assert exc_info.value.details == {"project_slug": "payments", "owner_type": "user"}
+    assert exc_info.value.code == "PROJECT_NOT_FOUND"
+    assert exc_info.value.details == {"project_slug": "payments"}
 
 
 @respx.mock
@@ -279,7 +279,7 @@ def test_create_is_keyword_only_on_run():
     exact shape a copy-paste error reintroduces silently."""
     import inspect
 
-    from memory.mcp.tools import _run
+    from memory.mcp.memory_tools import _run
 
     assert (
         inspect.signature(_run).parameters["create"].kind
@@ -405,7 +405,7 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
     import uuid
 
     from memory.errors import ProjectNotFound
-    from memory.models import Project
+    from memory.models import ProjectSlug
 
     respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
         return_value=httpx.Response(200, json={})
@@ -427,9 +427,7 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == ProjectNotFound.code, name
-        exists = (
-            session.query(Project).filter_by(project_slug=slug).count() == 1
-        )
+        exists = session.query(ProjectSlug).filter_by(slug=slug).count() == 1
         assert exists == expect_create, name
 
 
@@ -768,7 +766,7 @@ def test_get_memory_reaches_the_memory_endpoint(call_tool):
 @respx.mock
 def test_a_curation_tool_does_not_create_a_project(call_tool, session):
     from memory.errors import ProjectNotFound
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     _mock_bank()
     key = call_tool.make_user()
@@ -779,12 +777,13 @@ def test_a_curation_tool_does_not_create_a_project(call_tool, session):
         )
 
     assert exc_info.value.code == ProjectNotFound.code
-    assert session.query(Project).filter_by(project_slug="never-seen").count() == 0
+    assert session.query(ProjectSlug).filter_by(slug="never-seen").count() == 0
+    assert session.query(Project).count() == 0
 
 
 @respx.mock
 def test_idor_a_curation_tool_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -802,7 +801,7 @@ def test_idor_a_curation_tool_cannot_reach_an_unauthorized_bank(call_tool):
             memory_id=GHOST, content="mine now",
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert curate.call_count == 0
 
 
@@ -872,7 +871,7 @@ def test_delete_document_reaches_the_delete_endpoint(call_tool):
 
 @respx.mock
 def test_idor_delete_document_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -890,7 +889,7 @@ def test_idor_delete_document_cannot_reach_an_unauthorized_bank(call_tool):
             document_id="some-doc",
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert delete.call_count == 0
 
 
@@ -940,7 +939,7 @@ def test_list_operations_reaches_the_operations_endpoint(call_tool):
 
 @respx.mock
 def test_idor_cancel_operation_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -958,7 +957,7 @@ def test_idor_cancel_operation_cannot_reach_an_unauthorized_bank(call_tool):
             operation_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert cancel.call_count == 0
 
 
@@ -983,7 +982,7 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(call_tool):
     case. memory_id must be a syntactically valid UUID (GHOST): the client's
     local `_require_uuid` guard would otherwise zero out call_count for a
     malformed id whether or not the bank check ran at all."""
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1001,13 +1000,13 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(call_tool):
             memory_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert get.call_count == 0
 
 
 @respx.mock
 def test_idor_forget_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1025,13 +1024,13 @@ def test_idor_forget_cannot_reach_an_unauthorized_bank(call_tool):
             memory_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert forget.call_count == 0
 
 
 @respx.mock
 def test_idor_restore_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1049,13 +1048,13 @@ def test_idor_restore_cannot_reach_an_unauthorized_bank(call_tool):
             memory_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert restore.call_count == 0
 
 
 @respx.mock
 def test_idor_get_document_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1073,13 +1072,13 @@ def test_idor_get_document_cannot_reach_an_unauthorized_bank(call_tool):
             document_id="doc1",
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert get_doc.call_count == 0
 
 
 @respx.mock
 def test_idor_get_operation_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1097,7 +1096,7 @@ def test_idor_get_operation_cannot_reach_an_unauthorized_bank(call_tool):
             operation_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert get_op.call_count == 0
 
 
@@ -1108,7 +1107,7 @@ def test_idor_scenario_z_a_known_secondary_id_from_an_unreachable_bank_is_just_n
     """SPEC §24 scenario Z: 'Alice knows a memory_id ... from a project she
     cannot access. Supplying it under a scope she CAN access does not grant
     access: resolution happens only inside the already-authorized bank.'
-    Unlike the ProjectAccessDenied cases above (Alice names a scope she
+    Unlike the project-scope not-found cases above (Alice names a scope she
     cannot reach), this is Alice naming a scope she CAN reach (her own),
     carrying an id that only means something in someone else's bank -- the
     id is simply absent in hers, so it is an ordinary MEMORY_NOT_FOUND, and
@@ -1144,6 +1143,55 @@ EXPECTED_TOOLS = {
     "get_operation", "list_operations", "cancel_operation",
     "start_working_session", "set_working_state",
 }
+
+TOOL_CONTRACT_SHA256 = "10818241354d986d62f485f732aee7c2233f4e547dd98aca794442857c42e56a"
+
+
+def test_tool_registration_is_stable_after_module_split():
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    tools = mcp._tool_manager.list_tools()
+    names = {tool.name for tool in tools}
+
+    assert len(tools) == 18
+    assert {
+        "retain", "sync_retain", "recall", "reflect",
+        "start_working_session", "set_working_state",
+    }.issubset(names)
+
+
+@pytest.mark.anyio
+async def test_serialized_tool_contract_is_stable_after_module_split():
+    """Pin descriptions, schemas and annotations before moving registration."""
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    tools = await mcp.list_tools()
+    contract = [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.input_schema,
+            "output_schema": tool.output_schema,
+            "annotations": None
+            if tool.annotations is None
+            else tool.annotations.model_dump(
+                mode="json", by_alias=True, exclude_none=False
+            ),
+        }
+        for tool in sorted(tools, key=lambda item: item.name)
+    ]
+    serialized = json.dumps(
+        contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+
+    assert len(tools) == 18
+    assert hashlib.sha256(serialized).hexdigest() == TOOL_CONTRACT_SHA256
 
 # SPEC §11.6 and §11.7. Each is excluded for a stated reason: whole-bank
 # destruction an LLM would reach for when it decides memory is "stale"; bank
@@ -1253,7 +1301,7 @@ def test_a_reserved_metadata_key_under_project_scope_creates_no_project(
     existing regression test (`test_a_reserved_metadata_key_is_refused_and_
     nothing_is_retained`) uses scope="user", which has no row to create, so
     it could not see this (2026-08-23 review, R3-I-2)."""
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     key = call_tool.make_user()
     slug = "reserved-key-probe"
@@ -1265,9 +1313,10 @@ def test_a_reserved_metadata_key_under_project_scope_creates_no_project(
         )
 
     assert exc_info.value.code == "INVALID_METADATA"
-    assert (
-        session.query(Project).filter_by(project_slug=slug).count() == 0
-    ), "the refused retain committed a project row anyway"
+    assert session.query(ProjectSlug).filter_by(slug=slug).count() == 0
+    assert session.query(Project).count() == 0, (
+        "the refused retain committed a project row anyway"
+    )
 
 
 def test_oversize_metadata_under_project_scope_creates_no_project(
@@ -1284,7 +1333,7 @@ def test_oversize_metadata_under_project_scope_creates_no_project(
     test_a_reserved_metadata_key_under_project_scope_creates_no_project.
     """
     from memory.config import get_settings
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     get_settings.cache_clear()
     monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
@@ -1300,9 +1349,10 @@ def test_oversize_metadata_under_project_scope_creates_no_project(
         )
 
     assert exc_info.value.code == "CONTENT_TOO_LARGE"
-    assert (
-        session.query(Project).filter_by(project_slug=slug).count() == 0
-    ), "the refused retain committed a project row anyway"
+    assert session.query(ProjectSlug).filter_by(slug=slug).count() == 0
+    assert session.query(Project).count() == 0, (
+        "the refused retain committed a project row anyway"
+    )
 
 
 @respx.mock
@@ -1646,7 +1696,7 @@ def test_another_user_is_denied_writing_this_project(call_tool, client, master_h
             project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
         )
 
-    assert exc_info.value.code == "PROJECT_ACCESS_DENIED"
+    assert exc_info.value.code == "PROJECT_NOT_FOUND"
 
 
 def test_set_working_state_rejects_a_blank_objective_over_mcp(call_tool, client, master_headers):

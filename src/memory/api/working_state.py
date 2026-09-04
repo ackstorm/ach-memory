@@ -67,7 +67,9 @@ def _reject_master(principal: Principal) -> None:
         )
 
 
-def _record(*, action: str, principal: Principal, project: Project) -> None:
+def _record(
+    *, action: str, principal: Principal, project: Project, current_slug: str
+) -> None:
     """Neither route has a Hindsight bank to fingerprint through `_resolve_bank`
     (memory/api/memory.py), so without this both silently produced no
     activity row and no metrics: `activity.finish()` requires "action"/"scope"
@@ -77,7 +79,7 @@ def _record(*, action: str, principal: Principal, project: Project) -> None:
         scope="project",
         tenant_id=principal.tenant_id,
         credential_id=principal.credential_id,
-        project_slug=project.project_slug,
+        project_slug=current_slug,
         bank_fingerprint=activity.fingerprint(project.bank_id),
     )
 
@@ -100,15 +102,25 @@ def start_session(
     )
     project = resolution.project
     row = domain.start_session(
-        db, principal, project.project_slug, body.workspace_id, body.session_id, body.git_locator
+        db,
+        principal,
+        resolution.current_slug,
+        body.workspace_id,
+        body.session_id,
+        body.git_locator,
     )
-    _record(action="working_state.start_session", principal=principal, project=project)
+    _record(
+        action="working_state.start_session",
+        principal=principal,
+        project=project,
+        current_slug=resolution.current_slug,
+    )
     db.commit()
     return SessionResponse(
         session_epoch=row.session_epoch,
         session_id=row.session_id,
         workspace_id=row.workspace_id,
-        project_slug=project.project_slug,
+        project_slug=resolution.current_slug,
         resolved_from=resolution.resolved_from,
     )
 
@@ -128,10 +140,15 @@ def set_working_state(
     )
     project = resolution.project
     state, changed = domain.replace(db, principal, body)
-    _record(action="working_state.replace", principal=principal, project=project)
+    _record(
+        action="working_state.replace",
+        principal=principal,
+        project=project,
+        current_slug=resolution.current_slug,
+    )
     db.commit()
     return WorkingStateResponse(
-        project_slug=project.project_slug,
+        project_slug=resolution.current_slug,
         resolved_from=resolution.resolved_from,
         workspace_id=state.workspace_id,
         session_id=state.session_id,

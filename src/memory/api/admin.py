@@ -20,7 +20,7 @@ from memory.db import get_session
 from memory.errors import InvalidScope, RetiredSlugNotFound
 from memory.hindsight.client import get_client
 from memory.identifiers import is_unstorable, reject_control_characters
-from memory.models import AuditEvent, RetiredSlug
+from memory.models import AuditEvent, ProjectSlug
 from memory.slugs import normalize_slug
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -396,8 +396,8 @@ def release_slug(
     # stored as `payments-api` -- on the one route whose whole purpose is an
     # operator typing a name by hand.
     retired_slug = normalize_slug(retired_slug)
-    tombstone = db.get(RetiredSlug, (principal.tenant_id, retired_slug))
-    if tombstone is None:
+    tombstone = db.get(ProjectSlug, (principal.tenant_id, retired_slug))
+    if tombstone is None or tombstone.is_canonical:
         raise RetiredSlugNotFound("no such retired slug", retired_slug=retired_slug)
     db.delete(tombstone)
     audit.record(db, principal, "slug.release", retired_slug, on_behalf_of=on_behalf_of)

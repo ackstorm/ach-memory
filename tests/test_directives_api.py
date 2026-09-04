@@ -287,7 +287,7 @@ def test_directives_route_on_an_unknown_slug_creates_no_project(
     """A directive route is maintenance on something that already exists
     (SPEC §11.3), never first-touch creation -- an unknown slug must 404 and
     leave nothing behind."""
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     response = client.get(
         "/v1/directives",
@@ -298,12 +298,8 @@ def test_directives_route_on_an_unknown_slug_creates_no_project(
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="typo-slug")
-        .one_or_none()
-    )
-    assert project is None
+    assert session.get(ProjectSlug, (tenant, "typo-slug")) is None
+    assert session.query(Project).count() == 0
 
 
 def test_list_directives_rejects_a_negative_limit(client, juan, tenant):
@@ -363,7 +359,7 @@ def test_idor_create_directive_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert create.call_count == 0
 
 
@@ -393,7 +389,7 @@ def test_idor_update_directive_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert update.call_count == 0
 
 
@@ -420,7 +416,7 @@ def test_idor_delete_directive_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert delete.call_count == 0
 
 
@@ -446,7 +442,7 @@ def test_idor_list_directives_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert listed.call_count == 0
 
 
@@ -472,7 +468,7 @@ def test_idor_get_directive_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert get.call_count == 0
 
 

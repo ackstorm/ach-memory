@@ -37,6 +37,26 @@ READONLY = {
     "set_working_state": False,
 }
 
+WORKING_STATE_TOOLS = {"start_working_session", "set_working_state"}
+
+
+def test_product_registrars_own_disjoint_tool_sets():
+    """A product move must not leave either registrar owning the other's tools."""
+    from memory.mcp import memory_tools, working_state_tools
+    from memory.mcp.server import build_mcp
+
+    memory_mcp = build_mcp()
+    memory_tools.register(memory_mcp)
+    memory_names = {tool.name for tool in memory_mcp._tool_manager.list_tools()}
+
+    state_mcp = build_mcp()
+    working_state_tools.register(state_mcp)
+    state_names = {tool.name for tool in state_mcp._tool_manager.list_tools()}
+
+    assert memory_names == set(READONLY) - WORKING_STATE_TOOLS
+    assert state_names == WORKING_STATE_TOOLS
+    assert memory_names.isdisjoint(state_names)
+
 
 def test_the_readonly_table_covers_every_registered_tool():
     """An eighteenth tool landing without a row here must fail loudly."""

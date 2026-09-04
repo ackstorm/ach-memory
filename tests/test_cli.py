@@ -1478,6 +1478,12 @@ def test_capture_check_reports_ok_and_exits_zero(monkeypatch, configured_env):
         owner_id = "usr_1"
 
     class _FakeQuery:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
         def filter_by(self, **kwargs):
             return self
 
@@ -1520,6 +1526,12 @@ def test_capture_check_reports_failure_and_exits_nonzero_on_drift(monkeypatch, c
         owner_id = "usr_1"
 
     class _FakeQuery:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
         def filter_by(self, **kwargs):
             return self
 
@@ -1561,6 +1573,12 @@ def test_capture_check_never_calls_a_patch_or_retain_endpoint(monkeypatch, confi
         owner_id = "usr_1"
 
     class _FakeQuery:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
         def filter_by(self, **kwargs):
             return self
 

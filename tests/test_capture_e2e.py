@@ -18,7 +18,7 @@ import respx
 from memory.capture import local, worker
 from memory.capture.contracts import CheckpointSubmission
 from memory.hindsight.client import HindsightClient
-from memory.models import Project, User
+from memory.models import Project, ProjectSlug, User
 
 BASE = "http://hindsight.test"
 WS = "ws_" + "e" * 32
@@ -162,7 +162,8 @@ def _create_user_and_project(client, master_headers, tenant, session):
     key = client.post(f"/v1/users/{user_id}/keys", json={}, headers=master_headers).json()["key"]
     headers = {"Authorization": f"Bearer {key}"}
     client.post("/v1/projects", json={"project_slug": "acme-e2e"}, headers=headers)
-    project = session.query(Project).filter_by(project_slug="acme-e2e").one()
+    mapping = session.query(ProjectSlug).filter_by(slug="acme-e2e").one()
+    project = session.get(Project, mapping.project_internal_id)
     user = session.get(User, user_id)
     return headers, project, user
 

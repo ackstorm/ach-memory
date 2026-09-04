@@ -242,3 +242,33 @@ class CaptureConflict(DomainError):
 
     code = "CAPTURE_CONFLICT"
     status = 409
+
+
+class IdempotencyConflict(DomainError):
+    code = "IDEMPOTENCY_CONFLICT"
+    status = 409
+
+
+class ContentRejectedBySanitizer(DomainError):
+    code = "CONTENT_REJECTED_BY_SANITIZER"
+    status = 422
+
+
+class MentalModelQuotaExceeded(DomainError):
+    code = "MODEL_QUOTA_EXCEEDED"
+    status = 409
+
+
+class ContextBudgetExceeded(DomainError):
+    code = "CONTEXT_BUDGET_EXCEEDED"
+    status = 409
+
+
+class BankCurrentnessUnavailable(DomainError):
+    code = "BANK_CURRENTNESS_UNAVAILABLE"
+    status = 503
+
+
+class CurationNeedsOperator(DomainError):
+    code = "CURATION_NEEDS_OPERATOR"
+    status = 503

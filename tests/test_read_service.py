@@ -155,11 +155,20 @@ def test_an_undocumented_view_is_rejected():
         RecallRequest(scope="user", query="q", view="everything")
 
 
-def test_every_profile_kind_is_an_accepted_recall_kind():
+def test_every_memory_type_is_an_accepted_recall_kind():
     request = RecallRequest(
-        scope="user", query="q", kinds=["preference", "decision", "convention", "gotcha"]
+        scope="user",
+        query="q",
+        kinds=["preference", "constraint", "decision", "convention", "fact", "gotcha"],
     )
-    assert set(request.kinds) == {"preference", "decision", "convention", "gotcha"}
+    assert set(request.kinds) == {
+        "preference",
+        "constraint",
+        "decision",
+        "convention",
+        "fact",
+        "gotcha",
+    }
 
 
 def test_an_undocumented_kind_is_rejected():
@@ -172,7 +181,15 @@ def test_more_kinds_than_exist_is_rejected():
         RecallRequest(
             scope="user",
             query="q",
-            kinds=["preference", "decision", "convention", "gotcha", "preference"],
+            kinds=[
+                "preference",
+                "constraint",
+                "decision",
+                "convention",
+                "fact",
+                "gotcha",
+                "preference",
+            ],
         )
 
 
@@ -180,7 +197,7 @@ def test_more_kinds_than_exist_is_rejected():
 
 
 def test_a_hit_with_only_whitelisted_fields_constructs():
-    hit = _hit(kind="decision", origin="confirmed", eligibility="profile_eligible")
+    hit = _hit(kind="decision", origin="agent_verified", eligibility="evidence_only")
     assert hit.kind == "decision"
 
 
@@ -333,9 +350,9 @@ def test_all_view_widens_types_with_no_eligibility_default():
     assert filters.eligibility_tags == ()
 
 
-def test_kinds_become_bounded_kind_tags():
+def test_kinds_become_bounded_memory_type_tags():
     filters = resolve_filters("current", ("decision", "gotcha"))
-    assert set(filters.kind_tags) == {"kind:decision", "kind:gotcha"}
+    assert set(filters.kind_tags) == {"type:decision", "type:gotcha"}
 
 
 def test_no_kinds_means_no_kind_tags():
@@ -347,7 +364,7 @@ def test_resolve_filters_never_lets_a_caller_choose_tag_syntax_directly():
     """There is no parameter here through which a `RecallRequest` value ever
     reaches Hindsight's own tag/filter DSL: `resolve_filters` only accepts a
     closed `view` and closed `kinds`, and only ever emits the fixed
-    `kind:<kind>` shape."""
+    `type:<memory_type>` shape."""
     import inspect
 
     signature = inspect.signature(resolve_filters)

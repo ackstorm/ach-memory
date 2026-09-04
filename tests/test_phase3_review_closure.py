@@ -875,10 +875,14 @@ def _capture_row(session, tenant):
     project = Project(
         internal_id=new_project_internal_id(),
         tenant_id=tenant,
-        project_slug="fenced-project",
         bank_id=str(uuid.uuid4()),
         owner_type="user",
         owner_id=user.id,
+    )
+    from memory.models import ProjectSlug
+
+    project.slug_rows.append(
+        ProjectSlug(tenant_id=tenant, slug="fenced-project", is_canonical=True)
     )
     session.add_all([user, project])
     session.flush()

@@ -23,7 +23,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from memory.identifiers import has_control_character
-from memory.profiles import ProfileKind, ProfileOrigin
+from memory.memory_types import EvidenceBasis, MemoryType
 
 ReadScope = Literal["user", "project"]
 
@@ -34,13 +34,20 @@ ReadScope = Literal["user", "project"]
 # import one canonical copy.
 FactType = Literal["world", "experience", "observation"]
 MemoryState = Literal["valid", "invalidated"]
-Eligibility = Literal["profile_eligible", "evidence_only"]
+# The released response contains this nullable field. New v0.4 records do
+# not produce an eligibility value; this remaining value only describes
+# legacy evidence returned during the migration.
+Eligibility = Literal["evidence_only"]
+
+# The MCP compatibility surface still refers to the old annotation name.
+# Read contracts themselves use MemoryType directly.
+ProfileKind = MemoryType
 
 View = Literal["current", "evidence", "all"]
 
 MAX_QUERY_LENGTH = 2048
-MAX_PROJECT_SLUG_LENGTH = 128  # matches models.Project.project_slug's column
-MAX_KINDS = 4  # len(get_args(ProfileKind)) -- a caller can never usefully
+MAX_PROJECT_SLUG_LENGTH = 128  # matches models.ProjectSlug.slug's column
+MAX_KINDS = 6  # len(get_args(MemoryType)) -- a caller can never usefully
 # repeat itself past naming every kind there is.
 MIN_MAX_RESULTS = 1
 MAX_RESULTS_CEILING = 20
@@ -92,7 +99,7 @@ class _ReadRequest(BaseModel):
 class RecallRequest(_ReadRequest):
     query: str = Field(min_length=1, max_length=MAX_QUERY_LENGTH)
     view: View = "current"
-    kinds: tuple[ProfileKind, ...] | None = Field(default=None, max_length=MAX_KINDS)
+    kinds: tuple[MemoryType, ...] | None = Field(default=None, max_length=MAX_KINDS)
     max_results: int = Field(
         default=DEFAULT_MAX_RESULTS, ge=MIN_MAX_RESULTS, le=MAX_RESULTS_CEILING
     )
@@ -130,8 +137,9 @@ class RecallHit(BaseModel):
     text: str = Field(max_length=MAX_HIT_TEXT_LENGTH)
     fact_type: FactType
     state: MemoryState
-    kind: ProfileKind | None = None
-    origin: ProfileOrigin | None = None
+    # Keep released response names; their values follow the v0.4 contracts.
+    kind: MemoryType | None = None
+    origin: EvidenceBasis | None = None
     eligibility: Eligibility | None = None
     occurred_at: str | None = None
     document_id: str | None = None
@@ -151,7 +159,7 @@ class SourceFact(BaseModel):
 
     memory_id: str
     text: str = Field(max_length=MAX_HIT_TEXT_LENGTH)
-    origin: ProfileOrigin | None = None
+    origin: EvidenceBasis | None = None
 
 
 class HistoryChange(BaseModel):
@@ -171,7 +179,7 @@ class CurrentFact(BaseModel):
 
     text: str = Field(max_length=MAX_HIT_TEXT_LENGTH)
     state: MemoryState
-    kind: ProfileKind | None = None
+    kind: MemoryType | None = None
 
 
 class HistoryResponse(BaseModel):
@@ -287,13 +295,13 @@ _VIEW_FILTERS: dict[View, tuple[tuple[FactType, ...], bool, tuple[str, ...]]] = 
 }
 
 
-def resolve_filters(view: View, kinds: tuple[ProfileKind, ...] | None) -> RecallFilters:
+def resolve_filters(view: View, kinds: tuple[MemoryType, ...] | None) -> RecallFilters:
     """Map a caller's closed `view`/`kinds` choice to Hindsight's actual
     filter vocabulary. The caller never controls Hindsight filter syntax or
     a temporal anchor -- only which of these three fixed rows applies, and
-    which closed `kind:<kind>` tags OR together on top of it."""
+    which closed `type:<memory_type>` tags OR together on top of it."""
     types, prefer_observations, eligibility_tags = _VIEW_FILTERS[view]
-    kind_tags = tuple(f"kind:{kind}" for kind in kinds) if kinds else ()
+    kind_tags = tuple(f"type:{kind}" for kind in kinds) if kinds else ()
     return RecallFilters(
         types=types,
         prefer_observations=prefer_observations,
