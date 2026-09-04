@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -328,6 +329,12 @@ class WorkingSession(Base):
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    completed_checkpoint_seq: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class WorkingState(Base):
@@ -443,3 +450,262 @@ class CaptureSlice(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RetainedRecord(Base):
+    """ACH's durable provenance row for one exact typed retain."""
+
+    __tablename__ = "retained_records"
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'user' AND user_id IS NOT NULL AND project_internal_id IS NULL) "
+            "OR (scope = 'project' AND user_id IS NULL AND project_internal_id IS NOT NULL)",
+            name="ck_retained_records_scope_identity",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "scope",
+            "user_id",
+            "project_internal_id",
+            "operation_id",
+            name="uq_retained_records_bank_operation",
+            postgresql_nulls_not_distinct=True,
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "scope",
+            "user_id",
+            "project_internal_id",
+            "document_id",
+            name="uq_retained_records_bank_document",
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index(
+            "ix_retained_records_due",
+            "tenant_id",
+            "scope",
+            "valid_until",
+        ),
+    )
+
+    id: Mapped[uuid_module.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid_module.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    scope: Mapped[str] = mapped_column(String(8))
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    project_internal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.internal_id"), nullable=True
+    )
+    operation_id: Mapped[str] = mapped_column(String(128))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    document_id: Mapped[str] = mapped_column(String(128))
+    source_memory_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    canonical_content: Mapped[str] = mapped_column(Text)
+    memory_type: Mapped[str] = mapped_column(String(16))
+    basis: Mapped[str] = mapped_column(String(32))
+    trigger: Mapped[str] = mapped_column(String(32))
+    sanitized_evidence: Mapped[list[dict[str, str | None]]] = mapped_column(JSON)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    valid_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lifecycle: Mapped[str] = mapped_column(String(16))
+    upstream_state: Mapped[str] = mapped_column(String(16))
+    calling_agent: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_credential: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+
+
+class CurationOperation(Base):
+    """A durable desired curation outcome and its upstream proof state."""
+
+    __tablename__ = "curation_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'user' AND user_id IS NOT NULL AND project_internal_id IS NULL) "
+            "OR (scope = 'project' AND user_id IS NULL AND project_internal_id IS NOT NULL)",
+            name="ck_curation_operations_scope_identity",
+        ),
+    )
+
+    operation_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    retained_record_id: Mapped[uuid_module.UUID] = mapped_column(
+        ForeignKey("retained_records.id")
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    scope: Mapped[str] = mapped_column(String(8))
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    project_internal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.internal_id"), nullable=True
+    )
+    action: Mapped[str] = mapped_column(String(16))
+    desired_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String(32))
+    repair_not_before: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class BankCurrentness(Base):
+    """The one current-read safety barrier for a logical bank."""
+
+    __tablename__ = "bank_currentness"
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'user' AND user_id IS NOT NULL AND project_internal_id IS NULL) "
+            "OR (scope = 'project' AND user_id IS NULL AND project_internal_id IS NOT NULL)",
+            name="ck_bank_currentness_scope_identity",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "scope",
+            "user_id",
+            "project_internal_id",
+            name="uq_bank_currentness_bank",
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+    id: Mapped[uuid_module.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid_module.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    scope: Mapped[str] = mapped_column(String(8))
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    project_internal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.internal_id"), nullable=True
+    )
+    state: Mapped[str] = mapped_column(String(16))
+    blocking_operation_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    repair_not_before: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MentalModelRegistration(Base):
+    """ACH-owned logical identity and lifecycle for one upstream model."""
+
+    __tablename__ = "mental_model_registrations"
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'user' AND user_id IS NOT NULL AND project_internal_id IS NULL) "
+            "OR (scope = 'project' AND user_id IS NULL AND project_internal_id IS NOT NULL)",
+            name="ck_mental_model_registrations_scope_identity",
+        ),
+        CheckConstraint(
+            "(origin = 'builtin' AND builtin_key IS NOT NULL "
+            "AND definition_version IS NOT NULL) "
+            "OR (origin = 'user' AND builtin_key IS NULL "
+            "AND definition_version IS NULL)",
+            name="ck_mental_model_registrations_origin_metadata",
+        ),
+        CheckConstraint(
+            "max_tokens > 0", name="ck_mental_model_registrations_positive_tokens"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "scope",
+            "user_id",
+            "project_internal_id",
+            "model_key",
+            name="uq_mental_model_registrations_bank_key",
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index(
+            "uq_mental_model_registrations_bank_upstream",
+            "tenant_id",
+            "scope",
+            "user_id",
+            "project_internal_id",
+            "upstream_model_id",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text("upstream_model_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_mental_model_registrations_bank_builtin",
+            "tenant_id",
+            "scope",
+            "user_id",
+            "project_internal_id",
+            "builtin_key",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text("builtin_key IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid_module.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid_module.uuid4
+    )
+    model_key: Mapped[str] = mapped_column(String(64))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    scope: Mapped[str] = mapped_column(String(8))
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    project_internal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.internal_id"), nullable=True
+    )
+    upstream_model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    name: Mapped[str] = mapped_column(String(256))
+    source_query: Mapped[str] = mapped_column(Text)
+    source_tags: Mapped[list[str]] = mapped_column(JSON)
+    tags_match: Mapped[str] = mapped_column(String(8))
+    max_tokens: Mapped[int] = mapped_column(Integer)
+    trigger: Mapped[dict[str, object]] = mapped_column(JSON)
+    origin: Mapped[str] = mapped_column(String(16))
+    builtin_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    definition_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lifecycle_state: Mapped[str] = mapped_column(String(32))
+    mutation_operation_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    mutation_payload_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    always_in_context: Mapped[bool] = mapped_column(Boolean)
+    delivery_state: Mapped[str] = mapped_column(String(16))
+    refresh_operation_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    refresh_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    repair_not_before: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
