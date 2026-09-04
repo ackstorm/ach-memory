@@ -12,6 +12,10 @@
 
 **Execution branch:** Create `feat/ach-memory-v0.4.0-retain-lifecycle` from the verified foundation HEAD and record that SHA in the execution notes before Task 1.
 
+## Execution notes — foundation handoff
+
+Pre-handoff foundation SHA: `aa7784e122bbd21127546c5051b8d6a0889e2d1a`. This is the recorded code baseline. Neither successor may create an Alembic revision or rename/edit closed enums or shared table names; stop both tracks before any such change.
+
 ## Global Constraints
 
 - Requires the verified HEAD from `2026-09-04-ach-memory-v0-4-0-foundation.md`.
