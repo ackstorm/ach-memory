@@ -13,7 +13,7 @@ from memory.auth.principal import Principal
 from memory.capture import repository, worker
 from memory.errors import HindsightError
 from memory.hindsight.client import HindsightClient
-from memory.models import CaptureSlice, Project, User
+from memory.models import CaptureSlice, Project, ProjectSlug, User
 
 BASE = "http://hindsight.test"
 WS = "ws_" + "a" * 32
@@ -25,10 +25,12 @@ def rig(session, tenant):
     project = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id=tenant,
-        project_slug="acme-api",
         owner_type="user",
         owner_id="usr_1",
         bank_id=ids.new_project_bank_id(),
+    )
+    project.slug_rows.append(
+        ProjectSlug(tenant_id=tenant, slug="acme-api", is_canonical=True)
     )
     session.add_all([user, project])
     session.flush()

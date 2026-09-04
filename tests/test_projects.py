@@ -12,7 +12,7 @@ from memory.errors import (
     ProjectSlugConflict,
     UserNotFound,
 )
-from memory.models import Group, GroupMember, Project, User
+from memory.models import Group, GroupMember, Project, ProjectSlug, User
 
 
 def _user(session, tenant, user_id: str) -> User:
@@ -134,7 +134,7 @@ def test_rename_leaves_a_forwarding_tombstone(session, tenant):
 
     forwarded = projects.resolve(session, juan, "github.com-acme-payments-api")
 
-    assert forwarded.project.project_slug == "payments-api"
+    assert forwarded.current_slug == "payments-api"
     assert forwarded.project.bank_id == bank_before
     assert forwarded.resolved_from == "github.com-acme-payments-api"
 
@@ -152,8 +152,6 @@ def test_rename_does_not_create_an_empty_project(session, tenant):
 
 
 def test_chained_rename_still_resolves_in_one_hop(session, tenant):
-    from memory.models import RetiredSlug
-
     _user(session, tenant, "usr_juan")
     juan = _principal(tenant, "usr_juan")
     result = projects.resolve(session, juan, "a")
@@ -161,10 +159,11 @@ def test_chained_rename_still_resolves_in_one_hop(session, tenant):
     projects.rename(session, juan, result.project, "c")
 
     from_a = projects.resolve(session, juan, "a")
-    tombstone = session.get(RetiredSlug, (tenant, "a"))
+    alias = session.get(ProjectSlug, (tenant, "a"))
 
-    assert from_a.project.project_slug == "c"
-    assert tombstone.project_internal_id == result.project.internal_id
+    assert from_a.current_slug == "c"
+    assert alias.project_internal_id == result.project.internal_id
+    assert alias.is_canonical is False
 
 
 def test_a_retired_slug_cannot_be_reused(session, tenant):
@@ -178,6 +177,43 @@ def test_a_retired_slug_cannot_be_reused(session, tenant):
 
     with pytest.raises(ProjectSlugConflict):
         projects.rename(session, juan, second.project, "a")
+
+
+def test_alias_and_canonical_slug_share_one_namespace(session, tenant):
+    _user(session, tenant, "usr_juan")
+    principal = _principal(tenant, "usr_juan")
+    project = projects.resolve(session, principal, "ach-memory").project
+
+    projects.rename(session, principal, project, "renamed")
+    session.commit()
+
+    with pytest.raises(ProjectSlugConflict):
+        projects.create(
+            session, principal, "ach-memory", "user", principal.user_id
+        )
+
+
+def test_rename_collision_rolls_back_canonical_change(session, tenant):
+    _user(session, tenant, "usr_juan")
+    principal = _principal(tenant, "usr_juan")
+    project = projects.resolve(session, principal, "ach-memory").project
+    other_project = projects.resolve(session, principal, "other-project").project
+    original = projects.canonical_slug(session, project)
+    session.commit()
+
+    with pytest.raises(ProjectSlugConflict):
+        projects.rename(
+            session,
+            principal,
+            project,
+            projects.canonical_slug(session, other_project),
+        )
+    session.rollback()
+
+    assert (
+        projects.resolve(session, principal, original, create=False).project.internal_id
+        == project.internal_id
+    )
 
 
 def test_locator_mismatch_refuses_rather_than_merging(session, tenant):
@@ -278,7 +314,7 @@ def test_master_key_reaches_any_project_in_its_tenant(session, tenant):
         session, _principal(tenant, None, master=True), "payments-api"
     )
 
-    assert result.project.project_slug == "payments-api"
+    assert result.current_slug == "payments-api"
 
 
 def test_master_key_does_not_lazily_create(session, tenant):
@@ -425,7 +461,7 @@ def test_rename_denies_an_unauthorized_caller(session, tenant):
             session, _principal(tenant, "usr_alice"), result.project, "new-slug"
         )
 
-    assert result.project.project_slug == "payments-api"
+    assert projects.canonical_slug(session, result.project) == "payments-api"
 
 
 def test_transfer_denies_an_unauthorized_caller(session, tenant):
@@ -454,12 +490,20 @@ def _force_race(
     winner = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id=tenant,
-        project_slug=slug,
         owner_type=owner_type,
         owner_id=owner_id,
         bank_id=ids.new_project_bank_id(),
     )
     session.add(winner)
+    session.flush()
+    session.add(
+        ProjectSlug(
+            tenant_id=tenant,
+            slug=slug,
+            project_internal_id=winner.internal_id,
+            is_canonical=True,
+        )
+    )
     session.flush()
     monkeypatch.setattr(projects, "_slug_taken", lambda *a, **k: False)
     return winner
@@ -525,11 +569,7 @@ def test_a_denial_after_a_forward_does_not_disclose_the_new_slug(session, tenant
 
 
 def test_a_lost_rename_race_is_a_conflict_not_a_500(session, tenant, monkeypatch):
-    """create() got a savepoint and an IntegrityError -> ProjectSlugConflict
-    mapping; rename() got neither, though it mutates through TWO unique
-    constraints (projects and retired_slugs). SPEC §18 names "rename to an
-    existing live or retired slug" as PROJECT_SLUG_CONFLICT, and it was a 500
-    (2026-08-23 review, R1-#1)."""
+    """A namespace INSERT race is a conflict and preserves the old canonical."""
     _user(session, tenant, "usr_juan")
     juan = _principal(tenant, "usr_juan")
     result = projects.resolve(session, juan, "payments-api")
@@ -542,37 +582,10 @@ def test_a_lost_rename_race_is_a_conflict_not_a_500(session, tenant, monkeypatch
     with pytest.raises(ProjectSlugConflict):
         projects.rename(session, juan, result.project, "payments")
 
-
-def test_a_lost_race_on_the_tombstone_is_also_a_conflict(session, tenant):
-    """rename() mutates through TWO unique constraints, and the suite only
-    drove one of them.
-
-    `_slug_taken` checks the NEW slug; nothing checks whether the OLD slug's
-    tombstone already exists. Two concurrent renames of the same project both
-    insert RetiredSlug(tenant, old_slug), and the loser violates that composite
-    primary key -- a different constraint from the `projects` one
-    `_force_race` exercises, reaching the same savepoint. Unguarded it was a
-    500; §18 requires PROJECT_SLUG_CONFLICT for both.
-    """
-    from memory.models import RetiredSlug
-
-    _user(session, tenant, "usr_owner")
-    principal = _principal(tenant, "usr_owner")
-    project = projects.resolve(session, principal, "alpha").project
-    session.flush()
-
-    # The winner of the race already retired "alpha" and committed.
-    session.add(
-        RetiredSlug(
-            tenant_id=tenant,
-            retired_slug="alpha",
-            project_internal_id=project.internal_id,
-        )
+    assert projects.canonical_slug(session, result.project) == "payments-api"
+    assert projects.resolve(session, juan, "payments-api", create=False).project == (
+        result.project
     )
-    session.flush()
-
-    with pytest.raises(ProjectSlugConflict):
-        projects.rename(session, principal, project, "beta")
 
 
 def _external(tenant, user_id, groups):

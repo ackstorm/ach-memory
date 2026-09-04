@@ -39,7 +39,7 @@ Eligibility = Literal["profile_eligible", "evidence_only"]
 View = Literal["current", "evidence", "all"]
 
 MAX_QUERY_LENGTH = 2048
-MAX_PROJECT_SLUG_LENGTH = 128  # matches models.Project.project_slug's column
+MAX_PROJECT_SLUG_LENGTH = 128  # matches models.ProjectSlug.slug's column
 MAX_KINDS = 4  # len(get_args(ProfileKind)) -- a caller can never usefully
 # repeat itself past naming every kind there is.
 MIN_MAX_RESULTS = 1

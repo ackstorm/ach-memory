@@ -272,7 +272,7 @@ def test_operations_route_on_an_unknown_slug_creates_no_project(
     test_documents_route_on_an_unknown_slug_creates_no_project in
     test_documents_api.py -- the operations router copied the shape but not
     this test, so create=False on this router went unguarded."""
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     response = client.post(
         "/v1/memory/operations/list",
@@ -283,12 +283,8 @@ def test_operations_route_on_an_unknown_slug_creates_no_project(
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="typo-slug")
-        .one_or_none()
-    )
-    assert project is None
+    assert session.get(ProjectSlug, (tenant, "typo-slug")) is None
+    assert session.query(Project).count() == 0
 
 
 @respx.mock

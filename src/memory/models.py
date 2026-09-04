@@ -15,8 +15,9 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 def utcnow() -> datetime:
@@ -114,12 +115,10 @@ class GroupMember(Base):
 
 class Project(Base):
     __tablename__ = "projects"
-    __table_args__ = (UniqueConstraint("tenant_id", "project_slug"),)
 
-    # Internal. The public identity is project_slug (SPEC inv. 7).
+    # Internal. Public identity lives in ProjectSlug (SPEC inv. 7).
     internal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
-    project_slug: Mapped[str] = mapped_column(String(128), index=True)
     # Metadata, never identity and never authorization evidence (inv. 11).
     # Deliberately NOT unique: SPEC §17.
     git_locator: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -141,23 +140,34 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+    slug_rows: Mapped[list["ProjectSlug"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
-class RetiredSlug(Base):
-    __tablename__ = "retired_slugs"
+class ProjectSlug(Base):
+    __tablename__ = "project_slugs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slug", name="uq_project_slugs_tenant_slug"),
+        Index(
+            "uq_project_slugs_canonical_project",
+            "tenant_id",
+            "project_internal_id",
+            unique=True,
+            postgresql_where=text("is_canonical"),
+        ),
+    )
 
-    # A forwarding tombstone (SPEC §8.6). Resolution follows it in ONE hop:
-    # a rename mutates the slug on the same Project row, so internal_id never
-    # changes — every tombstone already points at the row, so there is never
-    # a chain to walk and never a cycle.
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
-    retired_slug: Mapped[str] = mapped_column(String(128), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(128), primary_key=True)
     project_internal_id: Mapped[str] = mapped_column(
         ForeignKey("projects.internal_id")
     )
-    retired_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+    is_canonical: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
+    project: Mapped[Project] = relationship(back_populates="slug_rows")
 
 
 class AuditEvent(Base):

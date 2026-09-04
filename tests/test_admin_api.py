@@ -698,7 +698,7 @@ def test_a_failed_provision_leaves_no_audit_row(
 def test_release_slug_frees_the_name_and_leaves_the_project_alone(
     client, juan, master_headers, tenant, session
 ):
-    from memory.models import RetiredSlug
+    from memory.models import ProjectSlug
 
     client.post("/v1/projects", json={"project_slug": "a"}, headers=juan["headers"])
     client.patch("/v1/projects/a", json={"project_slug": "b"}, headers=juan["headers"])
@@ -706,7 +706,7 @@ def test_release_slug_frees_the_name_and_leaves_the_project_alone(
     response = client.post("/v1/admin/slugs/a/release", headers=master_headers)
 
     assert response.status_code == 204
-    assert session.get(RetiredSlug, (tenant, "a")) is None
+    assert session.get(ProjectSlug, (tenant, "a")) is None
     # The project the tombstone pointed at keeps ITS current slug, untouched.
     projects = client.get("/v1/projects", headers=master_headers).json()
     assert [p["project_slug"] for p in projects] == ["b"]
@@ -751,25 +751,28 @@ def test_release_slug_is_scoped_to_the_callers_tenant(client, master_headers, te
     tenant's tombstone happening to share the same slug text must not be
     reachable or releasable from here."""
     from memory import ids
-    from memory.models import Project, RetiredSlug, Tenant
+    from memory.models import Project, ProjectSlug, Tenant
 
     session.add(Tenant(id="other"))
     session.flush()
     other_project = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id="other",
-        project_slug="b",
         owner_type="user",
         owner_id="usr_whoever",
         bank_id=ids.new_project_bank_id(),
     )
+    other_project.slug_rows.append(
+        ProjectSlug(tenant_id="other", slug="b", is_canonical=True)
+    )
     session.add(other_project)
     session.flush()
     session.add(
-        RetiredSlug(
+        ProjectSlug(
             tenant_id="other",
-            retired_slug="a",
+            slug="a",
             project_internal_id=other_project.internal_id,
+            is_canonical=False,
         )
     )
     session.flush()
@@ -778,7 +781,7 @@ def test_release_slug_is_scoped_to_the_callers_tenant(client, master_headers, te
 
     assert response.status_code == 404
     # And it's still there, untouched, for its own tenant.
-    assert session.get(RetiredSlug, ("other", "a")) is not None
+    assert session.get(ProjectSlug, ("other", "a")) is not None
 
 
 # --- scope in the body, not only the query string -----------------------------

@@ -501,7 +501,7 @@ def test_patch_rename_and_locator_together_apply_both_and_audit_both(
     client, juan, tenant, session
 ):
     """A rename and a locator update in the same request must both apply,
-    in the right order: `update_project` reads `project.project_slug` for
+    in the right order: `update_project` reads the current canonical slug for
     the locator's audit event AFTER the rename branch already mutated it, so
     the locator event's resource is the NEW slug, not the old one.
 
@@ -716,18 +716,25 @@ def test_listing_is_scoped_to_the_callers_tenant(client, juan, tenant, session):
     cannot tell tenants apart, so the query's tenant filter is the only thing
     that can."""
     from memory import ids
-    from memory.models import Project, Tenant
+    from memory.models import Project, ProjectSlug, Tenant
 
     session.add(Tenant(id="ten_other"))
     session.flush()
+    other_project = Project(
+        internal_id=ids.new_project_internal_id(),
+        tenant_id="ten_other",
+        owner_type="user",
+        owner_id=juan["user_id"],
+        bank_id=ids.new_project_bank_id(),
+    )
+    session.add(other_project)
+    session.flush()
     session.add(
-        Project(
-            internal_id=ids.new_project_internal_id(),
+        ProjectSlug(
             tenant_id="ten_other",
-            project_slug="not-mine",
-            owner_type="user",
-            owner_id=juan["user_id"],
-            bank_id=ids.new_project_bank_id(),
+            slug="not-mine",
+            project_internal_id=other_project.internal_id,
+            is_canonical=True,
         )
     )
     session.flush()

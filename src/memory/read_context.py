@@ -117,7 +117,7 @@ def resolve_read_bank(
         # bank is the same delegation-shaped access, usually larger blast
         # radius (a team's memory, not one person's).
         audit.record(
-            db, principal, action, project.project_slug, on_behalf_of=on_behalf_of
+            db, principal, action, resolution.current_slug, on_behalf_of=on_behalf_of
         )
     activity.describe(
         action=action,
@@ -127,7 +127,7 @@ def resolve_read_bank(
         user_id=None,
         # The RESOLVED slug, never the caller's: a caller who followed a
         # rename tombstone would otherwise show up as a second project.
-        project_slug=project.project_slug,
+        project_slug=resolution.current_slug,
         bank_fingerprint=activity.fingerprint(project.bank_id),
     )
     return ReadBank(
@@ -135,6 +135,6 @@ def resolve_read_bank(
         scope="project",
         user_id=None,
         project_internal_id=project.internal_id,
-        current_slug=project.project_slug,
+        current_slug=resolution.current_slug,
         resolved_from=resolution.resolved_from,
     )

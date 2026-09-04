@@ -405,7 +405,7 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
     import uuid
 
     from memory.errors import ProjectNotFound
-    from memory.models import Project
+    from memory.models import ProjectSlug
 
     respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
         return_value=httpx.Response(200, json={})
@@ -427,9 +427,7 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == ProjectNotFound.code, name
-        exists = (
-            session.query(Project).filter_by(project_slug=slug).count() == 1
-        )
+        exists = session.query(ProjectSlug).filter_by(slug=slug).count() == 1
         assert exists == expect_create, name
 
 
@@ -768,7 +766,7 @@ def test_get_memory_reaches_the_memory_endpoint(call_tool):
 @respx.mock
 def test_a_curation_tool_does_not_create_a_project(call_tool, session):
     from memory.errors import ProjectNotFound
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     _mock_bank()
     key = call_tool.make_user()
@@ -779,7 +777,8 @@ def test_a_curation_tool_does_not_create_a_project(call_tool, session):
         )
 
     assert exc_info.value.code == ProjectNotFound.code
-    assert session.query(Project).filter_by(project_slug="never-seen").count() == 0
+    assert session.query(ProjectSlug).filter_by(slug="never-seen").count() == 0
+    assert session.query(Project).count() == 0
 
 
 @respx.mock
@@ -1253,7 +1252,7 @@ def test_a_reserved_metadata_key_under_project_scope_creates_no_project(
     existing regression test (`test_a_reserved_metadata_key_is_refused_and_
     nothing_is_retained`) uses scope="user", which has no row to create, so
     it could not see this (2026-08-23 review, R3-I-2)."""
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     key = call_tool.make_user()
     slug = "reserved-key-probe"
@@ -1265,9 +1264,10 @@ def test_a_reserved_metadata_key_under_project_scope_creates_no_project(
         )
 
     assert exc_info.value.code == "INVALID_METADATA"
-    assert (
-        session.query(Project).filter_by(project_slug=slug).count() == 0
-    ), "the refused retain committed a project row anyway"
+    assert session.query(ProjectSlug).filter_by(slug=slug).count() == 0
+    assert session.query(Project).count() == 0, (
+        "the refused retain committed a project row anyway"
+    )
 
 
 def test_oversize_metadata_under_project_scope_creates_no_project(
@@ -1284,7 +1284,7 @@ def test_oversize_metadata_under_project_scope_creates_no_project(
     test_a_reserved_metadata_key_under_project_scope_creates_no_project.
     """
     from memory.config import get_settings
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     get_settings.cache_clear()
     monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
@@ -1300,9 +1300,10 @@ def test_oversize_metadata_under_project_scope_creates_no_project(
         )
 
     assert exc_info.value.code == "CONTENT_TOO_LARGE"
-    assert (
-        session.query(Project).filter_by(project_slug=slug).count() == 0
-    ), "the refused retain committed a project row anyway"
+    assert session.query(ProjectSlug).filter_by(slug=slug).count() == 0
+    assert session.query(Project).count() == 0, (
+        "the refused retain committed a project row anyway"
+    )
 
 
 @respx.mock

@@ -2,7 +2,7 @@ import httpx
 import pytest
 import respx
 
-from memory.models import Project, User
+from memory.models import Project, ProjectSlug, User
 
 BASE = "http://hindsight.test"
 
@@ -380,12 +380,8 @@ def test_curation_route_on_an_unknown_slug_creates_no_project(
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="typo-slug")
-        .one_or_none()
-    )
-    assert project is None
+    assert session.get(ProjectSlug, (tenant, "typo-slug")) is None
+    assert session.query(Project).count() == 0
 
 
 def test_list_memories_rejects_a_negative_limit(client, juan, tenant):
@@ -514,11 +510,8 @@ def test_curation_read_route_does_not_enrich_git_locator_on_an_existing_project(
 
     assert response.status_code == 200
     assert route.called
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="payments-api")
-        .one()
-    )
+    mapping = session.get(ProjectSlug, (tenant, "payments-api"))
+    project = session.get(Project, mapping.project_internal_id)
     assert project.git_locator is None
 
 

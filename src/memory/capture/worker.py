@@ -30,7 +30,7 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from memory import brief, metrics, profiles, working_state
+from memory import brief, metrics, profiles, projects, working_state
 from memory.auth.principal import Principal
 from memory.capture import filer, repository
 from memory.capture.contracts import NormalizedCandidate, WorkingStateEnvelope
@@ -270,7 +270,7 @@ def _applying_stage(
         project = db.get(Project, row.project_internal_id)
         ws = extraction.working_state
         write = WorkingStateWrite(
-            project_slug=project.project_slug,
+            project_slug=projects.canonical_slug(db, project),
             workspace_id=row.workspace_id,
             session_id=row.session_id,
             session_epoch=row.session_epoch,

@@ -149,16 +149,18 @@ def test_a_capture_extraction_stage_increments_the_stage_counter(session, tenant
     from memory.auth.principal import Principal
     from memory.capture import repository, worker
     from memory.hindsight.client import HindsightClient
-    from memory.models import Project, User
+    from memory.models import Project, ProjectSlug, User
 
     user = User(id="usr_cap_m", tenant_id=tenant, bank_id=ids.new_user_bank_id())
     project = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id=tenant,
-        project_slug="acme-metrics",
         owner_type="user",
         owner_id="usr_cap_m",
         bank_id=ids.new_project_bank_id(),
+    )
+    project.slug_rows.append(
+        ProjectSlug(tenant_id=tenant, slug="acme-metrics", is_canonical=True)
     )
     session.add_all([user, project])
     session.flush()

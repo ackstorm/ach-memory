@@ -15,19 +15,22 @@ from memory.errors import (
     WorkingStateConflict,
     WorkingStateStale,
 )
-from memory.models import Project, Tenant, User, WorkingSession, WorkingState
+from memory.models import Project, ProjectSlug, Tenant, User, WorkingSession, WorkingState
 from memory.working_state import WorkingStateWrite
 
 
 def _project(tenant: str, *, slug: str = "acme-api", owner_id: str = "usr_x") -> Project:
-    return Project(
+    project = Project(
         internal_id=ids.new_project_internal_id(),
         tenant_id=tenant,
-        project_slug=slug,
         owner_type="user",
         owner_id=owner_id,
         bank_id=ids.new_project_bank_id(),
     )
+    project.slug_rows.append(
+        ProjectSlug(tenant_id=tenant, slug=slug, is_canonical=True)
+    )
+    return project
 
 
 def _user(tenant: str, *, user_id: str | None = None) -> User:
@@ -566,6 +569,7 @@ def test_first_writes_from_two_sessions_race_and_the_greater_pair_survives(engin
         cleanup = Session()
         cleanup.query(WorkingState).filter_by(tenant_id=tenant_id).delete()
         cleanup.query(WorkingSession).filter_by(tenant_id=tenant_id).delete()
+        cleanup.query(ProjectSlug).filter_by(tenant_id=tenant_id).delete()
         cleanup.query(Project).filter_by(tenant_id=tenant_id).delete()
         cleanup.query(User).filter_by(tenant_id=tenant_id).delete()
         cleanup.query(Tenant).filter_by(id=tenant_id).delete()

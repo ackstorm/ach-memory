@@ -238,7 +238,7 @@ def test_documents_route_on_an_unknown_slug_creates_no_project(
     §11.3), never first-touch creation (SPEC §16.2 -- retain/recall/reflect
     only). An unknown slug must 404 and leave nothing behind, not squat the
     slug for whoever asked first."""
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
     response = client.post(
         "/v1/memory/documents/list",
@@ -249,12 +249,8 @@ def test_documents_route_on_an_unknown_slug_creates_no_project(
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="typo-slug")
-        .one_or_none()
-    )
-    assert project is None
+    assert session.get(ProjectSlug, (tenant, "typo-slug")) is None
+    assert session.query(Project).count() == 0
 
 
 def test_list_documents_rejects_a_negative_limit(client, juan, tenant):

@@ -386,12 +386,13 @@ def _mock_models(bank_id, models):
 
 
 def _bank_ids(session, user_id, project_slug=None):
-    from memory.models import Project, User
+    from memory.models import Project, ProjectSlug, User
 
     user_bank = session.get(User, user_id).bank_id
     if project_slug is None:
         return user_bank, None
-    return user_bank, session.query(Project).filter_by(project_slug=project_slug).one().bank_id
+    mapping = session.query(ProjectSlug).filter_by(slug=project_slug).one()
+    return user_bank, session.get(Project, mapping.project_internal_id).bank_id
 
 
 def _get_brief(client, headers, **params):

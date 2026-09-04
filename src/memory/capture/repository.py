@@ -85,7 +85,7 @@ def accept_checkpoint(
     project = resolution.project
 
     session_row = working_state.start_session(
-        db, principal, project.project_slug, workspace_id, session_id, git_locator
+        db, principal, resolution.current_slug, workspace_id, session_id, git_locator
     )
 
     query = _matching(
@@ -331,4 +331,3 @@ def complete(db: Session, row: CaptureSlice, *, owner: str) -> None:
     row.lease_until = None
     row.completed_at = now
     db.flush()
-

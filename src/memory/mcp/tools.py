@@ -390,7 +390,9 @@ def _run_working_state(ctx: Context, body_factory, call) -> ToolResult:
         activity.finish("mcp")
 
 
-def _record_working_state_call(*, action: str, principal, project) -> None:
+def _record_working_state_call(
+    *, action: str, principal, project, current_slug: str
+) -> None:
     """Neither working-state tool has a Hindsight bank to fingerprint through
     `_resolve_bank`, so without this call `activity.finish()` (which requires
     "action"/"scope" to already be set) silently wrote no row and no metrics
@@ -400,7 +402,7 @@ def _record_working_state_call(*, action: str, principal, project) -> None:
         scope="project",
         tenant_id=principal.tenant_id,
         credential_id=principal.credential_id,
-        project_slug=project.project_slug,
+        project_slug=current_slug,
         bank_fingerprint=activity.fingerprint(project.bank_id),
     )
 
@@ -411,19 +413,27 @@ def _start_working_session(db, principal, body: StartSessionRequest) -> ToolResu
     )
     project = resolution.project
     row = working_state_domain.start_session(
-        db, principal, project.project_slug, body.workspace_id, body.session_id, body.git_locator
+        db,
+        principal,
+        resolution.current_slug,
+        body.workspace_id,
+        body.session_id,
+        body.git_locator,
     )
     _record_working_state_call(
-        action="working_state.start_session", principal=principal, project=project
+        action="working_state.start_session",
+        principal=principal,
+        project=project,
+        current_slug=resolution.current_slug,
     )
     return ToolResult(
         result={
             "session_epoch": row.session_epoch,
             "session_id": row.session_id,
             "workspace_id": row.workspace_id,
-            "project_slug": project.project_slug,
+            "project_slug": resolution.current_slug,
         },
-        project_slug=project.project_slug,
+        project_slug=resolution.current_slug,
         resolved_from=resolution.resolved_from,
         notice="PROJECT_RENAMED" if resolution.resolved_from else None,
     )
@@ -436,11 +446,14 @@ def _set_working_state(db, principal, body: WorkingStateWrite) -> ToolResult:
     project = resolution.project
     state, changed = working_state_domain.replace(db, principal, body)
     _record_working_state_call(
-        action="working_state.replace", principal=principal, project=project
+        action="working_state.replace",
+        principal=principal,
+        project=project,
+        current_slug=resolution.current_slug,
     )
     return ToolResult(
         result={
-            "project_slug": project.project_slug,
+            "project_slug": resolution.current_slug,
             "workspace_id": state.workspace_id,
             "session_id": state.session_id,
             "session_epoch": state.session_epoch,
@@ -453,7 +466,7 @@ def _set_working_state(db, principal, body: WorkingStateWrite) -> ToolResult:
             "updated_at": state.updated_at.isoformat(),
             "changed": changed,
         },
-        project_slug=project.project_slug,
+        project_slug=resolution.current_slug,
         resolved_from=resolution.resolved_from,
         notice="PROJECT_RENAMED" if resolution.resolved_from else None,
     )

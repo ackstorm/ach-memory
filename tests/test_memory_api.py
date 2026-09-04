@@ -446,13 +446,10 @@ def test_retain_project_row_survives_a_failed_hindsight_call(
 
     assert response.status_code == 502
 
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="first-touch-retain")
-        .one_or_none()
-    )
+    mapping = session.get(ProjectSlug, (tenant, "first-touch-retain"))
+    project = session.get(Project, mapping.project_internal_id)
     assert project is not None
     assert project.bank_id
 
@@ -479,14 +476,10 @@ def test_recall_does_not_create_a_project_on_a_missing_slug(
 
     assert response.status_code == 404
 
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="first-touch-recall")
-        .one_or_none()
-    )
-    assert project is None
+    assert session.get(ProjectSlug, (tenant, "first-touch-recall")) is None
+    assert session.query(Project).count() == 0
 
 
 @respx.mock
@@ -613,14 +606,10 @@ def test_a_reserved_metadata_key_under_project_scope_writes_nothing_to_db_or_ups
     assert response.json()["error"]["code"] == "INVALID_METADATA"
     assert not bank_put.called
 
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="brand-new")
-        .one_or_none()
-    )
-    assert project is None
+    assert session.get(ProjectSlug, (tenant, "brand-new")) is None
+    assert session.query(Project).count() == 0
 
 
 @respx.mock
@@ -846,14 +835,10 @@ def test_reflect_project_row_survives_a_failed_hindsight_call(
 
     assert response.status_code == 404
 
-    from memory.models import Project
+    from memory.models import Project, ProjectSlug
 
-    project = (
-        session.query(Project)
-        .filter_by(tenant_id=tenant, project_slug="first-touch-reflect")
-        .one_or_none()
-    )
-    assert project is None
+    assert session.get(ProjectSlug, (tenant, "first-touch-reflect")) is None
+    assert session.query(Project).count() == 0
 
 
 @respx.mock
