@@ -705,6 +705,8 @@ it is never inferred from the name, prompt or scope. Every model must select
 trigger fields are exposed only through the validated subset supported by the trusted client
 boundary. Mutation tools carry host confirmation and normal write authorization.
 
+User-created models receive an immutable server-generated ACH `model_key`; name remains mutable.
+
 `memory_type` describes how a claim should be consumed; it is not a topic ontology. A mental
 model's `source_query` selects a domain such as collaboration, engineering or travel semantically.
 `0.4.0` adds controlled domain tags only if product evaluation demonstrates unacceptable
@@ -735,10 +737,10 @@ by logical scope and model key.
 
 ### 7.3 Limit
 
-Each physical bank may have its one ACH built-in model plus at most five ACH-registered custom
-mental models. The built-in is outside the custom quota, so a normally bootstrapped User or Project
-Bank may contain six ACH-governed models. The custom quota is a `0.4.0` product contract, not an
-operator-tunable default.
+Each bank may register one built-in plus five custom models. The built-in is outside the custom
+quota, so a normally bootstrapped User or Project Bank may contain six ACH-governed models. Delivery
+selection must fit the independent User/Project budgets. The custom quota is a `0.4.0` product
+contract, not an operator-tunable default.
 
 The five-custom quota is enforced transactionally in the ACH registry. Concurrent ACH creates
 cannot exceed it or produce duplicate logical keys. ACH inventories and reports unknown upstream
@@ -760,6 +762,9 @@ Both select `schema:ach-retain-v1` AND `validity:indefinite` with all-tag matchi
 distinguish the six public `memory_type` values where relevant and preserve the difference between
 human statements and tool-verified observations without inventing a global authority score. This
 gives every public type a concrete consumer and a behavioral test.
+
+Built-in `max_tokens` are 512 for `user-context` and 1,024 for `project-context`: the compiled
+definitions set `max_tokens=512` and `max_tokens=1024`, respectively.
 
 The initial built-in definition version is `1`. Both request delta refresh after consolidation with
 a five-minute minimum interval. Additive retains may therefore make a ready model temporarily
@@ -863,10 +868,10 @@ uvx ach-memory context load
 uvx ach-memory hook pre-compact
 ```
 
-`ach-memory mcp` continues to mean “run the stdio MCP server.” The MCP surface exposes
-`load_context(project_slug?)`. Callers do not enumerate model names; ACH selects every authorized
-model marked `always_in_context=true`. Models retain stable keys for CRUD, provenance and labelled
-output.
+`ach-memory mcp` continues to mean “run the stdio MCP server.” `load_context` accepts optional
+`project_slug` and optional `workspace_id`; `workspace_id` is valid only with `project_slug`. Callers
+do not enumerate model names; ACH selects every authorized model marked `always_in_context=true`.
+Models retain stable keys for CRUD, provenance and labelled output.
 
 Claude Code, OpenCode or another host may invoke the same command from a lifecycle event, but that
 event is adapter plumbing rather than the ACH API. A host without such an event can have its agent
@@ -875,7 +880,7 @@ call `load_context`; lack of a hook never enables polling or transcript capture 
 ### 8.3 Context-loading flow
 
 ```text
-load_context(project_slug?)
+load_context(project_slug?, workspace_id?)
   -> resolve authenticated user
   -> resolve the supplied existing project/workspace when available
   -> list ready always-in-context User models
@@ -898,10 +903,10 @@ required model refresh defined in §6.4; it never creates a project, bank, model
 semantic mutation.
 
 After authorization and registry selection, all selected model-output reads are issued concurrently
-and settle independently; deterministic ordering is applied only when assembling the response. A
-User-plus-Project request may select up to twelve ACH-governed models under the per-bank limits. One
-slow or failed read does not cancel successful peers, although every read remains subject to the
-single end-to-end deadline.
+and settle independently; deterministic ordering is applied only when assembling the response. The
+maximum legal selected set is nine with Hindsight's 256-token minimum, eight in the default
+two-built-in configuration. One slow or failed read does not cancel successful peers, although every
+read remains subject to the single end-to-end deadline.
 
 `Active Time-Bounded Claims` is the one deterministic delivery surface for active
 `validity:expiring` claims. It reads the already-authorized ACH ledger, includes the exact sanitized
@@ -924,8 +929,8 @@ unavailable, unauthorized or stale model output is omitted rather than replayed.
 is only enqueued inside that deadline; `load_context` never waits for it to finish. `0.4.0` has no
 persistent last-good context cache. Model content is included whole, never cut mid-line. Selection
 is never silently changed by an allocator; enabling a flag that would exceed the separately
-configured User or Project budget is rejected. The declared budgets are 1,024 model-output tokens
-for the User Bank, 2,048 for the active Project Bank, 256 for Project Metadata, 256 for Active
+configured User or Project budget is rejected. The declared budgets are 512 model-output tokens
+for the User Bank, 1,024 for the active Project Bank, 256 for Project Metadata, 256 for Active
 Time-Bounded Claims and 512 for Working State. A further 512 tokens are reserved for headings,
 omission markers and response framing, giving the complete `load_context` response a hard ceiling
 of 4,608 tokens.
@@ -1372,7 +1377,7 @@ Tests verify that:
 - tokenizer metadata is `ach-delivery-o200k-v1`, and changing its counting rules changes the
   contract version;
 - model-output reads execute concurrently and at least 30 warm maximum-selection live requests—up
-  to twelve ready models across User and Project—meet the two-second p95 deadline on the target
+  to nine ready models across User and Project—meet the two-second p95 deadline on the target
   deployment; if they do not, the deadline is revised before activation rather than waived through
   fail-open behavior;
 - the pre-compact hook emits only the fixed nudge and performs no transcript or memory write.
