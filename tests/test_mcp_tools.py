@@ -131,9 +131,8 @@ def test_a_tool_never_returns_a_bank_id(call_tool, session):
 @respx.mock
 def test_a_tool_cannot_reach_another_users_project(call_tool):
     """A DomainError raised inside `_run` must surface as `MCPToolError`, not
-    escape as the raw `ProjectAccessDenied` -- and it must keep the SPEC §18
-    disclosure (code + project_slug + owner_type) REST's JSON envelope makes,
-    not just a bare sentence with no code an MCP client could act on."""
+    escape raw. Resolution hides the existing project behind the same typed
+    not-found result as an absent slug, including omitting owner metadata."""
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
@@ -144,8 +143,8 @@ def test_a_tool_cannot_reach_another_users_project(call_tool):
     with pytest.raises(MCPToolError) as exc_info:
         call_tool("recall", alice, scope="project", project_slug="payments", query="x")
 
-    assert exc_info.value.code == "PROJECT_ACCESS_DENIED"
-    assert exc_info.value.details == {"project_slug": "payments", "owner_type": "user"}
+    assert exc_info.value.code == "PROJECT_NOT_FOUND"
+    assert exc_info.value.details == {"project_slug": "payments"}
 
 
 @respx.mock
@@ -783,7 +782,7 @@ def test_a_curation_tool_does_not_create_a_project(call_tool, session):
 
 @respx.mock
 def test_idor_a_curation_tool_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -801,7 +800,7 @@ def test_idor_a_curation_tool_cannot_reach_an_unauthorized_bank(call_tool):
             memory_id=GHOST, content="mine now",
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert curate.call_count == 0
 
 
@@ -871,7 +870,7 @@ def test_delete_document_reaches_the_delete_endpoint(call_tool):
 
 @respx.mock
 def test_idor_delete_document_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -889,7 +888,7 @@ def test_idor_delete_document_cannot_reach_an_unauthorized_bank(call_tool):
             document_id="some-doc",
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert delete.call_count == 0
 
 
@@ -939,7 +938,7 @@ def test_list_operations_reaches_the_operations_endpoint(call_tool):
 
 @respx.mock
 def test_idor_cancel_operation_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -957,7 +956,7 @@ def test_idor_cancel_operation_cannot_reach_an_unauthorized_bank(call_tool):
             operation_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert cancel.call_count == 0
 
 
@@ -982,7 +981,7 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(call_tool):
     case. memory_id must be a syntactically valid UUID (GHOST): the client's
     local `_require_uuid` guard would otherwise zero out call_count for a
     malformed id whether or not the bank check ran at all."""
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1000,13 +999,13 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(call_tool):
             memory_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert get.call_count == 0
 
 
 @respx.mock
 def test_idor_forget_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1024,13 +1023,13 @@ def test_idor_forget_cannot_reach_an_unauthorized_bank(call_tool):
             memory_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert forget.call_count == 0
 
 
 @respx.mock
 def test_idor_restore_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1048,13 +1047,13 @@ def test_idor_restore_cannot_reach_an_unauthorized_bank(call_tool):
             memory_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert restore.call_count == 0
 
 
 @respx.mock
 def test_idor_get_document_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1072,13 +1071,13 @@ def test_idor_get_document_cannot_reach_an_unauthorized_bank(call_tool):
             document_id="doc1",
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert get_doc.call_count == 0
 
 
 @respx.mock
 def test_idor_get_operation_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectAccessDenied
+    from memory.errors import ProjectNotFound
 
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
@@ -1096,7 +1095,7 @@ def test_idor_get_operation_cannot_reach_an_unauthorized_bank(call_tool):
             operation_id=GHOST,
         )
 
-    assert exc_info.value.code == ProjectAccessDenied.code
+    assert exc_info.value.code == ProjectNotFound.code
     assert get_op.call_count == 0
 
 
@@ -1107,7 +1106,7 @@ def test_idor_scenario_z_a_known_secondary_id_from_an_unreachable_bank_is_just_n
     """SPEC §24 scenario Z: 'Alice knows a memory_id ... from a project she
     cannot access. Supplying it under a scope she CAN access does not grant
     access: resolution happens only inside the already-authorized bank.'
-    Unlike the ProjectAccessDenied cases above (Alice names a scope she
+    Unlike the project-scope not-found cases above (Alice names a scope she
     cannot reach), this is Alice naming a scope she CAN reach (her own),
     carrying an id that only means something in someone else's bank -- the
     id is simply absent in hers, so it is an ordinary MEMORY_NOT_FOUND, and
@@ -1647,7 +1646,7 @@ def test_another_user_is_denied_writing_this_project(call_tool, client, master_h
             project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
         )
 
-    assert exc_info.value.code == "PROJECT_ACCESS_DENIED"
+    assert exc_info.value.code == "PROJECT_NOT_FOUND"
 
 
 def test_set_working_state_rejects_a_blank_objective_over_mcp(call_tool, client, master_headers):

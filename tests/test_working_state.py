@@ -9,7 +9,6 @@ from sqlalchemy.orm import sessionmaker
 from memory import brief, ids, projects, working_state
 from memory.auth.principal import Principal
 from memory.errors import (
-    ProjectAccessDenied,
     ProjectNotFound,
     WorkingSessionNotFound,
     WorkingStateConflict,
@@ -460,7 +459,7 @@ def test_setting_state_for_an_unauthorized_project_creates_no_project(session, t
     session.flush()
     stranger_principal = _principal(tenant, stranger.id)
 
-    with pytest.raises(ProjectAccessDenied):
+    with pytest.raises(ProjectNotFound):
         working_state.start_session(session, stranger_principal, "acme-api", WS, "sess-1")
 
     assert session.query(Project).count() == 1

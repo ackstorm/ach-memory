@@ -24,6 +24,14 @@ def _scalar(statement: str) -> int:
 
 def upgrade() -> None:
     """Move live and retired names into one tenant-global namespace."""
+    # SHARE ROW EXCLUSIVE conflicts with the ROW EXCLUSIVE lock taken by
+    # INSERT/UPDATE/DELETE while still allowing ordinary reads. Acquire both
+    # legacy namespace sources before the first duplicate snapshot so an
+    # admin alias release or project write cannot disappear between checking,
+    # copying and dropping the old storage.
+    op.execute(
+        "LOCK TABLE projects, retired_slugs IN SHARE ROW EXCLUSIVE MODE"
+    )
     duplicate_count = _scalar(
         """
         SELECT count(*)
@@ -112,6 +120,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Restore the legacy live column and retired-slug table."""
+    # Fence unified-namespace writes before the first canonical snapshot.
+    # Lock projects in the same statement so a concurrent create/delete
+    # cannot split the project row from the mapping being copied back.
+    op.execute(
+        "LOCK TABLE projects, project_slugs IN SHARE ROW EXCLUSIVE MODE"
+    )
     invalid_canonical_count = _scalar(
         """
         SELECT count(*)

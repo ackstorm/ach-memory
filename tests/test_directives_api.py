@@ -359,7 +359,7 @@ def test_idor_create_directive_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert create.call_count == 0
 
 
@@ -389,7 +389,7 @@ def test_idor_update_directive_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert update.call_count == 0
 
 
@@ -416,7 +416,7 @@ def test_idor_delete_directive_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert delete.call_count == 0
 
 
@@ -442,7 +442,7 @@ def test_idor_list_directives_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert listed.call_count == 0
 
 
@@ -468,7 +468,7 @@ def test_idor_get_directive_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert get.call_count == 0
 
 

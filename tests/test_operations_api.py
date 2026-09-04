@@ -191,7 +191,7 @@ def test_idor_an_operation_id_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert cancel.call_count == 0
 
 
@@ -228,7 +228,7 @@ def test_idor_get_operation_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert get.call_count == 0
 
 
@@ -258,7 +258,7 @@ def test_idor_list_operations_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
     assert listed.call_count == 0
 
 

@@ -140,6 +140,23 @@ def authorize(
     )
 
 
+def _authorize_resolution(
+    db: Session, principal: Principal, project: Project, requested_slug: str
+) -> None:
+    """Hide whether a requested project name exists from unauthorized callers.
+
+    Direct mutations still use ``authorize`` and its actionable 403. Slug
+    resolution is the discovery boundary, so its denial deliberately has the
+    same code, message and public details as an absent mapping.
+    """
+    try:
+        authorize(db, principal, project, requested_slug=requested_slug)
+    except ProjectAccessDenied as exc:
+        raise ProjectNotFound(
+            "no such project", project_slug=requested_slug
+        ) from exc
+
+
 def resolve(
     db: Session,
     principal: Principal,
@@ -169,7 +186,7 @@ def resolve(
         project = _create(db, principal, slug, git_locator)
         return Resolution(project, canonical_slug(db, project), None)
 
-    authorize(db, principal, project, requested_slug=slug)
+    _authorize_resolution(db, principal, project, slug)
     current_slug = slug if mapping.is_canonical else canonical_slug(db, project)
     resolved_from = None if mapping.is_canonical else slug
 
@@ -265,7 +282,7 @@ def _create(
         existing = _project_for_mapping(db, principal.tenant_id, mapping)
         if existing is None:
             raise
-        authorize(db, principal, existing)
+        _authorize_resolution(db, principal, existing, slug)
         return existing
 
 

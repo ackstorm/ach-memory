@@ -18,7 +18,6 @@ from memory.auth.principal import Principal
 from memory.errors import (
     Forbidden,
     InvalidScope,
-    ProjectAccessDenied,
     ProjectContextUnavailable,
     ProjectNotFound,
     UserNotFound,
@@ -164,7 +163,7 @@ def test_a_retired_slug_still_forwards_with_no_domain_writes(session, tenant):
     assert _snapshot(session) == before
 
 
-def test_an_unauthorized_project_is_denied_with_no_domain_writes(session, tenant):
+def test_an_unauthorized_project_is_hidden_with_no_domain_writes(session, tenant):
     _user(session, tenant, "usr_juan")
     _user(session, tenant, "usr_alice")
     owner = _principal(tenant, "usr_juan")
@@ -172,7 +171,7 @@ def test_an_unauthorized_project_is_denied_with_no_domain_writes(session, tenant
     projects.resolve(session, owner, "payments-api")
     before = _snapshot(session)
 
-    with pytest.raises(ProjectAccessDenied):
+    with pytest.raises(ProjectNotFound):
         read_context.resolve_read_bank(
             session, stranger, None, "read.recall", "project", project_slug="payments-api"
         )

@@ -183,7 +183,7 @@ def test_another_user_cannot_write_to_this_project(client, juan, master_headers,
         headers=other_headers,
     )
 
-    assert response.status_code in (403, 404)
+    assert response.status_code == 404
 
 
 def test_a_user_without_group_membership_cannot_write_a_group_project(
@@ -205,7 +205,7 @@ def test_a_user_without_group_membership_cannot_write_a_group_project(
         headers=juan["headers"],
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
 
 
 def test_another_tenant_cannot_write(client, juan, session, tenant):

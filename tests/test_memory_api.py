@@ -266,8 +266,8 @@ def test_a_stranger_cannot_reach_someone_elses_project(client, two_users, tenant
         headers=_headers(alice["key"]),
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "PROJECT_ACCESS_DENIED"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
 
 
 def test_project_scope_without_a_slug_is_unavailable(client, two_users, tenant):
@@ -785,8 +785,8 @@ def test_reflect_is_denied_on_someone_elses_project(client, juan, alice, tenant)
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "PROJECT_ACCESS_DENIED"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
 
 
 @respx.mock

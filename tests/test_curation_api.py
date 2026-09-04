@@ -170,8 +170,8 @@ def test_idor_a_memory_id_cannot_be_used_to_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "PROJECT_ACCESS_DENIED"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
     assert curate.call_count == 0
 
 
@@ -229,8 +229,8 @@ def test_idor_list_memories_cannot_reach_an_unauthorized_bank(
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "PROJECT_ACCESS_DENIED"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
     assert listed.call_count == 0
 
 
@@ -259,8 +259,8 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(client, juan, alice, 
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "PROJECT_ACCESS_DENIED"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
     assert get.call_count == 0
 
 
@@ -289,8 +289,8 @@ def test_idor_restore_cannot_reach_an_unauthorized_bank(client, juan, alice, ten
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "PROJECT_ACCESS_DENIED"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
     assert restore.call_count == 0
 
 
@@ -325,8 +325,8 @@ def test_idor_correct_cannot_reach_an_unauthorized_bank(client, juan, alice, ten
         headers=alice["headers"],
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "PROJECT_ACCESS_DENIED"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
     assert correct.call_count == 0
 
 
@@ -337,7 +337,7 @@ def test_idor_scenario_z_a_known_secondary_id_from_an_unreachable_bank_is_just_n
     """SPEC §24 scenario Z: knowing a memory_id from a project you cannot
     access does not grant access when you supply it under a scope you CAN
     access -- it is simply absent there, an ordinary 404, and the victim's
-    bank is never touched. Distinct from the PROJECT_ACCESS_DENIED tests
+    bank is never touched. Distinct from the project-scope not-found tests
     above, which name a scope Alice cannot reach at all; here she names her
     own scope=user bank, which she is fully authorized for."""
     from memory.models import User
