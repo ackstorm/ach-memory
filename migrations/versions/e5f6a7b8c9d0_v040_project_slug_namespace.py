@@ -9,7 +9,7 @@ Create Date: 2026-09-04 00:00:00.000000
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 # revision identifiers, used by Alembic.
 revision: str = "e5f6a7b8c9d0"
@@ -22,6 +22,35 @@ def _scalar(statement: str) -> int:
     return int(op.get_bind().execute(sa.text(statement)).scalar_one())
 
 
+def _abort_if_rows(statement: str, message: str) -> None:
+    """Keep data validation executable in online and offline migrations.
+
+    Offline Alembic has no result-bearing bind, so Python cannot count rows.
+    Emit the equivalent PostgreSQL validation for the generated script; a
+    connected migration retains the existing RuntimeError before destructive
+    DDL runs.
+    """
+    if context.is_offline_mode():
+        escaped_message = message.replace("'", "''")
+        op.execute(
+            f"""
+            DO $ach_memory$
+            BEGIN
+                IF EXISTS (
+                    {statement}
+                ) THEN
+                    RAISE EXCEPTION '{escaped_message}';
+                END IF;
+            END
+            $ach_memory$
+            """
+        )
+        return
+
+    if _scalar(f"SELECT count(*) FROM ({statement}) invalid"):
+        raise RuntimeError(message)
+
+
 def upgrade() -> None:
     """Move live and retired names into one tenant-global namespace."""
     # SHARE ROW EXCLUSIVE conflicts with the ROW EXCLUSIVE lock taken by
@@ -32,25 +61,19 @@ def upgrade() -> None:
     op.execute(
         "LOCK TABLE projects, retired_slugs IN SHARE ROW EXCLUSIVE MODE"
     )
-    duplicate_count = _scalar(
+    _abort_if_rows(
         """
-        SELECT count(*)
+        SELECT tenant_id, slug
         FROM (
-            SELECT tenant_id, slug
-            FROM (
-                SELECT tenant_id, project_slug AS slug FROM projects
-                UNION ALL
-                SELECT tenant_id, retired_slug AS slug FROM retired_slugs
-            ) names
-            GROUP BY tenant_id, slug
-            HAVING count(*) > 1
-        ) duplicates
-        """
+            SELECT tenant_id, project_slug AS slug FROM projects
+            UNION ALL
+            SELECT tenant_id, retired_slug AS slug FROM retired_slugs
+        ) names
+        GROUP BY tenant_id, slug
+        HAVING count(*) > 1
+        """,
+        "cannot migrate duplicate tenant project slugs; resolve them before upgrade",
     )
-    if duplicate_count:
-        raise RuntimeError(
-            "cannot migrate duplicate tenant project slugs; resolve them before upgrade"
-        )
 
     op.create_table(
         "project_slugs",
@@ -94,23 +117,19 @@ def upgrade() -> None:
         """
     )
 
-    invalid_canonical_count = _scalar(
+    _abort_if_rows(
         """
-        SELECT count(*)
-        FROM (
-            SELECT p.internal_id
-            FROM projects p
-            LEFT JOIN project_slugs ps
-              ON ps.tenant_id = p.tenant_id
-             AND ps.project_internal_id = p.internal_id
-             AND ps.is_canonical
-            GROUP BY p.internal_id
-            HAVING count(ps.slug) <> 1
-        ) invalid
-        """
+        SELECT p.internal_id
+        FROM projects p
+        LEFT JOIN project_slugs ps
+          ON ps.tenant_id = p.tenant_id
+         AND ps.project_internal_id = p.internal_id
+         AND ps.is_canonical
+        GROUP BY p.internal_id
+        HAVING count(ps.slug) <> 1
+        """,
+        "cannot migrate projects without exactly one canonical slug",
     )
-    if invalid_canonical_count:
-        raise RuntimeError("cannot migrate projects without exactly one canonical slug")
 
     op.drop_table("retired_slugs")
     op.drop_index(op.f("ix_projects_project_slug"), table_name="projects")
@@ -126,23 +145,19 @@ def downgrade() -> None:
     op.execute(
         "LOCK TABLE projects, project_slugs IN SHARE ROW EXCLUSIVE MODE"
     )
-    invalid_canonical_count = _scalar(
+    _abort_if_rows(
         """
-        SELECT count(*)
-        FROM (
-            SELECT p.internal_id
-            FROM projects p
-            LEFT JOIN project_slugs ps
-              ON ps.tenant_id = p.tenant_id
-             AND ps.project_internal_id = p.internal_id
-             AND ps.is_canonical
-            GROUP BY p.internal_id
-            HAVING count(ps.slug) <> 1
-        ) invalid
-        """
+        SELECT p.internal_id
+        FROM projects p
+        LEFT JOIN project_slugs ps
+          ON ps.tenant_id = p.tenant_id
+         AND ps.project_internal_id = p.internal_id
+         AND ps.is_canonical
+        GROUP BY p.internal_id
+        HAVING count(ps.slug) <> 1
+        """,
+        "cannot downgrade projects without exactly one canonical slug",
     )
-    if invalid_canonical_count:
-        raise RuntimeError("cannot downgrade projects without exactly one canonical slug")
 
     op.add_column("projects", sa.Column("project_slug", sa.String(length=128), nullable=True))
     op.execute(

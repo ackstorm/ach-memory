@@ -2,6 +2,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from io import StringIO
 from pathlib import Path
 from uuid import uuid4
 
@@ -75,6 +76,18 @@ def _downgrade(url: str, monkeypatch, revision: str) -> None:
     config = Config(str(REPO_ROOT / "alembic.ini"))
     with _logging_state_preserved():
         command.downgrade(config, revision)
+
+
+def _offline_upgrade_sql(url: str, monkeypatch) -> str:
+    from alembic import command
+    from alembic.config import Config
+
+    monkeypatch.setenv("MEMORY_DATABASE_URL", url)
+    output = StringIO()
+    config = Config(str(REPO_ROOT / "alembic.ini"), output_buffer=output)
+    with _logging_state_preserved():
+        command.upgrade(config, "head", sql=True)
+    return output.getvalue()
 
 
 def _with_application_name(url: str, application_name: str) -> str:
@@ -221,6 +234,15 @@ def test_upgrade_aborts_when_a_retired_slug_duplicates_a_live_slug(
         engine.dispose()
 
 
+def test_full_chain_offline_sql_emits_slug_validation(monkeypatch):
+    sql = _offline_upgrade_sql(TEST_DATABASE_URL, monkeypatch)
+
+    assert "CREATE TABLE project_slugs" in sql
+    assert "DO $ach_memory$" in sql
+    assert "cannot migrate duplicate tenant project slugs" in sql
+    assert "cannot migrate projects without exactly one canonical slug" in sql
+
+
 def test_upgrade_locks_legacy_slug_sources_before_reading_them(
     migration_database_url, monkeypatch
 ):
@@ -294,6 +316,37 @@ def test_downgrade_locks_the_unified_namespace_before_reading_it(
     assert " ".join(waiting_query.split()) == (
         "LOCK TABLE projects, project_slugs IN SHARE ROW EXCLUSIVE MODE"
     )
+
+
+def test_online_downgrade_still_aborts_when_a_project_has_no_canonical_slug(
+    migration_database_url, monkeypatch
+):
+    _upgrade(migration_database_url, monkeypatch, "d4e5f6a7b8c9")
+    _seed_legacy_slug_rows(migration_database_url)
+    _upgrade(migration_database_url, monkeypatch, "head")
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "DELETE FROM project_slugs "
+                    "WHERE project_internal_id = 'project-a' AND is_canonical"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    with pytest.raises(RuntimeError, match="without exactly one canonical slug"):
+        _downgrade(migration_database_url, monkeypatch, "d4e5f6a7b8c9")
+
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT to_regclass('public.project_slugs')")
+            ).scalar_one() == "project_slugs"
+    finally:
+        engine.dispose()
 
 
 def test_downgrade_restores_live_and_retired_slug_storage(
