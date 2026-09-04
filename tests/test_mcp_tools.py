@@ -1,3 +1,4 @@
+import hashlib
 import json
 from typing import ClassVar
 
@@ -278,7 +279,7 @@ def test_create_is_keyword_only_on_run():
     exact shape a copy-paste error reintroduces silently."""
     import inspect
 
-    from memory.mcp.tools import _run
+    from memory.mcp.memory_tools import _run
 
     assert (
         inspect.signature(_run).parameters["create"].kind
@@ -1142,6 +1143,55 @@ EXPECTED_TOOLS = {
     "get_operation", "list_operations", "cancel_operation",
     "start_working_session", "set_working_state",
 }
+
+TOOL_CONTRACT_SHA256 = "10818241354d986d62f485f732aee7c2233f4e547dd98aca794442857c42e56a"
+
+
+def test_tool_registration_is_stable_after_module_split():
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    tools = mcp._tool_manager.list_tools()
+    names = {tool.name for tool in tools}
+
+    assert len(tools) == 18
+    assert {
+        "retain", "sync_retain", "recall", "reflect",
+        "start_working_session", "set_working_state",
+    }.issubset(names)
+
+
+@pytest.mark.anyio
+async def test_serialized_tool_contract_is_stable_after_module_split():
+    """Pin descriptions, schemas and annotations before moving registration."""
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    tools = await mcp.list_tools()
+    contract = [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.input_schema,
+            "output_schema": tool.output_schema,
+            "annotations": None
+            if tool.annotations is None
+            else tool.annotations.model_dump(
+                mode="json", by_alias=True, exclude_none=False
+            ),
+        }
+        for tool in sorted(tools, key=lambda item: item.name)
+    ]
+    serialized = json.dumps(
+        contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+
+    assert len(tools) == 18
+    assert hashlib.sha256(serialized).hexdigest() == TOOL_CONTRACT_SHA256
 
 # SPEC §11.6 and §11.7. Each is excluded for a stated reason: whole-bank
 # destruction an LLM would reach for when it decides memory is "stale"; bank
