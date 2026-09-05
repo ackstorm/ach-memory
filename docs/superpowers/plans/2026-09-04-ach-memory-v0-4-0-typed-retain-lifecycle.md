@@ -14,7 +14,7 @@
 
 ## Execution notes — foundation handoff
 
-Pre-handoff foundation SHA: `aa7784e122bbd21127546c5051b8d6a0889e2d1a`. This is the recorded code baseline. Neither successor may create an Alembic revision or rename/edit closed enums or shared table names; stop both tracks before any such change.
+Pre-handoff foundation code SHA: `5913f14f33c1c6615d575f0d4942406cb4cb967d`. Create the execution branch from the current integrated `main` descendant of that commit, and record that exact branch-point SHA before Task 1. Neither successor may create an Alembic revision or rename/edit closed enums or shared table names; stop both tracks before any such change.
 
 ## Global Constraints
 
