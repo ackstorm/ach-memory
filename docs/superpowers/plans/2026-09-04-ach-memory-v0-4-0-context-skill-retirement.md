@@ -26,9 +26,10 @@
 - Automatic transcript capture, semantic extractor/router, structured profiles, ranking/displacement, session brief, INDEX/FULL and their flags/deployments are removed, not left disabled.
 - Frozen research remains reachable from `archive/memory-quality-v1.4-final`; it need not remain executable on the product branch.
 - Production data cleanup is not part of this plan and still requires separate operation-by-operation approval.
-- Test count is not a release KPI. Task 8 deletes tests whose product surface is removed; tests for retained
-  governance and v0.4.0 behavior remain until the post-implementation portfolio report identifies a
-  concrete duplicate or orphan and the user approves a separate cut.
+- Test count is not a release KPI. Task 8 deletes tests whose product surface is removed and does not add
+  absence or tombstone tests for that surface. Tests for retained governance and v0.4.0 behavior remain
+  until the post-implementation portfolio report identifies a concrete duplicate or orphan and the user
+  approves a separate cut.
 
 ---
 
@@ -603,57 +604,31 @@ rtk git commit -m "test(skill): validate v0.4.0 retain behavior"
 - Delete after migrating surviving security assertions: `tests/test_phase3_review_closure.py`
 - Delete: `tests/test_phase4_review_closure.py`
 - Create: `migrations/versions/a7b8c9d0e1f2_remove_superseded_memory_pipeline.py`
-- Create: `tests/test_removed_product_surface.py`
 
 **Interfaces:**
 - Consumes: verified replacement retain, context, skill and host surfaces.
 - Produces: no runtime import, command, route, hook, deployment or flag for automatic capture, structured profiles or INDEX/FULL; historical applied migrations remain intact.
 
-- [ ] **Step 1: Add failing absence tests before deletion**
-
-```python
-def test_superseded_routes_and_commands_are_absent(app, cli_help):
-    paths = {route.path for route in app.routes}
-    assert "/v1/session-brief" not in paths
-    assert "/v1/capture/checkpoints" not in paths
-    for command in ("capture-checkpoint", "capture-worker", "capture-check",
-                    "profile-check", "brief"):
-        assert command not in cli_help
-
-
-def test_runtime_has_no_superseded_imports():
-    source = "\n".join(path.read_text() for path in Path("src/memory").rglob("*.py"))
-    for token in ("memory.capture", "memory.profiles", "memory.brief", "memory.revisions",
-                  "profile_eligible", "evidence_only", "INDEX/FULL"):
-        assert token not in source
-```
-
-- [ ] **Step 2: Run the absence tests and confirm the old product is present**
-
-Run: `rtk uv run pytest tests/test_removed_product_surface.py -q`
-
-Expected: failures enumerate old routes, commands and imports.
-
-- [ ] **Step 3: Remove code, host and deployment surfaces**
+- [ ] **Step 1: Remove code, host and deployment surfaces**
 
 Delete only the explicitly superseded files. In `admin.py`, remove legacy brief/profile provisioning while preserving memory clear/delete and audit. In config/deployments remove `MEMORY_CAPTURE_ENABLED`, `MEMORY_CAPTURE_WORKER_ENABLED`, `MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED` and `MEMORY_PROFILE_DELIVERY_MODE`. Remove profile-only metrics but retain generic Hindsight, API, activity and error metrics.
 
-- [ ] **Step 4: Add the forward database migration**
+- [ ] **Step 2: Add the forward database migration**
 
 The new migration follows the existing v0.4 control-plane head and drops `capture_slices` and `context_revisions` only after replacement structures exist. It never edits `d4e5f6a7b8c9_capture_slices.py` or earlier applied revisions. Downgrade recreates empty legacy tables with their previous schema and documents that deleted queue/profile-revision data is not reconstructable.
 
-- [ ] **Step 5: Replace old tests with retained-product coverage**
+- [ ] **Step 3: Preserve only positive retained-product coverage**
 
 Delete the exact test files listed above. Before deleting `test_phase2_review_closure.py` and `test_phase3_review_closure.py`, move every still-applicable Working State, credential-redaction and authorization assertion into `test_working_state.py`, `test_sanitization.py`, `test_retention.py` or `test_agent_bundle.py`; do not discard a surviving invariant merely because its old mixed-purpose file is removed. Run:
 
 ```bash
-rtk uv run pytest tests/test_removed_product_surface.py tests/test_sanitization.py tests/test_retention.py tests/test_context_service.py tests/test_agent_bundle.py tests/test_metrics.py -q
+rtk uv run pytest tests/test_sanitization.py tests/test_retention.py tests/test_context_service.py tests/test_agent_bundle.py tests/test_metrics.py -q
 rtk uv run alembic heads
 ```
 
 Expected: all selected tests pass and exactly one head is reported.
 
-- [ ] **Step 6: Commit forward product retirement**
+- [ ] **Step 4: Commit the smaller product**
 
 Stage only the Task 8 paths enumerated in its **Files** list, including the named review-closure tests after their surviving assertions are migrated. Verify the staged paths with `rtk git diff --cached --name-only` and run `rtk git diff --check`, then commit:
 
@@ -675,7 +650,7 @@ rtk git commit -m "refactor(memory): remove automatic memory pipeline"
 
 **Interfaces:**
 - Consumes: complete v0.4.0 implementation and all prior plan result documents.
-- Produces: version `0.4.0`, tested clean/upgrade migrations, measured two-second context p95, an activation report and a bounded test-portfolio cut report; does not execute production cleanup or delete tests for retained product behavior.
+- Produces: version `0.4.0`, tested clean/upgrade migrations, measured two-second context p95, an activation report and a bounded test-portfolio cut report; does not execute production cleanup or delete tests for retained product behavior. Public release material describes only the resulting v0.4.0 product and does not preserve a catalog of abandoned internal surfaces.
 
 - [ ] **Step 1: Add clean-install and 0.3.5-upgrade tests**
 
@@ -713,7 +688,6 @@ Expected: exact retain, model governance and context latency gates pass; every r
 Set project version to `0.4.0`, regenerate the lock, and document:
 
 ```text
-removed commands, routes, hooks and flags
 typed retain and evidence contract
 English-only retained-content limitation
 built-in model behavior and temporary withholding during definition refresh
@@ -730,7 +704,7 @@ pre-Plan-4 `main` at `2cb1753`: 2,240 non-integration tests passed, 4 skipped an
 deselected in 124.66 seconds. Record the post-retirement counts and runtime from Step 3, plus:
 
 ```text
-tests and test files removed with the retired capture/profile/INDEX-FULL product
+baseline and resulting totals, without preserving a tombstone catalog of abandoned tests
 remaining tests grouped by retained responsibility:
   identity/auth/governance
   User/Project resolution and ownership
@@ -757,9 +731,10 @@ for root in (Path("src/memory"), Path("tests")):
 PY
 ```
 
-Task 8's explicitly retired tests are the deletion boundary for this execution. Do not delete or
-merge any additional retained-product test merely to reduce the count, and do not add a new eval
-framework. Finish the report with `READY_FOR_TEST_PORTFOLIO_CUT_REVIEW`; the user decides any
+Task 8's explicitly listed deletions are the boundary for this execution. Do not retain absence tests,
+tombstone assertions or public documentation whose only purpose is to remember the abandoned product,
+and do not delete or merge additional retained-product tests merely to reduce the count. Do not add a new
+eval framework. Finish the report with `READY_FOR_TEST_PORTFOLIO_CUT_REVIEW`; the user decides any
 further consolidation after Plan 4 from this evidence.
 
 - [ ] **Step 7: Verify release diff and commit**
