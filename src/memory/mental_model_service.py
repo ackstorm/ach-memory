@@ -27,6 +27,7 @@ from memory.errors import (
     ContextBudgetExceeded,
     CurationNeedsOperator,
     DomainError,
+    HindsightError,
     IdempotencyConflict,
     MentalModelNotFound,
 )
@@ -41,6 +42,44 @@ MIN_MAX_TOKENS = 256
 REPAIR_BACKOFF_SECONDS = 60
 USER_ALWAYS_IN_CONTEXT_BUDGET = 1024
 PROJECT_ALWAYS_IN_CONTEXT_BUDGET = 2048
+
+# Defaults returned by Hindsight 0.9.2 when a create request omits the
+# trigger. ACH stores that manual policy as ``{}``; normalizing both sides
+# lets crash recovery recognize the model Hindsight actually created.
+_TRIGGER_DEFAULTS: dict[str, object] = {
+    "mode": "full",
+    "refresh_after_consolidation": False,
+    "refresh_cron": None,
+    "min_refresh_interval_seconds": None,
+    "fact_types": None,
+    "exclude_mental_models": False,
+    "exclude_mental_model_ids": None,
+    "tags_match": None,
+    "tag_groups": None,
+    "include_chunks": None,
+    "recall_max_tokens": None,
+    "recall_chunks_max_tokens": None,
+    "response_schema": None,
+    "keep_trace": False,
+}
+_MANUAL_TRIGGER_UPDATE: dict[str, object] = {
+    "mode": "full",
+    "refresh_after_consolidation": False,
+    "refresh_cron": None,
+}
+
+
+def _validated_trigger(value: dict[str, object] | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    mode = value.get("mode")
+    if mode is not None and mode not in ("full", "delta"):
+        raise ValueError("trigger mode must be 'full' or 'delta'; use {} for manual refresh")
+    return value
+
+
+def _canonical_trigger(value: dict[str, object]) -> dict[str, object]:
+    return {**_TRIGGER_DEFAULTS, **value}
 
 
 def _exact_required_tags(value: tuple[str, ...] | None) -> tuple[str, ...] | None:
@@ -69,6 +108,11 @@ class CustomModelCreateRequest(BaseModel):
     def _validate_source_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _exact_required_tags(value)  # type: ignore[return-value]
 
+    @field_validator("trigger")
+    @classmethod
+    def _validate_trigger(cls, value: dict[str, object]) -> dict[str, object]:
+        return _validated_trigger(value)  # type: ignore[return-value]
+
 
 class CustomModelUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -78,6 +122,11 @@ class CustomModelUpdateRequest(BaseModel):
     trigger: dict[str, object] | None = None
     always_in_context: bool | None = None
     operation_id: str
+
+    @field_validator("trigger")
+    @classmethod
+    def _validate_trigger(cls, value: dict[str, object] | None) -> dict[str, object] | None:
+        return _validated_trigger(value)
 
 
 class MentalModelView(BaseModel):
@@ -189,12 +238,26 @@ def _upstream_items(listed: dict) -> list[dict]:
     return listed.get("mental_models") or listed.get("items") or []
 
 
+def _created_identity(response: dict) -> tuple[str, str]:
+    """Consume Hindsight 0.9.2's CreateMentalModelResponse exactly."""
+    model_id = response.get("mental_model_id")
+    operation_id = response.get("operation_id")
+    if not isinstance(model_id, str) or not model_id:
+        raise HindsightError("memory backend did not identify the created mental model")
+    if not isinstance(operation_id, str) or not operation_id:
+        raise HindsightError("memory backend did not identify the model refresh operation")
+    return model_id, operation_id
+
+
 def _matches_recorded(upstream: dict, row: MentalModelRegistration) -> bool:
     if upstream.get("source_query") != row.source_query:
         return False
     if upstream.get("max_tokens") != row.max_tokens:
         return False
-    if upstream.get("trigger") != row.trigger:
+    upstream_trigger = upstream.get("trigger")
+    if not isinstance(upstream_trigger, dict):
+        return False
+    if _canonical_trigger(upstream_trigger) != _canonical_trigger(row.trigger):
         return False
     tags = upstream.get("tags")
     return tags is None or frozenset(tags) == frozenset(row.source_tags)
@@ -247,10 +310,15 @@ def create_custom_model(
         name=_upstream_name(model_key),
         source_query=request.source_query,
         max_tokens=request.max_tokens,
-        trigger=request.trigger,
+        # Hindsight has no literal ``manual`` mode. An empty ACH trigger is
+        # the explicit manual policy and must be omitted on create.
+        trigger=request.trigger or None,
         tags=list(request.source_tags),
     )
-    activated = model_registry.activate_model(db, bank, model_key, upstream["id"])
+    upstream_id, refresh_operation_id = _created_identity(upstream)
+    activated = model_registry.activate_model(
+        db, bank, model_key, upstream_id, refresh_operation_id
+    )
     db.commit()
     return _to_view(activated)
 
@@ -282,10 +350,13 @@ def resume_model_mutation(
             name=upstream_name,
             source_query=row.source_query,
             max_tokens=row.max_tokens,
-            trigger=row.trigger,
+            trigger=row.trigger or None,
             tags=list(row.source_tags),
         )
-        activated = model_registry.activate_model(db, bank, row.model_key, upstream["id"])
+        upstream_id, refresh_operation_id = _created_identity(upstream)
+        activated = model_registry.activate_model(
+            db, bank, row.model_key, upstream_id, refresh_operation_id
+        )
         db.commit()
         return _to_view(activated)
 
@@ -345,7 +416,13 @@ def update_model(
     if request.max_tokens is not None and request.max_tokens != row.max_tokens:
         upstream_changes["max_tokens"] = request.max_tokens
     if request.trigger is not None and request.trigger != row.trigger:
-        upstream_changes["trigger"] = request.trigger
+        # Hindsight PATCHes trigger fields rather than replacing the object.
+        # Sending {} would leave an existing schedule active while ACH
+        # recorded it as manual, so manual must explicitly clear both
+        # automatic refresh mechanisms.
+        upstream_changes["trigger"] = (
+            request.trigger or dict(_MANUAL_TRIGGER_UPDATE)
+        )
     if upstream_changes and row.upstream_model_id is not None:
         client.update_mental_model(bank.bank_id, row.upstream_model_id, **upstream_changes)
 
@@ -457,7 +534,10 @@ def _create_builtin(
         trigger=dict(definition.trigger),
         tags=list(definition.source_tags),
     )
-    activated = model_registry.activate_model(db, bank, definition.key, upstream["id"])
+    upstream_id, refresh_operation_id = _created_identity(upstream)
+    activated = model_registry.activate_model(
+        db, bank, definition.key, upstream_id, refresh_operation_id
+    )
     db.commit()
     return _to_view(activated)
 

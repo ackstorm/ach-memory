@@ -1,15 +1,15 @@
-"""Preflight check for v0.4.0's frozen `ach-exact-v1` retain strategy.
+"""Read-only preflight for v0.4.0's installed `ach-exact-v1` strategy.
 
-Run against a disposable bank on the target Hindsight deployment BEFORE
-activating v0.4.0 retain against it (SPEC §5.7): "Provisioning and upgrades
-MUST use dry-run-extract plus a live disposable-bank test to prove one exact
-fact, zero extraction tokens, zero ingest-time entities and no second
-chunk. ACH MUST NOT silently fall back to a bank default or to Hindsight
-`verbatim` mode."
+Run against a prepared disposable bank on the target Hindsight deployment
+before activating v0.4.0 retain (SPEC §5.7). It verifies the pinned backend
+version and the resolved installed strategy without mutating the bank.
 
-This script only calls Hindsight's read-only dry-run-extract endpoint --
-`HindsightClient.dry_run_extract` -- so it stores nothing and needs no
-cleanup. It never prints the retained content itself, only counts and shapes.
+Hindsight 0.9.2's dry-run response exposes extracted facts and aggregate
+usage, but not chunk or entity metadata; on the validated deployment its
+per-call ``chunks`` override also does not reproduce named-strategy retain
+behavior. The guarded live test therefore performs the separate behavioral
+proof with a disposable bank and a synchronous retain. This script stores
+nothing and needs no cleanup.
 
 Usage:
     MEMORY_HINDSIGHT_URL=... MEMORY_HINDSIGHT_API_KEY=... \\
@@ -22,56 +22,29 @@ import os
 import sys
 
 from memory.hindsight.client import HindsightClient
-
-_PROBE_CONTENT = "x" * 4096  # exactly the v0.4.0 canonical-claim byte ceiling
-
-_STRATEGY_OVERRIDE = {
-    "retain_extraction_mode": "chunks",
-    "retain_chunk_size": 4096,
-    "retain_structured_chunk_size": 4096,
-}
+from memory.retain_strategy import EXACT_RETAIN_STRATEGY, EXACT_RETAIN_STRATEGY_NAME
 
 
 class PreflightFailed(RuntimeError):
-    """The target deployment's `chunks` extraction mode does not behave the
-    way `ach-exact-v1` requires."""
+    """The target bank does not expose ACH's exact strategy definition."""
 
 
 def check(client: HindsightClient, bank_id: str) -> dict[str, int]:
-    """Run dry-run-extract with the frozen override and verify SPEC §5.7's
-    four guarantees. Returns counts only -- never the probed content."""
-    result = client.dry_run_extract(
-        bank_id,
-        _PROBE_CONTENT,
-        retain_extraction_mode=_STRATEGY_OVERRIDE["retain_extraction_mode"],
-    )
-
-    chunks = result.get("chunks") if isinstance(result, dict) else None
-    chunk_count = len(chunks) if isinstance(chunks, list) else None
-    entities = result.get("entities") if isinstance(result, dict) else None
-    entity_count = len(entities) if isinstance(entities, list) else None
-    facts = result.get("facts") if isinstance(result, dict) else None
-    fact_count = len(facts) if isinstance(facts, list) else None
-    usage = result.get("usage") if isinstance(result, dict) else None
-    extraction_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
-
-    counts = {
-        "chunk_count": chunk_count if chunk_count is not None else -1,
-        "entity_count": entity_count if entity_count is not None else -1,
-        "fact_count": fact_count if fact_count is not None else -1,
-        "extraction_tokens": extraction_tokens if extraction_tokens is not None else -1,
+    """Verify the backend version and resolved strategy; return content-free flags."""
+    version = client.get_version()
+    if version.get("api_version") != "0.9.2":
+        raise PreflightFailed("target is not the validated Hindsight 0.9.2 release")
+    response = client.get_bank_config(bank_id)
+    config = response.get("config") if isinstance(response, dict) else None
+    strategies = config.get("retain_strategies") if isinstance(config, dict) else None
+    actual = strategies.get(EXACT_RETAIN_STRATEGY_NAME) if isinstance(strategies, dict) else None
+    if actual != EXACT_RETAIN_STRATEGY:
+        raise PreflightFailed("installed ach-exact-v1 strategy does not match the frozen definition")
+    return {
+        "hindsight_0_9_2": 1,
+        "strategy_present": 1,
+        "strategy_exact": 1,
     }
-
-    if chunk_count != 1:
-        raise PreflightFailed(f"expected exactly one chunk, saw {counts['chunk_count']}")
-    if entity_count not in (0, None):
-        raise PreflightFailed(f"expected zero extracted entities, saw {counts['entity_count']}")
-    if extraction_tokens not in (0, None):
-        raise PreflightFailed(
-            f"expected zero extraction-model tokens, saw {counts['extraction_tokens']}"
-        )
-
-    return counts
 
 
 def main(argv: list[str]) -> int:

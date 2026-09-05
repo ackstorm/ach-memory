@@ -13,6 +13,12 @@ from memory.retained_records import get_by_operation
 from memory.retention import submit_retain
 from memory.v040_contracts import RetainEvidence, TypedRetainRequest
 
+EXACT_STRATEGY = {
+    "retain_extraction_mode": "chunks",
+    "retain_chunk_size": 4096,
+    "retain_structured_chunk_size": 4096,
+}
+
 
 @pytest.fixture
 def principal(session, tenant) -> Principal:
@@ -44,11 +50,33 @@ def typed_request() -> TypedRetainRequest:
 @pytest.fixture
 def client():
     mock = create_autospec(HindsightClient, instance=True)
+    mock.get_bank_config.return_value = {
+        "config": {"retain_strategies": {"ach-exact-v1": EXACT_STRATEGY}},
+        "overrides": {},
+    }
     mock.retain_items.side_effect = lambda bank_id, items, *, operation_id, is_async=True: {
         "operation_id": operation_id,
         "status": "pending",
     }
     return mock
+
+
+def test_submit_retain_provisions_exact_strategy_before_writing(
+    session, principal, typed_request, client
+):
+    client.get_bank_config.side_effect = [
+        {"config": {"retain_strategies": None}, "overrides": {}},
+        {"config": {"retain_strategies": {"ach-exact-v1": EXACT_STRATEGY}}, "overrides": {}},
+    ]
+
+    submit_retain(session, principal, typed_request, wait=False, client=client)
+
+    client.update_bank_config.assert_called_once_with(
+        client.ensure_bank.call_args.args[0],
+        {"retain_strategies": {"ach-exact-v1": EXACT_STRATEGY}},
+    )
+    method_names = [call[0] for call in client.method_calls]
+    assert method_names.index("update_bank_config") < method_names.index("retain_items")
 
 
 def test_submit_retain_sends_only_claim_and_reserved_tags(session, principal, typed_request, client):

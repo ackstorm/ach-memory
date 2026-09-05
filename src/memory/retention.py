@@ -20,6 +20,7 @@ from memory.banks import resolve_user_bank
 from memory.errors import HindsightError, ProjectContextUnavailable
 from memory.hindsight.client import HindsightClient, RetainItem
 from memory.models import RetainedRecord
+from memory.retain_strategy import ensure_exact_retain_strategy
 from memory.retained_records import (
     LogicalBankRef,
     accept_retain,
@@ -157,6 +158,11 @@ def submit_retain(
     # leaves a pending, retry-safe record rather than an orphaned upstream
     # write with no local trace (SPEC §6.1).
     db.commit()
+
+    # Hindsight silently falls back to the bank default when an item names an
+    # unknown strategy. Provision and verify the exact strategy before the
+    # write so that fallback can never weaken this boundary.
+    ensure_exact_retain_strategy(client, bank.bank_id)
 
     item = RetainItem(
         content=row.canonical_content,

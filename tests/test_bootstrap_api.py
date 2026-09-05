@@ -19,7 +19,13 @@ def juan(client, master_headers, tenant) -> dict[str, str]:
 def _mock_create(counter: list[int]):
     def _respond(request: httpx.Request) -> httpx.Response:
         counter[0] += 1
-        return httpx.Response(201, json={"id": f"mm-upstream-{counter[0]}"})
+        return httpx.Response(
+            201,
+            json={
+                "mental_model_id": f"mm-upstream-{counter[0]}",
+                "operation_id": f"op-upstream-{counter[0]}",
+            },
+        )
 
     return respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
         side_effect=_respond
@@ -94,7 +100,13 @@ def test_bootstrap_rejects_an_unknown_field(client, juan):
 @respx.mock
 def test_bootstrap_opt_out_creates_no_models(client, juan):
     create = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
-        return_value=httpx.Response(201, json={"id": "mm-should-not-be-called"})
+        return_value=httpx.Response(
+            201,
+            json={
+                "mental_model_id": "mm-should-not-be-called",
+                "operation_id": "op-should-not-be-called",
+            },
+        )
     )
 
     response = client.post(

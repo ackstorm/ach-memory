@@ -21,6 +21,7 @@ from memory.auth.principal import Principal
 from memory.builtin_models import PROJECT_CONTEXT_V1, USER_CONTEXT_V1
 from memory.mental_model_service import MentalModelView
 from memory.models import ProjectSlug
+from memory.retain_strategy import ensure_exact_retain_strategy
 from memory.retained_records import LogicalBankRef
 from memory.slugs import normalize_slug
 
@@ -60,6 +61,7 @@ def bootstrap(
 
     user_bank_id = banks.resolve_user_bank(db, principal, None)
     user_bank = LogicalBankRef(principal.tenant_id, "user", principal.user_id, None, user_bank_id)
+    ensure_exact_retain_strategy(client, user_bank.bank_id)
 
     user_model = None
     if request.builtins_enabled:
@@ -101,6 +103,7 @@ def bootstrap(
         project_bank = LogicalBankRef(
             principal.tenant_id, "project", None, project.internal_id, project.bank_id
         )
+        ensure_exact_retain_strategy(client, project_bank.bank_id)
         if request.builtins_enabled:
             project_model = mental_model_service.reconcile_builtin(
                 db, project_bank, PROJECT_CONTEXT_V1, client=client

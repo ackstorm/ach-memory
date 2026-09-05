@@ -183,7 +183,8 @@ def seeded_activity(session, tenant) -> None:
 
 @pytest.fixture
 def app(connection, session, monkeypatch):
-    from memory import db, ratelimit
+    from memory import bootstrap as bootstrap_service
+    from memory import db, ratelimit, retention
     from memory.api.app import create_app
     from memory.auth import keys
     from memory.config import get_settings
@@ -199,6 +200,15 @@ def app(connection, session, monkeypatch):
     # in the session would share one Limiter (and, worse, one master-key
     # bucket), so an earlier test's writes could trip a later test's limit.
     ratelimit.get_limiter.cache_clear()
+
+    # API/MCP contract tests mock only the upstream operation they exercise.
+    # Strategy provisioning has its own unit and live coverage; keep it out
+    # of every unrelated route test so their respx expectations remain
+    # focused on that route's contract.
+    monkeypatch.setattr(retention, "ensure_exact_retain_strategy", lambda *_args: None)
+    monkeypatch.setattr(
+        bootstrap_service, "ensure_exact_retain_strategy", lambda *_args: None
+    )
 
     factory = sessionmaker(bind=connection, join_transaction_mode="create_savepoint")
 

@@ -476,11 +476,19 @@ retain_strategies:
 
 Hindsight's `chunks` mode makes no extraction-model call and stores each chunk verbatim as one
 `world` source fact with no extracted entities. Because sanitized `content` is at most 4 KiB UTF-8,
-it is also at most 4,096 Unicode code points and cannot split under this strategy. Provisioning and
-upgrades MUST use `dry-run-extract` plus a live disposable-bank test to prove one exact fact, zero
-extraction tokens, zero ingest-time entities and no second chunk. A change in an upstream release
-blocks activation until this contract is revalidated; ACH MUST NOT silently fall back to a bank
-default or to Hindsight `verbatim` mode.
+it is also at most 4,096 Unicode code points and cannot split under this strategy. Bootstrap and
+every ACH-mediated retain MUST idempotently verify the resolved named strategy and install the
+exact definition when absent, preserving unrelated bank strategies. A failed post-write
+verification aborts retain; ACH MUST NOT silently fall back to a bank default or to Hindsight
+`verbatim` mode.
+
+Activation and upgrades MUST combine a read-only preflight of the Hindsight version and resolved
+bank configuration with a synchronous live retain in a disposable bank proving one exact fact,
+zero extraction tokens, zero ingest-time entities and no second chunk. Hindsight 0.9.2's
+`dry-run-extract` response does not expose chunks or entities, and its per-call chunks override is
+not behaviorally equivalent to the installed named strategy on the validated deployment; it is
+therefore not accepted as proof of this contract. A change in an upstream release blocks
+activation until the read-only and behavioral checks are revalidated.
 
 This deliberately trades ingest-time entity structure for exactness and zero extraction-model
 hallucination. Semantic retrieval initially relies on Hindsight embeddings and reranking over the
@@ -825,6 +833,12 @@ names. The creator is responsible for their domain and purpose; ACH enforces sco
 expiry eligibility and delivery policy.
 
 For a user-defined model, the creator chooses manual refresh or a supported automatic trigger.
+Manual refresh is represented by an empty `trigger` object in the ACH contract; ACH omits the
+trigger on upstream creation because Hindsight 0.9.2 has no literal `manual` mode. The registry
+stores the empty object and crash recovery treats Hindsight's returned inactive default trigger as
+the same policy. Changing an automatic model to manual explicitly clears both upstream automatic
+refresh mechanisms; an empty trigger PATCH alone is not sufficient because Hindsight applies
+trigger updates field by field. `mode: manual` is invalid and rejected before an upstream request.
 Automatic delta refresh may use a minimum interval to coalesce bursts of retains. Correction,
 forget, restore and hard delete of indefinite sources bypass that interval: an affected model is
 withheld while its explicit Hindsight refresh operation is pending or failed. Authorization and

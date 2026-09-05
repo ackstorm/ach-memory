@@ -1,6 +1,6 @@
 # ach-memory v0.4.0 mental-model governance — verification result
 
-Status: **NON-LIVE GATE COMPLETE — LIVE DISPOSABLE-BANK RUN NOT EXECUTED (no reachable instance)**
+Status: **NON-LIVE AND LIVE HINDSIGHT 0.9.2 GATES PASSED**
 
 ## Non-live governance suite (executed)
 
@@ -10,7 +10,9 @@ rtk uv run pytest tests/test_builtin_models.py tests/test_mental_model_service.p
   tests/test_mcp_tools.py -q
 ```
 
-Result: 143 passed, 0 failed.
+The original plan run passed 143 tests. After the live compatibility corrections, the complete
+non-integration repository suite passed 2,239 tests (5 skipped, 6 live tests deselected); the
+focused changed-contract suite passed 157 tests.
 
 ```
 rtk uv run ruff check src tests
@@ -26,7 +28,7 @@ built-in provisioning, MCP-bootstrap project creation and its audit/warning, opt
 lifecycle-disabled and version-upgrade built-in reconciliation, refusal to adopt a colliding unknown
 upstream model); and exact refresh-operation-identity completion plus bounded, backoff-gated repair.
 
-## Live disposable-bank run (not executed)
+## Live disposable-bank run
 
 The plan calls for a guarded live proof against a real Hindsight instance
 (`HINDSIGHT_V040_CONFIRM=disposable-banks-only`), covering:
@@ -49,15 +51,15 @@ guarded by:
 - a fresh, uniquely-named disposable bank per run, registered before use and deleted in `finally`
   regardless of outcome.
 
-Running it in this environment (`rtk env HINDSIGHT_V040_CONFIRM=disposable-banks-only uv run pytest
-tests/test_v040_mental_models_live.py -q`) exercised exactly that guard: the configured
-`MEMORY_HINDSIGHT_URL` here is the test suite's own mock hostname (`hindsight.test`, never a real
-service), which is neither loopback nor allow-listed, so both tests correctly failed at the host
-check rather than silently skipping or reaching an unintended endpoint. This environment has no
-running Hindsight instance and no configured LLM-provider credentials for one (`docker-compose.yml`'s
-`hindsight` service requires `HINDSIGHT_LLM_BASE_URL`/`HINDSIGHT_LLM_API_KEY`, neither of which is
-available here), so the actual disposable-bank proof could not be executed as part of this session.
+The two tests passed against the real loopback Hindsight 0.9.2 deployment on 2026-09-05. In the
+combined retain/model live run they completed in 1.42 seconds and 0.22 seconds respectively.
 
-No production model, bank or credential was touched by this verification. Running the live proof for
-real is an operator action: point `MEMORY_HINDSIGHT_URL` at a loopback or explicitly allow-listed
-disposable Hindsight 0.9.2 instance with real LLM-provider credentials, then run the command above.
+The first attempt exposed two upstream-contract mismatches that mocks had hidden: create returns
+`mental_model_id` plus `operation_id`, and manual refresh is represented by omitting the trigger,
+not by `mode: manual`. Both contracts are now pinned in production code, unit tests and the SPEC.
+Fresh model output is withheld against the returned create operation until its terminal state is
+observed. The live lifecycle also verifies that changing an automatic model back to manual clears
+the upstream consolidation trigger instead of merely changing ACH's registry.
+
+No production model, bank or credential was touched. Cleanup was independently verified after the
+combined live run: no bank with a v0.4.0 test or diagnostic prefix remained.

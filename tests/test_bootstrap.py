@@ -14,6 +14,12 @@ from memory.model_registry import register_model
 from memory.models import User
 from memory.retained_records import LogicalBankRef
 
+EXACT_STRATEGY = {
+    "retain_extraction_mode": "chunks",
+    "retain_chunk_size": 4096,
+    "retain_structured_chunk_size": 4096,
+}
+
 
 @pytest.fixture
 def principal(session, tenant):
@@ -30,9 +36,35 @@ def principal(session, tenant):
 def hindsight():
     client = mock.MagicMock(spec=HindsightClient)
     counter = iter(range(1, 1000))
-    client.create_mental_model.side_effect = lambda *a, **k: {"id": f"mm-upstream-{next(counter)}"}
+    client.create_mental_model.side_effect = lambda *a, **k: {
+        "mental_model_id": f"mm-upstream-{next(counter)}",
+        "operation_id": f"op-upstream-{next(counter)}",
+    }
     client.list_mental_models.return_value = {"items": []}
+    client.get_bank_config.return_value = {
+        "config": {"retain_strategies": {"ach-exact-v1": EXACT_STRATEGY}},
+        "overrides": {},
+    }
     return client
+
+
+def test_bootstrap_provisions_exact_strategy_when_builtins_are_disabled(
+    session, principal, hindsight
+):
+    hindsight.get_bank_config.side_effect = [
+        {"config": {"retain_strategies": None}, "overrides": {}},
+        {"config": {"retain_strategies": {"ach-exact-v1": EXACT_STRATEGY}}, "overrides": {}},
+    ]
+
+    result = bootstrap(
+        session, principal, BootstrapRequest(builtins_enabled=False), client=hindsight
+    )
+
+    assert result.user_model is None
+    hindsight.update_bank_config.assert_called_once_with(
+        hindsight.ensure_bank.call_args.args[0],
+        {"retain_strategies": {"ach-exact-v1": EXACT_STRATEGY}},
+    )
 
 
 def test_user_bootstrap_creates_one_builtin_idempotently(session, principal, hindsight):

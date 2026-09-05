@@ -37,7 +37,9 @@ CONFIRM_ENV = "HINDSIGHT_V040_CONFIRM"
 ALLOW_HOSTS_ENV = "HINDSIGHT_V040_ALLOW_HOSTS"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 REQUIRED_TAGS = ("schema:ach-retain-v1", "validity:indefinite")
-TRIGGER = {"mode": "manual"}
+# An empty ACH trigger means manual refresh and is omitted from the upstream
+# create request. Hindsight 0.9.2 has no literal ``manual`` trigger mode.
+TRIGGER = {}
 
 
 def _confirmed_settings():
@@ -138,6 +140,34 @@ def test_governed_mental_model_lifecycle_against_disposable_hindsight(
     )
     assert updated.always_in_context is False
     assert updated.source_query == "Updated live source query."
+
+    update_model(
+        session,
+        live_bank,
+        target.model_key,
+        CustomModelUpdateRequest(
+            trigger={"mode": "delta", "refresh_after_consolidation": True},
+            operation_id=str(uuid.uuid4()),
+        ),
+        client=live_client,
+    )
+    manual = update_model(
+        session,
+        live_bank,
+        target.model_key,
+        CustomModelUpdateRequest(trigger={}, operation_id=str(uuid.uuid4())),
+        client=live_client,
+    )
+    assert manual.trigger == {}
+    upstream_models = live_client.list_mental_models(live_bank.bank_id, detail="full")
+    upstream_target = next(
+        item
+        for item in (upstream_models.get("mental_models") or upstream_models.get("items") or [])
+        if item.get("name") == f"ach:{target.model_key}"
+    )
+    assert upstream_target["trigger"]["mode"] == "full"
+    assert upstream_target["trigger"]["refresh_after_consolidation"] is False
+    assert not upstream_target["trigger"].get("refresh_cron")
 
     # enabling always_in_context beyond the User budget is refused before any upstream call
     with pytest.raises(ContextBudgetExceeded):

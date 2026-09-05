@@ -34,6 +34,23 @@ def _mock_hindsight() -> None:
     respx.put(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
         return_value=httpx.Response(200, json={})
     )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/config$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "config": {
+                    "retain_strategies": {
+                        "ach-exact-v1": {
+                            "retain_extraction_mode": "chunks",
+                            "retain_chunk_size": 4096,
+                            "retain_structured_chunk_size": 4096,
+                        }
+                    }
+                },
+                "overrides": {},
+            },
+        )
+    )
 
 
 def _retain_body(**overrides) -> dict:
@@ -525,7 +542,7 @@ def test_reflect_reaches_the_reflect_endpoint_of_the_right_bank(client, juan, te
     )
     assert setup.status_code == 201
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
-        return_value=httpx.Response(200, json={"answer": "use uv"})
+        return_value=httpx.Response(200, json={"text": "use uv", "usage": {}})
     )
 
     response = client.post(
@@ -535,7 +552,7 @@ def test_reflect_reaches_the_reflect_endpoint_of_the_right_bank(client, juan, te
     )
 
     assert response.status_code == 200
-    assert response.json()["result"] == {"answer": "use uv"}
+    assert response.json()["result"] == {"text": "use uv", "usage": {}}
     assert "banks/project_" in str(route.calls.last.request.url)
 
 
@@ -543,7 +560,7 @@ def test_reflect_reaches_the_reflect_endpoint_of_the_right_bank(client, juan, te
 def test_reflect_is_denied_on_someone_elses_project(client, juan, alice, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
-        return_value=httpx.Response(200, json={"answer": "leaked"})
+        return_value=httpx.Response(200, json={"text": "leaked", "usage": {}})
     )
     _create_project(client, juan["key"], "payments-api")
 
@@ -566,7 +583,8 @@ def test_bank_id_is_stripped_from_reflect(client, juan, tenant):
     assert setup.status_code == 201
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
         return_value=httpx.Response(
-            200, json={"answer": "use uv", "bank_id": "user_leaked_reflect"}
+            200,
+            json={"text": "use uv", "usage": {}, "bank_id": "user_leaked_reflect"},
         )
     )
 
@@ -578,7 +596,7 @@ def test_bank_id_is_stripped_from_reflect(client, juan, tenant):
 
     assert "bank_id" not in str(body)
     assert "user_leaked_reflect" not in str(body)
-    assert body["result"]["answer"] == "use uv"
+    assert body["result"]["text"] == "use uv"
 
 
 @respx.mock
@@ -615,7 +633,7 @@ def test_reflect_against_a_retired_slug_forwards_and_pins_resolved_from(
 ):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
-        return_value=httpx.Response(200, json={"answer": "use uv"})
+        return_value=httpx.Response(200, json={"text": "use uv", "usage": {}})
     )
 
     _create_project(client, juan["key"], "payments-api")

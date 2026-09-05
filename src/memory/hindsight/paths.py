@@ -123,6 +123,10 @@ def reject_mental_model_id_traversal(mental_model_id: str) -> None:
 HINDSIGHT_TENANT = "default"
 
 
+def version() -> str:
+    return "/version"
+
+
 def bank(tenant: str, bank_id: str) -> str:
     return f"/v1/{HINDSIGHT_TENANT}/banks/{bank_id}"
 
@@ -141,9 +145,7 @@ def dry_run_extract(tenant: str, bank_id: str) -> str:
 
 
 def config(tenant: str, bank_id: str) -> str:
-    """GET only in this phase. A PATCH to this same path is the production
-    enablement lever SPEC Phase 3 explicitly defers to Phase 0 -- this
-    module deliberately implements no client method that sends one."""
+    """Read/update the trusted per-bank configuration boundary."""
     return f"{bank(tenant, bank_id)}/config"
 
 
@@ -160,6 +162,10 @@ def recall(tenant: str, bank_id: str) -> str:
 
 def reflect(tenant: str, bank_id: str) -> str:
     return f"{bank(tenant, bank_id)}/reflect"
+
+
+def consolidate(tenant: str, bank_id: str) -> str:
+    return f"{bank(tenant, bank_id)}/consolidate"
 
 
 def memory_list(tenant: str, bank_id: str) -> str:

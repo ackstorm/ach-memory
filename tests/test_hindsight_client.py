@@ -39,6 +39,18 @@ def client() -> HindsightClient:
 
 
 @respx.mock
+def test_get_version_uses_the_root_version_endpoint(client):
+    route = respx.get(f"{BASE}/version").mock(
+        return_value=httpx.Response(200, json={"api_version": "0.9.2", "features": {}})
+    )
+
+    result = client.get_version()
+
+    assert route.called
+    assert result["api_version"] == "0.9.2"
+
+
+@respx.mock
 def test_retain_posts_the_item_envelope(client):
     route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories").mock(
         return_value=httpx.Response(200, json={"success": True, "operation_id": "op-1"})
@@ -466,12 +478,12 @@ def test_failed_materialization_is_retried(client):
 @respx.mock
 def test_reflect_posts_the_query(client):
     route = respx.post(f"{BASE}/v1/default/banks/{BANK}/reflect").mock(
-        return_value=httpx.Response(200, json={"answer": "use uv"})
+        return_value=httpx.Response(200, json={"text": "use uv", "usage": {}})
     )
 
     result = client.reflect(BANK, "how do we manage dependencies")
 
-    assert result == {"answer": "use uv"}
+    assert result == {"text": "use uv", "usage": {}}
     assert route.calls.last.request.read() == b'{"query":"how do we manage dependencies"}'
 
 
@@ -608,6 +620,18 @@ def test_list_documents_uses_the_documents_path(client):
     url = route.calls.last.request.url
     assert url.path == f"/v1/default/banks/{BANK}/documents"
     assert dict(url.params) == {"q": "onboarding", "limit": "5"}
+
+
+@respx.mock
+def test_consolidate_uses_the_async_bank_operation(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/consolidate").mock(
+        return_value=httpx.Response(200, json={"operation_id": OP_ID})
+    )
+
+    result = client.consolidate(BANK)
+
+    assert route.calls.last.request.content == b"{}"
+    assert result == {"operation_id": OP_ID}
 
 
 @respx.mock
@@ -912,7 +936,9 @@ def test_create_mental_model_sends_explicit_tags_when_supplied(client):
     import json
 
     route = respx.post(f"{BASE}/v1/default/banks/{BANK}/mental-models").mock(
-        return_value=httpx.Response(201, json={"id": MM_ID})
+        return_value=httpx.Response(
+            201, json={"mental_model_id": MM_ID, "operation_id": OP_ID}
+        )
     )
 
     client.create_mental_model(BANK, name="n", source_query="q", tags=["a", "b"])
@@ -928,7 +954,9 @@ def test_create_mental_model_omits_tags_when_not_supplied(client):
     import json
 
     route = respx.post(f"{BASE}/v1/default/banks/{BANK}/mental-models").mock(
-        return_value=httpx.Response(201, json={"id": MM_ID})
+        return_value=httpx.Response(
+            201, json={"mental_model_id": MM_ID, "operation_id": OP_ID}
+        )
     )
 
     client.create_mental_model(BANK, name="n", source_query="q")
@@ -975,7 +1003,9 @@ def test_create_mental_model_trigger_carries_response_schema_and_keep_trace_verb
     import json
 
     route = respx.post(f"{BASE}/v1/default/banks/{BANK}/mental-models").mock(
-        return_value=httpx.Response(201, json={"id": MM_ID})
+        return_value=httpx.Response(
+            201, json={"mental_model_id": MM_ID, "operation_id": OP_ID}
+        )
     )
     trigger = {
         "mode": "full",
@@ -1346,30 +1376,38 @@ def test_dry_run_extract_error_does_not_carry_the_bank_id(client):
 @respx.mock
 def test_get_bank_config_is_a_plain_get(client):
     route = respx.get(f"{BASE}/v1/default/banks/{BANK}/config").mock(
-        return_value=httpx.Response(200, json={"retain_default_strategy": "concise"})
+        return_value=httpx.Response(
+            200,
+            json={
+                "bank_id": BANK,
+                "config": {"retain_default_strategy": "concise"},
+                "overrides": {},
+            },
+        )
     )
 
     result = client.get_bank_config(BANK)
 
-    assert result == {"retain_default_strategy": "concise"}
+    assert result["config"]["retain_default_strategy"] == "concise"
     assert route.calls.last.request.method == "GET"
 
 
 @respx.mock
-def test_no_client_method_ever_patches_the_config_path(client):
-    """The route exists in the client's vocabulary (get_bank_config reads
-    it) but nothing here ever writes it -- this phase's config PATCH stays
-    undeployed until a later, separately-approved rollout."""
+def test_update_bank_config_wraps_trusted_updates_in_the_live_request_shape(client):
     patch_route = respx.patch(f"{BASE}/v1/default/banks/{BANK}/config").mock(
-        return_value=httpx.Response(200, json={})
+        return_value=httpx.Response(
+            200,
+            json={"bank_id": BANK, "config": {"retain_strategies": {}}, "overrides": {}},
+        )
     )
-    respx.get(f"{BASE}/v1/default/banks/{BANK}/config").mock(
-        return_value=httpx.Response(200, json={})
-    )
+    updates = {"retain_strategies": {"ach-exact-v1": {"retain_extraction_mode": "chunks"}}}
 
-    client.get_bank_config(BANK)
+    result = client.update_bank_config(BANK, updates)
 
-    assert not patch_route.called
+    import json
+
+    assert json.loads(patch_route.calls.last.request.read()) == {"updates": updates}
+    assert result["bank_id"] == BANK
 
 
 @respx.mock

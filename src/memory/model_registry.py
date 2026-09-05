@@ -145,7 +145,11 @@ def _locked_model(db: Session, bank: LogicalBankRef, model_key: str) -> MentalMo
 
 
 def activate_model(
-    db: Session, bank: LogicalBankRef, model_key: str, upstream_model_id: str
+    db: Session,
+    bank: LogicalBankRef,
+    model_key: str,
+    upstream_model_id: str,
+    refresh_operation_id: str | None = None,
 ) -> MentalModelRegistration:
     """Record the upstream id Hindsight assigned and leave `creating` for
     `active` -- the second half of create, run only after Hindsight's call
@@ -153,6 +157,10 @@ def activate_model(
     row = _locked_model(db, bank, model_key)
     row.upstream_model_id = upstream_model_id
     row.lifecycle_state = "active"
+    if refresh_operation_id is not None:
+        row.delivery_state = "withheld"
+        row.refresh_operation_id = refresh_operation_id
+        row.refresh_status = "pending"
     row.updated_at = _db_now(db)
     db.flush()
     return row

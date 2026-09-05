@@ -1,67 +1,70 @@
 # ach-memory v0.4.0 typed retain and lifecycle — compatibility gate
 
-Status: **NON-LIVE GATE PASSED — LIVE HINDSIGHT GATE NOT RUN**
+Status: **LIVE HINDSIGHT 0.9.2 GATE PASSED**
 
-This branch (`feat/ach-memory-v0.4.0-retain-lifecycle`) was executed in a sandboxed session with
-no reachable Hindsight deployment (no `MEMORY_HINDSIGHT_URL` configured, no listening backend on
-this host). `tests/test_v040_hindsight_live.py` and `scripts/v040-hindsight-preflight.py` exist and
-are structurally verified — they compile, lint clean, and every guarded test skips with the exact
-`HINDSIGHT_V040_CONFIRM=disposable-banks-only` message when unconfirmed — but no assertion in them
-has been proven against a real Hindsight 0.9.2 instance. Activation MUST NOT proceed on this
-branch's say-so alone; whoever runs the live gate next should replace this document's live section
-before treating retain/lifecycle as compatible with the target deployment.
+The gate was executed on 2026-09-05 against the real loopback Hindsight 0.9.2 deployment with
+explicit disposable-bank confirmation. It proves the v0.4.0 typed-retain boundary and governed
+mental-model lifecycle are compatible with that deployment. It does not activate v0.4.0, mutate a
+production bank or replace the separate release/activation gates in the SPEC.
 
-## Non-live gate (run in this session)
+## Contract corrections found by the live run
 
-```
-uv run pytest tests/test_sanitization.py tests/test_retention.py tests/test_memory_api.py \
-    tests/test_read_service.py tests/test_curation_service.py tests/test_expiry.py -q
-```
-Result: 130 passed.
+The first measured run exposed four real compatibility gaps, all fixed before the passing run:
 
-```
-uv run ruff check src tests scripts/v040-hindsight-preflight.py
-```
-Result: clean.
+- A named retain strategy is not globally available merely because ACH names it. Bootstrap and
+  typed retain now idempotently install and verify the frozen `ach-exact-v1` definition in each
+  governed bank, while preserving unrelated strategies. A failed verification blocks retain.
+- Hindsight 0.9.2 creates a mental model as `mental_model_id` plus `operation_id`, not `id`. ACH now
+  consumes both and withholds generated content until that exact operation succeeds.
+- Hindsight returns reflection text in `text`, not `answer`.
+- Hindsight has no `mode: manual` trigger. ACH represents manual refresh as `{}`, omits the trigger
+  on upstream creation and normalizes Hindsight's inactive defaults during crash recovery.
 
-Full non-integration suite (`uv run pytest -q -m "not integration"`): 2192 passed, 3 skipped, 2
-deselected, no failures.
+The read-only preflight was also corrected. Hindsight 0.9.2 dry-run extraction does not expose
+chunk/entity structure and its per-call chunks override is not equivalent to a named-strategy
+retain on this deployment. Preflight therefore verifies the exact version and resolved strategy;
+the guarded synchronous disposable retain supplies the behavioral proof.
 
-## Live gate (NOT run — no reachable disposable deployment in this environment)
+## Live gate
 
-To run it against a real disposable Hindsight 0.9.2 deployment:
-
-```
-MEMORY_HINDSIGHT_URL=<disposable deployment> MEMORY_HINDSIGHT_API_KEY=<key> \
-    HINDSIGHT_V040_CONFIRM=disposable-banks-only \
-    uv run pytest tests/test_v040_hindsight_live.py -q
+```bash
+MEMORY_HINDSIGHT_URL=http://127.0.0.1:8888 \
+HINDSIGHT_V040_CONFIRM=disposable-banks-only \
+uv run pytest tests/test_v040_hindsight_live.py \
+  tests/test_v040_mental_models_live.py -q -rs --durations=10
 ```
 
-A non-loopback `MEMORY_HINDSIGHT_URL` host also requires `HINDSIGHT_V040_ALLOWED_HOST=<host>` or
-the fixture skips rather than risk a non-disposable target.
+Result: **6 passed in 57.72 seconds**.
 
-Expected sections once run, filled in by that session (counts/durations/statuses/hashes only —
-never claim text, a bank ID, a credential or evidence):
-
-| Check | Status | Notes |
+| Check | Status | Evidence |
 |---|---|---|
-| `v040-hindsight-preflight.py` (chunks mode: 1 chunk, 0 entities, 0 extraction tokens) | PENDING | |
-| Exact strategy: one 4096-byte claim → one verbatim `world` fact | PENDING | |
-| Scale recall: 500 siblings, 10 frozen probes, source fact in top 10 every time | PENDING | |
-| Consolidation cites source facts; forget removes/invalidates the dependent observation | PENDING | |
-| Exact retry (same `operation_id`) after a simulated lost response is safe | PENDING | |
-| 429 / timeout / unavailable backend surface as typed, non-leaking errors | PENDING | |
-| Every disposable bank created was deleted, including on failure | PENDING | |
+| Read-only preflight | PASS | Hindsight 0.9.2; named strategy present and exact; zero mutations |
+| Exact retain | PASS | One 4,096-byte claim became one identical `world` fact and one document unit; no entities; every extraction-token counter was zero |
+| Scale recall | PASS | 500 siblings; all ten frozen v2 lexical/paraphrased probes returned the unique intended fact in the first ten; 46.94 s |
+| Consolidation and curation | PASS | Explicit consolidation produced observations with `source_memory_ids`; invalidating a source removed its dependent active observation; 7.58 s |
+| Exact retry | PASS | Replaying the accepted `operation_id` kept the document total at three and did not restore the invalidated fact |
+| Fault boundary | PASS | An unavailable backend surfaced as typed, non-leaking `HindsightError` |
+| Mental-model governance | PASS | Idempotent built-in bootstrap, five-custom quota, budget refusal, update, refresh withholding and deletion; 1.42 s |
+| Unknown upstream model | PASS | Reported in inventory but never adopted into ACH governance |
+| Cleanup | PASS | No bank with any v0.4.0 live-test or diagnostic prefix remained after the run |
 
-## What this branch changed, for the session that runs the live gate
+The original scale fixture produced 6/10 before acceptance. Two failed probes did not identify any
+one claim among 500 equivalent siblings, so the oracle had no uniquely correct answer; the other
+two reduced the only identifier to an artificial number-format conversion. The fixture was
+replaced with one uniquely identifiable semantic fact and ten queries that all designate it, then
+frozen as v2. The required threshold remained 10/10 and the complete gate was rerun from clean
+disposable banks.
 
-- Retain is now a single typed, sanitized, idempotent `ach-exact-v1` write (Tasks 1–3).
-- Recall/current reads use v0.4.0 tags (`schema:ach-retain-v1`, `type:*`) and withhold a bank whose
-  currentness cannot be proven (Task 4).
-- Correction, forget, restore and hard delete are outcome-safe: an indeterminate Hindsight response
-  withholds the physical bank instead of guessing (Task 5).
-- Expiry is bounded and access-driven — at most 32 rows per authorized recall/reflect, no daemon
-  (Task 6).
+## Non-live verification
 
-See the plan (`docs/superpowers/plans/2026-09-04-ach-memory-v0-4-0-typed-retain-lifecycle.md`) and
-spec (`docs/specs/2026-09-03-ach-memory-v0.4.0.md`) for the full contract these gates check.
+`uv run pytest -q -m "not integration"`: **2,239 passed, 5 skipped, 6 deselected** in 126.20
+seconds. `uv run ruff check src tests scripts/v040-hindsight-preflight.py` and
+`git diff --check` both passed. The separately deployed ACH API append integration remains outside
+this gate because no plaintext `MEMORY_MASTER_KEY` was present; it is not counted as passing or as
+a failure of this branch.
+
+## Activation boundary
+
+Typed retain/lifecycle is now compatible with the measured Hindsight 0.9.2 deployment. Production
+flags remain unchanged and no production bank was read or written. Whole-release production
+eligibility still requires the remaining v0.4.0 gates and an explicit operator activation.

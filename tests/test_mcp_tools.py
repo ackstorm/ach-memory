@@ -168,7 +168,13 @@ def test_mental_model_tools_never_return_a_physical_or_upstream_id(call_tool, se
     from memory.models import User
 
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
-        return_value=httpx.Response(201, json={"id": "mm-upstream-secret"})
+        return_value=httpx.Response(
+            201,
+            json={
+                "mental_model_id": "mm-upstream-secret",
+                "operation_id": "6f8636ea-bba9-46b0-a253-a9b42a5c8bd2",
+            },
+        )
     )
     key = call_tool.make_user()
     bank_id = session.get(User, call_tool.last_user_id).bank_id

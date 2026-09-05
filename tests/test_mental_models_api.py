@@ -17,6 +17,7 @@ import respx
 from memory.models import User
 
 BASE = "http://hindsight.test"
+CREATE_OPERATION_ID = "4d4a6f25-2d09-40e1-95d7-75cfb9eb7f1b"
 
 REQUIRED_TAGS = ["schema:ach-retain-v1", "validity:indefinite"]
 TRIGGER = {"mode": "delta", "refresh_after_consolidation": True, "min_refresh_interval_seconds": 300}
@@ -63,7 +64,10 @@ def _create_body(**overrides) -> dict:
 
 def _mock_create(mm_id: str = "mm-upstream-1"):
     return respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
-        return_value=httpx.Response(201, json={"id": mm_id})
+        return_value=httpx.Response(
+            201,
+            json={"mental_model_id": mm_id, "operation_id": CREATE_OPERATION_ID},
+        )
     )
 
 
@@ -158,6 +162,9 @@ def test_an_unknown_trigger_mode_is_a_422(client, juan):
 def test_create_then_get_round_trips_by_model_key(client, juan):
     _mock_create()
     created = client.post("/v1/mental-models", json=_create_body(), headers=juan["headers"]).json()
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{CREATE_OPERATION_ID}$"
+    ).mock(return_value=httpx.Response(200, json={"status": "completed"}))
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
         return_value=httpx.Response(200, json={"items": []})
     )

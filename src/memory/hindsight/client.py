@@ -169,6 +169,10 @@ class HindsightClient:
             base_url=base_url, headers=headers, timeout=self._default_timeout
         )
 
+    def get_version(self) -> dict:
+        """Read the backend version/feature contract used by activation gates."""
+        return self._request("GET", paths.version())
+
     def _request(
         self,
         method: str,
@@ -361,9 +365,16 @@ class HindsightClient:
         )
 
     def get_bank_config(self, bank_id: str) -> dict:
-        """Read-only. No method in this client ever PATCHes this path --
-        see paths.config()."""
+        """Read the resolved and bank-local Hindsight configuration."""
         return self._request("GET", paths.config(self._tenant, bank_id))
+
+    def update_bank_config(self, bank_id: str, updates: dict[str, Any]) -> dict:
+        """Apply trusted ACH-owned configuration overrides to an existing bank."""
+        return self._request(
+            "PATCH",
+            paths.config(self._tenant, bank_id),
+            {"updates": updates},
+        )
 
     def retain_items(
         self,
@@ -504,6 +515,15 @@ class HindsightClient:
         return self._request(
             "POST", paths.reflect(self._tenant, bank_id), {"query": query},
             timeout=self._llm_timeout,  # a full synthesis call
+        )
+
+    def consolidate(self, bank_id: str) -> dict:
+        """Start Hindsight's bank-native async consolidation operation."""
+        return self._request(
+            "POST",
+            paths.consolidate(self._tenant, bank_id),
+            {},
+            timeout=self._llm_timeout,
         )
 
     def list_memories(self, bank_id: str, **filters: Any) -> dict:

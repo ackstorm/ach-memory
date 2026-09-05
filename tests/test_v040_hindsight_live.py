@@ -7,8 +7,8 @@ non-loopback target unless explicitly allow-listed -- see
 this file creates is registered BEFORE any mutation against it and deleted
 in the fixture's `finally`, even on failure.
 
-Field names read off Hindsight responses here (`items`, `results`,
-`answer`, `text`, `id`) are pinned against shapes already confirmed
+Field names read off Hindsight responses here (`items`, `results`, `text`,
+`source_memory_ids`, `operation_id`) are pinned against shapes confirmed
 elsewhere in this codebase (read_service.py, hindsight/client.py's own
 docstrings, existing mocked tests) -- this file is what proves them against
 the real thing.
@@ -29,10 +29,12 @@ import pytest
 
 from memory.errors import HindsightError
 from memory.hindsight.client import HindsightClient, RetainItem
+from memory.retain_strategy import ensure_exact_retain_strategy
 
 pytestmark = pytest.mark.integration
 
 _POLL_TIMEOUT_SECONDS = 30.0
+_SCALE_POLL_TIMEOUT_SECONDS = 120.0
 _POLL_INTERVAL_SECONDS = 0.5
 _TAGS = ["type:fact", "basis:human_explicit", "schema:ach-retain-v1", "validity:indefinite"]
 
@@ -69,8 +71,8 @@ def disposable():
 
     def make_bank(kind: str) -> str:
         bank_id = f"v040test-{kind}-{uuid.uuid4().hex[:20]}"
-        client.ensure_bank(bank_id)
         created.append(bank_id)  # registered BEFORE any mutation against it
+        ensure_exact_retain_strategy(client, bank_id)
         return bank_id
 
     try:
@@ -93,14 +95,22 @@ def _retain_one(client: HindsightClient, bank_id: str, content: str, *, document
     return operation_id
 
 
-def _poll_operation(client: HindsightClient, bank_id: str, operation_id: str) -> dict:
-    deadline = time.monotonic() + _POLL_TIMEOUT_SECONDS
+def _poll_operation(
+    client: HindsightClient,
+    bank_id: str,
+    operation_id: str,
+    *,
+    timeout_seconds: float = _POLL_TIMEOUT_SECONDS,
+) -> dict:
+    deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         operation = client.get_operation(bank_id, operation_id)
         if operation.get("status") in ("completed", "failed"):
             return operation
         time.sleep(_POLL_INTERVAL_SECONDS)
-    raise AssertionError("operation did not reach a terminal status within 30s")
+    raise AssertionError(
+        f"operation did not reach a terminal status within {timeout_seconds:g}s"
+    )
 
 
 def test_exact_strategy_produces_one_verbatim_world_fact(disposable):
@@ -110,14 +120,33 @@ def test_exact_strategy_produces_one_verbatim_world_fact(disposable):
     bank_id = make_bank("exact")
     content = "x" * 4096
 
-    operation_id = _retain_one(client, bank_id, content, document_id=f"ach-retain-{uuid.uuid4().hex}")
-    operation = _poll_operation(client, bank_id, operation_id)
-    assert operation["status"] == "completed"
+    item = RetainItem(
+        content=content,
+        document_id=f"ach-retain-{uuid.uuid4().hex}",
+        tags=list(_TAGS),
+        strategy="ach-exact-v1",
+        update_mode="replace",
+    )
+    result = client.retain_items(
+        bank_id, [item], operation_id=str(uuid.uuid4()), is_async=False
+    )
+    assert result["usage"] == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cached_tokens": 0,
+        "thoughts_tokens": 0,
+    }
 
     listing = client.list_memories(bank_id, type="world")
     items = listing.get("items") or []
     assert len(items) == 1
     assert items[0].get("text") == content
+    assert not items[0].get("entities")
+
+    documents = client.list_documents(bank_id)
+    assert documents["total"] == 1
+    assert (documents.get("items") or [])[0].get("memory_unit_count") == 1
 
 
 def test_500_sibling_claims_are_recalled_by_ten_frozen_probes(disposable):
@@ -128,9 +157,17 @@ def test_500_sibling_claims_are_recalled_by_ten_frozen_probes(disposable):
     bank_id = make_bank("scale")
 
     target_index = 250
+    target_text = (
+        f"Sibling claim number {target_index:04d} says the amber kestrel prefers "
+        "cobalt fasteners during monsoon maintenance."
+    )
     items = [
         RetainItem(
-            content=f"Sibling claim number {n:04d} about deterministic recall testing.",
+            content=(
+                target_text
+                if n == target_index
+                else f"Sibling claim number {n:04d} about deterministic recall testing."
+            ),
             document_id=f"ach-retain-scale-{n:04d}", tags=list(_TAGS),
             strategy="ach-exact-v1", update_mode="replace",
         )
@@ -138,21 +175,31 @@ def test_500_sibling_claims_are_recalled_by_ten_frozen_probes(disposable):
     ]
     operation_id = str(uuid.uuid4())
     client.retain_items(bank_id, items, operation_id=operation_id, is_async=True)
-    operation = _poll_operation(client, bank_id, operation_id)
+    # This is one synthetic 500-document compatibility probe, not ACH's
+    # one-claim typed retain path. Keep its observation window local to this
+    # scale gate instead of widening production request timeouts.
+    operation = _poll_operation(
+        client,
+        bank_id,
+        operation_id,
+        timeout_seconds=_SCALE_POLL_TIMEOUT_SECONDS,
+    )
     assert operation["status"] == "completed"
 
-    target_text = f"Sibling claim number {target_index:04d} about deterministic recall testing."
+    # Every probe identifies the sole intended fact. The first live draft had
+    # two generic queries that could not distinguish claim 0250 from 499
+    # equally correct siblings; that was an invalid oracle, not a recall gate.
     probes = [
         f"sibling claim number {target_index:04d}",
-        "deterministic recall testing sibling claim",
-        f"claim {target_index:04d}",
-        "sibling number two hundred fifty",
-        f"number {target_index:04d} deterministic",
-        "recall testing claim two-fifty",
-        f"{target_index:04d} sibling",
-        "deterministic testing claim two hundred fifty",
-        f"claim number {target_index}",
-        "sibling claims deterministic recall",
+        "amber kestrel cobalt fasteners",
+        "Which amber bird prefers cobalt hardware?",
+        "What fasteners does the kestrel prefer?",
+        "bird preference during monsoon maintenance",
+        f"claim {target_index:04d} cobalt",
+        "blue-metal fasteners used by an amber kestrel",
+        "kestrel hardware preference",
+        "monsoon upkeep with cobalt fasteners",
+        "amber kestrel rainy-season maintenance",
     ]
 
     misses = []
@@ -169,9 +216,8 @@ def test_500_sibling_claims_are_recalled_by_ten_frozen_probes(disposable):
 
 
 def test_consolidation_curation_and_retry_cases(disposable):
-    """Consolidation cites its source facts; forgetting a source is
-    reflected upstream; a retry after a lost response with the SAME
-    operation_id never creates a second document (SPEC §6.1)."""
+    """Consolidation cites its source facts; forgetting one removes its
+    dependent observations; an exact retry never creates another document."""
     client, make_bank = disposable
     bank_id = make_bank("curation")
 
@@ -189,21 +235,60 @@ def test_consolidation_curation_and_retry_cases(disposable):
     ]
     operation_id = str(uuid.uuid4())
     client.retain_items(bank_id, items, operation_id=operation_id, is_async=True)
-    _poll_operation(client, bank_id, operation_id)
+    retained = _poll_operation(client, bank_id, operation_id)
+    assert retained["status"] == "completed"
+    assert client.list_documents(bank_id)["total"] == 3
+
+    consolidation = client.consolidate(bank_id)
+    consolidated = _poll_operation(client, bank_id, consolidation["operation_id"])
+    assert consolidated["status"] == "completed"
+
+    observations = client.list_memories(bank_id, type="observation").get("items") or []
+    assert observations
 
     reflect_result = client.reflect(bank_id, "What happened with the gRPC migration?")
-    assert reflect_result.get("answer")
+    assert reflect_result.get("text")
 
     listing = client.list_memories(bank_id, type="world")
     source_ids = [m["id"] for m in listing.get("items") or []]
     assert source_ids
 
-    client.curate(bank_id, source_ids[0], state="invalidated", reason="v0.4.0 live gate cleanup probe")
+    cited_source_ids = {
+        source_id
+        for observation in observations
+        for source_id in observation.get("source_memory_ids") or []
+    }
+    assert cited_source_ids.intersection(source_ids)
+
+    invalidated_source_id = next(iter(cited_source_ids.intersection(source_ids)))
+    dependent_observation_ids = {
+        observation["id"]
+        for observation in observations
+        if invalidated_source_id in (observation.get("source_memory_ids") or [])
+    }
+    assert dependent_observation_ids
+
+    client.curate(
+        bank_id,
+        invalidated_source_id,
+        state="invalidated",
+        reason="v0.4.0 live gate cleanup probe",
+    )
+    active_observation_ids = {
+        observation["id"]
+        for observation in (
+            client.list_memories(bank_id, type="observation").get("items") or []
+        )
+    }
+    assert dependent_observation_ids.isdisjoint(active_observation_ids)
 
     # An exact retry at the same operation_id resolves the same document,
-    # never a second one -- accepted here even if upstream treats it as a
-    # pure no-op replay.
-    client.retain_items(bank_id, items, operation_id=operation_id, is_async=True)
+    # never a second one and never silently restores the invalidated fact.
+    replay = client.retain_items(
+        bank_id, items, operation_id=operation_id, is_async=True
+    )
+    assert replay.get("operation_id") == operation_id
+    assert client.list_documents(bank_id)["total"] == 3
 
 
 def test_fault_injection_at_the_client_boundary():

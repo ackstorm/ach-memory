@@ -30,7 +30,10 @@ from memory.models import User
 from memory.retained_records import LogicalBankRef
 
 REQUIRED_TAGS = ("schema:ach-retain-v1", "validity:indefinite")
-TRIGGER = {"mode": "manual"}
+# Hindsight 0.9.2 represents a manually refreshed model by omitting its
+# trigger. ACH keeps an empty object in its non-null registry column and
+# normalizes that object at the client boundary.
+TRIGGER = {}
 
 
 @pytest.fixture
@@ -45,7 +48,10 @@ def bank(session, tenant):
 def hindsight():
     client = mock.MagicMock(spec=HindsightClient)
     counter = iter(range(1, 1000))
-    client.create_mental_model.side_effect = lambda *a, **k: {"id": f"mm-upstream-{next(counter)}"}
+    client.create_mental_model.side_effect = lambda *a, **k: {
+        "mental_model_id": f"mm-upstream-{next(counter)}",
+        "operation_id": f"op-upstream-{next(counter)}",
+    }
     return client
 
 
@@ -139,7 +145,12 @@ class PendingRegistration:
             "name": f"ach:{self.model_key}",
             "source_query": self.source_query,
             "max_tokens": self.max_tokens,
-            "trigger": self.trigger,
+            "trigger": {
+                "mode": "full",
+                "refresh_after_consolidation": False,
+                "exclude_mental_models": False,
+                "keep_trace": False,
+            },
             "tags": list(self.source_tags),
         }
 
@@ -189,6 +200,23 @@ def test_custom_create_returns_ach_key_and_hides_upstream_id(session, bank, hind
     assert hindsight.create_mental_model.call_args.kwargs["name"] == f"ach:{result.model_key}"
     assert not hasattr(result, "upstream_model_id")
     assert not hasattr(result, "bank_id")
+
+
+def test_custom_create_omits_an_empty_manual_trigger_upstream(
+    session, bank, hindsight, create_request
+):
+    create_custom_model(session, bank, create_request, client=hindsight)
+
+    assert hindsight.create_mental_model.call_args.kwargs["trigger"] is None
+
+
+def test_custom_create_withholds_generated_content_until_its_operation_completes(
+    session, bank, hindsight, create_request
+):
+    result = create_custom_model(session, bank, create_request, client=hindsight)
+
+    assert result.delivery_state == "withheld"
+    assert result.refresh_status == "pending"
 
 
 def test_sixth_custom_create_is_rejected_before_hindsight(session, bank, hindsight, five_custom_models):
@@ -253,6 +281,20 @@ def test_create_rejects_a_source_selection_missing_a_required_tag():
         )
 
 
+def test_create_rejects_the_nonexistent_manual_trigger_mode():
+    with pytest.raises(ValueError, match="trigger mode"):
+        CustomModelCreateRequest(
+            name="bad-trigger",
+            source_query="q",
+            source_tags=REQUIRED_TAGS,
+            tags_match="all",
+            max_tokens=256,
+            trigger={"mode": "manual"},
+            always_in_context=False,
+            operation_id=str(uuid4()),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Resume: crash recovery for a lost create response
 # ---------------------------------------------------------------------------
@@ -269,7 +311,10 @@ def test_create_retry_adopts_only_exact_matching_upstream_model(session, bank, h
 
 def test_resume_retries_creation_when_no_upstream_model_exists(session, bank, hindsight, pending_registration):
     hindsight.list_mental_models.return_value = {"items": []}
-    hindsight.create_mental_model.return_value = {"id": "mm-freshly-created"}
+    hindsight.create_mental_model.return_value = {
+        "mental_model_id": "mm-freshly-created",
+        "operation_id": "op-freshly-created",
+    }
 
     result = resume_model_mutation(session, bank, pending_registration.operation_id, client=hindsight)
 
@@ -334,6 +379,40 @@ def test_update_changes_source_query_and_forwards_it_upstream(session, bank, hin
     hindsight.update_mental_model.assert_called_once_with(
         bank.bank_id, "mm-upstream-1", source_query="Summarize new conventions."
     )
+
+
+def test_update_to_manual_refresh_explicitly_disables_upstream_automation(
+    session, bank, hindsight
+):
+    created = create_custom_model(
+        session,
+        bank,
+        custom_request(always_in_context=False).model_copy(
+            update={
+                "trigger": {
+                    "mode": "delta",
+                    "refresh_after_consolidation": True,
+                    "min_refresh_interval_seconds": 300,
+                }
+            }
+        ),
+        client=hindsight,
+    )
+
+    updated = update_model(
+        session,
+        bank,
+        created.model_key,
+        CustomModelUpdateRequest(trigger={}, operation_id=str(uuid4())),
+        client=hindsight,
+    )
+
+    assert updated.trigger == {}
+    assert hindsight.update_mental_model.call_args.kwargs["trigger"] == {
+        "mode": "full",
+        "refresh_after_consolidation": False,
+        "refresh_cron": None,
+    }
 
 
 def test_update_cannot_change_a_builtin(session, user_bank_with_builtin, hindsight):
