@@ -12,8 +12,8 @@ Verified on 2026-09-05:
 - real headless retain-skill evaluation: 120/120 decisions, every hard gate passed;
 - real clean install and v0.3.5-to-v0.4.0 data-preserving migrations;
 - one Alembic head;
-- real Hindsight 0.9.2 disposable-bank gate: 7 passed in 63.95 seconds;
-- maximum context selection: nine live model reads, 30 warmed calls, p95 0.095722 seconds;
+- real Hindsight 0.9.2 disposable-bank gate: 7 passed in 65.82 seconds;
+- maximum context selection: nine live model reads, 30 warmed calls, p95 0.140193 seconds;
 - cleanup of every disposable bank created by the final gate.
 
 The final non-live repository count and runtime are recorded in the test-portfolio report. Ruff,
