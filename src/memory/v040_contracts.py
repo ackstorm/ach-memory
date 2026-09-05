@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -36,6 +36,8 @@ class TypedRetainRequest(BaseModel):
             raise ValueError("project_slug is forbidden for user scope")
         if self.valid_until is not None and self.valid_until.utcoffset() is None:
             raise ValueError("valid_until must include an RFC 3339 offset")
+        if self.valid_until is not None and self.valid_until <= datetime.now(UTC):
+            raise ValueError("valid_until must be later than the current time")
         return self
 
 

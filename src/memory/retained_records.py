@@ -114,7 +114,7 @@ def _payload_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _document_id(operation_id: UUID) -> str:
+def document_id_for(operation_id: UUID) -> str:
     return f"ach-retain-{operation_id.hex}"
 
 
@@ -150,7 +150,7 @@ def accept_retain(
         project_internal_id=bank.project_internal_id,
         operation_id=str(request.operation_id),
         payload_hash=digest,
-        document_id=_document_id(request.operation_id),
+        document_id=document_id_for(request.operation_id),
         canonical_content=canonical_content,
         memory_type=request.memory_type,
         basis=request.basis,
