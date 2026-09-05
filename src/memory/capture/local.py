@@ -27,6 +27,7 @@ import httpx
 
 from memory.capture.contracts import CheckpointAccepted, CheckpointSubmission
 from memory.errors import ProjectInvalidSlug
+from memory.sanitization import redact_secrets
 from memory.slugs import canonical_locator, slug_from_locator
 
 # --------------------------------------------------------------------------
@@ -194,29 +195,13 @@ def read_new_slice(transcript_path: Path, start_offset: int) -> RawSlice:
 # Sanitization
 # --------------------------------------------------------------------------
 
-_SECRET_PATTERNS = [
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._-]{10,}"),
-    # Common vendor token shapes: sk-..., ghp_..., xoxb-..., mem_..., etc.
-    re.compile(r"\b(?:sk|gh[oprsu]|mem|xox[baprs])[-_][A-Za-z0-9]{10,}\b"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
-    # scheme://user:pass@host credential URLs.
-    re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@\S+"),
-    # scheme://token@host -- userinfo with no colon is still a credential,
-    # and it is the exact spelling `git remote set-url` writes for a PAT.
-    re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+@\S+"),
-    # Assignment-style secrets: FOO_TOKEN=..., "password": "...", etc.
-    re.compile(r"(?i)\b\w*(?:secret|password|passwd|token|api[_-]?key)\w*\s*[=:]\s*\S+"),
-]
-
-
 def redact(text: str) -> str:
     """Structural, not semantic: fixed patterns for shapes secrets commonly
-    take. This is a floor, not a promise -- it cannot catch a secret with no
-    recognizable shape, which is exactly why file bodies and tool inputs are
-    dropped outright instead of redacted in place (see `_sanitize_block`)."""
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub("[redacted]", text)
-    return text
+    take, shared with `memory.sanitization`. This is a floor, not a promise --
+    it cannot catch a secret with no recognizable shape, which is exactly why
+    file bodies and tool inputs are dropped outright instead of redacted in
+    place (see `_sanitize_block`)."""
+    return redact_secrets(text)
 
 
 def _text_from_content(content: object) -> str:
