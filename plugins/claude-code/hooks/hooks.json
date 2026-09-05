@@ -1,5 +1,5 @@
 {
-  "description": "ach-memory activation - announces the memory tools, never calls them",
+  "description": "ach-memory lifecycle - loads standing context and provides retain guidance",
   "hooks": {
     "SessionStart": [
       {

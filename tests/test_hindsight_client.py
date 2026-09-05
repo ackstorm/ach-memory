@@ -998,7 +998,7 @@ def test_create_mental_model_trigger_carries_response_schema_and_keep_trace_verb
     client,
 ):
     """Pins the existing verbatim trigger pass-through (no new handling
-    added for this): a structured-profile trigger's `mode`/`response_schema`/
+    added for this): a structured-output trigger's `mode`/`response_schema`/
     `keep_trace` keys reach the wire exactly as given."""
     import json
 
@@ -1009,7 +1009,7 @@ def test_create_mental_model_trigger_carries_response_schema_and_keep_trace_verb
     )
     trigger = {
         "mode": "full",
-        "response_schema": {"type": "object", "properties": {"user_profile": {}}},
+        "response_schema": {"type": "object", "properties": {"summary": {}}},
         "keep_trace": True,
     }
 

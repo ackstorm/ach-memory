@@ -130,25 +130,8 @@ def test_the_repository_root_is_the_marketplace_for_both_hosts() -> None:
 
 
 @pytest.mark.parametrize("host", NATIVE)
-def test_hooks_register_only_the_two_activation_events(host: str) -> None:
-    """Pinned, and both absentees are deliberate for codex (claude-code
-    additionally registers Stop/PreCompact -- see
-    test_claude_code_registers_silent_capture_checkpoint_hooks below).
-
-    UserPromptSubmit was paid on every message for a reminder actionable on
-    few of them. Stop was tried in its place and is worse: Claude Code treats
-    ANY output from a Stop hook as feedback that blocks the turn from ending,
-    so the nudge re-fired until the block cap -- measured at nine extra model
-    turns for one response, with the agent answering "nothing to retain" each
-    time. `stop_hook_active` would bound that to one extra turn per response,
-    which is still a whole turn to say nothing.
-
-    The retain guidance lives in activation.txt, where it costs one injection
-    per session. Phase 3's Stop/PreCompact hooks are a categorically
-    different thing from the abandoned reminder: they never print anything
-    at all, so there is no feedback for Claude Code to act on -- see the
-    silence test below, not "no output happened to be visible this time."
-    """
+def test_hosts_register_only_current_lifecycle_events(host: str) -> None:
+    """Every supported lifecycle entry is explicit and host-native."""
     hooks = _json(ROOT / "plugins" / host / "hooks" / "hooks.json")["hooks"]
 
     assert {"SessionStart", "SubagentStart"} <= set(hooks)
@@ -167,18 +150,8 @@ def test_hooks_register_only_the_two_activation_events(host: str) -> None:
         assert hook["command"] == f'"${{{root}}}/scripts/{name}"'
 
 
-
-
-
-
-
-
-
-
-
-
 def test_the_consumer_contract_ships_as_host_policy():
-    """Brief contents are dynamic; these interpretation rules are not."""
+    """Standing context is dynamic; its interpretation rules are not."""
     contract = (ROOT / "plugins" / "claude-code/activation.txt").read_text()
 
     assert "earn its place" in contract.lower()

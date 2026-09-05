@@ -21,7 +21,7 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
                 "results": [
                     {
                         "id": "memory-1",
-                        "text": "Capture is disabled.",
+                        "text": "Production deployment is disabled.",
                         "type": "observation",
                         "bank_id": "must-not-leak",
                         "embedding": [1, 2, 3],
@@ -34,7 +34,7 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
     key = two_users[0]["key"]
     response = client.post(
         "/v1/read/recall",
-        json={"scope": "user", "query": "Why is capture disabled?"},
+        json={"scope": "user", "query": "Why is deployment disabled?"},
         headers=_headers(key),
     )
 
@@ -45,7 +45,7 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
         "hits": [
             {
                 "memory_id": "memory-1",
-                "text": "Capture is disabled.",
+                "text": "Production deployment is disabled.",
                 "fact_type": "observation",
                 "state": "valid",
                 "kind": None,

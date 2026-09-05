@@ -10,6 +10,7 @@ production bank or model is ever touched.
 """
 
 import os
+import time
 import uuid
 from urllib.parse import urlsplit
 
@@ -82,10 +83,19 @@ def live_bank(session, tenant, live_client):
     try:
         yield bank
     finally:
-        try:
-            live_client.delete_bank(bank.bank_id)
-        except Exception as exc:  # noqa: BLE001 -- best-effort cleanup must never mask a real failure
-            print(f"ach-memory: live-test cleanup could not delete disposable bank: {exc}")
+        last_error = None
+        for _ in range(5):
+            try:
+                live_client.delete_bank(bank.bank_id)
+                last_error = None
+                break
+            except Exception as exc:  # noqa: BLE001 -- bounded disposable cleanup retry
+                last_error = exc
+                time.sleep(0.5)
+        if last_error is not None:
+            raise AssertionError(
+                "could not delete a disposable governance-test bank"
+            ) from last_error
 
 
 def _principal_for(bank: LogicalBankRef) -> Principal:

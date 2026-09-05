@@ -218,7 +218,16 @@ def test_maximum_context_selection_is_live_parallel_and_bounded(session, tenant)
         ]
     finally:
         for bank in created_banks:
-            try:
-                client.delete_bank(bank)
-            except Exception as exc:  # noqa: BLE001 -- cleanup must not hide the gate
-                print(f"ach-memory: disposable context cleanup failed: {exc}")
+            last_error = None
+            for _ in range(5):
+                try:
+                    client.delete_bank(bank)
+                    last_error = None
+                    break
+                except Exception as exc:  # noqa: BLE001 -- bounded disposable cleanup retry
+                    last_error = exc
+                    time.sleep(0.5)
+            if last_error is not None:
+                raise AssertionError(
+                    "could not delete a disposable context-test bank"
+                ) from last_error

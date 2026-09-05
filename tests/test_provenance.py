@@ -20,10 +20,10 @@ def test_extraction_metadata_keeps_the_six_extraction_fields():
 
 def test_client_metadata_survives_when_it_is_not_reserved():
     extraction = provenance.build(
-        {"profile": "security", "pr": "382"}, project_slug="payments-api"
+        {"component": "security", "pr": "382"}, project_slug="payments-api"
     )
 
-    assert extraction["profile"] == "security"
+    assert extraction["component"] == "security"
     assert extraction["pr"] == "382"
 
 

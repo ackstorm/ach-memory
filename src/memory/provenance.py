@@ -129,8 +129,8 @@ def build(
         raise ContentTooLarge(f"metadata exceeds {limit} bytes")
 
     # A DENYLIST, not an allowlist: every key EXCEPT AUDIT_ONLY_KEYS goes to
-    # extraction. §13.3's MEMORY_PROJECT_METADATA example ({"profile":
-    # "security", ...}) is exactly the unknown-key case that must reach
+    # extraction. A caller-defined key such as {"component": "security"}
+    # is exactly the unknown-key case that must reach
     # extraction, so forwarding by default is correct -- but a reader who
     # takes the module docstring's "the extraction six" literally will expect
     # unknown keys to be held back, and they are not.

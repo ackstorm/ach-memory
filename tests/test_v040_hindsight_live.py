@@ -79,10 +79,19 @@ def disposable():
         yield client, make_bank
     finally:
         for bank_id in created:
-            try:
-                client.delete_bank(bank_id)
-            except Exception:  # noqa: BLE001, S110 -- best-effort cleanup, never masks the test's own failure
-                pass
+            last_error = None
+            for _ in range(5):
+                try:
+                    client.delete_bank(bank_id)
+                    last_error = None
+                    break
+                except Exception as exc:  # noqa: BLE001 -- bounded disposable cleanup retry
+                    last_error = exc
+                    time.sleep(0.5)
+            if last_error is not None:
+                raise AssertionError(
+                    "could not delete a disposable v0.4.0 live-test bank"
+                ) from last_error
 
 
 def _retain_one(client: HindsightClient, bank_id: str, content: str, *, document_id: str) -> str:

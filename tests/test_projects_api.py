@@ -248,11 +248,7 @@ def test_patch_without_git_locator_leaves_it_alone(client, juan, tenant):
 
 
 def test_project_metadata_round_trips(client, juan, tenant):
-    """Orientation is derivable, so it must not cost a memory fact. An audit of
-    the project mental model found it carried zero orientation -- no name, no
-    spec pointer, no purpose -- because nothing but a Hindsight fact could hold
-    it, and facts compete for a profile item budget.
-    """
+    """Derivable orientation is project metadata, not a durable memory fact."""
     client.post(
         "/v1/projects", json={"project_slug": "acme-api"}, headers=juan["headers"]
     )
