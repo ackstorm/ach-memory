@@ -10,6 +10,8 @@ from memory.mcp.tools import MCPToolError
 
 BASE = "http://hindsight.test"
 GHOST = "22222222-2222-2222-2222-222222222222"
+MM_GHOST = "mm_" + "0" * 32
+MM_REQUIRED_TAGS = ["schema:ach-retain-v1", "validity:indefinite"]
 
 
 @pytest.fixture
@@ -30,11 +32,14 @@ def call_tool(app, client, master_headers, tenant):
             f"/v1/users/{user_id}/keys", json={}, headers=master_headers
         ).json()["key"]
 
-    def _call(name: str, key: str, **kwargs):
+    def _call(tool_name: str, key: str, **kwargs):
+        # `tool_name`, not `name`: a mental-model tool has its own `name`
+        # kwarg (the model's display name), which collided with this
+        # fixture's own lookup parameter under **kwargs expansion.
         class _Ctx:
             headers: ClassVar = {"authorization": f"Bearer {key}"}
 
-        return tool_module.REGISTRY[name](ctx=_Ctx(), **kwargs)
+        return tool_module.REGISTRY[tool_name](ctx=_Ctx(), **kwargs)
 
     _call.make_user = _make_user
     return _call
@@ -127,6 +132,34 @@ def test_a_tool_never_returns_a_bank_id(call_tool, session):
     assert "chunk_id" not in str(
         call_tool("recall", key, scope="user", query="deps", verbose=True).result
     )
+
+
+@respx.mock
+def test_mental_model_tools_never_return_a_physical_or_upstream_id(call_tool, session):
+    """SPEC §7.2: public callers address a model by logical scope and
+    model_key; upstream mental-model ids and physical bank ids are
+    implementation details MCP must never surface, same as REST."""
+    from memory.models import User
+
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
+        return_value=httpx.Response(201, json={"id": "mm-upstream-secret"})
+    )
+    key = call_tool.make_user()
+    bank_id = session.get(User, call_tool.last_user_id).bank_id
+
+    created = call_tool(
+        "create_mental_model", key, scope="user", name="n", source_query="q",
+        source_tags=MM_REQUIRED_TAGS, tags_match="all", max_tokens=512,
+        always_in_context=False, trigger={"mode": "delta"},
+    )
+
+    assert created.result["model_key"].startswith("mm_")
+    for result in (created.result, str(created.model_dump())):
+        text = str(result)
+        assert "mm-upstream-secret" not in text
+        assert bank_id not in text
+        assert "upstream_model_id" not in text
+        assert "bank_id" not in text
 
 
 @respx.mock
@@ -309,6 +342,15 @@ GHOST_EXTRA_KWARGS: dict[str, dict[str, str]] = {
     "delete_document": {"document_id": "doc1"},
     "get_operation": {"operation_id": GHOST},
     "cancel_operation": {"operation_id": GHOST},
+    "create_mental_model": {
+        "name": "n", "source_query": "q", "source_tags": MM_REQUIRED_TAGS,
+        "tags_match": "all", "max_tokens": 512, "always_in_context": False,
+        "trigger": {"mode": "delta"},
+    },
+    "get_mental_model": {"model_key": MM_GHOST},
+    "update_mental_model": {"model_key": MM_GHOST, "name": "n2"},
+    "refresh_mental_model": {"model_key": MM_GHOST},
+    "delete_mental_model": {"model_key": MM_GHOST},
 }
 
 MCP_IS_WRITE_TABLE: dict[str, bool] = {
@@ -318,6 +360,8 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
     "get_document": False, "delete_document": True, "get_operation": False,
     "list_operations": False, "cancel_operation": True,
     "start_working_session": True, "set_working_state": True,
+    "create_mental_model": True, "list_mental_models": False, "get_mental_model": False,
+    "update_mental_model": True, "refresh_mental_model": True, "delete_mental_model": True,
 }
 
 MCP_CREATE_TABLE: dict[str, bool] = {
@@ -327,6 +371,10 @@ MCP_CREATE_TABLE: dict[str, bool] = {
     "get_document": False, "delete_document": False, "get_operation": False,
     "list_operations": False, "cancel_operation": False,
     "start_working_session": False, "set_working_state": False,
+    # Every mental-model tool resolves with create=False (SPEC §7: maintenance
+    # over an existing bank, never first-touch project creation).
+    "create_mental_model": False, "list_mental_models": False, "get_mental_model": False,
+    "update_mental_model": False, "refresh_mental_model": False, "delete_mental_model": False,
 }
 
 # Working State tools take no `scope`/generic project kwargs at all -- their
@@ -388,7 +436,11 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == "RATE_LIMITED", name
-        elif name == "memory_history":
+        elif name in ("memory_history", "get_mental_model"):
+            # get_mental_model is a pure registry read with no Hindsight call
+            # to mock success from -- a ghost model_key genuinely 404s. The
+            # property under test is still "not RATE_LIMITED", same as
+            # memory_history's own carve-out above.
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code != "RATE_LIMITED"
@@ -1142,9 +1194,11 @@ EXPECTED_TOOLS = {
     "list_documents", "get_document", "delete_document",
     "get_operation", "list_operations", "cancel_operation",
     "start_working_session", "set_working_state",
+    "create_mental_model", "list_mental_models", "get_mental_model",
+    "update_mental_model", "refresh_mental_model", "delete_mental_model",
 }
 
-TOOL_CONTRACT_SHA256 = "10818241354d986d62f485f732aee7c2233f4e547dd98aca794442857c42e56a"
+TOOL_CONTRACT_SHA256 = "847aa9b08f068ffd9f3b68246f355d0cbed0577c327178ba7f4cb9d5bc6f1074"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1156,7 +1210,7 @@ def test_tool_registration_is_stable_after_module_split():
     tools = mcp._tool_manager.list_tools()
     names = {tool.name for tool in tools}
 
-    assert len(tools) == 18
+    assert len(tools) == 24
     assert {
         "retain", "sync_retain", "recall", "reflect",
         "start_working_session", "set_working_state",
@@ -1190,7 +1244,7 @@ async def test_serialized_tool_contract_is_stable_after_module_split():
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
 
-    assert len(tools) == 18
+    assert len(tools) == 24
     assert hashlib.sha256(serialized).hexdigest() == TOOL_CONTRACT_SHA256
 
 # SPEC §11.6 and §11.7. Each is excluded for a stated reason: whole-bank
@@ -1202,9 +1256,11 @@ FORBIDDEN_TOOLS = {
     "clear_memories", "delete_bank", "get_bank", "update_bank", "get_bank_stats",
     "list_banks", "create_bank", "dry_run_refresh", "dry-run-refresh",
     "list_tags", "retry_operation", "delete_operation",
-    "create_mental_model", "get_mental_model", "list_mental_models",
-    "update_mental_model", "refresh_mental_model", "clear_mental_model",
-    "delete_mental_model",
+    # clear_mental_model/list_mental_model_history: dropped entirely from the
+    # v0.4.0 governed lifecycle (SPEC §7), REST included -- not merely absent
+    # from MCP. create/get/list/update/refresh/delete_mental_model are now
+    # part of EXPECTED_TOOLS instead of forbidden.
+    "clear_mental_model", "list_mental_model_history",
     "create_directive", "list_directives", "delete_directive",
     "update_project", "transfer_project", "create_project",
     "create_user", "create_group", "create_key",

@@ -108,7 +108,7 @@ def mutation_query_params(
     )
 
 
-def _resolve_logical_bank(
+def resolve_logical_bank(
     body: ScopedRequest,
     db: Session,
     principal: Principal,
@@ -151,7 +151,7 @@ def create_mental_model(
     # MentalModelTrigger is extra="allow" (pass-through), so an oversize
     # caller-authored key is otherwise the last uncapped blob on this route.
     _check_content_size(json.dumps(body.trigger.model_dump(exclude_none=True)))
-    bank = _resolve_logical_bank(
+    bank = resolve_logical_bank(
         body, db, principal, on_behalf_of, "mental_models.create", is_write=True
     )
     db.commit()
@@ -175,7 +175,7 @@ def list_mental_models(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> ModelListResult:
-    bank = _resolve_logical_bank(
+    bank = resolve_logical_bank(
         scoped, db, principal, on_behalf_of, "mental_models.list", is_write=False
     )
     db.commit()
@@ -190,7 +190,7 @@ def get_mental_model(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MentalModelView:
-    bank = _resolve_logical_bank(
+    bank = resolve_logical_bank(
         scoped, db, principal, on_behalf_of, "mental_models.get", is_write=False
     )
     db.commit()
@@ -209,7 +209,7 @@ def update_mental_model(
         _check_content_size(body.source_query)
     if body.trigger is not None:
         _check_content_size(json.dumps(body.trigger.model_dump(exclude_none=True)))
-    bank = _resolve_logical_bank(
+    bank = resolve_logical_bank(
         body, db, principal, on_behalf_of, "mental_models.update", is_write=True
     )
     db.commit()
@@ -232,7 +232,7 @@ def delete_mental_model(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> Response:
-    bank = _resolve_logical_bank(
+    bank = resolve_logical_bank(
         scoped, db, principal, on_behalf_of, "mental_models.delete", is_write=True
     )
     db.commit()
@@ -248,7 +248,7 @@ def refresh_mental_model(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MentalModelView:
-    bank = _resolve_logical_bank(
+    bank = resolve_logical_bank(
         scoped, db, principal, on_behalf_of, "mental_models.refresh", is_write=True
     )
     db.commit()

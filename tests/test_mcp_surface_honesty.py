@@ -35,27 +35,40 @@ READONLY = {
     "delete_document": False, "get_operation": True, "list_operations": True,
     "cancel_operation": False, "start_working_session": False,
     "set_working_state": False,
+    "create_mental_model": False, "list_mental_models": True, "get_mental_model": True,
+    "update_mental_model": False, "refresh_mental_model": False, "delete_mental_model": False,
 }
 
 WORKING_STATE_TOOLS = {"start_working_session", "set_working_state"}
+MODEL_TOOLS = {
+    "create_mental_model", "list_mental_models", "get_mental_model",
+    "update_mental_model", "refresh_mental_model", "delete_mental_model",
+}
 
 
 def test_product_registrars_own_disjoint_tool_sets():
-    """A product move must not leave either registrar owning the other's tools."""
-    from memory.mcp import memory_tools, working_state_tools
+    """A product move must not leave any registrar owning another's tools."""
+    from memory.mcp import memory_tools, model_tools, working_state_tools
     from memory.mcp.server import build_mcp
 
     memory_mcp = build_mcp()
     memory_tools.register(memory_mcp)
     memory_names = {tool.name for tool in memory_mcp._tool_manager.list_tools()}
 
+    model_mcp = build_mcp()
+    model_tools.register(model_mcp)
+    model_names = {tool.name for tool in model_mcp._tool_manager.list_tools()}
+
     state_mcp = build_mcp()
     working_state_tools.register(state_mcp)
     state_names = {tool.name for tool in state_mcp._tool_manager.list_tools()}
 
-    assert memory_names == set(READONLY) - WORKING_STATE_TOOLS
+    assert memory_names == set(READONLY) - WORKING_STATE_TOOLS - MODEL_TOOLS
+    assert model_names == MODEL_TOOLS
     assert state_names == WORKING_STATE_TOOLS
     assert memory_names.isdisjoint(state_names)
+    assert memory_names.isdisjoint(model_names)
+    assert model_names.isdisjoint(state_names)
 
 
 def test_the_readonly_table_covers_every_registered_tool():
@@ -78,6 +91,25 @@ def test_no_tool_claims_readonly_while_it_creates_or_writes(name):
     if advertised:
         assert not MCP_CREATE_TABLE[name], f"{name} creates but claims read-only"
         assert not MCP_IS_WRITE_TABLE[name], f"{name} writes but claims read-only"
+
+
+def test_model_tools_are_registered_with_honest_annotations():
+    mgr = _manager()
+    for name in ("list_mental_models", "get_mental_model"):
+        ann = mgr.get_tool(name).annotations
+        assert bool(ann and ann.read_only_hint) is True, name
+    for name in (
+        "create_mental_model", "update_mental_model",
+        "refresh_mental_model", "delete_mental_model",
+    ):
+        ann = mgr.get_tool(name).annotations
+        assert not (ann and ann.read_only_hint), name
+
+
+def test_create_model_schema_requires_always_in_context():
+    mgr = _manager()
+    schema = mgr.get_tool("create_mental_model").parameters
+    assert "always_in_context" in schema["required"]
 
 
 def test_the_advertised_schema_carries_the_vocabulary_the_models_enforce():
