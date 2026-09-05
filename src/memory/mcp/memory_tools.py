@@ -324,7 +324,11 @@ def register(mcp: MCPServer) -> None:
         )
 
     @mcp.tool(
-        description="Search memory and return bounded, grounded matching facts.",
+        description=(
+            "Search memory and return bounded, grounded matching facts. May "
+            "also expire a bounded batch (at most 32) of claims already past "
+            "their stated expiry as a side effect of this access."
+        ),
         annotations=ToolAnnotations(
             readOnlyHint=True, destructiveHint=False,
             idempotentHint=True, openWorldHint=False,
@@ -348,9 +352,9 @@ def register(mcp: MCPServer) -> None:
             )
 
         def call(resolved, db, principal, body):
-            read_service.ensure_current_read_allowed(
-                db, read_service.bank_ref(principal, resolved)
-            )
+            recall_bank_ref = read_service.bank_ref(principal, resolved)
+            read_service.ensure_current_read_allowed(db, recall_bank_ref)
+            read_service.run_access_maintenance(db, recall_bank_ref)
             hits = read_service._recall_hits(
                 resolved.bank_id, body.query, body.view, body.kinds
             )
@@ -389,7 +393,9 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool(
         description=(
             "Ask memory a question and get a synthesized answer rather than "
-            "a list of facts. Costs more than recall."
+            "a list of facts. Costs more than recall. May also expire a "
+            "bounded batch (at most 32) of claims already past their stated "
+            "expiry as a side effect of this access."
         ),
         # Reflect still spends LLM tokens and keeps confirmation/rate limiting.
     )
@@ -411,11 +417,17 @@ def register(mcp: MCPServer) -> None:
             _check_content_size(query)
             return body
 
+        def call(bank, db, principal, slug):
+            reflect_bank_ref = retention.resolve_bank_ref(db, principal, body_factory())
+            read_service.ensure_current_read_allowed(db, reflect_bank_ref)
+            read_service.run_access_maintenance(db, reflect_bank_ref)
+            return get_client().reflect(bank, query)
+
         return _run(
             ctx,
             body_factory,
             "memory.reflect",
-            lambda bank, db, p, slug: get_client().reflect(bank, query),
+            call,
             create=False,
             is_write=True,
             verbose=verbose,

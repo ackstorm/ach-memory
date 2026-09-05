@@ -1109,7 +1109,7 @@ EXPECTED_TOOLS = {
     "start_working_session", "set_working_state",
 }
 
-TOOL_CONTRACT_SHA256 = "11ea859cf419e773154b5353e385d1136105498a0fe305158324c7a256081dea"
+TOOL_CONTRACT_SHA256 = "acc2f5de6d6e22c60d7f9e95a97af9bbb1b2f7478ee2a625ac82efe6c9ae2ca4"
 
 
 def test_tool_registration_is_stable_after_module_split():

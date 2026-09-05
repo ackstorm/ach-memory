@@ -21,12 +21,14 @@ something that merely looks safe.
 from typing import Any, get_args
 
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from memory import read_context
 from memory.auth.principal import Principal
 from memory.currentness import bank_is_withheld
 from memory.errors import BankCurrentnessUnavailable, MemoryNotFound
+from memory.expiry import ensure_no_expiry_backlog
 from memory.hindsight.client import get_client
 from memory.memory_types import EvidenceBasis, MemoryType
 from memory.read_models import (
@@ -152,6 +154,18 @@ def bank_ref(principal: Principal, read_bank: read_context.ReadBank) -> LogicalB
     )
 
 
+def _db_now(db: Session):
+    return db.execute(select(func.now())).scalar_one()
+
+
+def run_access_maintenance(db: Session, bank: LogicalBankRef) -> None:
+    """The one bounded maintenance side effect an authorized recall/reflect
+    access performs: at most one batch of overdue expiry (SPEC §6.4). Never
+    run by `load_context` or by current list/get, which only honor an
+    existing barrier without claiming new work."""
+    ensure_no_expiry_backlog(db, bank, client=get_client(), now=_db_now(db))
+
+
 def _recall_hits(
     bank_id: str, query: str, view: View, memory_types: tuple[MemoryType, ...] | None
 ) -> list[RecallHit]:
@@ -207,7 +221,9 @@ def recall(
         project_slug=request.project_slug,
     )
     db.commit()
-    ensure_current_read_allowed(db, bank_ref(principal, read_bank))
+    ref = bank_ref(principal, read_bank)
+    ensure_current_read_allowed(db, ref)
+    run_access_maintenance(db, ref)
 
     hits = _recall_hits(read_bank.bank_id, request.query, request.view, request.kinds)
     capped = hits[: request.max_results]
