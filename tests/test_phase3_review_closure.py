@@ -821,46 +821,15 @@ def test_classification_metadata_is_reserved_from_callers(key):
         provenance.check_reserved({key: "anything"})
 
 
-def test_explicit_retain_stamps_its_own_classification(client, hook_user):
-    """SPEC §7.6: retain is evidence capture, not durable-memory creation."""
-    captured = {}
-
-    class _StubClient:
-        def retain_items(self, bank_id, items, **kwargs):
-            captured["item"] = items[0]
-            return {"operation_id": "op_1", "status": "pending"}
-
-    with mock.patch("memory.api.memory.get_client", return_value=_StubClient()):
-        response = client.post(
-            "/v1/memory/retain",
-            json={"scope": "user", "content": "Remember that I prefer tabs."},
-            headers=hook_user["headers"],
-        )
-
-    assert response.status_code == 200, response.text
-    metadata = captured["item"].metadata
-    assert metadata["origin"] == "stated"
-    assert metadata["kind"] == "technical_claim"
-    assert metadata["explicit_request"] is True
-    assert metadata["provenance"] == {"type": "explicit_request"}
-    assert captured["item"].tags == ["kind:technical_claim", "evidence_only"]
-
-
-def test_explicit_retain_refuses_a_caller_supplied_classification(client, hook_user):
-    """A caller able to send origin=confirmed + kind=decision could promote
-    its own proposal to durable truth with no human ever accepting it."""
-    response = client.post(
-        "/v1/memory/retain",
-        json={
-            "scope": "user",
-            "content": "We decided to rewrite the importer.",
-            "metadata": {"origin": "confirmed", "kind": "decision"},
-        },
-        headers=hook_user["headers"],
-    )
-
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "INVALID_METADATA"
+# v0.4.0 note: the two tests formerly here (test_explicit_retain_stamps_its_
+# own_classification, test_explicit_retain_refuses_a_caller_supplied_
+# classification) pinned SPEC §7.6's "retain is evidence capture, stamped
+# with a fixed evidence_only/technical_claim classification, never a caller-
+# supplied one" -- a Phase 3 design entirely superseded by v0.4.0's typed
+# retain contract, where the caller supplies its OWN durable memory_type/
+# basis/trigger and there is no metadata channel or classification stamp
+# left to pin. See tests/test_memory_api.py and tests/test_mcp_tools.py for
+# the current retain contract's coverage.
 
 
 # ---------------------------------------------------------------------------

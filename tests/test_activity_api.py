@@ -4,9 +4,29 @@ import respx
 from sqlalchemy import text
 
 from memory.models import ActivityEvent
-from tests.test_mcp_tools import _mock_bank, call_tool  # noqa: F401 -- reused as a fixture
+from tests.test_mcp_tools import (  # noqa: F401 -- reused as fixtures/helpers
+    _mock_bank,
+    _retain_kwargs,
+    call_tool,
+)
 
 BASE = "http://hindsight.test"
+
+
+def _retain_body(**overrides) -> dict:
+    import uuid
+
+    body = {
+        "scope": "user",
+        "content": "hello",
+        "memory_type": "fact",
+        "basis": "human_explicit",
+        "trigger": "agent_proactive",
+        "evidence": [{"kind": "user_quote", "raw": "hello"}],
+        "operation_id": str(uuid.uuid4()),
+    }
+    body.update(overrides)
+    return body
 
 
 @pytest.fixture
@@ -32,14 +52,12 @@ def _mock_hindsight() -> None:
 def test_a_retain_records_one_row(client, session, user_key, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
-        return_value=httpx.Response(200, json={"success": True, "operation_id": "op-1"})
+        return_value=httpx.Response(200, json={"status": "pending"})
     )
     _, key = user_key
 
     client.post(
-        "/v1/memory/retain",
-        json={"scope": "user", "content": "hello", "metadata": {"agent": "claude-code"}},
-        headers=_headers(key),
+        "/v1/memory/retain", json=_retain_body(), headers=_headers(key)
     )
 
     row = session.query(ActivityEvent).one()
@@ -47,7 +65,6 @@ def test_a_retain_records_one_row(client, session, user_key, tenant):
         "memory.retain", "rest", "user", "ok",
     )
     assert row.content_bytes == len("hello")
-    assert row.agent == "claude-code"
     assert row.bank_fingerprint and len(row.bank_fingerprint) == 12
 
 
@@ -62,9 +79,7 @@ def test_an_upstream_failure_is_recorded_as_an_error(client, session, user_key, 
     _, key = user_key
 
     client.post(
-        "/v1/memory/retain",
-        json={"scope": "user", "content": "hello"},
-        headers=_headers(key),
+        "/v1/memory/retain", json=_retain_body(), headers=_headers(key)
     )
 
     row = session.query(ActivityEvent).one()
@@ -85,11 +100,11 @@ def test_a_rejected_credential_records_no_row(client, session, tenant):
 def test_an_mcp_tool_call_records_a_row(call_tool, session, tenant):  # noqa: F811
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+        return_value=httpx.Response(200, json={"status": "pending"})
     )
     key = call_tool.make_user()
 
-    call_tool("retain", key, scope="user", content="hello")
+    call_tool("retain", key, scope="user", content="hello", **_retain_kwargs())
 
     row = session.query(ActivityEvent).one()
     assert (row.surface, row.action, row.outcome) == ("mcp", "memory.retain", "ok")
@@ -187,17 +202,15 @@ def test_an_unhandled_500_is_recorded_as_an_error(client, session, user_key, ten
     def _boom(*_args, **_kwargs):
         raise RuntimeError("something internal broke")
 
-    # No respx mock, and none needed: `build` raises inside the retain
-    # handler before any upstream call. Calling _mock_hindsight() here without
-    # @respx.mock registered a PUT on the GLOBAL respx router and leaked a 200
-    # into every later test file -- which made ensure_bank's 500 unreachable
-    # and broke three tests in test_hindsight_client.py.
-    monkeypatch.setattr(memory_routes.provenance, "build", _boom)
+    # No respx mock, and none needed: submit_retain raises before any
+    # upstream call. Calling _mock_hindsight() here without @respx.mock
+    # registered a PUT on the GLOBAL respx router and leaked a 200 into
+    # every later test file -- which made ensure_bank's 500 unreachable and
+    # broke three tests in test_hindsight_client.py.
+    monkeypatch.setattr(memory_routes, "submit_retain", _boom)
 
     response = client.post(
-        "/v1/memory/retain",
-        json={"scope": "user", "content": "hello"},
-        headers=_headers(user_key[1]),
+        "/v1/memory/retain", json=_retain_body(), headers=_headers(user_key[1])
     )
 
     assert response.status_code == 500

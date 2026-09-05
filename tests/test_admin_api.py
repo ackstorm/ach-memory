@@ -217,9 +217,11 @@ def test_master_destructive_routes_are_rate_limited_before_hindsight(
     get_settings.cache_clear()
     ratelimit.get_limiter.cache_clear()
 
+    import uuid
+
     warmup = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$"
-    ).mock(return_value=httpx.Response(200, json={"operation_id": "op_1"}))
+    ).mock(return_value=httpx.Response(200, json={"status": "pending"}))
     destructive = respx.delete(url__regex=upstream_pattern).mock(
         return_value=httpx.Response(200, json={"success": True})
     )
@@ -230,10 +232,15 @@ def test_master_destructive_routes_are_rate_limited_before_hindsight(
             "scope": "user",
             "user_id": juan["user_id"],
             "content": "warmup",
+            "memory_type": "fact",
+            "basis": "human_explicit",
+            "trigger": "agent_proactive",
+            "evidence": [{"kind": "user_quote", "raw": "warmup"}],
+            "operation_id": str(uuid.uuid4()),
         },
         headers=master_headers,
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     assert warmup.called
 
     response = client.request(

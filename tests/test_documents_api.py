@@ -363,24 +363,6 @@ def test_get_document_traversal_never_reaches_hindsight(client, juan, tenant, do
 
 
 @respx.mock
-@pytest.mark.parametrize("document_id", TRAVERSAL_DOCUMENT_IDS)
-def test_retain_rejects_unaddressable_document_ids_locally(
-    client, juan, tenant, document_id
-):
-    """The shared guard must refuse a JSON-body id before retain can create
-    a document which get/delete would later refuse.  As above, no respx route
-    is registered: any Hindsight call fails this test."""
-    response = client.post(
-        "/v1/memory/retain",
-        json={"scope": "user", "content": "x", "document_id": document_id},
-        headers=juan["headers"],
-    )
-
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "DOCUMENT_NOT_FOUND"
-
-
-@respx.mock
 @pytest.mark.parametrize(
     "document_id",
     [

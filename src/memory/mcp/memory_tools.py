@@ -23,6 +23,7 @@ its safe, caller-authored message, and anything else becomes a fixed
 
 import logging
 import uuid
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -32,7 +33,6 @@ from pydantic import BaseModel, Field, ValidationError
 from memory import (
     activity,
     metrics,
-    provenance,
     read_context,
     read_models,
     read_service,
@@ -40,11 +40,7 @@ from memory import (
 from memory.api.curation import CorrectRequest, ListMemoriesRequest
 from memory.api.documents import ListDocumentsRequest
 from memory.api.memory import (
-    EXPLICIT_RETAIN_OBSERVATION_SCOPES,
-    EXPLICIT_RETAIN_STRATEGY,
-    EXPLICIT_RETAIN_TAGS,
     MAX_PAGE_SIZE,
-    RetainRequest,
     ScopedRequest,
     _check_content_size,
     _resolve_bank,
@@ -52,7 +48,7 @@ from memory.api.memory import (
 )
 from memory.api.operations import ListOperationsRequest
 from memory.errors import DomainError
-from memory.hindsight.client import RetainItem, get_client
+from memory.hindsight.client import get_client
 from memory.mcp.compact import compact as compact_payload
 from memory.mcp.server import tool_session
 from memory.mcp.tools import (
@@ -62,18 +58,14 @@ from memory.mcp.tools import (
     _internal_error,
     _invalid_request,
 )
+from memory.memory_types import EvidenceBasis, MemoryType, RetainTrigger
+from memory.retention import submit_retain
+from memory.v040_contracts import RetainEvidence, TypedRetainRequest
 
 logger = logging.getLogger("memory.mcp")
 
 Scope = Literal["user", "project"]
 
-# The tool SIGNATURE is what the SDK turns into the advertised JSON Schema, so
-# a bound living only on the pydantic model is invisible to the model calling
-# the tool. REST's OpenAPI publishes these enums for the identical operations;
-# MCP published bare `str`. SPEC §11.4 blesses update_mode="append" for
-# interactive coding sessions and nothing in the advertised schema said
-# `append` existed at all.
-UpdateMode = Literal["replace", "append"]
 MemoryState = Literal["valid", "invalidated"]
 FactType = Literal["world", "experience", "observation"]
 PageLimit = Annotated[int | None, Field(ge=1, le=MAX_PAGE_SIZE)]
@@ -271,14 +263,13 @@ def _read_run(ctx: Context, body_factory, action: str, call) -> ToolResult:
 def register(mcp: MCPServer) -> None:
     @mcp.tool(
         description=(
-            "Store something worth remembering, for an explicit human "
-            "'remember this' request. Captures it as evidence, not "
-            "guaranteed profile truth -- an automatic background pass is "
-            "what promotes routine observations to standing preferences or "
-            "conventions. Write the content in English whatever language "
-            "the conversation is in: retrieval reranks in English only, so "
-            "a fact stored in another language is not found by an English "
-            "query. Returns immediately with an operation you can follow "
+            "Store one durable, independently-correctable claim plus its "
+            "evidence -- for an explicit human 'remember this' request or "
+            "an agent's own well-grounded observation. Evidence is bounded "
+            "provenance (1-4 short excerpts); it is never stored as "
+            "searchable memory itself. Write content in English whatever "
+            "language the conversation is in: retrieval reranks in English "
+            "only. Returns immediately with an operation you can follow "
             "with get_operation; use sync_retain when you need to read it "
             "back straight away."
         ),
@@ -286,47 +277,47 @@ def register(mcp: MCPServer) -> None:
     def retain(
         scope: Scope,
         content: str,
+        memory_type: MemoryType,
+        basis: EvidenceBasis,
+        trigger: RetainTrigger,
+        evidence: list[RetainEvidence],
         ctx: Context,
         project_slug: str | None = None,
-        git_locator: str | None = None,
-        document_id: str | None = None,
-        update_mode: UpdateMode = "replace",
-        metadata: dict[str, str] | None = None,
+        valid_until: datetime | None = None,
         operation_id: str | None = None,
     ) -> ToolResult:
         return _retain(
-            ctx, scope, content, project_slug, git_locator, document_id,
-            update_mode, metadata, operation_id, is_async=True,
+            ctx, scope, content, memory_type, basis, trigger, evidence,
+            project_slug, valid_until, operation_id, wait=False,
         )
 
     @mcp.tool(
         description=(
-            "Store something and wait until it is searchable, for an "
-            "explicit human 'remember this' request. Captures it as "
-            "evidence, not guaranteed profile truth. Write the content in "
-            "English whatever language the conversation is in: retrieval "
-            "reranks in English only."
+            "Store one durable, independently-correctable claim plus its "
+            "evidence, and wait until it is searchable. Same semantics as "
+            "retain."
         ),
     )
     def sync_retain(
         scope: Scope,
         content: str,
+        memory_type: MemoryType,
+        basis: EvidenceBasis,
+        trigger: RetainTrigger,
+        evidence: list[RetainEvidence],
         ctx: Context,
         project_slug: str | None = None,
-        git_locator: str | None = None,
-        document_id: str | None = None,
-        update_mode: UpdateMode = "replace",
-        metadata: dict[str, str] | None = None,
+        valid_until: datetime | None = None,
         operation_id: str | None = None,
     ) -> ToolResult:
-        # No idempotentHint: two calls with no document_id write two separate
-        # memories, same as retain -- this only blocks longer while Hindsight
-        # makes the write searchable before returning. A true hint here would
-        # invite an LLM client to retry blindly on a timeout and duplicate the
-        # write.
+        # No idempotentHint: two calls with no operation_id write two
+        # separate memories, same as retain -- this only blocks longer while
+        # Hindsight makes the write searchable before returning. A true hint
+        # here would invite an LLM client to retry blindly on a timeout and
+        # duplicate the write.
         return _retain(
-            ctx, scope, content, project_slug, git_locator, document_id,
-            update_mode, metadata, operation_id, is_async=False,
+            ctx, scope, content, memory_type, basis, trigger, evidence,
+            project_slug, valid_until, operation_id, wait=True,
         )
 
     @mcp.tool(
@@ -768,75 +759,34 @@ def register(mcp: MCPServer) -> None:
     )
 
 
-def _retain(ctx, scope, content, project_slug, git_locator, document_id,
-            update_mode, metadata, operation_id, *, is_async: bool) -> ToolResult:
-    def body_factory() -> RetainRequest:
-        # Reuses RetainRequest itself rather than re-deriving its rules: this
-        # is what keeps update_mode/operation_id/the append-needs-a-document_id
-        # rule identical to REST's, instead of a second, silently-drifting
-        # copy the way a bare ScopedRequest let them drift before.
-        body = RetainRequest(
+def _retain(
+    ctx, scope, content, memory_type, basis, trigger, evidence,
+    project_slug, valid_until, operation_id, *, wait: bool,
+) -> ToolResult:
+    # Generated before the first network attempt (SPEC §6.1) and reused for
+    # every retry this call makes -- a direct REST client must supply its own.
+    op_id = operation_id or str(uuid.uuid4())
+
+    def body_factory() -> TypedRetainRequest:
+        return TypedRetainRequest(
             scope=scope,
             project_slug=project_slug,
-            git_locator=git_locator,
             content=content,
-            document_id=document_id,
-            update_mode=update_mode,
-            metadata=metadata,
-            operation_id=operation_id,
+            memory_type=memory_type,
+            basis=basis,
+            trigger=trigger,
+            valid_until=valid_until,
+            evidence=tuple(evidence),
+            operation_id=op_id,
         )
-        _check_content_size(body.content)
-        # SPEC §13.4: a reserved metadata key must raise with NOTHING
-        # written -- and the same holds for an oversize metadata mapping
-        # (CONTENT_TOO_LARGE). body_factory runs before _resolve_bank/commit
-        # (Task 19), so checking here -- rather than in `call`, which only
-        # runs after the project row is committed -- is what keeps a refused
-        # retain from permanently squatting the project slug it named
-        # (invariant 8: slugs are unique across live AND retired names,
-        # never recoverable). `provenance.build` runs both checks (reserved
-        # keys, then the size cap); its return value is discarded here
-        # because it doesn't have the resolved slug yet -- `call` below
-        # re-runs `build` to stamp that in after resolution. Review finding
-        # 3 (2026-08-23): the size cap used to run only inside `call`, after
-        # `tc.db.commit()`, so an oversize retain left the project row
-        # committed -- reproduced live as `mcp-squat` staying unreclaimable.
-        provenance.build(metadata, project_slug=None)
-        return body
 
     def call(bank_id, db, principal, slug):
-        # The reserved-key check and the size cap both already ran in
-        # body_factory, before the project row was committed (SPEC §13.4).
-        # build() re-runs both (cheap, and keeps build() correct on its own
-        # for REST's callers), but its real job here is stamping the
-        # RESOLVED slug -- unavailable until after _resolve_bank -- into the
-        # extraction mapping.
-        #
-        # `slug` is `_resolve_bank`'s RESOLVED project slug, not the raw
-        # `project_slug` argument above: None for scope=user (the argument is
-        # meaningless there and must never be stamped into extraction
-        # metadata), and the project's current, live slug for scope=project
-        # even when the caller named a retired one.
-        extraction = provenance.build(metadata, project_slug=slug)
-        client = get_client()
-        # SPEC Phase 3: explicit retain is evidence, not guaranteed profile
-        # truth -- tags/observation_scopes/strategy are fixed, never taken
-        # from `metadata` or any other MCP argument. Classification (kind,
-        # origin, eligibility) is the automatic capture pipeline's job.
-        item = RetainItem(
-            content=content,
-            document_id=document_id,
-            metadata=extraction or None,
-            context=provenance.context_line(extraction),
-            tags=list(EXPLICIT_RETAIN_TAGS),
-            observation_scopes=[list(scope) for scope in EXPLICIT_RETAIN_OBSERVATION_SCOPES],
-            strategy=EXPLICIT_RETAIN_STRATEGY,
-            update_mode=update_mode,
-        )
-        return client.retain_items(
-            bank_id, [item], operation_id=operation_id or str(uuid.uuid4()), is_async=is_async
-        )
+        return submit_retain(
+            db, principal, body_factory(), client=get_client(), wait=wait,
+        ).model_dump(mode="json")
 
-    return _run(ctx, body_factory, "memory.retain", call, create=True, is_write=True)
+    # create=False: existing-only, same as every other v0.4.0 retain surface.
+    return _run(ctx, body_factory, "memory.retain", call, create=False, is_write=True)
 
 
 def _list_documents(

@@ -89,8 +89,16 @@ def _read_back_source_memory_id(
     client: HindsightClient, bank: LogicalBankRef, document_id: str
 ) -> str | None:
     """Fall back to the stable document when the operation body names no
-    memory id -- never invent one from `document_id` itself."""
-    listing = client.list_memories(bank.bank_id, document_id=document_id, limit=1)
+    memory id -- never invent one from `document_id` itself.
+
+    Best-effort: the retain itself already proved `completed`, so a failure
+    reading the id back (transport, unexpected shape) must not turn a proven
+    success into an error. A later authorized access can retry hydration.
+    """
+    try:
+        listing = client.list_memories(bank.bank_id, document_id=document_id, limit=1)
+    except Exception:  # noqa: BLE001 -- see docstring: hydration is best-effort
+        return None
     items = listing.get("items") if isinstance(listing, dict) else None
     if isinstance(items, list) and items and isinstance(items[0], dict):
         candidate = items[0].get("id")
@@ -147,7 +155,8 @@ def submit_retain(
         update_mode="replace",
     )
     result = client.retain_items(bank.bank_id, [item], operation_id=row.operation_id, is_async=True)
-    if str(result.get("operation_id")) != row.operation_id:
+    returned_operation_id = result.get("operation_id")
+    if returned_operation_id is not None and str(returned_operation_id) != row.operation_id:
         raise HindsightError("memory backend acknowledged a different operation")
 
     row.upstream_state = "accepted"

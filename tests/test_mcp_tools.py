@@ -12,6 +12,19 @@ BASE = "http://hindsight.test"
 GHOST = "22222222-2222-2222-2222-222222222222"
 
 
+def _retain_kwargs(**overrides) -> dict:
+    """The minimum typed-retain shape every retain/sync_retain call needs
+    (memory_type/basis/trigger/evidence), merged with per-test overrides."""
+    kwargs = {
+        "memory_type": "fact",
+        "basis": "human_explicit",
+        "trigger": "agent_proactive",
+        "evidence": [{"kind": "user_quote", "raw": "Source excerpt."}],
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 @pytest.fixture
 def call_tool(app, client, master_headers, tenant):
     """Invoke a registered tool the way the SDK would, with real headers.
@@ -30,6 +43,17 @@ def call_tool(app, client, master_headers, tenant):
             f"/v1/users/{user_id}/keys", json={}, headers=master_headers
         ).json()["key"]
 
+    def _seed_project(key: str, slug: str) -> None:
+        """Typed retain is existing-only (create=False); several tests here
+        need an already-owned project to exercise curation/IDOR behavior
+        against, so they create it directly rather than relying on retain's
+        old lazy-creation side effect."""
+        response = client.post(
+            "/v1/projects", json={"project_slug": slug},
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        assert response.status_code == 201, response.text
+
     def _call(name: str, key: str, **kwargs):
         class _Ctx:
             headers: ClassVar = {"authorization": f"Bearer {key}"}
@@ -37,6 +61,7 @@ def call_tool(app, client, master_headers, tenant):
         return tool_module.REGISTRY[name](ctx=_Ctx(), **kwargs)
 
     _call.make_user = _make_user
+    _call.seed_project = _seed_project
     return _call
 
 
@@ -49,46 +74,47 @@ def test_retain_reaches_the_callers_own_bank(call_tool, session):
 
     _mock_bank()
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+        return_value=httpx.Response(200, json={"status": "pending"})
     )
     key = call_tool.make_user()
     bank_id = session.get(User, call_tool.last_user_id).bank_id
 
-    result = call_tool("retain", key, scope="user", content="uv, not pip")
+    result = call_tool(
+        "retain", key, scope="user", content="uv, not pip", **_retain_kwargs()
+    )
 
-    assert result.result == {"operation_id": "op_1"}
+    assert result.result["status"] == "accepted"
+    assert result.result["document_id"].startswith("ach-retain-")
     assert f"banks/{bank_id}/" in str(route.calls.last.request.url)
 
 
 @pytest.mark.parametrize("tool", ["retain", "sync_retain"])
 @respx.mock
-def test_retain_tools_always_use_the_fixed_evidence_only_candidate_verbatim_shape(
-    call_tool, tool
-):
-    """SPEC Phase 3: explicit retain is evidence, not guaranteed profile
-    truth. tags/observation_scopes/strategy are fixed, never derived from
-    any MCP argument or metadata key."""
+def test_retain_tools_always_use_the_fixed_ach_exact_v1_shape(call_tool, tool):
+    """v0.4.0: exact typed retain always selects the frozen `ach-exact-v1`
+    strategy and server-derived tags. Never overridable by any MCP argument,
+    and evidence never reaches the wire payload."""
     _mock_bank()
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
+        return_value=httpx.Response(200, json={"status": "completed"})
     )
     key = call_tool.make_user()
 
     call_tool(
-        tool,
-        key,
-        scope="user",
-        content="uv, not pip",
-        metadata={"tags": "profile_eligible", "strategy": "concise"},
+        tool, key, scope="user", content="uv, not pip",
+        **_retain_kwargs(memory_type="convention", basis="agent_verified"),
     )
 
     item = json.loads(route.calls.last.request.read())["items"][0]
-    assert item["tags"] == ["kind:technical_claim", "evidence_only"]
-    assert item["observation_scopes"] == [["evidence_only"]]
-    assert item["strategy"] == "candidate_verbatim"
-    # The caller's metadata value still reaches extraction metadata (SPEC
-    # §13.2) -- it just never becomes a tag, scope or strategy.
-    assert item["metadata"]["tags"] == "profile_eligible"
+    assert item["tags"] == [
+        "type:convention", "basis:agent_verified", "schema:ach-retain-v1", "validity:indefinite",
+    ]
+    assert item["strategy"] == "ach-exact-v1"
+    assert "evidence" not in item
+    assert "observation_scopes" not in item
 
 
 @respx.mock
@@ -139,7 +165,7 @@ def test_a_tool_cannot_reach_another_users_project(call_tool):
         return_value=httpx.Response(200, json={"ok": True})
     )
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool("recall", alice, scope="project", project_slug="payments", query="x")
@@ -149,63 +175,27 @@ def test_a_tool_cannot_reach_another_users_project(call_tool):
 
 
 @respx.mock
-def test_a_reserved_metadata_key_is_refused_and_nothing_is_retained(call_tool):
+def test_project_scope_retain_forwards_a_retired_slug_to_the_same_bank(call_tool, client):
+    """Mirrors test_memory_api.py's equivalent: after a rename, a retain
+    against the OLD slug must still forward to the same project bank. The
+    typed response (v0.4.0) carries no resolved_from/notice fields -- it is
+    built entirely from ACH's own DB row -- so only the forwarding itself is
+    asserted here, not a surfaced rename notice."""
     _mock_bank()
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"ok": True})
-    )
-    key = call_tool.make_user()
-
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "retain", key, scope="user", content="x", metadata={"user_id": "someone"}
-        )
-
-    assert route.call_count == 0
-    assert exc_info.value.code == "INVALID_METADATA"
-    assert exc_info.value.details == {"key": "user_id"}
-
-
-@respx.mock
-def test_user_scope_retain_ignores_the_raw_project_slug_argument(call_tool):
-    """`project_slug` is meaningless under scope=user (`_resolve_bank` returns
-    None for it) but used to be stamped into extraction metadata verbatim
-    regardless of scope -- an attacker-chosen value landing in a private
-    bank. REST never had this bug: it always used `_resolve_bank`'s resolved
-    slug, never the caller's raw argument."""
-    _mock_bank()
-    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_1"})
-    )
-    key = call_tool.make_user()
-
-    call_tool("retain", key, scope="user", content="x", project_slug="acme-secrets")
-
-    sent = json.loads(route.calls.last.request.read())
-    assert "metadata" not in sent["items"][0]
-
-
-@respx.mock
-def test_project_scope_retain_stamps_the_live_slug_after_a_rename(call_tool, client):
-    """Mirrors test_memory_api.py's
-    test_retain_against_a_retired_slug_forwards_and_carries_the_notice: after
-    a rename, a retain against the OLD slug must forward to the same bank,
-    stamp the NEW (live) slug into extraction metadata -- not the retired one
-    the caller asked with -- and report resolved_from/project_slug/notice on
-    the ToolResult (SPEC §8.6)."""
-    _mock_bank()
-    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+        return_value=httpx.Response(200, json={"status": "pending"})
     )
     key = call_tool.make_user()
     headers = {"Authorization": f"Bearer {key}"}
+    assert client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=headers
+    ).status_code == 201
 
-    result = call_tool(
-        "retain", key, scope="project", project_slug="payments-api", content="x"
+    call_tool(
+        "retain", key, scope="project", project_slug="payments-api", content="x",
+        **_retain_kwargs(),
     )
-    assert result.project_slug == "payments-api"
-    sent = json.loads(route.calls.last.request.read())
-    assert sent["items"][0]["metadata"]["project_slug"] == "payments-api"
+    original_bank_url = str(route.calls.last.request.url)
 
     client.patch(
         "/v1/projects/payments-api",
@@ -213,15 +203,12 @@ def test_project_scope_retain_stamps_the_live_slug_after_a_rename(call_tool, cli
         headers=headers,
     )
 
-    result = call_tool(
-        "retain", key, scope="project", project_slug="payments-api", content="y"
+    call_tool(
+        "retain", key, scope="project", project_slug="payments-api", content="y",
+        **_retain_kwargs(),
     )
 
-    sent = json.loads(route.calls.last.request.read())
-    assert sent["items"][0]["metadata"]["project_slug"] == "payments-service"
-    assert result.resolved_from == "payments-api"
-    assert result.project_slug == "payments-service"
-    assert result.notice == "PROJECT_RENAMED"
+    assert str(route.calls.last.request.url) == original_bank_url
 
 
 @respx.mock
@@ -295,9 +282,9 @@ def test_create_is_keyword_only_on_run():
 # (create=False) and `retain` (is_write=True, via the shared rate-limit
 # tests) were pinned; the other 13 create=False flags and 7 is_write flags
 # were each individually deletable with the full suite staying green.
-GHOST_EXTRA_KWARGS: dict[str, dict[str, str]] = {
-    "retain": {"content": "x"},
-    "sync_retain": {"content": "x"},
+GHOST_EXTRA_KWARGS: dict[str, dict] = {
+    "retain": {"content": "x", **_retain_kwargs()},
+    "sync_retain": {"content": "x", **_retain_kwargs()},
     "recall": {"query": "x"},
     "memory_history": {"memory_id": GHOST},
     "reflect": {"query": "x"},
@@ -321,7 +308,7 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
 }
 
 MCP_CREATE_TABLE: dict[str, bool] = {
-    "retain": True, "sync_retain": True, "recall": False, "memory_history": False, "reflect": False,
+    "retain": False, "sync_retain": False, "recall": False, "memory_history": False, "reflect": False,
     "list_memories": False, "get_memory": False, "forget": False,
     "correct": False, "restore": False, "list_documents": False,
     "get_document": False, "delete_document": False, "get_operation": False,
@@ -375,7 +362,7 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
         return_value=httpx.Response(200, json={})
     )
     key = call_tool.make_user()
-    call_tool("retain", key, scope="user", content="warmup")  # consumes the slot
+    call_tool("retain", key, scope="user", content="warmup", **_retain_kwargs())  # consumes the slot
 
     for name, expect_write in MCP_IS_WRITE_TABLE.items():
         if name in WORKING_STATE_KWARGS:
@@ -432,20 +419,15 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
 
 
 @respx.mock
-def test_oversize_content_is_rejected_over_mcp(call_tool, monkeypatch):
-    """The size gate used to live only in REST's `_retain`; MCP forwarded an
-    oversize body straight to Hindsight. No route is registered on purpose --
-    a request that reached Hindsight at all fails via respx's own
-    AllMockedAssertionError."""
-    from memory.config import get_settings
-
-    get_settings.cache_clear()
-    monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
-    get_settings.cache_clear()
+def test_oversize_content_is_rejected_over_mcp(call_tool):
+    """v0.4.0's canonical-claim ceiling (normalize_claim, 4096 bytes) is
+    fixed by spec, not MEMORY_MAX_CONTENT_BYTES-configurable. No route is
+    registered on purpose -- a request that reached Hindsight at all fails
+    via respx's own AllMockedAssertionError."""
     key = call_tool.make_user()
 
     with pytest.raises(MCPToolError) as exc_info:
-        call_tool("retain", key, scope="user", content="x" * 100)
+        call_tool("retain", key, scope="user", content="x" * 5000, **_retain_kwargs())
 
     assert exc_info.value.code == "CONTENT_TOO_LARGE"
 
@@ -539,42 +521,16 @@ def test_oversize_list_documents_q_is_rejected_over_mcp(call_tool, monkeypatch):
 
 
 @respx.mock
-def test_a_bogus_update_mode_on_retain_is_rejected_not_blamed_on_hindsight_over_mcp(
-    call_tool,
-):
-    """MCP built a bare ScopedRequest and skipped RetainRequest's own
-    validators entirely, so a bogus update_mode reached Hindsight and came
-    back as a 502-shaped HINDSIGHT_ERROR blaming the backend for the
-    caller's typo. No route registered on purpose -- see the oversize test
-    above."""
-    key = call_tool.make_user()
-
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool("retain", key, scope="user", content="x", update_mode="bogus")
-
-    assert exc_info.value.code == "INVALID_REQUEST"
-
-
-@respx.mock
 def test_a_non_uuid_operation_id_on_retain_is_rejected_not_blamed_on_hindsight_over_mcp(
     call_tool,
 ):
     key = call_tool.make_user()
 
     with pytest.raises(MCPToolError) as exc_info:
-        call_tool("retain", key, scope="user", content="x", operation_id="retry-1")
-
-    assert exc_info.value.code == "INVALID_REQUEST"
-
-
-@respx.mock
-def test_append_without_a_document_id_over_mcp_is_rejected_not_blamed_on_hindsight(
-    call_tool,
-):
-    key = call_tool.make_user()
-
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool("retain", key, scope="user", content="x", update_mode="append")
+        call_tool(
+            "retain", key, scope="user", content="x", operation_id="retry-1",
+            **_retain_kwargs(),
+        )
 
     assert exc_info.value.code == "INVALID_REQUEST"
 
@@ -627,35 +583,44 @@ def test_list_operations_rejects_a_negative_offset_over_mcp(call_tool):
 
 
 @respx.mock
-def test_sync_retain_returns_the_real_upstream_result(call_tool):
-    """Pins sync_retain's body against a `return ToolResult(result={})`
+def test_sync_retain_returns_a_completed_typed_response(call_tool):
+    """Pins sync_retain's result shape against a `return ToolResult(result={})`
     mutation -- no prior test called sync_retain by name at all."""
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_sync"})
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
+        return_value=httpx.Response(200, json={"status": "completed"})
     )
     key = call_tool.make_user()
 
-    result = call_tool("sync_retain", key, scope="user", content="x")
+    result = call_tool("sync_retain", key, scope="user", content="x", **_retain_kwargs())
 
-    assert result.result == {"operation_id": "op_sync"}
+    assert result.result["status"] == "completed"
 
 
 @respx.mock
-def test_sync_retain_is_actually_synchronous_unlike_retain(call_tool):
+def test_sync_retain_polls_the_operation_unlike_retain(call_tool):
     """Pins the sync/async distinction itself -- sync_retain's entire reason
-    to exist -- against a mutation that flips its `is_async` to True."""
+    to exist. Both send an async retain upstream (SPEC §6.2: ACH MUST NOT
+    use an upstream synchronous path that ignores operation_id); only
+    sync_retain then polls get_operation to a terminal status before
+    returning."""
     _mock_bank()
-    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op"})
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
     )
+    operation_route = respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+"
+    ).mock(return_value=httpx.Response(200, json={"status": "completed"}))
     key = call_tool.make_user()
 
-    call_tool("sync_retain", key, scope="user", content="x")
-    assert json.loads(route.calls.last.request.read())["async"] is False
+    call_tool("retain", key, scope="user", content="x", **_retain_kwargs())
+    assert operation_route.call_count == 0
 
-    call_tool("retain", key, scope="user", content="y")
-    assert json.loads(route.calls.last.request.read())["async"] is True
+    call_tool("sync_retain", key, scope="user", content="y", **_retain_kwargs())
+    assert operation_route.call_count == 1
 
 
 def test_sync_retain_carries_no_idempotent_hint():
@@ -793,7 +758,7 @@ def test_idor_a_curation_tool_cannot_reach_an_unauthorized_bank(call_tool):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/[^/]+"
     ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
@@ -881,7 +846,7 @@ def test_idor_delete_document_cannot_reach_an_unauthorized_bank(call_tool):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*"
     ).mock(return_value=httpx.Response(200, json={"deleted": True}))
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
@@ -949,7 +914,7 @@ def test_idor_cancel_operation_cannot_reach_an_unauthorized_bank(call_tool):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/[^/]+$"
     ).mock(return_value=httpx.Response(200, json={"status": "cancelled"}))
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
@@ -992,7 +957,7 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(call_tool):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$"
     ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
@@ -1016,7 +981,7 @@ def test_idor_forget_cannot_reach_an_unauthorized_bank(call_tool):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$"
     ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
@@ -1040,7 +1005,7 @@ def test_idor_restore_cannot_reach_an_unauthorized_bank(call_tool):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$"
     ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
@@ -1064,7 +1029,7 @@ def test_idor_get_document_cannot_reach_an_unauthorized_bank(call_tool):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*"
     ).mock(return_value=httpx.Response(200, json={"id": "doc1"}))
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
@@ -1088,7 +1053,7 @@ def test_idor_get_operation_cannot_reach_an_unauthorized_bank(call_tool):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{GHOST}$"
     ).mock(return_value=httpx.Response(200, json={"status": "completed"}))
     juan, alice = call_tool.make_user(), call_tool.make_user()
-    call_tool("retain", juan, scope="project", project_slug="payments", content="x")
+    call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
@@ -1144,7 +1109,7 @@ EXPECTED_TOOLS = {
     "start_working_session", "set_working_state",
 }
 
-TOOL_CONTRACT_SHA256 = "10818241354d986d62f485f732aee7c2233f4e547dd98aca794442857c42e56a"
+TOOL_CONTRACT_SHA256 = "11ea859cf419e773154b5353e385d1136105498a0fe305158324c7a256081dea"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1282,76 +1247,13 @@ def test_an_unauthenticated_oversize_retain_is_refused_before_validation(app):
         headers: ClassVar = {}
 
     with pytest.raises(MCPToolError) as exc_info:
-        REGISTRY["retain"](scope="user", content="x" * 300_000, ctx=NoAuth())
+        REGISTRY["retain"](
+            scope="user", content="x" * 300_000, ctx=NoAuth(), **_retain_kwargs()
+        )
 
     assert exc_info.value.code == "UNAUTHORIZED"
     assert "256000" not in str(exc_info.value), (
         "the configured content limit leaked to an unauthenticated caller"
-    )
-
-
-@respx.mock
-def test_a_reserved_metadata_key_under_project_scope_creates_no_project(
-    call_tool, session
-):
-    """SPEC §13.4: INVALID_METADATA and NOTHING IS WRITTEN. MCP used to commit
-    the project row before `provenance.build` ran, so a refused retain still
-    permanently created and owned the project it named -- unrecoverable,
-    since invariant 8 makes a slug unique across live AND retired names. The
-    existing regression test (`test_a_reserved_metadata_key_is_refused_and_
-    nothing_is_retained`) uses scope="user", which has no row to create, so
-    it could not see this (2026-08-23 review, R3-I-2)."""
-    from memory.models import Project, ProjectSlug
-
-    key = call_tool.make_user()
-    slug = "reserved-key-probe"
-
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "retain", key, scope="project", project_slug=slug,
-            content="x", metadata={"user_id": "someone"},
-        )
-
-    assert exc_info.value.code == "INVALID_METADATA"
-    assert session.query(ProjectSlug).filter_by(slug=slug).count() == 0
-    assert session.query(Project).count() == 0, (
-        "the refused retain committed a project row anyway"
-    )
-
-
-def test_oversize_metadata_under_project_scope_creates_no_project(
-    call_tool, session, monkeypatch
-):
-    """2026-08-23 review, finding 3: `provenance.build`'s metadata size cap
-    ran only inside `call`, AFTER `tc.db.commit()` -- `body_factory` moved
-    the reserved-key check (`provenance.check_reserved`) earlier for exactly
-    this reason (SPEC §13.4) but left the size cap behind, so an oversize
-    metadata still permanently squatted the project slug it named
-    (invariant 8: slugs are unique across live AND retired names, never
-    recoverable). Reproduced live as `mcp-squat` staying unreclaimable while
-    REST's twin correctly left no project row. Mirrors
-    test_a_reserved_metadata_key_under_project_scope_creates_no_project.
-    """
-    from memory.config import get_settings
-    from memory.models import Project, ProjectSlug
-
-    get_settings.cache_clear()
-    monkeypatch.setenv("MEMORY_MAX_CONTENT_BYTES", "10")
-    get_settings.cache_clear()
-
-    key = call_tool.make_user()
-    slug = "mcp-oversize-metadata-squat"
-
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "retain", key, scope="project", project_slug=slug,
-            content="x", metadata={"note": "y" * 300},
-        )
-
-    assert exc_info.value.code == "CONTENT_TOO_LARGE"
-    assert session.query(ProjectSlug).filter_by(slug=slug).count() == 0
-    assert session.query(Project).count() == 0, (
-        "the refused retain committed a project row anyway"
     )
 
 
@@ -1390,7 +1292,9 @@ def test_invalid_request_names_the_offending_field(call_tool):
     key = call_tool.make_user()
 
     with pytest.raises(MCPToolError) as exc_info:
-        call_tool("retain", key, scope="not-a-real-scope", content="x")
+        call_tool(
+            "retain", key, scope="not-a-real-scope", content="x", **_retain_kwargs()
+        )
 
     assert exc_info.value.code == "INVALID_REQUEST"
     assert "scope" in str(exc_info.value)

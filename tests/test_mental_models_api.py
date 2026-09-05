@@ -593,14 +593,10 @@ def test_an_unknown_trigger_mode_is_a_422(client, juan, tenant):
 def test_idor_create_mental_model_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     create = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$"
     ).mock(return_value=httpx.Response(201, json={"id": MM_ID}))
@@ -624,14 +620,10 @@ def test_idor_create_mental_model_cannot_reach_an_unauthorized_bank(
 def test_idor_update_mental_model_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     update = respx.patch(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/[^/]+$"
     ).mock(return_value=httpx.Response(200, json={"id": MM_ID}))
@@ -654,14 +646,10 @@ def test_idor_update_mental_model_cannot_reach_an_unauthorized_bank(
 def test_idor_delete_mental_model_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     delete = respx.delete(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/[^/]+$"
     ).mock(return_value=httpx.Response(200, json={"deleted": True}))
@@ -681,14 +669,10 @@ def test_idor_delete_mental_model_cannot_reach_an_unauthorized_bank(
 def test_idor_refresh_mental_model_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     refresh = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/[^/]+/refresh$"
     ).mock(return_value=httpx.Response(200, json={"status": "refreshing"}))
@@ -707,14 +691,10 @@ def test_idor_refresh_mental_model_cannot_reach_an_unauthorized_bank(
 def test_idor_clear_mental_model_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     clear = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/[^/]+/clear$"
     ).mock(return_value=httpx.Response(200, json={"status": "cleared"}))
@@ -733,14 +713,10 @@ def test_idor_clear_mental_model_cannot_reach_an_unauthorized_bank(
 def test_idor_list_mental_models_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     listed = respx.get(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)"
     ).mock(return_value=httpx.Response(200, json={"mental_models": []}))
@@ -759,14 +735,10 @@ def test_idor_list_mental_models_cannot_reach_an_unauthorized_bank(
 def test_idor_get_mental_model_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     get = respx.get(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/[^/]+$"
     ).mock(return_value=httpx.Response(200, json={"id": MM_ID}))
@@ -798,14 +770,10 @@ def test_a_group_member_who_is_not_the_owner_can_manage_mental_models(
     ).json()["key"]
     client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
     client.put(f"/v1/groups/grp_payments/members/{bob}", headers=master_headers)
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     client.patch(
         "/v1/projects/payments-api/owner",
         json={"type": "group", "id": "grp_payments"},
@@ -834,14 +802,10 @@ def test_a_group_member_who_is_not_the_owner_can_manage_mental_models(
 def test_a_master_key_can_manage_mental_models_on_any_bank(
     client, juan, master_headers, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
+    setup = client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    assert setup.status_code == 201
     create = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$"
     ).mock(return_value=httpx.Response(201, json={"id": MM_ID}))

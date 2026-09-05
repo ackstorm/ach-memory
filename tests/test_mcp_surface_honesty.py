@@ -84,16 +84,25 @@ def test_the_advertised_schema_carries_the_vocabulary_the_models_enforce():
     mgr = _manager()
     schemas = {n: mgr.get_tool(n).parameters for n in READONLY}
 
-    retain = schemas["retain"]["properties"]["update_mode"]
-    assert "append" in str(retain), retain
-    assert "replace" in str(retain), retain
-
     state = schemas["list_memories"]["properties"]["state"]
     assert "valid" in str(state) and "invalidated" in str(state), state
 
     for tool in ("list_memories", "list_documents", "list_operations"):
         limit = schemas[tool]["properties"]["limit"]
         assert "500" in str(limit), (tool, limit)
+
+
+@pytest.mark.parametrize("name", ["retain", "sync_retain"])
+def test_retain_exposes_type_basis_trigger_expiry_and_evidence(name):
+    """v0.4.0's typed retain contract: the calling model must see the real
+    required vocabulary, and no trace of the removed metadata/update_mode
+    channel."""
+    mgr = _manager()
+    properties = mgr.get_tool(name).parameters["properties"]
+
+    assert {"memory_type", "basis", "trigger", "valid_until", "evidence"} <= properties.keys()
+    assert "metadata" not in properties
+    assert "update_mode" not in properties
 
 
 @pytest.mark.parametrize("name", ["retain", "sync_retain"])
