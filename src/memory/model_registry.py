@@ -193,3 +193,44 @@ def ready_model(
     row.updated_at = now
     db.flush()
     return row
+
+
+def mark_refresh_failed(
+    db: Session,
+    bank: LogicalBankRef,
+    model_key: str,
+    operation_id: str,
+    *,
+    repair_not_before,
+) -> MentalModelRegistration:
+    """A terminal non-success outcome for the exact recorded operation.
+    Ignored (no-op) if `operation_id` no longer matches, same guard as
+    `ready_model` -- a stale observer must never overwrite a newer state."""
+    row = _locked_model(db, bank, model_key)
+    if row.refresh_operation_id != operation_id:
+        return row
+    row.refresh_status = "failed"
+    row.repair_not_before = repair_not_before
+    row.updated_at = _db_now(db)
+    db.flush()
+    return row
+
+
+def oldest_failed_model(
+    db: Session, bank: LogicalBankRef, *, now
+) -> MentalModelRegistration | None:
+    """The one eligible failed registration a single repair access may act
+    on: withheld, failed, and past its own backoff -- oldest first."""
+    _lock_bank(db, bank)
+    return db.scalar(
+        _models_query(bank)
+        .where(
+            MentalModelRegistration.lifecycle_state != "deleted",
+            MentalModelRegistration.delivery_state == "withheld",
+            MentalModelRegistration.refresh_status == "failed",
+            MentalModelRegistration.repair_not_before <= now,
+        )
+        .order_by(MentalModelRegistration.updated_at.asc())
+        .with_for_update()
+        .limit(1)
+    )

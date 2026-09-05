@@ -192,6 +192,10 @@ def register(mcp: MCPServer) -> None:
 
         def call(bank, db, body):
             view = mental_model_service.get_model(db, bank, model_key)
+            if view.delivery_state == "withheld":
+                view = mental_model_service.observe_model_refresh(
+                    db, bank, model_key, client=get_client()
+                )
             return view.model_dump(mode="json")
 
         return _model_run(ctx, body_factory, "mental_models.get", call, is_write=False)

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -20,10 +21,12 @@ from sqlalchemy.orm import Session
 
 from memory import model_registry
 from memory.builtin_models import BuiltinModelDefinition
+from memory.currentness import bank_is_withheld
 from memory.errors import (
     BuiltinModelImmutable,
     ContextBudgetExceeded,
     CurationNeedsOperator,
+    DomainError,
     IdempotencyConflict,
     MentalModelNotFound,
 )
@@ -31,8 +34,11 @@ from memory.ids import new_model_key
 from memory.models import MentalModelRegistration
 from memory.retained_records import LogicalBankRef
 
+logger = logging.getLogger("memory.mental_model_service")
+
 REQUIRED_SOURCE_TAGS = frozenset({"schema:ach-retain-v1", "validity:indefinite"})
 MIN_MAX_TOKENS = 256
+REPAIR_BACKOFF_SECONDS = 60
 USER_ALWAYS_IN_CONTEXT_BUDGET = 1024
 PROJECT_ALWAYS_IN_CONTEXT_BUDGET = 2048
 
@@ -491,3 +497,74 @@ def _upgrade_builtin(
         withheld = existing
     db.commit()
     return _to_view(withheld)
+
+
+def _repair_not_before(now: datetime) -> datetime:
+    return now + timedelta(seconds=REPAIR_BACKOFF_SECONDS)
+
+
+def observe_model_refresh(
+    db: Session, bank: LogicalBankRef, model_key: str, *, client
+) -> MentalModelView:
+    """Exact refresh-completion check (SPEC §6.4): reads only the row's own
+    recorded `refresh_operation_id`. Pending and failed operations leave the
+    model withheld; only a matching successful terminal status sets ready.
+    A mismatched operation id is ignored and logged, never trusted as proof
+    of currentness.
+    """
+    row = model_registry.get_registered_model(db, bank, model_key)
+    if row is None or row.lifecycle_state == "deleted":
+        raise MentalModelNotFound("no registered model with that logical key")
+    if row.delivery_state != "withheld" or row.refresh_operation_id is None:
+        return _to_view(row)
+
+    operation = client.get_operation(bank.bank_id, row.refresh_operation_id)
+    if operation.get("id") != row.refresh_operation_id:
+        logger.warning(
+            "model_key=%s ignored a refresh operation observation whose id did not "
+            "match the recorded operation",
+            model_key,
+        )
+        return _to_view(row)
+
+    status = operation.get("status")
+    if status in {"pending", "running"}:
+        return _to_view(row)
+    if status == "completed":
+        ready = model_registry.ready_model(db, bank, model_key, row.refresh_operation_id)
+        db.commit()
+        return _to_view(ready)
+
+    now = db.execute(select(func.now())).scalar_one()
+    failed = model_registry.mark_refresh_failed(
+        db, bank, model_key, row.refresh_operation_id, repair_not_before=_repair_not_before(now)
+    )
+    db.commit()
+    return _to_view(failed)
+
+
+def repair_one_model(
+    db: Session, bank: LogicalBankRef, *, now: datetime, client
+) -> MentalModelView | None:
+    """At most one repair action per access (SPEC §6.4): while the physical
+    bank barrier is active, defer entirely to bank-level reconciliation.
+    Otherwise submit exactly one refresh for the oldest eligible failed
+    model past its own backoff, and return -- never loop, never wait."""
+    if bank_is_withheld(db, bank):
+        return None
+
+    row = model_registry.oldest_failed_model(db, bank, now=now)
+    if row is None:
+        return None
+
+    try:
+        result = client.refresh_mental_model(bank.bank_id, row.upstream_model_id)
+        operation_id = result.get("operation_id") or result.get("id")
+        repaired = model_registry.withhold_model(db, bank, row.model_key, operation_id)
+    except DomainError:
+        repaired = model_registry.mark_refresh_failed(
+            db, bank, row.model_key, row.refresh_operation_id,
+            repair_not_before=_repair_not_before(now),
+        )
+    db.commit()
+    return _to_view(repaired)
