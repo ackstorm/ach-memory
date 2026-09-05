@@ -38,6 +38,7 @@ from mcp.shared.inbound import (
     x_mcp_header_map,
 )
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
+from memory.slugs import slug_from_locator
 
 CONTEXT_TIMEOUT_SECONDS = 2.0
 
@@ -73,7 +74,7 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
         locator = subprocess.run(["git", "remote", "get-url", "origin"], cwd=cwd or os.getcwd(), capture_output=True, text=True, timeout=3, check=False).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         locator = ""
-    return (Path(locator).name.removesuffix(".git") if locator else None), (locator or None)
+    return (slug_from_locator(locator) if locator else None), (locator or None)
 
 
 def bootstrap(base_url: str, api_key: str, project_slug: str | None) -> str | None:
@@ -604,7 +605,7 @@ def fetch_context(
     returns ``None``.
     """
     try:
-        response = httpx.get(
+        response = httpx.post(
             f"{base_url.rstrip('/')}/v1/context/load",
             json={"project_slug": slug, "workspace_id": workspace_id},
             headers={"Authorization": f"Bearer {api_key}"},

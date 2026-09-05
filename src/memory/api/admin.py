@@ -276,7 +276,6 @@ def delete_bank(
     )
 
 
-@router.post("/brief/{scope}/provision", response_model=MemoryResponse)
 def provision_brief_model(
     scope: Scope,
     principal: Annotated[Principal, Depends(require_master)],
@@ -330,7 +329,6 @@ def provision_brief_model(
     )
 
 
-@router.post("/profile/{scope}/provision", response_model=MemoryResponse)
 def provision_profile_model(
     scope: Scope,
     principal: Annotated[Principal, Depends(require_master)],

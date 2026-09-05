@@ -663,65 +663,12 @@ def _parser() -> argparse.ArgumentParser:
         "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
         "because argv is world-readable",
     )
-    brief = commands.add_parser("brief", help="print the session brief this host would receive")
-    brief.add_argument(
-        "--url",
-        default=None,
-        help="memory service base URL (default: $ACH_MEMORY_URL). The API key "
-        "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
-        "because argv is world-readable",
-    )
     context = commands.add_parser("context", help="load bounded standing context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
     context_sub.add_parser("load")
     hook = commands.add_parser("hook", help="host lifecycle nudges")
     hook_sub = hook.add_subparsers(dest="hook_command", required=True)
     hook_sub.add_parser("pre-compact")
-    checkpoint = commands.add_parser(
-        "capture-checkpoint",
-        help="silent transcript checkpoint for a Claude Code Stop/PreCompact hook "
-        "(reads one hook JSON object from stdin)",
-    )
-    checkpoint.add_argument(
-        "--url",
-        default=None,
-        help="memory service base URL (default: $ACH_MEMORY_URL)",
-    )
-    worker = commands.add_parser(
-        "capture-worker", help="run the durable capture queue worker"
-    )
-    worker.add_argument(
-        "--once",
-        action="store_true",
-        help="process one batch and exit, for tests and one-off operational runs",
-    )
-    check = commands.add_parser(
-        "capture-check",
-        help="read-only dry-run verification of the candidate_verbatim contract; "
-        "never mutates config or memory",
-    )
-    check.add_argument("--scope", choices=("user", "project"), required=True)
-    check.add_argument(
-        "--project", required=True, help="project slug (identifies the bank to check; "
-        "for --scope user, the project's owning user)"
-    )
-    profile = commands.add_parser(
-        "profile-check",
-        help="read-only cost/quality measurement of the structured profile "
-        "against Hindsight's non-persisting refresh preview; never creates, "
-        "updates, refreshes or retains anything",
-    )
-    profile.add_argument("--scope", choices=("user", "project"), required=True)
-    profile.add_argument(
-        "--project", required=True, help="project slug (identifies the bank to "
-        "measure; for --scope user, the project's owning user)"
-    )
-    profile.add_argument(
-        "--json",
-        action="store_true",
-        help="emit the evaluation result as one JSON object instead of a "
-        "human-readable report",
-    )
     return parser
 
 

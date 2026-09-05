@@ -35,11 +35,12 @@ READONLY = {
     "delete_document": False, "get_operation": True, "list_operations": True,
     "cancel_operation": False, "start_working_session": False,
     "set_working_state": False,
+    "clear_working_state": False, "load_context": False,
     "create_mental_model": False, "list_mental_models": True, "get_mental_model": True,
     "update_mental_model": False, "refresh_mental_model": False, "delete_mental_model": False,
 }
 
-WORKING_STATE_TOOLS = {"start_working_session", "set_working_state"}
+WORKING_STATE_TOOLS = {"start_working_session", "set_working_state", "clear_working_state"}
 MODEL_TOOLS = {
     "create_mental_model", "list_mental_models", "get_mental_model",
     "update_mental_model", "refresh_mental_model", "delete_mental_model",
@@ -48,12 +49,15 @@ MODEL_TOOLS = {
 
 def test_product_registrars_own_disjoint_tool_sets():
     """A product move must not leave any registrar owning another's tools."""
-    from memory.mcp import memory_tools, model_tools, working_state_tools
+    from memory.mcp import context_tools, memory_tools, model_tools, working_state_tools
     from memory.mcp.server import build_mcp
 
     memory_mcp = build_mcp()
     memory_tools.register(memory_mcp)
     memory_names = {tool.name for tool in memory_mcp._tool_manager.list_tools()}
+    context_mcp = build_mcp()
+    context_tools.register(context_mcp)
+    context_names = {tool.name for tool in context_mcp._tool_manager.list_tools()}
 
     model_mcp = build_mcp()
     model_tools.register(model_mcp)
@@ -63,9 +67,10 @@ def test_product_registrars_own_disjoint_tool_sets():
     working_state_tools.register(state_mcp)
     state_names = {tool.name for tool in state_mcp._tool_manager.list_tools()}
 
-    assert memory_names == set(READONLY) - WORKING_STATE_TOOLS - MODEL_TOOLS
+    assert memory_names == set(READONLY) - WORKING_STATE_TOOLS - MODEL_TOOLS - {"load_context"}
     assert model_names == MODEL_TOOLS
     assert state_names == WORKING_STATE_TOOLS
+    assert context_names == {"load_context"}
     assert memory_names.isdisjoint(state_names)
     assert memory_names.isdisjoint(model_names)
     assert model_names.isdisjoint(state_names)
