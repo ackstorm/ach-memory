@@ -39,6 +39,7 @@ dependencies = [
     # group -- the same mistake `mcp` and `mcp-types` each shipped once,
     # which crash-looped the image because `uv export --no-dev` dropped them.
     "prometheus-client>=0.21",
+    "tiktoken>=0.8,<1",
 ]
 
 [project.scripts]
