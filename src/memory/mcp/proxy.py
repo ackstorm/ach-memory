@@ -78,6 +78,36 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
     return context.project_slug, context.git_locator
 
 
+def bootstrap(base_url: str, api_key: str, project_slug: str | None) -> str | None:
+    """Call `POST /v1/bootstrap` exactly once at startup (SPEC §7.5).
+
+    Returns the content-free Project bootstrap error CODE -- never a
+    message or details, which can carry a bank id -- when `project_slug`
+    was configured and bootstrap failed; otherwise None. Never raises: a
+    broken or slow service must cost this session its bootstrap, never its
+    startup (SPEC §4.3, "does not prevent the MCP server from starting").
+    A User-only bootstrap (no project_slug) failing is not reported here:
+    there is nothing project-specific to route around, and startup must
+    proceed regardless.
+    """
+    try:
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/v1/bootstrap",
+            json={"project_slug": project_slug} if project_slug else {},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError:
+        return "BOOTSTRAP_UNAVAILABLE" if project_slug else None
+    if response.status_code == 200 or not project_slug:
+        return None
+    try:
+        code = response.json().get("error", {}).get("code")
+    except ValueError:
+        code = None
+    return code or "BOOTSTRAP_UNAVAILABLE"
+
+
 def resolve_workspace_context(cwd: str | None = None) -> str | None:
     """The opaque workspace id for the git worktree at cwd, or None outside one.
 
@@ -188,6 +218,7 @@ class StdioHttpBridge:
         workspace_id: str | None = None,
         instructions: str | None = None,
         client: httpx.AsyncClient | None = None,
+        project_bootstrap_error: str | None = None,
     ) -> None:
         self._url = url
         self._api_key = api_key
@@ -198,6 +229,11 @@ class StdioHttpBridge:
         self._client = client or httpx.AsyncClient(timeout=300.0)
         self._owns_client = client is None
         self._tool_header_maps: dict[str, dict[tuple[str, ...], str]] = {}
+        # Content-free: a code only, never the message/details a real
+        # backend error could carry (SPEC inv. 29). Routes every
+        # scope="project" tool call to a local error until a later process
+        # restart re-bootstraps -- this proxy never retries bootstrap itself.
+        self._project_bootstrap_error = project_bootstrap_error
 
     async def close(self) -> None:
         if self._owns_client:
@@ -225,6 +261,12 @@ class StdioHttpBridge:
                         self._slug,
                         None if tool_name in _READ_TOOLS else self._locator,
                     )
+
+                if self._project_bootstrap_error and arguments.get("scope") == "project":
+                    yield _project_bootstrap_error_reply(
+                        outgoing.get("id"), self._project_bootstrap_error
+                    )
+                    return
 
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -507,6 +549,22 @@ def _jsonrpc_error(
     }
 
 
+def _project_bootstrap_error_reply(request_id: object, code: str) -> dict:
+    """The standard MCP tool-call error shape (`isError=true` + text
+    content) -- synthesized locally so a host cannot tell this apart from
+    the same failure the remote server would eventually report itself."""
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {
+            "content": [
+                {"type": "text", "text": f"{code}: project bootstrap failed at startup"}
+            ],
+            "isError": True,
+        },
+    }
+
+
 def run_stdio_bridge(
     url: str,
     api_key: str,
@@ -515,6 +573,7 @@ def run_stdio_bridge(
     instructions: str,
     *,
     workspace_id: str | None = None,
+    project_bootstrap_error: str | None = None,
 ) -> None:
     bridge = StdioHttpBridge(
         url,
@@ -523,6 +582,7 @@ def run_stdio_bridge(
         locator=locator,
         workspace_id=workspace_id,
         instructions=instructions,
+        project_bootstrap_error=project_bootstrap_error,
     )
     asyncio.run(bridge.serve())
 

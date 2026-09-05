@@ -1089,12 +1089,17 @@ def test_mcp_runs_stdio_http_bridge_from_env(
     monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
     calls = []
+    bootstrap_calls = []
     monkeypatch.setattr(
         "memory.mcp.proxy.resolve_project_context",
         lambda: ("acme-api", "git@github.com:acme/api.git"),
     )
     monkeypatch.setattr(
         "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
+    )
+    monkeypatch.setattr(
+        "memory.mcp.proxy.bootstrap",
+        lambda *args: bootstrap_calls.append(args) or None,
     )
     monkeypatch.setattr(
         "memory.mcp.proxy.startup_instructions",
@@ -1115,9 +1120,10 @@ def test_mcp_runs_stdio_http_bridge_from_env(
                 "git@github.com:acme/api.git",
                 "POLICY + BRIEF",
             ),
-            {"workspace_id": "ws_" + "a" * 32},
+            {"workspace_id": "ws_" + "a" * 32, "project_bootstrap_error": None},
         )
     ]
+    assert bootstrap_calls == [("https://mem.example.com", "mem_secret", "acme-api")]
 
 
 def test_mcp_passes_the_resolved_workspace_id_to_startup_instructions(
@@ -1130,6 +1136,7 @@ def test_mcp_passes_the_resolved_workspace_id_to_startup_instructions(
     monkeypatch.setattr(
         "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
     )
+    monkeypatch.setattr("memory.mcp.proxy.bootstrap", lambda *args: None)
     monkeypatch.setattr("memory.mcp.proxy.run_stdio_bridge", lambda *args, **kwargs: None)
     seen = {}
 
@@ -1150,6 +1157,7 @@ def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
     calls = []
     monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
+    monkeypatch.setattr("memory.mcp.proxy.bootstrap", lambda *args: None)
     monkeypatch.setattr(
         "memory.mcp.proxy.startup_instructions",
         lambda *_a, **_k: "[ach-memory] Session brief unavailable; recall still works.",
@@ -1162,6 +1170,51 @@ def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) 
     assert cli.main(["mcp"]) == 0
     assert len(calls) == 1
     assert "unavailable" in calls[0][-1].lower()
+
+
+def test_mcp_bootstrap_opt_out_makes_no_bootstrap_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
+    monkeypatch.setenv("ACH_MEMORY_BOOTSTRAP", "false")
+    bootstrap_calls = []
+    monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
+    monkeypatch.setattr("memory.mcp.proxy.resolve_workspace_context", lambda: None)
+    monkeypatch.setattr(
+        "memory.mcp.proxy.bootstrap", lambda *args: bootstrap_calls.append(args)
+    )
+    monkeypatch.setattr("memory.mcp.proxy.startup_instructions", lambda *a, **k: "POLICY")
+    monkeypatch.setattr("memory.mcp.proxy.run_stdio_bridge", lambda *args, **kwargs: None)
+
+    assert cli.main(["mcp"]) == 0
+    assert bootstrap_calls == []
+
+
+def test_project_bootstrap_failure_still_starts_the_bridge_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Project bootstrap failure must not prevent stdio startup -- it is
+    forwarded to the bridge, which routes scope="project" calls to a local
+    error while scope="user" tools stay available."""
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
+    calls = []
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_project_context", lambda: ("acme-api", None)
+    )
+    monkeypatch.setattr("memory.mcp.proxy.resolve_workspace_context", lambda: None)
+    monkeypatch.setattr(
+        "memory.mcp.proxy.bootstrap", lambda *args: "PROJECT_SLUG_CONFLICT"
+    )
+    monkeypatch.setattr("memory.mcp.proxy.startup_instructions", lambda *a, **k: "POLICY")
+    monkeypatch.setattr(
+        "memory.mcp.proxy.run_stdio_bridge",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert cli.main(["mcp"]) == 0
+    assert calls[0][1]["project_bootstrap_error"] == "PROJECT_SLUG_CONFLICT"
 
 
 def test_config_plan_modes_pick_the_server_shape(

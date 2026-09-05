@@ -744,13 +744,27 @@ def _serve_mcp(url_argument: str | None = None) -> int:
     url = _mcp_url(base)
     slug, locator = proxy.resolve_project_context()
     workspace_id = proxy.resolve_workspace_context()
+
+    # One initialization bootstrap call (SPEC §7.5), opt-out only: neither
+    # the credential nor the project slug is accepted through argv here --
+    # both are already resolved from environment/config above.
+    bootstrap_enabled = os.environ.get("ACH_MEMORY_BOOTSTRAP", "true").lower() not in {
+        "0", "false", "no",
+    }
+    project_bootstrap_error = (
+        proxy.bootstrap(_base_url(base), key, slug) if bootstrap_enabled else None
+    )
+
     # Cache first, network in the background: startup must not wait on the
     # service merely to gain orientation. A cached index may be one session
     # behind, which its brief_revision makes visible to consumers.
     instructions = proxy.startup_instructions(
         _base_url(base), key, slug, locator, workspace_id=workspace_id
     )
-    proxy.run_stdio_bridge(url, key, slug, locator, instructions, workspace_id=workspace_id)
+    proxy.run_stdio_bridge(
+        url, key, slug, locator, instructions, workspace_id=workspace_id,
+        project_bootstrap_error=project_bootstrap_error,
+    )
     return 0
 
 

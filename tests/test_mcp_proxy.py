@@ -700,6 +700,110 @@ def test_cache_paths_differ_by_workspace_with_no_credential_or_raw_path():
 
 
 @respx.mock
+def test_bootstrap_calls_the_endpoint_once_and_returns_none_on_success():
+    route = respx.post("https://memory.test/v1/bootstrap").mock(
+        return_value=httpx.Response(200, json={"user_model": None})
+    )
+
+    result = proxy.bootstrap("https://memory.test", "k", "acme-api")
+
+    assert result is None
+    assert route.call_count == 1
+    sent = json.loads(route.calls.last.request.content)
+    assert sent == {"project_slug": "acme-api"}
+    assert route.calls.last.request.headers["authorization"] == "Bearer k"
+
+
+@respx.mock
+def test_bootstrap_with_no_project_slug_sends_an_empty_body():
+    route = respx.post("https://memory.test/v1/bootstrap").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    assert proxy.bootstrap("https://memory.test", "k", None) is None
+    assert json.loads(route.calls.last.request.content) == {}
+
+
+@respx.mock
+def test_bootstrap_returns_the_content_free_project_error_code():
+    respx.post("https://memory.test/v1/bootstrap").mock(
+        return_value=httpx.Response(
+            409,
+            json={"error": {"code": "PROJECT_SLUG_CONFLICT", "message": "bank user_abc123"}},
+        )
+    )
+
+    result = proxy.bootstrap("https://memory.test", "k", "acme-api")
+
+    assert result == "PROJECT_SLUG_CONFLICT"
+    assert "user_abc123" not in (result or "")
+
+
+@respx.mock
+def test_bootstrap_failure_with_no_project_slug_is_not_reported():
+    """Nothing project-specific to route around; a User-only failure must
+    not degrade any tool."""
+    respx.post("https://memory.test/v1/bootstrap").mock(
+        return_value=httpx.Response(500, json={"error": {"code": "INTERNAL_ERROR"}})
+    )
+
+    assert proxy.bootstrap("https://memory.test", "k", None) is None
+
+
+@respx.mock
+def test_bootstrap_network_failure_reports_a_fixed_code_only_with_a_project():
+    respx.post("https://memory.test/v1/bootstrap").mock(side_effect=httpx.ConnectError("down"))
+
+    assert proxy.bootstrap("https://memory.test", "k", "acme-api") == "BOOTSTRAP_UNAVAILABLE"
+    assert proxy.bootstrap("https://memory.test", "k", None) is None
+
+
+@pytest.mark.anyio
+async def test_project_scope_tool_calls_are_routed_locally_after_a_bootstrap_failure():
+    """SPEC §7.5: a Project bootstrap failure degrades scope="project" tool
+    calls to a local, content-free error without a second round trip --
+    scope="user" calls are unaffected."""
+    contacted: list[str] = []
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        params = message.get("params", {})
+        arguments = params.get("arguments", {})
+        contacted.append(arguments.get("scope"))
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": message["id"], "result": {}})
+
+    meta = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge(
+            "https://memory.test/mcp/", "secret", client=client,
+            project_bootstrap_error="PROJECT_SLUG_CONFLICT",
+        )
+        project_reply = await bridge.forward(
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {
+                    "name": "list_memories", "arguments": {"scope": "project"},
+                    "_meta": meta,
+                },
+            }
+        )
+        user_reply = await bridge.forward(
+            {
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {
+                    "name": "list_memories", "arguments": {"scope": "user"},
+                    "_meta": meta,
+                },
+            }
+        )
+
+    assert contacted == ["user"]
+    assert project_reply[0]["result"]["isError"] is True
+    assert "PROJECT_SLUG_CONFLICT" in project_reply[0]["result"]["content"][0]["text"]
+    assert user_reply[0]["result"] == {}
+
+
+@respx.mock
 @pytest.mark.parametrize(
     "failure",
     [
