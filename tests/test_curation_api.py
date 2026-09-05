@@ -124,6 +124,77 @@ def test_correct_edits_the_text(client, juan, tenant):
 
 
 @respx.mock
+def test_forget_on_a_tracked_record_uses_the_outcome_safe_path(client, juan, tenant, session):
+    """A memory ACH itself retained routes forget through curation_service:
+    proven success marks the durable provenance row forgotten, not just the
+    upstream fact."""
+    import json
+    import uuid
+
+    mem_id = "22222222-2222-2222-2222-222222222222"
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
+        return_value=httpx.Response(
+            200, json={"status": "completed", "result": {"memory_id": mem_id}}
+        )
+    )
+    retain_response = client.post(
+        "/v1/memory/sync_retain",
+        json={
+            "scope": "user", "content": "we use uv", "memory_type": "convention",
+            "basis": "human_explicit", "trigger": "user_requested",
+            "evidence": [{"kind": "user_quote", "raw": "we use uv"}],
+            "operation_id": str(uuid.uuid4()),
+        },
+        headers=juan["headers"],
+    )
+    assert retain_response.status_code == 200, retain_response.text
+    assert retain_response.json()["status"] == "completed"
+
+    curate = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": mem_id}))
+
+    response = client.post(
+        "/v1/memory/forget",
+        json={"scope": "user", "memory_id": mem_id, "reason": "obsolete"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200, response.text
+    assert curate.calls.last.request.method == "PATCH"
+    sent = json.loads(curate.calls.last.request.read())
+    assert sent["state"] == "invalidated"
+
+    from memory.models import RetainedRecord
+
+    record = session.query(RetainedRecord).filter_by(source_memory_id=mem_id).one()
+    assert record.lifecycle == "forgotten"
+
+
+def test_forget_refuses_when_the_bank_is_already_withheld(client, juan, tenant, session):
+    from memory.currentness import withhold_bank
+    from memory.models import User
+    from memory.retained_records import LogicalBankRef
+
+    user = session.get(User, juan["user_id"])
+    bank = LogicalBankRef(tenant, "user", user.id, None, user.bank_id)
+    withhold_bank(session, bank, "op-unknown")
+    session.commit()
+
+    response = client.post(
+        "/v1/memory/forget",
+        json={"scope": "user", "memory_id": "22222222-2222-2222-2222-222222222222"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "BANK_CURRENTNESS_UNAVAILABLE"
+
+
+@respx.mock
 def test_a_missing_memory_is_a_404_not_a_backend_error(client, juan, tenant):
     # A syntactically valid but absent UUID: "ghost" would now be rejected by
     # the client's local UUID guard before the request is ever sent, so the

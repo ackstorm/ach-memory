@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import Field
 from sqlalchemy.orm import Session
 
+from memory import curation_service, read_service
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import (
     MAX_PAGE_SIZE,
@@ -16,6 +17,8 @@ from memory.api.memory import (
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.hindsight.client import get_client
+from memory.retained_records import get_by_document_id
+from memory.retention import resolve_bank_ref
 
 router = APIRouter(prefix="/v1/memory/documents", tags=["documents"])
 
@@ -80,6 +83,7 @@ def list_documents(
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.documents.list"
     )
+    read_service.ensure_current_read_allowed(db, resolve_bank_ref(db, principal, body))
     result = get_client().list_documents(
         bank_id, q=body.q, limit=body.limit, offset=body.offset
     )
@@ -100,6 +104,7 @@ def get_document(
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.documents.get"
     )
+    read_service.ensure_current_read_allowed(db, resolve_bank_ref(db, principal, body))
     result = get_client().get_document(bank_id, body.document_id)
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
@@ -125,7 +130,14 @@ def delete_document(
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.documents.delete", is_write=True
     )
-    result = get_client().delete_document(bank_id, body.document_id)
+    bank_ref = resolve_bank_ref(db, principal, body)
+    read_service.ensure_current_read_allowed(db, bank_ref)
+    retained = get_by_document_id(db, bank_ref, body.document_id)
+    if retained is not None:
+        curation_service.delete_record(db, retained, client=get_client(), bank_id=bank_id)
+        result: dict = {"deleted": True}
+    else:
+        result = get_client().delete_document(bank_id, body.document_id)
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,

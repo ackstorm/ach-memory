@@ -25,6 +25,20 @@ from memory.hindsight import paths
 
 logger = logging.getLogger("memory.hindsight")
 
+
+class HindsightOutcomeUnknown(Exception):
+    """The request may have reached Hindsight but no response proves the
+    outcome (SPEC §5.8).
+
+    Internal signal, not a `DomainError`: it names no stable public error
+    code of its own because the correct caller-visible outcome depends on
+    context (curation_service.py withholds the physical bank and answers
+    `BankCurrentnessUnavailable`; a future caller might resolve it another
+    way). Raised only by calls that opt in via `ambiguous_on_timeout=True` --
+    every other call keeps today's plain-unreachable handling.
+    """
+
+
 # The two states we have seen Hindsight hang in. An allowlist, not a
 # denylist of terminal states, on purpose: if a future Hindsight adds a
 # status this code has never seen, it simply gets no derived failure. That
@@ -166,6 +180,7 @@ class HindsightClient:
         bad_request: type[DomainError] | None = None,
         conflict: type[DomainError] | None = None,
         timeout: httpx.Timeout | None = None,
+        ambiguous_on_timeout: bool = False,
     ) -> dict:
         response = None
         started = time.monotonic()
@@ -178,6 +193,18 @@ class HindsightClient:
                 timeout=timeout or self._default_timeout,
             )
             upstream_status = str(response.status_code)
+        except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.WriteError, httpx.RemoteProtocolError) as exc:
+            # These fail AFTER (or while) the request left this process, so
+            # Hindsight may have already applied the mutation -- unlike the
+            # other httpx.HTTPError cases below, this is not "never reached
+            # the server". Only raised for calls that opt in
+            # (`ambiguous_on_timeout=True`, SPEC §5.8's curation callers);
+            # every other caller keeps today's unreachable/error handling.
+            logger.warning("hindsight ambiguous transport failure: %s", type(exc).__name__)
+            if ambiguous_on_timeout:
+                raise HindsightOutcomeUnknown(
+                    "memory backend response could not be confirmed"
+                ) from None
         except httpx.HTTPError as exc:
             # Logged here and never attached to the raised error: the httpx
             # exception holds .request.url, which contains the bank ID.
@@ -520,6 +547,11 @@ class HindsightClient:
             # property of the memory the caller named, not a backend fault, so
             # it must not become a 502 -- see MemoryNotCuratable.
             bad_request=MemoryNotCuratable,
+            # A PATCH has no idempotency key of its own (SPEC §5.8): a timeout
+            # after the request left this process cannot be told apart from
+            # one that never arrived, so curation_service.py must treat it as
+            # indeterminate rather than assume either outcome.
+            ambiguous_on_timeout=True,
         )
 
     def list_documents(self, bank_id: str, **filters: Any) -> dict:
@@ -539,6 +571,10 @@ class HindsightClient:
             "DELETE",
             paths.document(self._tenant, bank_id, document_id),
             not_found=DocumentNotFound,
+            # See curate()'s identical comment: hard delete is irreversible
+            # and has no idempotency key, so an ambiguous transport failure
+            # must not be assumed to have failed.
+            ambiguous_on_timeout=True,
         )
 
     def get_operation(self, bank_id: str, operation_id: str) -> dict:

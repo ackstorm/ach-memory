@@ -32,10 +32,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from memory import (
     activity,
+    curation_service,
     metrics,
     read_context,
     read_models,
     read_service,
+    retention,
 )
 from memory.api.curation import CorrectRequest, ListMemoriesRequest
 from memory.api.documents import ListDocumentsRequest
@@ -59,6 +61,7 @@ from memory.mcp.tools import (
     _invalid_request,
 )
 from memory.memory_types import EvidenceBasis, MemoryType, RetainTrigger
+from memory.retained_records import get_by_document_id, get_by_source_memory_id
 from memory.retention import submit_retain
 from memory.v040_contracts import RetainEvidence, TypedRetainRequest
 
@@ -459,17 +462,16 @@ def register(mcp: MCPServer) -> None:
                 _check_content_size(q)
             return body
 
-        return _run(
-            ctx,
-            body_factory,
-            "memory.list",
-            lambda bank, db, p, slug: get_client().list_memories(
+        def call(bank, db, principal, slug):
+            read_service.ensure_current_read_allowed(
+                db, retention.resolve_bank_ref(db, principal, body_factory())
+            )
+            return get_client().list_memories(
                 bank, q=q, type=type, state=state, document_id=document_id,
                 limit=page, offset=offset,
-            ),
-            create=False,
-            verbose=verbose,
-        )
+            )
+
+        return _run(ctx, body_factory, "memory.list", call, create=False, verbose=verbose)
 
     @mcp.tool(
         description="Fetch one memory by id.",
@@ -483,13 +485,20 @@ def register(mcp: MCPServer) -> None:
         git_locator: str | None = None,
         verbose: Verbose = False,
     ) -> ToolResult:
+        def body_factory() -> ScopedRequest:
+            return ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
+
+        def call(bank, db, principal, slug):
+            read_service.ensure_current_read_allowed(
+                db, retention.resolve_bank_ref(db, principal, body_factory())
+            )
+            return get_client().get_memory(bank, memory_id)
+
         return _run(
             ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
+            body_factory,
             "memory.get",
-            lambda bank, db, p, slug: get_client().get_memory(bank, memory_id),
+            call,
             create=False,
             verbose=verbose,
         )
@@ -522,16 +531,18 @@ def register(mcp: MCPServer) -> None:
                 _check_content_size(reason)
             return body
 
-        return _run(
-            ctx,
-            body_factory,
-            "memory.forget",
-            lambda bank, db, p, slug: get_client().curate(
-                bank, memory_id, state="invalidated", reason=reason
-            ),
-            create=False,
-            is_write=True,
-        )
+        def call(bank, db, principal, slug):
+            bank_ref = retention.resolve_bank_ref(db, principal, body_factory())
+            read_service.ensure_current_read_allowed(db, bank_ref)
+            retained = get_by_source_memory_id(db, bank_ref, memory_id)
+            if retained is not None:
+                curation_service.forget_record(
+                    db, retained, reason=reason, client=get_client(), bank_id=bank
+                )
+                return {"id": memory_id, "state": "invalidated"}
+            return get_client().curate(bank, memory_id, state="invalidated", reason=reason)
+
+        return _run(ctx, body_factory, "memory.forget", call, create=False, is_write=True)
 
     @mcp.tool(
         description="Replace the text of an existing memory.",
@@ -563,16 +574,18 @@ def register(mcp: MCPServer) -> None:
             _check_content_size(body.content)
             return body
 
-        return _run(
-            ctx,
-            body_factory,
-            "memory.correct",
-            lambda bank, db, p, slug: get_client().curate(
-                bank, memory_id, text=content
-            ),
-            create=False,
-            is_write=True,
-        )
+        def call(bank, db, principal, slug):
+            bank_ref = retention.resolve_bank_ref(db, principal, body_factory())
+            read_service.ensure_current_read_allowed(db, bank_ref)
+            retained = get_by_source_memory_id(db, bank_ref, memory_id)
+            if retained is not None:
+                curation_service.correct_record(
+                    db, retained, content, client=get_client(), bank_id=bank
+                )
+                return {"id": memory_id, "text": content}
+            return get_client().curate(bank, memory_id, text=content)
+
+        return _run(ctx, body_factory, "memory.correct", call, create=False, is_write=True)
 
     @mcp.tool(
         description="Bring back a memory that forget retired.",
@@ -587,18 +600,19 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
     ) -> ToolResult:
-        return _run(
-            ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
-            "memory.restore",
-            lambda bank, db, p, slug: get_client().curate(
-                bank, memory_id, state="valid"
-            ),
-            create=False,
-            is_write=True,
-        )
+        def body_factory() -> ScopedRequest:
+            return ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
+
+        def call(bank, db, principal, slug):
+            bank_ref = retention.resolve_bank_ref(db, principal, body_factory())
+            read_service.ensure_current_read_allowed(db, bank_ref)
+            retained = get_by_source_memory_id(db, bank_ref, memory_id)
+            if retained is not None:
+                curation_service.restore_record(db, retained, client=get_client(), bank_id=bank)
+                return {"id": memory_id, "state": "valid"}
+            return get_client().curate(bank, memory_id, state="valid")
+
+        return _run(ctx, body_factory, "memory.restore", call, create=False, is_write=True)
 
     @mcp.tool(
         description=(
@@ -660,18 +674,19 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
     ) -> ToolResult:
-        return _run(
-            ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
-            "memory.documents.delete",
-            lambda bank, db, p, slug: get_client().delete_document(
-                bank, document_id
-            ),
-            create=False,
-            is_write=True,
-        )
+        def body_factory() -> ScopedRequest:
+            return ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
+
+        def call(bank, db, principal, slug):
+            bank_ref = retention.resolve_bank_ref(db, principal, body_factory())
+            read_service.ensure_current_read_allowed(db, bank_ref)
+            retained = get_by_document_id(db, bank_ref, document_id)
+            if retained is not None:
+                curation_service.delete_record(db, retained, client=get_client(), bank_id=bank)
+                return {"deleted": True}
+            return get_client().delete_document(bank, document_id)
+
+        return _run(ctx, body_factory, "memory.documents.delete", call, create=False, is_write=True)
 
     @mcp.tool(
         description="Check whether an async retain has finished.",

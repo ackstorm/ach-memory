@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from time import monotonic, sleep
+from typing import Protocol
 
 from sqlalchemy.orm import Session
 
@@ -33,9 +34,20 @@ _POLL_TIMEOUT_SECONDS = 30.0
 _TERMINAL_STATUSES = ("completed", "failed")
 
 
-def _resolve_bank(db: Session, principal: Principal, request: TypedRetainRequest) -> LogicalBankRef:
-    """Existing-only resolution (create=False): ordinary retain never mints
-    an unknown project."""
+class _ScopedIdentity(Protocol):
+    """Structural minimum `resolve_bank_ref` needs: `TypedRetainRequest` and
+    `api.memory.ScopedRequest` (and its subclasses) both satisfy this
+    without either importing the other."""
+
+    scope: str
+    user_id: str | None
+    project_slug: str | None
+
+
+def resolve_bank_ref(db: Session, principal: Principal, request: _ScopedIdentity) -> LogicalBankRef:
+    """Existing-only resolution (create=False): never mints an unknown
+    project. Shared by the retain service and any curation path that needs
+    the same `LogicalBankRef` a REST/MCP request's scope fields resolve to."""
     if request.scope == "user":
         bank_id = resolve_user_bank(db, principal, request.user_id)
         target_id = request.user_id or principal.user_id
@@ -129,7 +141,7 @@ def submit_retain(
     clock: Callable[[], float] = monotonic,
     sleeper: Callable[[float], None] = sleep,
 ) -> TypedRetainResponse:
-    bank = _resolve_bank(db, principal, request)
+    bank = resolve_bank_ref(db, principal, request)
     canonical_content = normalize_claim(request.content)
     sanitized_evidence = [item.model_dump() for item in sanitize_evidence(request.evidence)]
 

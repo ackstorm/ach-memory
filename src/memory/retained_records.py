@@ -171,3 +171,32 @@ def get_by_operation(
     db: Session, bank: LogicalBankRef, operation_id: str | UUID
 ) -> RetainedRecord | None:
     return db.scalar(_operation_query(bank, operation_id))
+
+
+def get_by_source_memory_id(
+    db: Session, bank: LogicalBankRef, source_memory_id: str
+) -> RetainedRecord | None:
+    """Resolve a caller-supplied Hindsight `memory_id` to ACH's own stable
+    provenance row, scoped to the already-authorized bank (SPEC §20.1: never
+    looked up globally). None for a memory Hindsight derived on its own or
+    that predates ACH's typed retain -- callers fall back to the untracked
+    path for those."""
+    return db.scalar(
+        select(RetainedRecord).where(
+            *_bank_filters(RetainedRecord, bank),
+            RetainedRecord.source_memory_id == source_memory_id,
+        )
+    )
+
+
+def get_by_document_id(
+    db: Session, bank: LogicalBankRef, document_id: str
+) -> RetainedRecord | None:
+    """Same as `get_by_source_memory_id`, keyed by the caller-managed
+    document id (SPEC §12.2's hard-delete target)."""
+    return db.scalar(
+        select(RetainedRecord).where(
+            *_bank_filters(RetainedRecord, bank),
+            RetainedRecord.document_id == document_id,
+        )
+    )
