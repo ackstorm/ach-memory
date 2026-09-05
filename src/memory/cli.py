@@ -671,6 +671,12 @@ def _parser() -> argparse.ArgumentParser:
         "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
         "because argv is world-readable",
     )
+    context = commands.add_parser("context", help="load bounded standing context")
+    context_sub = context.add_subparsers(dest="context_command", required=True)
+    context_sub.add_parser("load")
+    hook = commands.add_parser("hook", help="host lifecycle nudges")
+    hook_sub = hook.add_subparsers(dest="hook_command", required=True)
+    hook_sub.add_parser("pre-compact")
     checkpoint = commands.add_parser(
         "capture-checkpoint",
         help="silent transcript checkpoint for a Claude Code Stop/PreCompact hook "
@@ -1102,6 +1108,26 @@ def _profile_check(*, scope: str, project_slug: str, as_json: bool) -> int:
     return 0 if result.schema_valid and result.outcome == "ok" else 1
 
 
+def _context_load() -> int:
+    """Print only context text; diagnostics never become agent context."""
+    key = os.environ.get("ACH_MEMORY_API_KEY", "")
+    base = os.environ.get("ACH_MEMORY_URL", "http://localhost:8000").rstrip("/")
+    if not key:
+        return 0
+    import urllib.request
+    request = urllib.request.Request(
+        f"{base}/v1/context/load", data=b"{}", method="POST",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.load(response)
+        print(payload.get("text", ""))
+    except Exception as exc:
+        print("ach-memory: context unavailable", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -1113,6 +1139,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "brief":
         return _print_brief(args.url)
+
+    if args.command == "context" and args.context_command == "load":
+        return _context_load()
+    if args.command == "hook" and args.hook_command == "pre-compact":
+        print("Before context is compacted, retain any durable decision, constraint, convention, fact or verified gotcha that is not yet in ach-memory. If project work is incomplete, update Working State. Do not retain the transcript or a generic session summary.")
+        return 0
 
     if args.command == "capture-checkpoint":
         return _capture_checkpoint(args.url)

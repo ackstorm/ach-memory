@@ -25,23 +25,12 @@
         ]
       }
     ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/capture-checkpoint.sh\"",
-            "timeout": 9
-          }
-        ]
-      }
-    ],
     "PreCompact": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/capture-checkpoint.sh\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/pre-compact.sh\"",
             "timeout": 9
           }
         ]

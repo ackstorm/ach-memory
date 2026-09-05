@@ -7,6 +7,12 @@
 # message.
 set -u
 
+if [ -n "${ACH_MEMORY_API_KEY:-}" ]; then
+  curl -sf --max-time 3 -H "Authorization: Bearer ${ACH_MEMORY_API_KEY}" \
+    -H 'Content-Type: application/json' -d '{}' "${ACH_MEMORY_URL:-http://localhost:8000}/v1/context/load" 2>/dev/null || true
+fi
+exit 0
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cat "$root/activation.txt" 2>/dev/null || true
 

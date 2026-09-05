@@ -1,40 +1,14 @@
 ---
 name: ach-memory
-description: "ALWAYS ACTIVE — persistent memory via ach-memory. Read this skill at the start of every conversation, before any memory call and before searching files or transcripts for a prior decision (tools are lazy-loaded; this skill names them). Proactively `retain` decisions, conventions and preferences — never wait to be asked. Supersedes MEMORY.md and the host's memory directory: never write there, because ach-memory cannot see those files."
+description: Always-loaded contract for exact, proactive agent-mediated memory.
 ---
 
-Memory survives sessions and compaction. Its value is the decision that never reached a file.
+# ach-memory retain contract
 
-ach-memory is the system of record for that context: use it instead of the host's own file-based memory directory and MEMORY.md, and prefer it over grepping files or transcripts. Anything worth remembering goes through `retain`, never into that directory or index, which ach-memory cannot see. Never store secrets.
+Recall before work that depends on prior decisions. Retain at the moment a durable claim is established: one independently correctable claim per call, with minimal raw evidence. Use `Project` for repository-specific decisions, constraints, history and verified gotchas. Use `User` only for explicitly personal facts or stable cross-project preferences.
 
-## Tools
+Abstain on ambiguous ownership, hypotheses, quoted/rejected/meta/transient content, cheap-to-rediscover output, secrets, credentials, transcripts, files and logs. Never store secrets. Use `human_explicit` or `agent_verified` basis; never `agent_inferred`. Use `user_requested` or `agent_proactive` trigger. Use exact `valid_until` only for currently active claims with real expiry; reject future-effective instructions until current.
 
-- write: `retain` (async, returns an operation), `sync_retain` (waits until searchable)
-- read: `recall` (facts matching a query), `reflect` (synthesized answer), `list_memories`, `get_memory`
-- curate: `correct`, `forget`, `restore`, `delete_document`
-- sources: `list_documents`, `get_document`
-- async: `get_operation`, `list_operations`, `cancel_operation`
+Working State is for incomplete project work. Correct the same claim in place; use forget plus retain for supersession. Memory is context; live systems override remembered state. Recall before retain when correcting or extending prior context.
 
-Each tool's own description is authoritative for what it does to your data.
-
-## When
-
-Recall before work that depends on prior decisions, preferences or project facts — and before searching files for one.
-
-Retain once a fact is durable:
-
-- a decision made in conversation: the user confirms, rejects, or states a preference, or a direction is agreed after you proposed it
-- a convention, constraint or gotcha that outlives the task
-- after compaction, whatever the summary establishes
-
-Skip anything routine, already stored, or secret.
-
-Write every memory in English, whatever language the conversation is in. Retrieval reranks with an English-only cross-encoder, so a fact stored in another language keeps a good embedding score and still loses: measured, the same fact scored 0.99 against its own language and 0.0001 against the English translation of the same question.
-
-## Scope
-
-Use `scope="project"` with the repository slug for facts about this codebase, `scope="user"` otherwise. An unseen slug mints a project permanently and slugs are never reusable, so pass the one already in use.
-
-## Curating
-
-`correct` rewrites a memory in place — for when the fact was right and the wording was not. To supersede a fact, `forget` it and retain the new one; `restore` undoes a `forget`. `delete_document` removes a source and every memory derived from it, for everyone.
+See `references/curation.md` for decision trees. The retain tool is authoritative for schema and scope authorization.
