@@ -1,4 +1,4 @@
-from memory.builtin_models import USER_CONTEXT_V1, PROJECT_CONTEXT_V1
+from memory.builtin_models import PROJECT_CONTEXT_V1, USER_CONTEXT_V1
 
 
 def test_user_builtin_is_frozen_and_out_of_custom_namespace():
