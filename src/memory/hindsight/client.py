@@ -182,7 +182,7 @@ class HindsightClient:
         not_found: type[DomainError] | None = None,
         bad_request: type[DomainError] | None = None,
         conflict: type[DomainError] | None = None,
-        timeout: httpx.Timeout | None = None,
+        timeout: httpx.Timeout | float | None = None,
         ambiguous_on_timeout: bool = False,
     ) -> dict:
         response = None
@@ -736,12 +736,19 @@ class HindsightClient:
             params=_present({"detail": detail, "limit": limit, "offset": offset}),
         )
 
-    def get_mental_model(self, bank_id: str, mental_model_id: str) -> dict:
+    def get_mental_model(
+        self,
+        bank_id: str,
+        mental_model_id: str,
+        *,
+        timeout: httpx.Timeout | float | None = None,
+    ) -> dict:
         paths.reject_mental_model_id_traversal(mental_model_id)
         return self._request(
             "GET",
             paths.mental_model(self._tenant, bank_id, mental_model_id),
             not_found=MentalModelNotFound,
+            timeout=timeout,
         )
 
     def update_mental_model(

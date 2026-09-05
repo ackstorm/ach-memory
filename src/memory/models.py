@@ -125,7 +125,7 @@ class Project(Base):
     git_locator: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Orientation, not memory: name, spec pointer and one-line purpose are
     # derivable facts about a project, so they are a record here rather than
-    # three Hindsight facts competing for a profile item budget. purpose is
+    # three Hindsight facts competing for standing-context budget. purpose is
     # capped at 256 because it is one line -- a budget, not a text field.
     # All nullable: every existing project has none of them, and a NOT NULL
     # with a default would invent orientation nobody wrote.

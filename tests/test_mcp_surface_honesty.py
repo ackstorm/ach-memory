@@ -143,12 +143,8 @@ def test_retain_exposes_type_basis_trigger_expiry_and_evidence(name):
 
 
 @pytest.mark.parametrize("name", ["retain", "sync_retain"])
-def test_retain_tools_advertise_that_they_capture_evidence_not_profile_truth(name):
-    """SPEC Phase 3: explicit retain is for an explicit human "remember
-    this" request and captures evidence, not guaranteed profile truth --
-    only the automatic capture pipeline classifies and promotes candidates.
-    The advertised description is the only place a calling model learns
-    that distinction."""
+def test_retain_tools_advertise_that_evidence_is_supporting_context(name):
+    """The calling agent must see that evidence supports, but is not, a claim."""
     mgr = _manager()
     description = (mgr.get_tool(name).description or "").lower()
 

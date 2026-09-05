@@ -34,15 +34,6 @@ ReadScope = Literal["user", "project"]
 # import one canonical copy.
 FactType = Literal["world", "experience", "observation"]
 MemoryState = Literal["valid", "invalidated"]
-# The released response contains this nullable field. New v0.4 records do
-# not produce an eligibility value; this remaining value only describes
-# legacy evidence returned during the migration.
-Eligibility = Literal["evidence_only"]
-
-# The MCP compatibility surface still refers to the old annotation name.
-# Read contracts themselves use MemoryType directly.
-ProfileKind = MemoryType
-
 View = Literal["current", "evidence", "all"]
 
 MAX_QUERY_LENGTH = 2048
@@ -140,7 +131,6 @@ class RecallHit(BaseModel):
     # Keep released response names; their values follow the v0.4 contracts.
     kind: MemoryType | None = None
     origin: EvidenceBasis | None = None
-    eligibility: Eligibility | None = None
     occurred_at: str | None = None
     document_id: str | None = None
 
@@ -278,15 +268,11 @@ def resolve_filters(
     """Map a caller's closed `view`/`memory_types` choice to Hindsight's
     actual filter vocabulary.
 
-    v0.4.0 has no eligibility/profile-based filtering axis left --
-    `evidence_only`/`profile_eligible` are gone from the tag vocabulary
-    entirely (SPEC §5.6) -- so every ACH-authored fact is scoped by the
-    fixed `schema:ach-retain-v1` tag alone, optionally narrowed by the
-    caller's own closed `memory_types`. `view` is accepted for wire/schema
-    stability (existing callers still send one) but does not currently
-    branch this mapping: with no eligibility tag left to distinguish
-    "evidence" from "current", the three documented views resolve
-    identically until a future contract gives them separate meaning.
+    Every ACH-authored fact is scoped by the fixed `schema:ach-retain-v1`
+    tag, optionally narrowed by the caller's closed `memory_types`. `view`
+    does not currently branch this mapping; the documented views select the
+    same exact retained corpus until a future contract gives them separate
+    meaning.
     `ach-exact-v1` never produces an "experience" fact (SPEC §5.7), so only
     `world` (the retained claim) and `observation` (Hindsight's own later
     consolidation) are ever relevant types.

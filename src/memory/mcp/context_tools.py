@@ -12,7 +12,11 @@ def register(mcp: MCPServer) -> None:
         description="Load authorized bounded standing context. It creates no project, bank, model or claim; it may enqueue one existing safety repair.",
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True),
     )
-    def load_context(project_slug: str | None, workspace_id: str | None, ctx: Context):
+    def load_context(
+        ctx: Context,
+        project_slug: str | None = None,
+        workspace_id: str | None = None,
+    ):
         with tool_session(ctx) as tc:
             result = load_context_service(tc.db, tc.principal, LoadContextRequest(project_slug=project_slug, workspace_id=workspace_id))
             tc.db.commit()

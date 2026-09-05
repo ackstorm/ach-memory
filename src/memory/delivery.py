@@ -27,6 +27,7 @@ class DeliveryOmission(BaseModel):
     key: str
     reason: str
     token_count: int | None = None
+    omitted_count: int | None = None
 
 
 class ContextPayload(BaseModel):
@@ -48,26 +49,26 @@ def assemble_context(
     sections: Iterable[DeliverySection], *, global_max_tokens: int = 4608
 ) -> ContextPayload:
     ordered = sorted(sections, key=lambda section: section.key)
-    rendered: list[str] = []
+    rendered: list[tuple[DeliverySection, str]] = []
     headings: list[str] = []
     omissions: list[DeliveryOmission] = []
     for section in ordered:
         body = _inert(section.text)
         candidate = f"{_inert(section.heading)}\n{body}"
-        tokens = count_tokens(candidate)
-        if tokens > section.max_tokens:
-            omissions.append(DeliveryOmission(key=section.key, reason="model_output_over_budget", token_count=tokens))
+        body_tokens = count_tokens(body)
+        if body_tokens > section.max_tokens:
+            omissions.append(DeliveryOmission(key=section.key, reason="model_output_over_budget", token_count=body_tokens))
             continue
-        rendered.append(candidate)
+        rendered.append((section, candidate))
         headings.append(_inert(section.heading))
-    text = "\n\n".join(rendered)
+    text = "\n\n".join(candidate for _, candidate in rendered)
     total = count_tokens(text)
     if total > global_max_tokens:
         # Omit whole entries from the end, preserving deterministic priority.
-        while rendered and count_tokens("\n\n".join(rendered)) > global_max_tokens:
-            rendered.pop()
+        while rendered and count_tokens("\n\n".join(candidate for _, candidate in rendered)) > global_max_tokens:
+            section, _ = rendered.pop()
             headings.pop()
-            omissions.append(DeliveryOmission(key=ordered[len(rendered)].key, reason="global_budget"))
-        text = "\n\n".join(rendered)
+            omissions.append(DeliveryOmission(key=section.key, reason="global_budget"))
+        text = "\n\n".join(candidate for _, candidate in rendered)
         total = count_tokens(text)
     return ContextPayload(text=text, total_tokens=total, headings=headings, omissions=omissions)

@@ -197,7 +197,7 @@ def test_more_kinds_than_exist_is_rejected():
 
 
 def test_a_hit_with_only_whitelisted_fields_constructs():
-    hit = _hit(kind="decision", origin="agent_verified", eligibility="evidence_only")
+    hit = _hit(kind="decision", origin="agent_verified")
     assert hit.kind == "decision"
 
 
@@ -327,7 +327,7 @@ def test_a_history_response_rejects_an_undocumented_top_level_field():
 
 
 # -- resolve_filters: deterministic view/memory_types -> Hindsight filter
-# mapping (v0.4.0: schema:ach-retain-v1 always, no eligibility/profile axis)
+# mapping (v0.4.0: schema:ach-retain-v1 always)
 
 
 def test_current_view_always_carries_the_schema_tag_and_no_experience_type():
@@ -339,9 +339,7 @@ def test_current_view_always_carries_the_schema_tag_and_no_experience_type():
 
 @pytest.mark.parametrize("view", ["current", "evidence", "all"])
 def test_every_documented_view_resolves_to_the_same_v040_filter(view):
-    """v0.4.0 has no eligibility tag left to distinguish the three views by;
-    they resolve identically until a future contract gives them separate
-    meaning."""
+    """The views share one exact retained corpus in v0.4.0."""
     assert resolve_filters(view, None) == resolve_filters("current", None)
 
 

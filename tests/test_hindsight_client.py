@@ -164,12 +164,12 @@ def test_recall_forwards_tags_and_tags_match(client):
         return_value=httpx.Response(200, json={"results": []})
     )
 
-    client.recall(BANK, "q", tags=["evidence_only", "kind:gotcha"], tags_match="all_strict")
+    client.recall(BANK, "q", tags=["schema:ach-retain-v1", "type:gotcha"], tags_match="all_strict")
 
     import json
 
     body = json.loads(route.calls.last.request.read())
-    assert body["tags"] == ["evidence_only", "kind:gotcha"]
+    assert body["tags"] == ["schema:ach-retain-v1", "type:gotcha"]
     assert body["tags_match"] == "all_strict"
 
 
@@ -1422,16 +1422,16 @@ def test_retain_items_sends_one_operation_id_and_item_level_fields(client):
             content="we use uv",
             document_id="doc-1",
             metadata={"host": "claude-code"},
-            tags=["kind:convention", "profile_eligible"],
-            observation_scopes=[["profile_eligible"]],
+            tags=["type:convention", "schema:ach-retain-v1"],
+            observation_scopes=[["schema:ach-retain-v1"]],
             strategy="candidate_verbatim",
         ),
         RetainItem(
             content="ci runs on every push",
             document_id="doc-1",
             metadata={"host": "claude-code"},
-            tags=["kind:convention", "evidence_only"],
-            observation_scopes=[["evidence_only"]],
+            tags=["type:convention", "validity:indefinite"],
+            observation_scopes=[["validity:indefinite"]],
             strategy="candidate_verbatim",
         ),
     ]
@@ -1444,8 +1444,8 @@ def test_retain_items_sends_one_operation_id_and_item_level_fields(client):
     assert payload["operation_id"] == OP_ID
     assert payload["async"] is True
     assert len(payload["items"]) == 2
-    assert payload["items"][0]["tags"] == ["kind:convention", "profile_eligible"]
-    assert payload["items"][0]["observation_scopes"] == [["profile_eligible"]]
+    assert payload["items"][0]["tags"] == ["type:convention", "schema:ach-retain-v1"]
+    assert payload["items"][0]["observation_scopes"] == [["schema:ach-retain-v1"]]
     assert payload["items"][0]["strategy"] == "candidate_verbatim"
     assert payload["items"][0]["document_id"] == "doc-1"
 

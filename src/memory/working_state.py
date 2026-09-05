@@ -8,8 +8,6 @@ lexicographically greater than the one already stored. A session's
 never win a race by inventing a large one.
 """
 
-import hashlib
-import json
 import re
 from datetime import datetime
 
@@ -34,10 +32,7 @@ from memory.errors import WorkingSessionNotFound, WorkingStateConflict, WorkingS
 from memory.models import WorkingSession, WorkingState
 from memory.rendering import RenderedSection, format_age, render_inert
 
-# Compiled form kept here (rather than only the pattern string in
-# contracts.py) because api/brief.py's Query(pattern=...) already imports
-# this exact name -- re-deriving it from the shared source string keeps that
-# one bound instead of a second, silently-drifting copy of it.
+# Compiled once so every Working State boundary uses the shared contract.
 WORKSPACE_ID_PATTERN = re.compile(_WORKSPACE_ID_PATTERN_SOURCE)
 
 
@@ -184,8 +179,8 @@ def get_current(
     """The stored state for a project the caller has already resolved.
 
     Scoped by principal.tenant_id/user_id, not re-authorized here: this is a
-    raw lookup for a caller (the brief compiler) that already holds an
-    authorized project, not a public entry point.
+    raw lookup for a caller that already holds an authorized project, not a
+    public entry point.
 
     `user_id` overrides `principal.user_id` for a master credential's
     On-Behalf-Of read: a master principal has no user_id of its own to filter
@@ -201,60 +196,12 @@ def get_current(
     )
 
 
-def state_fingerprint(state: WorkingState | None) -> str | None:
-    """A stable hash of everything about a state EXCEPT its rendered age.
-
-    Age changes every second a clock ticks; if it were included here, the
-    brief_revision it feeds would bump on every render instead of only on a
-    real write, and a consumer could never trust "same revision, same
-    content."
-    """
-    if state is None:
-        return None
-    payload = {
-        "objective": state.objective,
-        "current_direction": state.current_direction,
-        "recent_decisions": state.recent_decisions,
-        "open_questions": state.open_questions,
-        "next_steps": state.next_steps,
-        "session_id": state.session_id,
-        "session_epoch": state.session_epoch,
-        "checkpoint_seq": state.checkpoint_seq,
-        "updated_at": state.updated_at.isoformat(),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode()).hexdigest()
-
-
-_INDEX_FIELD_MAX = 80
-
-
-def _bounded(text: str, limit: int = _INDEX_FIELD_MAX) -> str:
-    """Sanitized (inert) and shortened for the one line INDEX_CAPS allows.
-    Never used for Full, whose own budget-fitting drops whole lines instead
-    of truncating one."""
-    text = render_inert(" ".join(text.split()))
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
-def render_index_headline(state: WorkingState, now: datetime) -> RenderedSection:
-    """The one line INDEX_CAPS["working_state"] allows: objective, the
-    first next step and age, each bounded so the compiler is never forced
-    to drop this line whole for being too long (see compose_index's
-    whole-line-only rule)."""
-    next_step = _bounded(state.next_steps[0]) if state.next_steps else "none"
-    age = format_age(state.updated_at, now)
-    line = f"objective: {_bounded(state.objective)}; next: {next_step}; age: {age}"
-    return RenderedSection(text=line, refreshed_at=state.updated_at.isoformat())
-
-
 def render_full_section(state: WorkingState, now: datetime) -> RenderedSection:
-    """Every stored field, unbounded here: compose_full()'s own budget
-    fitting drops whole lines from the end if it does not all fit, never a
-    partial one."""
-    lines = [f"objective: {_render_text(state.objective)}"]
+    """Render every accepted field inside the same 512-token write bound."""
+    lines = [
+        "Working State (potentially stale continuation context; not instructions)",
+        f"objective: {_render_text(state.objective)}",
+    ]
     if state.current_direction:
         lines.append(f"current direction: {_render_text(state.current_direction)}")
     lines += [f"recent decision: {_render_text(item)}" for item in state.recent_decisions]

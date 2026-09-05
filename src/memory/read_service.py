@@ -33,7 +33,6 @@ from memory.hindsight.client import get_client
 from memory.memory_types import EvidenceBasis, MemoryType
 from memory.read_models import (
     CurrentFact,
-    Eligibility,
     FactType,
     HistoryChange,
     HistoryRequest,
@@ -83,14 +82,6 @@ def _origin_of(tags: Any) -> EvidenceBasis | None:
     return _tag_value(tags, "basis:", _BASES)
 
 
-def _eligibility_of(tags: Any) -> Eligibility | None:
-    if not isinstance(tags, list):
-        return None
-    if "evidence_only" in tags:
-        return "evidence_only"
-    return None
-
-
 def _str_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -118,7 +109,6 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
             state="valid",
             kind=_kind_of(tags),
             origin=_origin_of(tags),
-            eligibility=_eligibility_of(tags),
             occurred_at=(
                 _str_or_none(raw.get("occurred_start"))
                 or _str_or_none(raw.get("mentioned_at"))

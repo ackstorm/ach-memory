@@ -232,10 +232,6 @@ tr.silent .ribbon{opacity:.55}
 .mm-warn{color:var(--sodium)}
 .mm-think{color:var(--sodium)}
 
-/* The brief is shown as sent: whitespace is load-bearing, since the agent
-   reads these as line-per-rule instructions. */
-.brief-text{margin:0;white-space:pre-wrap;word-break:break-word;font:13px/1.6 var(--mono);color:var(--text)}
-
 /* ── project metadata ───────────────────────────────────────────────────── */
 /* [hidden] is a UA rule, so display:grid outranks it and the form would stay
    on screen with no project loaded. Same reason .panel[hidden] exists. */
@@ -272,7 +268,6 @@ tr.silent .ribbon{opacity:.55}
     <button class="tab" role="tab" aria-selected="false" data-panel="activity">Activity</button>
     <button class="tab" role="tab" aria-selected="false" data-panel="peek">Peek</button>
     <button class="tab" role="tab" aria-selected="false" data-panel="models">Models</button>
-    <button class="tab" role="tab" aria-selected="false" data-panel="brief">Brief</button>
     <button class="tab" role="tab" aria-selected="false" data-panel="projects">Projects</button>
   </nav>
   <div class="top-right">
@@ -766,14 +761,11 @@ document.getElementById("peek-go").addEventListener("click", async () => {
   }
 });
 
-/* Matches STALE_AFTER in src/memory/brief.py. Stale AND old means refreshes
-   are failing, not that the bank went quiet. */
+/* Stale AND old means refreshes are failing, not that the bank went quiet. */
 const STALE_AFTER_DAYS = 7;
 
-/* Matches PLACEHOLDER in src/memory/brief.py. Hindsight returns this for a
-   model that exists but has never refreshed, and it is truthy: rendered as
-   content it says "work in progress" for a model whose refresh has been
-   failing for a week. brief.py:130 treats it as absent; so does this. */
+/* Hindsight returns this for a model that exists but has never refreshed.
+   Treat it as absent instead of presenting a placeholder as model content. */
 const PLACEHOLDER = "Generating content...";
 
 function scopeParams(value) {
@@ -872,7 +864,7 @@ function renderModels(models, histories) {
   }
   out.innerHTML = models.map((model, i) => {
     const history = histories[i] ?? [];
-    // Mirrors brief.py:129-130: trimmed, and the placeholder counts as absent.
+    // Trimmed, and the upstream placeholder counts as absent.
     const raw = (model.content || "").trim();
     const content = raw === PLACEHOLDER ? "" : raw;
     const fresh = freshness(model, history);
@@ -927,34 +919,9 @@ document.getElementById("models-go").addEventListener("click", async () => {
   }
 });
 
-/* Both halves are reported by the endpoint as booleans, and they are the only
-   honest source: a missing section leaves no marker in the composed text, so
-   reading the prose to work out what is there would guess. */
-document.getElementById("brief-go").addEventListener("click", async () => {
-  const user = document.getElementById("brief-user").value;
-  const project = document.getElementById("brief-project").value;
-  const out = document.getElementById("brief-out");
-  if (!user) { out.innerHTML = `<div class="empty">Pick a user first.</div>`; return; }
-  // The user half comes from the on-behalf-of subject, never from a query
-  // identity (SPEC §16.5), and only the project half is addressable.
-  // `scope` is required even so -- with no query string at all this is a 422,
-  // not a user-only brief.
-  const params = project ? scopeParams(project) : { scope: "user" };
-  const qs = `?${new URLSearchParams(params).toString()}`;
-  out.innerHTML = `<div class="empty">Reading…</div>`;
-  try {
-      headers: { "on-behalf-of": user.slice(2) },
-    }));
-  } catch (e) {
-    if (e.message !== "refused") out.innerHTML = `<div class="empty">Could not read that brief.</div>`;
-  }
-});
-
 /* ── projects ─────────────────────────────────────────────────────────────
-   The three metadata fields exist so a brief can state a project's
-   orientation outright instead of an agent learning it and paying to store
-   it. Nothing else in the product writes them, and brief.py does not read
-   them yet -- this panel is what puts values there first. */
+   These fields provide deterministic project orientation without paying to
+   store facts that already belong in the project record. */
 
 /* Matches UpdateProjectRequest.purpose in src/memory/api/projects.py, which
    mirrors the projects.purpose column. Counted while typing because one
@@ -1047,8 +1014,8 @@ document.getElementById("projects-save").addEventListener("click", async () => {
     return;
   }
   // The boxes must have come from this project. Writing one project's
-  // orientation onto another is silent, and these fields are what a brief
-  // states to an agent as fact.
+  // orientation onto another is silent, and these fields are delivered to an
+  // agent as deterministic project context.
   if (loadedProject !== slug) {
     out.innerHTML = `<div class="empty">Load the project first.</div>`;
     return;
@@ -1092,10 +1059,6 @@ async function load() {
   renderLog(log);
   buildBankOptions("peek-target", fleet);
   buildBankOptions("models-target", fleet);
-  buildBankOptions("brief-user", fleet, { scope: "user", placeholder: "Pick a user…" });
-  buildBankOptions("brief-project", fleet, {
-    scope: "project", placeholder: "No project section",
-  });
   buildProjectOptions("projects-target", projects);
   /* Rebuilding the options resets the select to "" without firing `change`,
      so without this a Refresh leaves a filled form and an "Editing X" line

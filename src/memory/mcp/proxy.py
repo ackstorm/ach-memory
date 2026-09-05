@@ -601,9 +601,8 @@ def fetch_context(
     """The bounded context response, or None -- never an exception.
 
     Bounded and silent on purpose: this runs before the host's first prompt,
-    so a slow or broken memory service must cost a session its brief and
-    nothing else. The caller supplies the small fallback instruction when this
-    returns ``None``.
+    so a slow or broken memory service can only omit standing context. The
+    host still starts normally when this returns ``None``.
     """
     try:
         response = httpx.post(
@@ -618,7 +617,7 @@ def fetch_context(
     except (httpx.HTTPError, ValueError):
         return None
     if isinstance(body, dict) and isinstance(body.get("text"), str):
-        return {"instructions": body["text"]}
+        return body
     return None
 
 
@@ -638,5 +637,5 @@ def startup_instructions(
     """Fetch fresh authorized context; failures are fail-open and empty."""
     fetched = fetch_context(base_url, api_key, slug, locator, workspace_id=workspace_id)
     if fetched:
-        return fetched["instructions"]
+        return fetched["text"]
     return ""

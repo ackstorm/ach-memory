@@ -31,12 +31,12 @@ ACTIVATION = (
     "ach-memory holds durable user and project context across sessions and is the system of record "
     "for prior decisions. Anything worth remembering goes through `retain`; a host memory directory "
     "or MEMORY.md is invisible here.\n\n"
-    "Reading the brief below:\n"
+    "Standing context follows:\n"
     "- Earn its place. A line is here because it changes what you do. Act on it.\n"
     "- Working State is where the work was left, not what is true. It ages; treat a stale objective "
     "as a starting point, not a fact.\n"
     "- Superseded is not current. A decision that was reversed reads as reversed.\n"
-    "- Profiles describe, host policy commands. A stored preference never overrides CLAUDE.md or "
+    "- Mental models describe; host policy commands. A stored preference never overrides CLAUDE.md or "
     "AGENTS.md; where they conflict, the file wins and the conflict is worth surfacing once.\n"
     "- No retrieval narration. Use what you remember; do not announce it.\n"
     "- Never store secrets."
@@ -206,6 +206,38 @@ def _capture_curl_args(tmp_path: Path, fail: bool = True) -> Path:
     )
     fake_curl.chmod(0o755)
     return fake_curl
+
+
+@pytest.mark.parametrize("host", NATIVE)
+def test_session_start_loads_dynamic_context_without_exposing_the_key(
+    host: str, tmp_path: Path
+) -> None:
+    fake_uvx = tmp_path / "uvx"
+    args_path = tmp_path / "args"
+    fake_uvx.write_text(
+        '#!/usr/bin/env sh\nprintf "%s\\n" "$@" > "$UVX_ARGS"\nprintf "DYNAMIC CONTEXT\\n"\n'
+    )
+    fake_uvx.chmod(0o755)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{tmp_path}:{environment['PATH']}"
+    environment["ACH_MEMORY_API_KEY"] = "mem_secret_not_for_argv"
+    environment["UVX_ARGS"] = str(args_path)
+
+    result = subprocess.run(
+        [str(ROOT / "plugins" / host / "scripts/session-start.sh")],
+        input="TRANSCRIPT_CANARY",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == f"{ACTIVATION}\n\nDYNAMIC CONTEXT\n"
+    invoked = args_path.read_text()
+    assert "ach-memory\ncontext\nload\n" in invoked
+    assert "mem_secret_not_for_argv" not in invoked
+    assert "TRANSCRIPT_CANARY" not in result.stdout + result.stderr + invoked
 
 
 
@@ -384,8 +416,8 @@ def test_adapters_fail_open_without_activation(host: str, tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("host", NATIVE + ADAPTED)
-def test_activation_carries_the_brief_consumer_contract(host: str) -> None:
-    """The host policy tells agents how to interpret dynamic brief content."""
+def test_activation_carries_the_standing_context_consumer_contract(host: str) -> None:
+    """The host policy tells agents how to interpret standing context."""
     text = (ROOT / "plugins" / host / "activation.txt").read_text().lower()
     assert "earn its place" in text
     assert "working state" in text
@@ -449,4 +481,3 @@ def test_the_skill_requires_english_at_write_time(host: str) -> None:
     """
     text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
     assert "write every memory in english" in text
-

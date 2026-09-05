@@ -67,7 +67,7 @@ class UpdateProjectRequest(BaseModel):
     # locator information and almost always signals a caller bug -- the two
     # intents must not collapse into the same silent-clear behavior.
     git_locator: str | None = Field(default=None, max_length=512, min_length=1)
-    # Orientation the brief compiler reads instead of spending memory on it.
+    # Deterministic orientation delivered without spending memory on it.
     # Lengths mirror the projects columns so an oversize value is a typed 422
     # here, not a DB error; min_length=1 for the same reason as git_locator
     # above -- null is a deliberate clear, "" is a caller bug.

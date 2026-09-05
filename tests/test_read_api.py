@@ -50,7 +50,6 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
                 "state": "valid",
                 "kind": None,
                 "origin": None,
-                "eligibility": None,
                 "occurred_at": None,
                 "document_id": None,
             }
@@ -63,9 +62,8 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
 
 @respx.mock
 def test_read_recall_sends_v040_schema_and_type_tags(client, two_users):
-    """v0.4.0: no eligibility/profile filtering axis -- every recall carries
-    the fixed schema tag, narrowed only by the caller's own closed
-    memory_types, and never the retired profile_eligible vocabulary."""
+    """Every recall carries the fixed schema tag, optionally narrowed by
+    the caller's closed memory types."""
     route = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
     ).mock(return_value=httpx.Response(200, json={"results": []}))
@@ -82,7 +80,6 @@ def test_read_recall_sends_v040_schema_and_type_tags(client, two_users):
     assert sent["tags"] == ["schema:ach-retain-v1", "type:decision"]
     assert sent["tags_match"] == "all_strict"
     assert set(sent["types"]) == {"world", "observation"}
-    assert "profile_eligible" not in json.dumps(sent)
 
 
 @respx.mock

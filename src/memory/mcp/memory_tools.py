@@ -341,7 +341,7 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         verbose: Verbose = False,
         view: read_models.View = "current",
-        kinds: list[read_models.ProfileKind] | None = None,
+        kinds: list[MemoryType] | None = None,
         max_results: int = read_models.DEFAULT_MAX_RESULTS,
     ) -> ToolResult:
         def body_factory() -> read_models.RecallRequest:

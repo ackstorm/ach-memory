@@ -100,13 +100,10 @@ def build_mcp() -> MCPServer:
     Keeping registration out of this module is what makes the exclusion test in
     Task 6 meaningful: the advertised set is one list in one place.
 
-    `instructions` carries the policy because it is the only delivery that
-    reaches every caller. activation.txt reaches a host whose SessionStart hook
-    runs, which codex's never does (measured, test_agent_bundle), and reaches
-    nobody who wires the endpoint by hand. This string is returned by
-    `server/discover`, so it lands on every host, HTTP and stdio alike. The
-    stdio bridge replaces it with the compact index tier; direct HTTP clients
-    still receive this static safety floor.
+    `instructions` carries the universal safety floor because it is the only
+    delivery that reaches every caller. Host activation text may add richer
+    workflow guidance, while direct HTTP and stdio clients both receive this
+    static contract through discovery.
 
     It is not written for coding agents. Any MCP client gets it, so the text
     names the read moment and the write moment in general terms and leaves the

@@ -1,13 +1,12 @@
-#!/usr/bin/env bash
-# ach-memory - SessionStart hook.
-#
-# SessionStart takes its context as plain stdout, so this is a plain cat: no
-# node, no jq, no runtime that has to be installed before memory works. The
-# hook announces the tools and never calls them -- a hook that talked to the
-# service would make every session start depend on the network.
-#
-# Must exit 0 whatever happens: a non-zero UserPromptSubmit hook blocks the
-# message.
+#!/usr/bin/env sh
+# SessionStart emits fixed policy plus one fresh, authorized context load.
+# It never reads stdin, passes a credential in argv or blocks host startup.
 set -u
-cat "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/activation.txt" 2>/dev/null || true
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cat "$plugin_root/activation.txt" 2>/dev/null || exit 0
+if [ -n "${ACH_MEMORY_API_KEY:-}" ] && command -v uvx >/dev/null 2>&1; then
+  printf '\n'
+  uvx --from git+https://github.com/ackstorm/ach-memory@v0.4.0 \
+    ach-memory context load 2>/dev/null || true
+fi
 exit 0

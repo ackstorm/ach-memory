@@ -1,6 +1,6 @@
 """Authorized, bounded standing-context assembly."""
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from time import monotonic
 
@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 from memory import projects, working_state
 from memory.auth.principal import Principal
 from memory.currentness import bank_is_withheld
-from memory.delivery import ContextPayload, DeliverySection, assemble_context
+from memory.delivery import (
+    ContextPayload,
+    DeliveryOmission,
+    DeliverySection,
+    assemble_context,
+    count_tokens,
+)
 from memory.hindsight.client import get_client
 from memory.models import MentalModelRegistration, Project, RetainedRecord
 from memory.read_context import resolve_read_bank
@@ -18,6 +24,7 @@ from memory.retained_records import LogicalBankRef
 from memory.v040_contracts import LoadContextRequest
 
 DEADLINE_SECONDS = 2.0
+ACTIVE_CLAIMS_TOKENS = 256
 
 
 def _model_text(raw: dict) -> str:
@@ -26,6 +33,23 @@ def _model_text(raw: dict) -> str:
         if isinstance(value, str):
             return value
     return ""
+
+
+def _bounded_active_claims(
+    entries: list[tuple[str, RetainedRecord]],
+) -> tuple[str, int]:
+    lines = [f"{scope.title()} · {record.canonical_content}" for scope, record in entries]
+    for kept in range(len(lines), -1, -1):
+        omitted = len(lines) - kept
+        marker = (
+            [f"[{omitted} more active claims omitted; use recall]"]
+            if omitted
+            else []
+        )
+        body = "\n".join([*lines[:kept], *marker])
+        if count_tokens(body) <= ACTIVE_CLAIMS_TOKENS:
+            return body, omitted
+    return "", len(lines)
 
 
 class ContextService:
@@ -49,7 +73,19 @@ class ContextService:
         user_bank = self._bank("user")
         project_bank = self._bank("project", project) if project else None
         sections: list[DeliverySection] = []
-        omissions = []
+        omissions: list[DeliveryOmission] = []
+        banks = [("user", user_bank)]
+        if project_bank is not None:
+            banks.append(("project", project_bank))
+        withheld_scopes = {
+            scope for scope, bank in banks if bank_is_withheld(self.db, bank)
+        }
+        omissions.extend(
+            DeliveryOmission(
+                key=f"{scope}-bank", reason="bank_currentness_unavailable"
+            )
+            for scope in sorted(withheld_scopes)
+        )
         registration_scope = (
             ((MentalModelRegistration.scope == "user") & (MentalModelRegistration.user_id == self.principal.user_id))
             | ((MentalModelRegistration.scope == "project") & (MentalModelRegistration.project_internal_id == (project.internal_id if project else None)))
@@ -63,63 +99,107 @@ class ContextService:
         jobs = []
         for row in rows:
             bank = user_bank if row.scope == "user" else project_bank
-            if bank is None or bank_is_withheld(self.db, bank) or row.delivery_state != "ready" or not row.upstream_model_id:
+            if (
+                bank is None
+                or row.scope in withheld_scopes
+                or row.delivery_state != "ready"
+                or not row.upstream_model_id
+            ):
                 continue
             jobs.append((row, bank))
-        remaining = max(0.0, DEADLINE_SECONDS - (monotonic() - started))
-        pool = ThreadPoolExecutor(max_workers=max(1, min(len(jobs), 9)))
-        futures = {pool.submit(self.client.get_mental_model, bank.bank_id, row.upstream_model_id): (row, bank) for row, bank in jobs}
-        try:
-            try:
-                completed = as_completed(futures, timeout=remaining or 0.001)
-                iterator = completed
-                for future in iterator:
-                    row, bank = futures[future]
-                    try:
-                        raw = future.result()
-                        text = _model_text(raw if isinstance(raw, dict) else {})
-                        if text:
-                            prefix = "0" if row.scope == "user" else "2"
-                            sections.append(DeliverySection(f"{prefix}:{row.model_key}", f"{row.scope.title()} · {row.model_key}", text, row.max_tokens))
-                    except Exception:  # noqa: BLE001 - one unavailable model cannot cancel peers
-                        omissions.append({"key": row.model_key, "reason": "model_unavailable"})
-            except TimeoutError:
-                for future, (row, _) in futures.items():
-                    if not future.done():
-                        future.cancel()
-                        omissions.append({"key": row.model_key, "reason": "model_unavailable"})
-        finally:
+        if jobs:
+            deadline = started + DEADLINE_SECONDS
+            pool = ThreadPoolExecutor(max_workers=min(len(jobs), 9))
+
+            def fetch(row, bank):
+                remaining = max(0.001, deadline - monotonic())
+                return self.client.get_mental_model(
+                    bank.bank_id, row.upstream_model_id, timeout=remaining
+                )
+
+            futures = {
+                pool.submit(fetch, row, bank): (row, bank) for row, bank in jobs
+            }
+            remaining = max(0.0, deadline - monotonic())
+            done, pending = wait(futures, timeout=remaining)
+            for future in pending:
+                row, _ = futures[future]
+                future.cancel()
+                omissions.append(
+                    DeliveryOmission(key=row.model_key, reason="model_unavailable")
+                )
+            for future in done:
+                row, _ = futures[future]
+                try:
+                    raw = future.result()
+                    text = _model_text(raw if isinstance(raw, dict) else {})
+                    if text:
+                        prefix = "0" if row.scope == "user" else "2"
+                        sections.append(
+                            DeliverySection(
+                                f"{prefix}:{row.model_key}",
+                                f"{row.scope.title()} · {row.model_key}",
+                                text,
+                                row.max_tokens,
+                            )
+                        )
+                except Exception:  # noqa: BLE001 - one unavailable model cannot cancel peers
+                    omissions.append(
+                        DeliveryOmission(key=row.model_key, reason="model_unavailable")
+                    )
             pool.shutdown(wait=False, cancel_futures=True)
         if project is not None:
             metadata = "\n".join(filter(None, [f"name: {project.name}" if project.name else None, f"purpose: {project.purpose}" if project.purpose else None, f"spec: {project.canonical_spec}" if project.canonical_spec else None]))
             if metadata:
                 sections.append(DeliverySection("1:project-metadata", "Project Metadata", metadata, 256))
-            now = datetime.now(UTC)
-            for scope, bank in (("user", user_bank), ("project", project_bank)):
-                if bank is None or bank_is_withheld(self.db, bank):
-                    continue
-                claims = self.db.scalars(select(RetainedRecord).where(
-                    RetainedRecord.tenant_id == self.principal.tenant_id,
-                    RetainedRecord.scope == scope,
-                    RetainedRecord.user_id == (bank.user_id if scope == "user" else None),
-                    RetainedRecord.project_internal_id == (bank.project_internal_id if scope == "project" else None),
-                    RetainedRecord.lifecycle == "active",
-                    RetainedRecord.upstream_state.in_(("accepted", "completed")),
-                    RetainedRecord.valid_until.is_not(None),
-                    RetainedRecord.valid_until > now,
-                ).order_by(RetainedRecord.valid_until, RetainedRecord.recorded_at, RetainedRecord.document_id)).all()
-                text = "\n".join(record.canonical_content for record in claims)
-                if text:
-                    sections.append(DeliverySection("2:active-claims", "Active Time-Bounded Claims", text, 256))
+        now = datetime.now(UTC)
+        active_claims: list[tuple[str, RetainedRecord]] = []
+        for scope, bank in banks:
+            if scope in withheld_scopes:
+                continue
+            claims = self.db.scalars(select(RetainedRecord).where(
+                RetainedRecord.tenant_id == self.principal.tenant_id,
+                RetainedRecord.scope == scope,
+                RetainedRecord.user_id == (bank.user_id if scope == "user" else None),
+                RetainedRecord.project_internal_id == (bank.project_internal_id if scope == "project" else None),
+                RetainedRecord.lifecycle == "active",
+                RetainedRecord.upstream_state.in_(("accepted", "completed")),
+                RetainedRecord.valid_until.is_not(None),
+                RetainedRecord.valid_until > now,
+            ).order_by(RetainedRecord.valid_until, RetainedRecord.recorded_at, RetainedRecord.document_id)).all()
+            active_claims.extend((scope, record) for record in claims)
+        active_claims.sort(
+            key=lambda item: (
+                item[1].valid_until,
+                item[1].recorded_at,
+                item[1].document_id,
+            )
+        )
+        claims_text, claims_omitted = _bounded_active_claims(active_claims)
+        if claims_text:
+            sections.append(
+                DeliverySection(
+                    "3:active-claims",
+                    "Active Time-Bounded Claims",
+                    claims_text,
+                    ACTIVE_CLAIMS_TOKENS,
+                )
+            )
+        if claims_omitted:
+            omissions.append(
+                DeliveryOmission(
+                    key="active-claims",
+                    reason="section_budget",
+                    omitted_count=claims_omitted,
+                )
+            )
         if project is not None and request.workspace_id:
             state = working_state.get_current(self.db, self.principal, project.internal_id, request.workspace_id)
             if state:
                 rendered = working_state.render_full_section(state, datetime.now(UTC)).text
-                sections.append(DeliverySection("3:working-state", "Working State", rendered, 512))
+                sections.append(DeliverySection("4:working-state", "Working State", rendered, 512))
         payload = assemble_context(sections)
-        payload.omissions.extend(
-            {"key": item["key"], "reason": item["reason"]} for item in omissions
-        )
+        payload.omissions.extend(omissions)
         return payload
 
 

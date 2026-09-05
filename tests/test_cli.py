@@ -1150,8 +1150,8 @@ def test_mcp_passes_the_resolved_workspace_id_to_startup_instructions(
     assert seen["workspace_id"] == "ws_" + "a" * 32
 
 
-def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A failed brief fetch costs the session its brief, not its MCP tools."""
+def test_mcp_still_runs_when_standing_context_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed context fetch never costs the session its MCP tools."""
     monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
     calls = []
@@ -1159,7 +1159,7 @@ def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr("memory.mcp.proxy.bootstrap", lambda *args: None)
     monkeypatch.setattr(
         "memory.mcp.proxy.startup_instructions",
-        lambda *_a, **_k: "[ach-memory] Session brief unavailable; recall still works.",
+        lambda *_a, **_k: "",
     )
     monkeypatch.setattr(
         "memory.mcp.proxy.run_stdio_bridge",
@@ -1168,7 +1168,46 @@ def test_mcp_still_runs_when_there_is_no_brief(monkeypatch: pytest.MonkeyPatch) 
 
     assert cli.main(["mcp"]) == 0
     assert len(calls) == 1
-    assert "unavailable" in calls[0][-1].lower()
+    assert calls[0][-1] == ""
+
+
+def test_context_load_resolves_local_identity_and_prints_only_text(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_project_context",
+        lambda: ("acme-api", "https://github.com/acme/api"),
+    )
+    monkeypatch.setattr(
+        "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
+    )
+    seen = {}
+
+    def fake_fetch(base, key, slug, locator, **kwargs):
+        seen.update(
+            base=base,
+            key=key,
+            slug=slug,
+            locator=locator,
+            workspace_id=kwargs["workspace_id"],
+        )
+        return {"text": "standing context", "omissions": []}
+
+    monkeypatch.setattr("memory.mcp.proxy.fetch_context", fake_fetch)
+
+    assert cli.main(["context", "load"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "standing context\n"
+    assert captured.err == ""
+    assert seen == {
+        "base": "https://mem.example.com",
+        "key": "mem_secret",
+        "slug": "acme-api",
+        "locator": "https://github.com/acme/api",
+        "workspace_id": "ws_" + "a" * 32,
+    }
 
 
 def test_mcp_bootstrap_opt_out_makes_no_bootstrap_call(
@@ -1312,7 +1351,6 @@ def test_register_codex_server_stdio_whitelists_key_name_without_storing_secret(
 
 
 # ---------------------------------------------------------------------------
-# Task 7: capture-checkpoint / capture-worker / capture-check dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -1334,8 +1372,6 @@ def _real_precompact_hook_event() -> dict:
         "hook_event_name": "PreCompact",
         "trigger": "auto",
     }
-
-
 
 
 

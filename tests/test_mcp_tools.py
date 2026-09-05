@@ -1180,7 +1180,7 @@ EXPECTED_TOOLS = {
     "update_mental_model", "refresh_mental_model", "delete_mental_model",
 }
 
-TOOL_CONTRACT_SHA256 = "97e49ccf0f7e010e6414fd6a20ea865834b2715ecb3cc8d26bb0444c6d469ea7"
+TOOL_CONTRACT_SHA256 = "0d7496a32cea0004cba01b7811f1edc2de94111f55c3a2158bb6d20cdcfc44c7"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1229,6 +1229,19 @@ async def test_serialized_tool_contract_is_stable_after_module_split():
     assert len(tools) == 26
     assert hashlib.sha256(serialized).hexdigest() == TOOL_CONTRACT_SHA256
 
+
+@pytest.mark.anyio
+async def test_load_context_accepts_an_empty_input_object():
+    """Standing context is useful without a project and must not require nulls."""
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    tool = next(item for item in await mcp.list_tools() if item.name == "load_context")
+
+    assert tool.input_schema.get("required", []) == []
+
 # SPEC §11.6 and §11.7. Each is excluded for a stated reason: whole-bank
 # destruction an LLM would reach for when it decides memory is "stale"; bank
 # configuration that is policy for every user of a project; shared, persistent
@@ -1266,8 +1279,8 @@ async def test_the_advertised_tool_surface_is_exactly_the_spec_set():
 def test_instructions_carry_the_static_mcp_contract_to_every_caller():
     """Direct HTTP clients still need the service identity and safety floor.
 
-    The mutable read/write policy now ships as host policy in Task 9, leaving
-    the capped MCP instruction field for the session index tier.
+    The mutable read/write policy ships as host policy; the capped MCP
+    instruction field carries only the universal safety contract.
     """
     from memory.mcp.server import build_mcp
 

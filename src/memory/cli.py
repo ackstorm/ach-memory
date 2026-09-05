@@ -734,21 +734,31 @@ def _serve_mcp(url_argument: str | None = None) -> int:
 
 def _context_load() -> int:
     """Print only context text; diagnostics never become agent context."""
+    from memory.mcp import proxy
+
     key = os.environ.get("ACH_MEMORY_API_KEY", "")
-    base = os.environ.get("ACH_MEMORY_URL", "http://localhost:8000").rstrip("/")
     if not key:
         return 0
-    import urllib.request
-    request = urllib.request.Request(
-        f"{base}/v1/context/load", data=b"{}", method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    base = _base_url(
+        os.environ.get("ACH_MEMORY_URL", "http://localhost:8000")
     )
-    try:
-        with urllib.request.urlopen(request, timeout=3) as response:
-            payload = json.load(response)
-        print(payload.get("text", ""))
-    except Exception:  # noqa: BLE001 - CLI fails open and keeps diagnostics off stdout
+    slug, locator = proxy.resolve_project_context()
+    workspace_id = proxy.resolve_workspace_context()
+    payload = proxy.fetch_context(
+        base, key, slug, locator, workspace_id=workspace_id
+    )
+    if payload is None:
         print("ach-memory: context unavailable", file=sys.stderr)
+        return 0
+    text = payload.get("text", "")
+    if text:
+        print(text)
+    omissions = payload.get("omissions")
+    if isinstance(omissions, list) and omissions:
+        print(
+            f"ach-memory: {len(omissions)} context section(s) omitted",
+            file=sys.stderr,
+        )
     return 0
 
 

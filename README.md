@@ -157,9 +157,10 @@ a gateway already uses `Authorization`; when both are sent,
 `x-ach-memory-key` wins. The master key is rejected on MCP, and v1 supports
 native/non-browser MCP clients only.
 
-`ach-memory brief --url <endpoint>` prints exactly the instructions text a
-session would receive — the way to see what a host actually got when a brief
-looks missing or wrong.
+`ach-memory context load` reads the endpoint and credential from
+`ACH_MEMORY_URL` / `ACH_MEMORY_API_KEY` and prints exactly the authorized
+standing-context text a session receives. Diagnostics and omissions go to stderr
+so stdout can be injected directly into an agent context.
 
 ### Direct HTTP
 

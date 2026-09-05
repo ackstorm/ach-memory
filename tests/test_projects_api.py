@@ -279,8 +279,7 @@ def test_project_metadata_round_trips(client, juan, tenant):
 
 def test_patch_with_an_explicit_null_clears_project_metadata(client, juan, tenant):
     """Same "clear or update" semantics the locator already has: a null is a
-    deliberate clear, and orientation someone retracted must actually go away
-    rather than keep being compiled into every session brief.
+    deliberate clear, and retracted orientation must actually go away.
 
     Replacing any of the three `in body.model_fields_set` checks with a
     `body.<field> is not None` check turns this red -- the clear is skipped and
