@@ -770,6 +770,22 @@ The initial built-in definition version is `1`. Both request delta refresh after
 a five-minute minimum interval. Additive retains may therefore make a ready model temporarily
 incomplete, but never unsafe; Hindsight owns that normal refresh lifecycle.
 
+#### 7.4.1 Frozen version-1 definitions
+
+The following source queries and token budgets are immutable in `0.4.0`:
+
+**user-context (version 1)**
+- **source_query:** "Summarize durable user context that an authorized agent should always know. Include explicitly retained identity, relationships, preferences, constraints, conventions, facts, and accepted decisions useful across agents. Distinguish imperative constraints from defeasible preferences and preserve whether support is human-explicit or agent-verified. Omit project-specific material, speculation, transient work, secrets, unsupported inference, and duplicate statements. Present only current indefinite knowledge."
+- **max_tokens:** 512
+- **source_tags:** `schema:ach-retain-v1`, `validity:indefinite` (all-tag matching)
+- **trigger:** delta refresh, refresh after consolidation, 300-second minimum interval
+
+**project-context (version 1)**
+- **source_query:** "Summarize durable, impersonal project context that is not cheaply rediscoverable from the repository: accepted decisions and useful rationale, constraints, conventions, non-obvious facts and history, and verified gotchas. Preserve prohibitions and distinguish rejected or superseded alternatives from active decisions. Omit personal user context, current task progress, secrets, unsupported inference, duplicate statements, and cheap source-code facts. Present only current indefinite knowledge."
+- **max_tokens:** 1,024
+- **source_tags:** `schema:ach-retain-v1`, `validity:indefinite` (all-tag matching)
+- **trigger:** delta refresh, refresh after consolidation, 300-second minimum interval
+
 Built-in prompts are ACH-owned and cannot be edited through ordinary model CRUD. Their definitions
 carry a version and may be updated by an ACH release. This is a closed two-definition mechanism,
 not a user-extensible catalog, inheritance system or general template framework. An upgrade changes
