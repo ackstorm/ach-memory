@@ -39,10 +39,7 @@ from mcp.shared.inbound import (
 )
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
-from memory import brief
-from memory.capture.local import resolve_project_context as resolve_local_project_context
-
-BRIEF_TIMEOUT_SECONDS = 2.0
+CONTEXT_TIMEOUT_SECONDS = 2.0
 
 
 def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | None]:
@@ -66,16 +63,17 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
     The locator travels alongside the derived slug so the server binds it to
     the project on first touch and refuses a mismatch afterwards (§8.3/§8.4).
 
-    The resolution itself lives in `memory.capture.local` and is shared with
-    the checkpoint hook: two copies is what let one of them send a raw
-    `origin` -- credentials and all -- over the network (SPEC Phase 3 review
-    finding 2). The tuple shape is kept because this is a hot startup path
-    with existing callers; the values are the canonical ones.
+    Resolution happens locally; only the derived logical project and workspace
+    identity are sent to the service.
     """
-    context = resolve_local_project_context(cwd or os.getcwd())
-    if context is None:
-        return None, None
-    return context.project_slug, context.git_locator
+    slug = os.environ.get("MEMORY_PROJECT")
+    if slug:
+        return slug, None
+    try:
+        locator = subprocess.run(["git", "remote", "get-url", "origin"], cwd=cwd or os.getcwd(), capture_output=True, text=True, timeout=3, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        locator = ""
+    return (Path(locator).name.removesuffix(".git") if locator else None), (locator or None)
 
 
 def bootstrap(base_url: str, api_key: str, project_slug: str | None) -> str | None:
@@ -587,37 +585,28 @@ def run_stdio_bridge(
     asyncio.run(bridge.serve())
 
 
-def fetch_brief(
+def fetch_context(
     base_url: str,
     api_key: str,
     slug: str | None,
     locator: str | None,
-    timeout: float = BRIEF_TIMEOUT_SECONDS,
+    timeout: float = CONTEXT_TIMEOUT_SECONDS,
     *,
     tier: str = "index",
     host: str | None = None,
     workspace_id: str | None = None,
 ) -> dict | None:
-    """The session brief, or None -- never an exception.
+    """The bounded context response, or None -- never an exception.
 
     Bounded and silent on purpose: this runs before the host's first prompt,
     so a slow or broken memory service must cost a session its brief and
     nothing else. The caller supplies the small fallback instruction when this
     returns ``None``.
     """
-    params = {"scope": "user", "tier": tier}
-    if slug:
-        params["project_slug"] = slug
-    if locator:
-        params["git_locator"] = locator
-    if host:
-        params["host"] = host
-    if workspace_id:
-        params["workspace_id"] = workspace_id
     try:
         response = httpx.get(
-            f"{base_url.rstrip('/')}/v1/session-brief",
-            params=params,
+            f"{base_url.rstrip('/')}/v1/context/load",
+            json={"project_slug": slug, "workspace_id": workspace_id},
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
@@ -626,7 +615,9 @@ def fetch_brief(
         body = response.json()
     except (httpx.HTTPError, ValueError):
         return None
-    return body if isinstance(body, dict) and body.get("instructions") else None
+    if isinstance(body, dict) and isinstance(body.get("text"), str):
+        return {"instructions": body["text"]}
+    return None
 
 
 def _cache_path(
@@ -756,7 +747,7 @@ def _refresh_cached_index(
     locator: str | None,
     workspace_id: str | None = None,
 ) -> None:
-    brief = fetch_brief(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
+    brief = fetch_context(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
     if brief:
         store_cached_index(
             base_url, api_key, slug, locator, brief["instructions"], workspace_id=workspace_id
@@ -773,12 +764,9 @@ def _stamp_or_append_cache_age(instructions: str, age_seconds: int) -> str:
     line -- until it fits SMALLEST_BUDGET. A cache entry must never be served
     with its age invisible.
     """
-    if brief.carries_cache_age(instructions):
-        return brief.stamp_cache_age(instructions, age_seconds)
-
     age_line = f"cached-index age {age_seconds}s"
     lines = instructions.split("\n")
-    while len(lines) > 1 and len("\n".join([*lines, age_line])) > brief.SMALLEST_BUDGET:
+    while len(lines) > 1 and len("\n".join([*lines, age_line])) > 512:
         lines.pop()
     return "\n".join([*lines, age_line])
 
@@ -811,9 +799,9 @@ def startup_instructions(
         age_seconds = int(max((instant - cached.stored_at).total_seconds(), 0))
         return _stamp_or_append_cache_age(cached.instructions, age_seconds)
 
-    fetched = fetch_brief(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
+    fetched = fetch_context(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
     if fetched:
         instructions = fetched["instructions"]
         store_cached_index(base_url, api_key, slug, locator, instructions, workspace_id=workspace_id)
         return instructions
-    return "[ach-memory] Session brief unavailable; recall still works."
+    return "[ach-memory] Standing context unavailable; recall still works."

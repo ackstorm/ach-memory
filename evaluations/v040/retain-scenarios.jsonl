@@ -1,0 +1,20 @@
+{"case_id":"case-01","text":"accepted project decision","expected":"retain","scope":"project"}
+{"case_id":"case-02","text":"explicit personal preference","expected":"retain","scope":"user"}
+{"case_id":"case-03","text":"verified gotcha","expected":"retain","scope":"project"}
+{"case_id":"case-04","text":"stable cross-project preference","expected":"retain","scope":"user"}
+{"case_id":"case-05","text":"durable constraint","expected":"retain","scope":"project"}
+{"case_id":"case-06","text":"explicit correction","expected":"retain","scope":"project"}
+{"case_id":"case-07","text":"rejected proposal","expected":"abstain","scope":null}
+{"case_id":"case-08","text":"hypothesis","expected":"abstain","scope":null}
+{"case_id":"case-09","text":"secret credential","expected":"abstain","scope":null}
+{"case_id":"case-10","text":"transient greeting","expected":"abstain","scope":null}
+{"case_id":"case-11","text":"cheap repository output","expected":"abstain","scope":null}
+{"case_id":"case-12","text":"incomplete task progress","expected":"working_state","scope":null}
+{"case_id":"case-13","text":"active expiring claim","expected":"retain","scope":"project","valid_until":true}
+{"case_id":"case-14","text":"future-effective instruction","expected":"abstain","scope":null}
+{"case_id":"case-15","text":"one independently correctable claim","expected":"retain","scope":"project"}
+{"case_id":"case-16","text":"ambiguous ownership","expected":"abstain","scope":null}
+{"case_id":"case-17","text":"human explicit decision","expected":"retain","scope":"project"}
+{"case_id":"case-18","text":"agent verified failure cause","expected":"retain","scope":"project"}
+{"case_id":"case-19","text":"quoted statement","expected":"abstain","scope":null}
+{"case_id":"case-20","text":"superseded decision","expected":"retain","scope":"project"}

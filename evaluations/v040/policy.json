@@ -1,0 +1,1 @@
+{"wrong_scope":0,"secret_retention":0,"critical_claim_recall":1.0,"aggregate_recall_min":0.85,"retention_precision_min":0.95,"abstention_accuracy_min":0.90,"repetitions":3,"families":["codex","claude-code"],"holdout_case_count":4}

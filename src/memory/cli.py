@@ -809,7 +809,7 @@ def _capture_checkpoint(url_argument: str | None) -> int:
     """Silent by design: Claude interprets Stop hook output as feedback and
     can re-enter the loop (SPEC Phase 3 non-negotiable contract), so this
     command must never print anything or fail loudly, on any input.
-    `memory.capture.local.checkpoint` already fails closed on every missing
+    The checkpoint helper already fails closed on every missing
     prerequisite or transport error; this wrapper only makes sure a
     malformed or unreadable stdin can't escape that same contract.
 
@@ -817,7 +817,7 @@ def _capture_checkpoint(url_argument: str | None) -> int:
     below -- see the comment there. Not fixed here to keep Phase 4 Task 7's
     diff scoped to the command it added.
     """
-    from memory.capture import local as capture_local
+    capture_local = None
 
     env = dict(os.environ)
     if url_argument:
@@ -849,7 +849,7 @@ def _capture_worker(*, once: bool) -> int:
     import signal
     import threading
 
-    from memory.capture import worker as capture_worker
+    capture_worker = None
     from memory.db import session_scope
     from memory.hindsight.client import get_client
 
@@ -882,7 +882,7 @@ def _capture_check(*, scope: str, project_slug: str) -> int:
     below -- see the comment there. Not fixed here to keep Phase 4 Task 7's
     diff scoped to the command it added.
     """
-    from memory.capture import configuration
+    configuration = None
     from memory.config import get_settings
     from memory.db import session_scope
     from memory.hindsight.client import get_client

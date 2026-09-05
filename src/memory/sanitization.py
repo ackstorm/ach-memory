@@ -26,7 +26,7 @@ _HORIZONTAL_WS = re.compile(r"[ \t]+")
 _MAX_BYTES = 4096
 
 # Structural, not semantic: fixed patterns for shapes secrets commonly take.
-# Shared with memory.capture.local, which redacts the same shapes out of
+# Shared sanitization redacts the same shapes out of
 # transcript text before it ever crosses the network.
 _SECRET_PATTERNS = [
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._-]{10,}"),

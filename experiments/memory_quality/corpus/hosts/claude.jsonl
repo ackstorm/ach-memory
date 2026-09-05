@@ -1,6 +1,0 @@
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Synthetic user preference: concise replies."}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Acknowledged."},{"type":"tool_use","name":"Read","id":"read-1","input":{"file_path":"/private/path"}}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"read-1","content":"file body CANARY-FILE"}]}}
-{"type":"meta","text":"injected-memory CANARY-INJECTED CANARY-HOST CANARY-HOST-ASSISTANT"}
-{"type":"meta","text":"private-key header assignment-secret credential URL"}
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Bearer CANARYTOKEN123456"}]}}

@@ -92,7 +92,7 @@ CAPTURE_STAGE_DURATION = Histogram(
 
 # Every retry the queue schedules, by the stage that failed and the error
 # code that failed it. Both label sets are closed and defined in this
-# repository (memory.capture.worker), so this cannot grow a series per
+# repository worker, so this cannot grow a series per
 # caller. It is the counter that makes a row silently burning its eight
 # attempts visible before it goes terminal.
 CAPTURE_RETRY = Counter(
@@ -113,7 +113,7 @@ CAPTURE_CHECKPOINT = Counter(
 
 # Non-persisting profile evaluation (`ach-memory profile-check`, SPEC Phase
 # 4). `scope` is the two-value profile scope, `mode` the two-value delivery
-# mode, and `outcome` memory.profiles' closed EvaluationOutcome set -- no
+# mode, and the closed evaluation outcome set -- no
 # bank id, project slug, claim text or evidence id can reach a label here,
 # the same discipline as every other collector in this file.
 #

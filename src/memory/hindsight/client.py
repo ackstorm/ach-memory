@@ -108,7 +108,7 @@ def _require_uuid(value: str, not_found: type[DomainError]) -> None:
 class RetainItem:
     """One already-classified capture candidate, ready to retain. Trusted
     and server-owned: every field here came from
-    memory.capture.classifier.NormalizedCandidate, never from arbitrary
+    normalized retain candidate, never from arbitrary
     caller-supplied metadata."""
 
     content: str

@@ -19,7 +19,7 @@ RESERVED_KEYS = frozenset(
         # computed by the harness, never declared by an agent or trusted to
         # a prompt -- and a metadata key is a prompt with extra steps. These
         # are exactly the fields the capture pipeline stamps for itself
-        # (memory.capture.filer), so a caller setting one would be handing
+        # the retired filer, so a caller setting one would be handing
         # itself a classification the classifier never made.
         "origin",
         "kind",
