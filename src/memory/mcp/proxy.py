@@ -25,7 +25,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -785,27 +784,8 @@ def startup_instructions(
     now: datetime | None = None,
     workspace_id: str | None = None,
 ) -> str:
-    """Return a cached index immediately and refresh it for the next session.
-
-    With no cache, the one bounded request is the best available orientation.
-    A total failure returns an explicit stub so the agent knows memory may
-    exist and can use ``recall`` after startup.
-    """
-    cached = load_cached_index(base_url, api_key, slug, locator, workspace_id)
-    if cached:
-        if refresh:
-            threading.Thread(
-                target=_refresh_cached_index,
-                args=(base_url, api_key, slug, locator, workspace_id),
-                daemon=True,
-            ).start()
-        instant = (now or datetime.now(UTC)).astimezone(UTC)
-        age_seconds = int(max((instant - cached.stored_at).total_seconds(), 0))
-        return _stamp_or_append_cache_age(cached.instructions, age_seconds)
-
+    """Fetch fresh authorized context; failures are fail-open and empty."""
     fetched = fetch_context(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
     if fetched:
-        instructions = fetched["instructions"]
-        store_cached_index(base_url, api_key, slug, locator, instructions, workspace_id=workspace_id)
-        return instructions
-    return "[ach-memory] Standing context unavailable; recall still works."
+        return fetched["instructions"]
+    return ""

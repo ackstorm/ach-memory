@@ -130,6 +130,10 @@ def replace(db: Session, principal: Principal, request: WorkingStateWrite) -> tu
     ).project
     _verify_session(db, principal, project.internal_id, request)
 
+    completed = _latest_completed(db, principal, project.internal_id, request.workspace_id)
+    if completed is not None and (request.session_epoch, request.checkpoint_seq) <= completed:
+        raise WorkingStateStale("a newer checkpoint or clear already exists", stored_session_epoch=completed[0], stored_checkpoint_seq=completed[1])
+
     current = _locked(db, principal, project.internal_id, request.workspace_id)
     if current is not None:
         return _apply(db, current, request)
@@ -301,12 +305,26 @@ def clear(
         if pair < stored:
             raise WorkingStateStale("a newer checkpoint already exists", stored_session_epoch=current.session_epoch, stored_checkpoint_seq=current.checkpoint_seq)
         db.delete(current)
-    elif session_row.completed_checkpoint_seq is not None and checkpoint_seq < session_row.completed_checkpoint_seq:
-        raise WorkingStateStale("a newer clear already exists", stored_session_epoch=session_epoch, stored_checkpoint_seq=session_row.completed_checkpoint_seq)
+    latest = _latest_completed(db, principal, project.internal_id, workspace_id)
+    if current is None and latest is not None and (session_epoch, checkpoint_seq) < latest:
+        raise WorkingStateStale("a newer clear already exists", stored_session_epoch=latest[0], stored_checkpoint_seq=latest[1])
     session_row.completed_checkpoint_seq = checkpoint_seq
     session_row.completed_at = _db_now(db)
     db.flush()
     return current is not None
+
+
+def _latest_completed(db: Session, principal: Principal, project_internal_id: str, workspace_id: str) -> tuple[int, int] | None:
+    rows = db.scalars(select(WorkingSession).where(
+        WorkingSession.tenant_id == principal.tenant_id,
+        WorkingSession.user_id == principal.user_id,
+        WorkingSession.project_internal_id == project_internal_id,
+        WorkingSession.workspace_id == workspace_id,
+        WorkingSession.completed_checkpoint_seq.is_not(None),
+    )).all()
+    if not rows:
+        return None
+    return max((row.session_epoch, row.completed_checkpoint_seq) for row in rows)
 
 
 def _render_text(text: str) -> str:

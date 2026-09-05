@@ -62,8 +62,9 @@ class ContextService:
                 continue
             jobs.append((row, bank))
         remaining = max(0.0, DEADLINE_SECONDS - (monotonic() - started))
-        with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
-            futures = {pool.submit(self.client.get_mental_model, bank.bank_id, row.upstream_model_id): (row, bank) for row, bank in jobs}
+        pool = ThreadPoolExecutor(max_workers=max(1, min(len(jobs), 9)))
+        futures = {pool.submit(self.client.get_mental_model, bank.bank_id, row.upstream_model_id): (row, bank) for row, bank in jobs}
+        try:
             try:
                 completed = as_completed(futures, timeout=remaining or 0.001)
                 iterator = completed
@@ -82,6 +83,8 @@ class ContextService:
                     if not future.done():
                         future.cancel()
                         omissions.append({"key": row.model_key, "reason": "model_unavailable"})
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         if project is not None:
             metadata = "\n".join(filter(None, [f"name: {project.name}" if project.name else None, f"purpose: {project.purpose}" if project.purpose else None, f"spec: {project.canonical_spec}" if project.canonical_spec else None]))
             if metadata:
@@ -93,7 +96,10 @@ class ContextService:
                 claims = self.db.scalars(select(RetainedRecord).where(
                     RetainedRecord.tenant_id == self.principal.tenant_id,
                     RetainedRecord.scope == scope,
+                    RetainedRecord.user_id == (bank.user_id if scope == "user" else None),
+                    RetainedRecord.project_internal_id == (bank.project_internal_id if scope == "project" else None),
                     RetainedRecord.lifecycle == "active",
+                    RetainedRecord.upstream_state.in_(("accepted", "completed")),
                     RetainedRecord.valid_until.is_not(None),
                     RetainedRecord.valid_until > now,
                 ).order_by(RetainedRecord.valid_until, RetainedRecord.recorded_at, RetainedRecord.document_id)).all()
