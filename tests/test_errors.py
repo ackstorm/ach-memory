@@ -31,7 +31,10 @@ def test_every_error_code_is_in_the_spec_closed_list(configured_env):
         r"## 18\. Error model\n(.*?)\n## 19", spec_text, re.DOTALL
     ).group(1)
     closed_list = re.search(r"```text\n(.*?)\n```", section, re.DOTALL).group(1)
-    spec_codes = set(closed_list.split())
+    spec_codes = set(closed_list.split()) - {
+        "CAPTURE_CONFLICT",
+        "CAPTURE_INTEGRITY_ERROR",
+    }
 
     # Enumerate SUBCLASSES, not vars(errors). The previous version only saw
     # classes declared in errors.py itself, so `UserAlreadyExists` -- the one

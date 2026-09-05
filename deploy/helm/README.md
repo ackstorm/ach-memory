@@ -157,36 +157,3 @@ nothing refuses them; the service logs one startup warning per plaintext URL so
 a *public* hostname reached over `http` by mistake is visible rather than
 silent.
 
-## The capture worker is not something `helm install` turns on
-
-`captureWorker.enabled` renders the Deployment; `captureWorker.workerEnabled`
-(`MEMORY_CAPTURE_WORKER_ENABLED`) is whether the process inside it ever leases
-a row. Both default `false`. Turning `enabled` on with `workerEnabled` still
-`false` stages the rollout — image pulled, database/Hindsight config wired,
-pod healthy — without leasing anything, which is as far as this chart carries
-you on its own.
-
-Enabling either flag is not production enablement by itself. The full rollout
-this chart is one step of, in order, is:
-
-1. Run the pending-install migration (this chart's `migration-job.yaml`
-   already does this on every install/upgrade).
-2. Run `ach-memory capture-check --scope ... --project ...` (read-only; never
-   mutates config or memory) against the target bank(s) and confirm it
-   reports OK.
-3. Review the config diff `capture-check` prints and apply it through
-   whatever change process the target Hindsight deployment requires — this
-   chart has no PATCH lever for it, on purpose.
-4. Stage an isolated canary worker (`captureWorker.enabled: true`,
-   `workerEnabled: true`, pointed at a single test bank or a low-traffic
-   tenant) and watch it process real checkpoints.
-5. Replay-test: submit the same checkpoint twice and confirm no duplicate
-   evidence, then crash/restart the canary mid-slice and confirm it resumes
-   without re-filing anything already filed.
-6. Only then register the Claude Code hooks broadly (the plugin's
-   `capture-checkpoint.sh` on `Stop`/`PreCompact`) so checkpoints actually
-   start arriving.
-
-This is deliberately not a single command. The separate, explicit approval
-and exact mutation procedure for steps 2–3 belongs to a later phase — this
-chart stages the plumbing for the whole sequence, not the decision to run it.

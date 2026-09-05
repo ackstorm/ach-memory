@@ -138,7 +138,7 @@ def retain(tenant: str, bank_id: str) -> str:
 def dry_run_extract(tenant: str, bank_id: str) -> str:
     """Read-only: Hindsight extracts as if retaining but stores nothing.
     Used both by the Task 5 extractor (a strict custom-prompt extraction
-    pass over one sanitized slice) and by capture-check's read-only
+    pass over one sanitized item) and by the read-only verifier's
     verbatim-strategy safety probe -- neither ever calls retain() on
     unclassified model output."""
     return f"{bank(tenant, bank_id)}/memories/dry-run-extract"

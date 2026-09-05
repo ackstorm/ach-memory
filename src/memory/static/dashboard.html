@@ -396,30 +396,6 @@ tr.silent .ribbon{opacity:.55}
   <div id="models-out"><div class="empty">Pick a bank to see what it believes about itself.</div></div>
 </section>
 
-<!-- ── BRIEF ─────────────────────────────────────────────────────────── -->
-<section class="panel" id="brief" hidden>
-  <div class="sec">
-    <h2>Session brief</h2>
-    <p>The instructions an agent is handed when a session starts, exactly as it receives them.</p>
-  </div>
-  <div class="peek-bar">
-    <select id="brief-user">
-      <option value="">Pick a user…</option>
-    </select>
-    <select id="brief-project">
-      <option value="">No project section</option>
-    </select>
-    <button class="ghost" id="brief-go">Read it</button>
-  </div>
-  <div class="notice">
-    A brief is always anchored to a user; the project half is optional, and a project this
-    key cannot reach is treated as a missing section rather than an error — so a brief that
-    quietly lost half its content still returns 200. That is why both sections are reported
-    separately below instead of being inferred from the text.
-  </div>
-  <div id="brief-out"><div class="empty">Pick a user to see the brief they would be handed.</div></div>
-</section>
-
 <!-- ── PROJECTS ──────────────────────────────────────────────────────── -->
 <section class="panel" id="projects" hidden>
   <div class="sec">
@@ -825,7 +801,6 @@ function shortId(id) {
 /* The whole point of this panel. `last_refreshed_at` is what the model says
    about itself; history[0].changed_at is when its content demonstrably moved.
    Measured in production on 2026-08-27 those disagreed by ten minutes on
-   session-brief-user and agreed to 170ms on gitlab-ackstorm, so the
    disagreement is real, silent and intermittent -- it gets shown, not
    averaged away. */
 function freshness(model, history) {
@@ -955,37 +930,12 @@ document.getElementById("models-go").addEventListener("click", async () => {
 /* Both halves are reported by the endpoint as booleans, and they are the only
    honest source: a missing section leaves no marker in the composed text, so
    reading the prose to work out what is there would guess. */
-function renderBrief(response) {
-  const out = document.getElementById("brief-out");
-  const sections = response?.sections ?? {};
-  const chip = (name, present) =>
-    `<span class="mm-state ${present ? "mm-fresh" : "mm-blind"}">${esc(name)} ${present ? "present" : "missing"}</span>`;
-  const stamp = response?.generated_at
-    ? `<span title="${esc(response.generated_at)}">oldest section ${esc(fmtAgo(response.generated_at))} · ${esc(fmtWhen(response.generated_at))}</span>`
-    : `<span>no section carries a timestamp</span>`;
-  const text = response?.instructions ?? "";
-  out.innerHTML = `
-    <div class="mem">
-      <div class="mem-head">
-        ${chip("user", !!sections.user)}
-        ${chip("project", !!sections.project)}
-        ${stamp}
-        <span>${esc(String(text.length).replace(/\B(?=(\d{3})+(?!\d))/g, ","))} chars</span>
-      </div>
-      ${sections.user ? "" : `<div class="mm-line mm-warn">The user section is missing.
-        This agent starts its session knowing nothing standing about whoever it is
-        working for, and the call still succeeded.</div>`}
-      <pre class="brief-text">${esc(text)}</pre>
-    </div>`;
-}
-
 document.getElementById("brief-go").addEventListener("click", async () => {
   const user = document.getElementById("brief-user").value;
   const project = document.getElementById("brief-project").value;
   const out = document.getElementById("brief-out");
   if (!user) { out.innerHTML = `<div class="empty">Pick a user first.</div>`; return; }
   // The user half comes from the on-behalf-of subject, never from a query
-  // param: /v1/session-brief always resolves scope=user from the caller's
   // identity (SPEC §16.5), and only the project half is addressable.
   // `scope` is required even so -- with no query string at all this is a 422,
   // not a user-only brief.
@@ -993,7 +943,6 @@ document.getElementById("brief-go").addEventListener("click", async () => {
   const qs = `?${new URLSearchParams(params).toString()}`;
   out.innerHTML = `<div class="empty">Reading…</div>`;
   try {
-    renderBrief(await api(`/v1/session-brief${qs}`, {
       headers: { "on-behalf-of": user.slice(2) },
     }));
   } catch (e) {

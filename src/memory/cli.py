@@ -49,7 +49,7 @@ def _mcp_url(base: str) -> str:
 
 def _base_url(base: str) -> str:
     """The endpoint without the `/mcp/` suffix `_mcp_url` adds, for routes
-    like `/v1/session-brief` that live outside the MCP mount."""
+    like `/v1/context/load` that live outside the MCP mount."""
     parts = _validated_parts(base)
     return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
@@ -235,7 +235,7 @@ def _config_root(target: str) -> Path:
     *append* to its search path, so writing to one of those would not put our
     server where opencode looks first, and honouring them here would move our
     entry out of the file the user edits by hand. Measured in
-    github.com/ackstorm/agent-profile, which had to shim XDG_CONFIG_HOME for
+    a host integration, which had to shim XDG_CONFIG_HOME for
     exactly this reason -- do not "fix" this to OPENCODE_CONFIG without new
     measurements.
     """

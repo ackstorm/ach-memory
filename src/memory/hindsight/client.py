@@ -106,14 +106,13 @@ def _require_uuid(value: str, not_found: type[DomainError]) -> None:
 
 @dataclass(frozen=True)
 class RetainItem:
-    """One already-classified capture candidate, ready to retain. Trusted
+    """One already-classified candidate, ready to retain. Trusted
     and server-owned: every field here came from
     normalized retain candidate, never from arbitrary
     caller-supplied metadata."""
 
     content: str
     # None lets Hindsight assign a fresh document -- the explicit
-    # human-request surface's normal case. The capture pipeline always
     # supplies its deterministic content-addressed slice key instead.
     document_id: str | None = None
     metadata: dict[str, Any] | None = None
@@ -343,7 +342,7 @@ class HindsightClient:
         retain_mission: str | None = None,
     ) -> dict:
         """Extract as if retaining, store nothing (SPEC Phase 3 §9). Used by
-        the Task 5 extractor's custom-prompt pass and by capture-check's
+        the custom-prompt pass and by the read-only verifier's
         read-only verbatim-strategy safety probe.
 
         `retain_extraction_mode`/`retain_mission` are per-call overrides of
@@ -388,8 +387,8 @@ class HindsightClient:
         one resolved bank (SPEC Phase 3 §6), or the explicit human-request
         surface's single trusted item. `operation_id` is validated here so a
         caller bug surfaces before the network call rather than as an
-        opaque upstream 422 -- the capture pipeline's is a deterministic
-        UUIDv5 (one per (capture_id, bank_kind)); the explicit surface's is
+        opaque upstream 422 -- the pipeline's is a deterministic
+        UUIDv5; the explicit surface's is
         caller-supplied or freshly generated, exactly as retain()'s already
         was.
 
@@ -710,7 +709,6 @@ class HindsightClient:
         # model created without one performs no automatic refresh, which is
         # Hindsight's own cheapest and safest behavior. tags follows the same
         # discipline: it is Hindsight's in-bank visibility scope, server-owned
-        # (structured-profile provisioning passes an explicit `tags=[]`), and
         # is sent only when a trusted caller actually supplies it --
         # CreateMentalModelRequest, the caller-facing route, never does.
         body = _present(

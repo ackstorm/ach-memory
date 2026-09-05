@@ -223,25 +223,8 @@ class WorkingStateConflict(DomainError):
     status = 409
 
 
-class CaptureIntegrityError(DomainError):
-    """The submitted sanitized_hash does not match sha256(content). The
-    server never sees raw transcript bytes to check content_hash against,
-    but sanitized_hash protects the one payload it does receive -- a
-    mismatch means the request was corrupted or tampered with in transit."""
-
-    code = "CAPTURE_INTEGRITY_ERROR"
-    status = 400
 
 
-class CaptureConflict(DomainError):
-    """A different slice already exists for this exact offset range (same
-    start_offset/end_offset, different content_hash or sanitized_hash).
-    Never resolved by last-write-wins: the local cursor and the stored row
-    disagree about what happened at this offset, which is a caller/client
-    bug to fix, not a value to overwrite."""
-
-    code = "CAPTURE_CONFLICT"
-    status = 409
 
 
 class IdempotencyConflict(DomainError):
