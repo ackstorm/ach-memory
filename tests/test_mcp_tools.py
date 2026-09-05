@@ -384,6 +384,10 @@ WORKING_STATE_KWARGS: dict[str, dict] = {
         "session_epoch": 0, "checkpoint_seq": 0, "objective": "x",
     },
 }
+CONTEXT_KWARGS = {
+    "clear_working_state": {"workspace_id": "ws_" + "0" * 32, "session_id": "s1", "session_epoch": 0, "checkpoint_seq": 0},
+    "load_context": {"workspace_id": None},
+}
 
 
 def test_the_security_tables_cover_every_registered_tool():
@@ -421,10 +425,12 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
     call_tool("retain", key, scope="user", content="warmup", **_retain_kwargs())  # consumes the slot
 
     for name, expect_write in MCP_IS_WRITE_TABLE.items():
-        if name in WORKING_STATE_KWARGS:
+        if name == "load_context":
+            continue
+        if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS:
             # project_slug need not exist: ratelimit.check() runs before any
             # project resolution, so RATE_LIMITED fires first regardless.
-            kwargs = {"project_slug": "wst-ratelimit", **WORKING_STATE_KWARGS[name]}
+            kwargs = {"project_slug": "wst-ratelimit", **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS[name])}
         else:
             kwargs = {"scope": "user", **GHOST_EXTRA_KWARGS.get(name, {})}
         if expect_write:
@@ -460,9 +466,11 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
     key = call_tool.make_user()
 
     for name, expect_create in MCP_CREATE_TABLE.items():
+        if name == "load_context":
+            continue
         slug = f"tbl-{uuid.uuid4().hex[:12]}"
-        if name in WORKING_STATE_KWARGS:
-            kwargs = {"project_slug": slug, **WORKING_STATE_KWARGS[name]}
+        if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS:
+            kwargs = {"project_slug": slug, **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS[name])}
         else:
             kwargs = {
                 "scope": "project", "project_slug": slug,
@@ -1172,7 +1180,7 @@ EXPECTED_TOOLS = {
     "update_mental_model", "refresh_mental_model", "delete_mental_model",
 }
 
-TOOL_CONTRACT_SHA256 = "46ef4479f8cabb6282d1e57275c235c4c340467c33fa1d7a9604abf9fe2b9536"
+TOOL_CONTRACT_SHA256 = "97e49ccf0f7e010e6414fd6a20ea865834b2715ecb3cc8d26bb0444c6d469ea7"
 
 
 def test_tool_registration_is_stable_after_module_split():
