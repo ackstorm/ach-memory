@@ -1,7 +1,7 @@
 """Deterministic, whole-entry bounded context delivery."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 import tiktoken
 from pydantic import BaseModel, ConfigDict
@@ -65,8 +65,7 @@ def assemble_context(
     if total > global_max_tokens:
         # Omit whole entries from the end, preserving deterministic priority.
         while rendered and count_tokens("\n\n".join(rendered)) > global_max_tokens:
-            removed = rendered.pop()
-            heading = removed.split("\n", 1)[0]
+            rendered.pop()
             headings.pop()
             omissions.append(DeliveryOmission(key=ordered[len(rendered)].key, reason="global_budget"))
         text = "\n\n".join(rendered)

@@ -619,6 +619,9 @@ def fetch_context(
         return {"instructions": body["text"]}
     return None
 
+# Compatibility symbol for older host tests; new callers use fetch_context.
+fetch_brief = fetch_context
+
 
 def _cache_path(
     base_url: str, slug: str | None, locator: str | None, workspace_id: str | None = None

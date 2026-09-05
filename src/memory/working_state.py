@@ -19,7 +19,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from memory import projects
-from memory.delivery import count_tokens
 from memory.auth.principal import Principal
 from memory.contracts import WORKSPACE_ID_PATTERN as _WORKSPACE_ID_PATTERN_SOURCE
 from memory.contracts import (
@@ -30,6 +29,7 @@ from memory.contracts import (
     WorkingStateLines,
     WorkspaceId,
 )
+from memory.delivery import count_tokens
 from memory.errors import WorkingSessionNotFound, WorkingStateConflict, WorkingStateStale
 from memory.models import WorkingSession, WorkingState
 from memory.rendering import RenderedSection, format_age, render_inert

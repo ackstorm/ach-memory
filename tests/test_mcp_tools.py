@@ -353,6 +353,7 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
     "get_document": False, "delete_document": True, "get_operation": False,
     "list_operations": False, "cancel_operation": True,
     "start_working_session": True, "set_working_state": True,
+    "clear_working_state": True, "load_context": False,
     "create_mental_model": True, "list_mental_models": False, "get_mental_model": False,
     "update_mental_model": True, "refresh_mental_model": True, "delete_mental_model": True,
 }
@@ -364,6 +365,7 @@ MCP_CREATE_TABLE: dict[str, bool] = {
     "get_document": False, "delete_document": False, "get_operation": False,
     "list_operations": False, "cancel_operation": False,
     "start_working_session": False, "set_working_state": False,
+    "clear_working_state": False, "load_context": False,
     # Every mental-model tool resolves with create=False (SPEC §7: maintenance
     # over an existing bank, never first-touch project creation).
     "create_mental_model": False, "list_mental_models": False, "get_mental_model": False,
@@ -1165,6 +1167,7 @@ EXPECTED_TOOLS = {
     "list_documents", "get_document", "delete_document",
     "get_operation", "list_operations", "cancel_operation",
     "start_working_session", "set_working_state",
+    "clear_working_state", "load_context",
     "create_mental_model", "list_mental_models", "get_mental_model",
     "update_mental_model", "refresh_mental_model", "delete_mental_model",
 }
@@ -1181,7 +1184,7 @@ def test_tool_registration_is_stable_after_module_split():
     tools = mcp._tool_manager.list_tools()
     names = {tool.name for tool in tools}
 
-    assert len(tools) == 24
+    assert len(tools) == 26
     assert {
         "retain", "sync_retain", "recall", "reflect",
         "start_working_session", "set_working_state",
@@ -1215,7 +1218,7 @@ async def test_serialized_tool_contract_is_stable_after_module_split():
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
 
-    assert len(tools) == 24
+    assert len(tools) == 26
     assert hashlib.sha256(serialized).hexdigest() == TOOL_CONTRACT_SHA256
 
 # SPEC §11.6 and §11.7. Each is excluded for a stated reason: whole-bank

@@ -1,6 +1,6 @@
 """Authorized, bounded standing-context assembly."""
 
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from datetime import UTC, datetime
 from time import monotonic
 
@@ -10,13 +10,12 @@ from sqlalchemy.orm import Session
 from memory import projects, working_state
 from memory.auth.principal import Principal
 from memory.currentness import bank_is_withheld
-from memory.delivery import DeliverySection, ContextPayload, assemble_context
+from memory.delivery import ContextPayload, DeliverySection, assemble_context
 from memory.hindsight.client import get_client
 from memory.models import MentalModelRegistration, Project, RetainedRecord
 from memory.read_context import resolve_read_bank
 from memory.retained_records import LogicalBankRef
 from memory.v040_contracts import LoadContextRequest
-
 
 DEADLINE_SECONDS = 2.0
 
@@ -76,7 +75,7 @@ class ContextService:
                         if text:
                             prefix = "0" if row.scope == "user" else "2"
                             sections.append(DeliverySection(f"{prefix}:{row.model_key}", f"{row.scope.title()} · {row.model_key}", text, row.max_tokens))
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - one unavailable model cannot cancel peers
                         omissions.append({"key": row.model_key, "reason": "model_unavailable"})
             except TimeoutError:
                 for future, (row, _) in futures.items():

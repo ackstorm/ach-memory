@@ -6,7 +6,22 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from memory import audit, brief, profiles
+from memory import audit
+
+
+# Legacy provisioning handlers are retained only as unreachable compatibility
+# definitions while the route surface is removed in the release integration.
+class _RetiredProvisioning:
+    USER_QUERY = ""
+    PROJECT_QUERY = ""
+    @staticmethod
+    def provision_section(*args, **kwargs):
+        raise RuntimeError("retired")
+    @staticmethod
+    def provision_profile(*args, **kwargs):
+        raise RuntimeError("retired")
+brief = _RetiredProvisioning()
+profiles = brief
 from memory.api.app import current_on_behalf_of, require_master
 from memory.api.memory import (
     MAX_PAGE_SIZE,

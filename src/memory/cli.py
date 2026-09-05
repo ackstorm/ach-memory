@@ -1123,7 +1123,7 @@ def _context_load() -> int:
         with urllib.request.urlopen(request, timeout=3) as response:
             payload = json.load(response)
         print(payload.get("text", ""))
-    except Exception as exc:
+    except Exception:  # noqa: BLE001 - CLI fails open and keeps diagnostics off stdout
         print("ach-memory: context unavailable", file=sys.stderr)
     return 0
 
