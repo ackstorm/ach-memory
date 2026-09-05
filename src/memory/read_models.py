@@ -262,49 +262,36 @@ def build_history_response(
 
 @dataclass(frozen=True)
 class RecallFilters:
-    """The server-owned Hindsight filter set a `view`/`kinds` choice maps to.
-    Never caller input: a `RecallRequest` cannot construct one of these
-    directly, only name a `view` and `kinds` for `resolve_filters` to map."""
+    """The server-owned Hindsight filter set a `view`/`memory_types` choice
+    maps to. Never caller input: a `RecallRequest` cannot construct one of
+    these directly, only name a `view` and `memory_types` for
+    `resolve_filters` to map."""
 
     types: tuple[FactType, ...]
-    prefer_observations: bool
-    eligibility_tags: tuple[str, ...]
-    kind_tags: tuple[str, ...]
+    tags: tuple[str, ...]
+    tags_match: str
 
 
-# view -> (types, prefer_observations, eligibility tags). Table, not a
-# branching function: the whole point is that every value here is fixed at
-# import time, so a new view can only ever be added by changing code, never
-# by a request payload.
-_VIEW_FILTERS: dict[View, tuple[tuple[FactType, ...], bool, tuple[str, ...]]] = {
-    # Current: what memory asserts right now. Preferring observations over
-    # their raw source facts is what makes this "current" rather than
-    # "everything ever retained" -- an observation supersedes the world/
-    # experience facts it was derived from.
-    "current": (("observation", "world", "experience"), True, ()),
-    # Evidence: the raw world/experience facts a claim rests on, not the
-    # claim itself. `evidence_only` is the same closed eligibility tag the
-    # explicit-retain surface writes (api/memory.py's
-    # EXPLICIT_RETAIN_OBSERVATION_SCOPES); this is that tag read back.
-    "evidence": (("world", "experience"), False, ("evidence_only",)),
-    # All: still current/valid unless exact history is requested separately
-    # through POST /v1/read/history -- "all" widens fact types and drops the
-    # eligibility default, it does not reach into invalidated/superseded
-    # history.
-    "all": (("observation", "world", "experience"), False, ()),
-}
+def resolve_filters(
+    view: View, memory_types: tuple[MemoryType, ...] | None
+) -> RecallFilters:
+    """Map a caller's closed `view`/`memory_types` choice to Hindsight's
+    actual filter vocabulary.
 
-
-def resolve_filters(view: View, kinds: tuple[MemoryType, ...] | None) -> RecallFilters:
-    """Map a caller's closed `view`/`kinds` choice to Hindsight's actual
-    filter vocabulary. The caller never controls Hindsight filter syntax or
-    a temporal anchor -- only which of these three fixed rows applies, and
-    which closed `type:<memory_type>` tags OR together on top of it."""
-    types, prefer_observations, eligibility_tags = _VIEW_FILTERS[view]
-    kind_tags = tuple(f"type:{kind}" for kind in kinds) if kinds else ()
-    return RecallFilters(
-        types=types,
-        prefer_observations=prefer_observations,
-        eligibility_tags=eligibility_tags,
-        kind_tags=kind_tags,
-    )
+    v0.4.0 has no eligibility/profile-based filtering axis left --
+    `evidence_only`/`profile_eligible` are gone from the tag vocabulary
+    entirely (SPEC §5.6) -- so every ACH-authored fact is scoped by the
+    fixed `schema:ach-retain-v1` tag alone, optionally narrowed by the
+    caller's own closed `memory_types`. `view` is accepted for wire/schema
+    stability (existing callers still send one) but does not currently
+    branch this mapping: with no eligibility tag left to distinguish
+    "evidence" from "current", the three documented views resolve
+    identically until a future contract gives them separate meaning.
+    `ach-exact-v1` never produces an "experience" fact (SPEC §5.7), so only
+    `world` (the retained claim) and `observation` (Hindsight's own later
+    consolidation) are ever relevant types.
+    """
+    tags = ["schema:ach-retain-v1"]
+    if memory_types:
+        tags.extend(f"type:{value}" for value in memory_types)
+    return RecallFilters(types=("world", "observation"), tags=tuple(tags), tags_match="all_strict")

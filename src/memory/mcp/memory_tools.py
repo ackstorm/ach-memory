@@ -344,7 +344,10 @@ def register(mcp: MCPServer) -> None:
                 kinds=tuple(kinds) if kinds else None, max_results=max_results,
             )
 
-        def call(resolved, _db, _principal, body):
+        def call(resolved, db, principal, body):
+            read_service.ensure_current_read_allowed(
+                db, read_service.bank_ref(principal, resolved)
+            )
             hits = read_service._recall_hits(
                 resolved.bank_id, body.query, body.view, body.kinds
             )

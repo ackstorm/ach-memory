@@ -344,6 +344,7 @@ def recall(
         project_slug=body.project_slug,
     )
     db.commit()
+    read_service.ensure_current_read_allowed(db, read_service.bank_ref(principal, read_bank))
 
     response.headers.update(_DEPRECATED_RECALL_HEADERS)
     hits = read_service._recall_hits(read_bank.bank_id, body.query, "current", None)
@@ -399,6 +400,7 @@ def reflect(
         project_slug=body.project_slug,
     )
     db.commit()
+    read_service.ensure_current_read_allowed(db, read_service.bank_ref(principal, read_bank))
     bank_id = read_bank.bank_id
     resolved_from = read_bank.resolved_from
     project_slug = read_bank.current_slug if read_bank.scope == "project" else None

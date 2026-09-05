@@ -25,7 +25,8 @@ from sqlalchemy.orm import Session
 
 from memory import read_context
 from memory.auth.principal import Principal
-from memory.errors import MemoryNotFound
+from memory.currentness import bank_is_withheld
+from memory.errors import BankCurrentnessUnavailable, MemoryNotFound
 from memory.hindsight.client import get_client
 from memory.memory_types import EvidenceBasis, MemoryType
 from memory.read_models import (
@@ -45,6 +46,7 @@ from memory.read_models import (
     build_recall_response,
     resolve_filters,
 )
+from memory.retained_records import LogicalBankRef
 
 _MEMORY_TYPES = set(get_args(MemoryType))
 _BASES = set(get_args(EvidenceBasis))
@@ -125,34 +127,58 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
         return None
 
 
+def ensure_current_read_allowed(db: Session, bank: LogicalBankRef) -> None:
+    """Withhold a bank whose current state cannot yet be trusted.
+
+    An ACH-mediated safety mutation on this bank (correction, forget,
+    restore, expiry) may have an indeterminate upstream outcome (SPEC §5.8);
+    until it is proven, every ordinary current read is refused rather than
+    risk serving a state that was never actually reached. Authorized
+    history/audit surfaces are unaffected -- they never claim currentness.
+    """
+    if bank_is_withheld(db, bank):
+        raise BankCurrentnessUnavailable(
+            "this bank's current state is temporarily unavailable"
+        )
+
+
+def bank_ref(principal: Principal, read_bank: read_context.ReadBank) -> LogicalBankRef:
+    return LogicalBankRef(
+        tenant_id=principal.tenant_id,
+        scope=read_bank.scope,
+        user_id=read_bank.user_id,
+        project_internal_id=read_bank.project_internal_id,
+        bank_id=read_bank.bank_id,
+    )
+
+
 def _recall_hits(
-    bank_id: str, query: str, view: View, kinds: tuple[MemoryType, ...] | None
+    bank_id: str, query: str, view: View, memory_types: tuple[MemoryType, ...] | None
 ) -> list[RecallHit]:
-    """Everything AFTER a bank is already resolved and authorized: build the
-    server-owned filter set, call Hindsight, normalize every candidate hit.
+    """Everything AFTER a bank is already resolved, authorized and proven
+    current: build the server-owned filter set, call Hindsight, normalize
+    every candidate hit.
 
     Shared by `recall` below (which also resolves the bank itself, via
     `read_context.resolve_read_bank`, create=False) and by the legacy
-    `POST /v1/memory/recall` (`api/memory.py`, which resolves its own way --
-    `create=True`, rate-limited, first-touch project creation preserved --
-    then calls this directly). What legitimately differs between the two
-    surfaces is resolution; how an already-resolved bank's recall is queried
-    and normalized is identical on purpose, so both delegate to one place.
+    `POST /v1/memory/recall` (`api/memory.py`, which now resolves the same
+    existing-only way and checks the same currentness barrier). What
+    legitimately differs between the two surfaces is resolution; how an
+    already-resolved bank's recall is queried and normalized is identical on
+    purpose, so both delegate to one place.
 
     Returns every hit that normalized cleanly, NOT sliced to any
     `max_results` -- the caller decides how much of this to keep and whether
     that makes the response truncated.
     """
-    filters = resolve_filters(view, kinds)
-    combined_tags = filters.eligibility_tags + filters.kind_tags
+    filters = resolve_filters(view, memory_types)
     raw = get_client().recall(
         bank_id,
         query,
         with_entities=False,
         types=list(filters.types),
-        prefer_observations=filters.prefer_observations,
-        tags=list(combined_tags) if combined_tags else None,
-        tags_match="all_strict" if combined_tags else None,
+        tags=list(filters.tags),
+        tags_match=filters.tags_match,
     )
     raw_results = raw.get("results") if isinstance(raw, dict) else None
     if not isinstance(raw_results, list):
@@ -181,6 +207,7 @@ def recall(
         project_slug=request.project_slug,
     )
     db.commit()
+    ensure_current_read_allowed(db, bank_ref(principal, read_bank))
 
     hits = _recall_hits(read_bank.bank_id, request.query, request.view, request.kinds)
     capped = hits[: request.max_results]
