@@ -134,6 +134,22 @@ def _make_user_key(client, master_headers) -> str:
     ).json()["key"]
 
 
+def _retain_body(**overrides) -> dict:
+    import uuid
+
+    body = {
+        "scope": "user",
+        "content": "x",
+        "memory_type": "fact",
+        "basis": "human_explicit",
+        "trigger": "agent_proactive",
+        "evidence": [{"kind": "user_quote", "raw": "x"}],
+        "operation_id": str(uuid.uuid4()),
+    }
+    body.update(overrides)
+    return body
+
+
 def _lower_the_limit(monkeypatch) -> None:
     from memory import ratelimit
     from memory.config import get_settings
@@ -151,18 +167,18 @@ def test_a_write_over_the_limit_gets_429_rate_limited(
     _lower_the_limit(monkeypatch)
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+        return_value=httpx.Response(200, json={"status": "pending"})
     )
     key = _make_user_key(client, master_headers)
     headers = {"Authorization": f"Bearer {key}"}
 
     ok = client.post(
-        "/v1/memory/retain", json={"scope": "user", "content": "x"}, headers=headers
+        "/v1/memory/retain", json=_retain_body(), headers=headers
     )
-    assert ok.status_code == 200
+    assert ok.status_code == 202, ok.text
 
     refused = client.post(
-        "/v1/memory/retain", json={"scope": "user", "content": "y"}, headers=headers
+        "/v1/memory/retain", json=_retain_body(content="y"), headers=headers
     )
     assert refused.status_code == 429
     assert refused.json()["error"]["code"] == "RATE_LIMITED"
@@ -179,7 +195,7 @@ def test_a_read_route_is_not_rate_limited(client, master_headers, tenant, monkey
     _lower_the_limit(monkeypatch)
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+        return_value=httpx.Response(200, json={"status": "pending"})
     )
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list").mock(
         return_value=httpx.Response(200, json={"items": []})
@@ -187,9 +203,10 @@ def test_a_read_route_is_not_rate_limited(client, master_headers, tenant, monkey
     key = _make_user_key(client, master_headers)
     headers = {"Authorization": f"Bearer {key}"}
 
-    client.post(
-        "/v1/memory/retain", json={"scope": "user", "content": "x"}, headers=headers
+    warmup = client.post(
+        "/v1/memory/retain", json=_retain_body(), headers=headers
     )
+    assert warmup.status_code == 202, warmup.text
 
     for _ in range(3):
         response = client.post(
@@ -236,21 +253,25 @@ def test_the_limit_is_shared_across_rest_and_mcp_for_the_same_credential(
     _lower_the_limit(monkeypatch)
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op_1"})
+        return_value=httpx.Response(200, json={"status": "pending"})
     )
     key = _make_user_key(client, master_headers)
     headers = {"Authorization": f"Bearer {key}"}
 
     ok = client.post(
-        "/v1/memory/retain", json={"scope": "user", "content": "x"}, headers=headers
+        "/v1/memory/retain", json=_retain_body(), headers=headers
     )
-    assert ok.status_code == 200
+    assert ok.status_code == 202, ok.text
 
     class _Ctx:
         headers: ClassVar = {"authorization": f"Bearer {key}"}
 
     with pytest.raises(MCPToolError) as exc_info:
-        REGISTRY["retain"](ctx=_Ctx(), scope="user", content="y")
+        REGISTRY["retain"](
+            ctx=_Ctx(), scope="user", content="y", memory_type="fact",
+            basis="human_explicit", trigger="agent_proactive",
+            evidence=[{"kind": "user_quote", "raw": "y"}],
+        )
 
     assert exc_info.value.code == "RATE_LIMITED"
 
@@ -306,11 +327,13 @@ def test_the_limiter_is_keyed_per_credential_through_a_route(
         respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
             return_value=httpx.Response(200, json={})
         )
-        body = {"scope": "user", "content": "x"}
-        assert client.post("/v1/memory/retain", json=body, headers=alice).status_code == 200
+        body = _retain_body()
+        assert client.post("/v1/memory/retain", json=body, headers=alice).status_code == 202
         assert client.post("/v1/memory/retain", json=body, headers=alice).status_code == 429
         # Bob's own bucket must be untouched.
-        assert client.post("/v1/memory/retain", json=body, headers=bob).status_code == 200
+        assert client.post(
+            "/v1/memory/retain", json=_retain_body(), headers=bob
+        ).status_code == 202
 
 
 def test_two_external_identities_do_not_share_a_bucket(monkeypatch):

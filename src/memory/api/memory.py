@@ -8,11 +8,10 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
-    model_validator,
 )
 from sqlalchemy.orm import Session
 
-from memory import activity, audit, provenance, ratelimit, read_context, read_models, read_service
+from memory import activity, audit, ratelimit, read_context, read_models, read_service
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.common import RenameForwarding
 from memory.auth.principal import Principal
@@ -20,8 +19,10 @@ from memory.banks import resolve_project_bank, resolve_user_bank
 from memory.config import get_settings
 from memory.db import get_session
 from memory.errors import ContentTooLarge
-from memory.hindsight.client import RetainItem, get_client
+from memory.hindsight.client import get_client
 from memory.identifiers import has_control_character
+from memory.retention import submit_retain
+from memory.v040_contracts import TypedRetainRequest, TypedRetainResponse
 
 router = APIRouter(prefix="/v1/memory", tags=["memory"])
 
@@ -42,7 +43,10 @@ MAX_PAGE_SIZE = 500
 
 # A UUID in any form uuid.UUID() accepts. Not `pydantic.UUID4`, which would
 # coerce the value to a UUID object and re-serialize it in canonical form —
-# SPEC §15 says the caller's id is passed through verbatim.
+# SPEC §15 says the caller's id is passed through verbatim. Reused by
+# api/mental_models.py's own operation_id fields, not just this module's
+# (now-typed) retain contract -- kept here rather than removed when retain
+# stopped needing it directly, since it is still a real cross-module utility.
 UUID4Str = Annotated[str, AfterValidator(_must_be_uuid)]
 
 
@@ -117,65 +121,6 @@ def scoped_query_params(
         project_slug=project_slug,
         git_locator=git_locator,
     )
-
-
-# SPEC Phase 3: explicit retain (this route and the MCP `retain`/
-# `retain_sync` tools) is for an explicit human "remember this" request. It
-# captures evidence, not guaranteed profile truth -- kind/origin/eligibility
-# classification is the automatic capture pipeline's job. Fixed here, never
-# derived from caller input: no MCP argument or metadata key can override
-# any of these three.
-EXPLICIT_RETAIN_TAGS = ["kind:technical_claim", "evidence_only"]
-EXPLICIT_RETAIN_OBSERVATION_SCOPES = [["evidence_only"]]
-EXPLICIT_RETAIN_STRATEGY = "candidate_verbatim"
-
-# The classification this route stamps, matching the tags above. Fixed, and
-# reserved from callers (memory.provenance.RESERVED_KEYS) so that a client
-# cannot supply its own: "remember this" is a human STATING something, which
-# is an evidence candidate (§6.4, technical_claim/stated), and a caller able
-# to send origin=confirmed + kind=decision could promote its own proposal to
-# durable project truth without a human ever accepting it -- the exact
-# promotion §6.3 forbids (Phase 3 review finding 7).
-EXPLICIT_RETAIN_PROVENANCE: dict[str, Any] = {
-    "origin": "stated",
-    "kind": "technical_claim",
-    "explicit_request": True,
-    "provenance": {"type": "explicit_request"},
-}
-
-
-class RetainRequest(ScopedRequest):
-    """An explicit human "remember this" request. Stored as one verbatim
-    evidence item -- see EXPLICIT_RETAIN_TAGS -- never as a guaranteed
-    profile-eligible truth; only the automatic capture pipeline classifies
-    and promotes candidates to that."""
-
-    content: str
-    document_id: str | None = None
-    # Bound to Hindsight's own enum (confirmed against a live server's
-    # MemoryItem.update_mode schema) so a bogus value is a typed 422 at the
-    # boundary instead of a 502 blaming the backend for the caller's typo --
-    # the same reasoning as operation_id's UUID validator below.
-    update_mode: Literal["replace", "append"] = "replace"
-    metadata: dict[str, str] | None = None
-    # SPEC §15: a caller may supply its own operation id for safe retries.
-    # Passed through verbatim; the wrapper assigns no meaning to it — but it
-    # must be UUID-shaped, because Hindsight's is, and an unchecked one comes
-    # back as a 502 blaming the backend for the caller's typo. Validated here
-    # rather than in the handler so it is a typed 422 at the boundary, the
-    # same as git_locator's bound: one request model should not answer two
-    # malformed fields two different ways.
-    operation_id: UUID4Str | None = None
-
-    @model_validator(mode="after")
-    def _append_requires_a_document_id(self) -> "RetainRequest":
-        # Hindsight 400s with "update_mode='append' requires a document_id"
-        # -- SPEC §11.4 blesses append for interactive coding sessions, so a
-        # caller following the spec and forgetting document_id used to get a
-        # 502 with a fixed, unhelpful message instead of learning why.
-        if self.update_mode == "append" and not self.document_id:
-            raise ValueError("update_mode='append' requires a document_id")
-        return self
 
 
 class RecallRequest(ScopedRequest):
@@ -301,7 +246,10 @@ def _resolve_bank(
         return bank_id, None, None
 
     bank_id, resolved_from, project_slug = resolve_project_bank(
-        db, principal, body.project_slug, body.git_locator, create=create
+        # getattr: TypedRetainRequest (v0.4.0 retain) has no git_locator at
+        # all -- that concept only ever served enrichment/mismatch-checking
+        # for a lazily-CREATED project, and typed retain never creates one.
+        db, principal, body.project_slug, getattr(body, "git_locator", None), create=create
     )
     if principal.is_master:
         # Mirrors the scope=user branch above: a master key reaching a
@@ -340,86 +288,41 @@ def _strip_bank_id(value: Any, bank_id: str | None = None) -> Any:
     return value
 
 
-@router.post("/retain", response_model=MemoryResponse)
+@router.post("/retain", response_model=TypedRetainResponse, status_code=202)
 def retain(
-    body: RetainRequest,
+    body: TypedRetainRequest,
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-) -> MemoryResponse:
-    return _retain(body, principal, on_behalf_of, db, is_async=True)
+) -> TypedRetainResponse:
+    return _typed_retain(body, principal, on_behalf_of, db, wait=False)
 
 
-@router.post("/sync_retain", response_model=MemoryResponse)
+@router.post("/sync_retain", response_model=TypedRetainResponse)
 def sync_retain(
-    body: RetainRequest,
+    body: TypedRetainRequest,
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-) -> MemoryResponse:
-    return _retain(body, principal, on_behalf_of, db, is_async=False)
+) -> TypedRetainResponse:
+    return _typed_retain(body, principal, on_behalf_of, db, wait=True)
 
 
-def _retain(
-    body: RetainRequest,
+def _typed_retain(
+    body: TypedRetainRequest,
     principal: Principal,
     on_behalf_of: str | None,
     db: Session,
     *,
-    is_async: bool,
-) -> MemoryResponse:
-    _check_content_size(body.content)
-
-    bank_id, resolved_from, project_slug = _resolve_bank(
-        body, db, principal, on_behalf_of, "memory.retain", is_write=True
-    )
-
-    extraction = provenance.build(body.metadata, project_slug=project_slug)
-
-    # Commit as soon as resolution succeeds, BEFORE retain — not after, per
-    # the controller resolution overriding the original task text. Project
-    # resolution can lazily create a project row (a fresh bank_id) or fill in
-    # git_locator; if we committed after a failed Hindsight call instead, the
-    # exception would unwind, get_session would roll back, and that project
-    # row — the only record of the bank_id — would vanish while the bank
-    # still exists in Hindsight, orphaning it beyond a retry's reach.
-    # Committing now means a retry after an upstream failure finds the same
-    # project and the same bank instead of leaking a new one each time.
+    wait: bool,
+) -> TypedRetainResponse:
+    # Existing-only (create=False): ordinary retain never mints an unknown
+    # project. Resolved here too (not just inside submit_retain) so the
+    # shared rate-limit/audit/activity choke point every other data-plane
+    # route funnels through still covers typed retain.
+    _resolve_bank(body, db, principal, on_behalf_of, "memory.retain", create=False, is_write=True)
     db.commit()
-
-    client = get_client()
-
-    # SPEC Phase 3: explicit retain is evidence, not guaranteed profile
-    # truth -- fixed, not derived from any caller input. A human asked for
-    # this specific sentence to be remembered; classification (kind,
-    # origin, eligibility) is the automatic capture pipeline's job, never
-    # this route's.
-    #
-    # The same classification is stamped into the metadata, not just the
-    # tags: a downstream reader that trusted metadata over tags would
-    # otherwise see an unclassified memory. Server-last on purpose, though
-    # `build()` has already refused these keys from the caller.
-    item = RetainItem(
-        content=body.content,
-        document_id=body.document_id,
-        metadata={**extraction, **EXPLICIT_RETAIN_PROVENANCE},
-        context=provenance.context_line(extraction),
-        tags=list(EXPLICIT_RETAIN_TAGS),
-        observation_scopes=[list(scope) for scope in EXPLICIT_RETAIN_OBSERVATION_SCOPES],
-        strategy=EXPLICIT_RETAIN_STRATEGY,
-        update_mode=body.update_mode,
-    )
-    result = client.retain_items(
-        bank_id,
-        [item],
-        operation_id=body.operation_id or str(uuid.uuid4()),
-        is_async=is_async,
-    )
-    return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
+    return submit_retain(db, principal, body, client=get_client(), wait=wait)
 
 
 # SPEC-cited elsewhere in this file, repeated here so the deprecation
@@ -456,6 +359,9 @@ def recall(
         project_slug=body.project_slug,
     )
     db.commit()
+    read_bank_ref = read_service.bank_ref(principal, read_bank)
+    read_service.ensure_current_read_allowed(db, read_bank_ref)
+    read_service.run_access_maintenance(db, read_bank_ref)
 
     response.headers.update(_DEPRECATED_RECALL_HEADERS)
     hits = read_service._recall_hits(read_bank.bank_id, body.query, "current", None)
@@ -511,6 +417,9 @@ def reflect(
         project_slug=body.project_slug,
     )
     db.commit()
+    reflect_bank_ref = read_service.bank_ref(principal, read_bank)
+    read_service.ensure_current_read_allowed(db, reflect_bank_ref)
+    read_service.run_access_maintenance(db, reflect_bank_ref)
     bank_id = read_bank.bank_id
     resolved_from = read_bank.resolved_from
     project_slug = read_bank.current_slug if read_bank.scope == "project" else None

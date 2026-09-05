@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import respx
 
@@ -57,6 +59,56 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
     }
     assert route.called
     assert "must-not-leak" not in response.text
+
+
+@respx.mock
+def test_read_recall_sends_v040_schema_and_type_tags(client, two_users):
+    """v0.4.0: no eligibility/profile filtering axis -- every recall carries
+    the fixed schema tag, narrowed only by the caller's own closed
+    memory_types, and never the retired profile_eligible vocabulary."""
+    route = respx.post(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
+    ).mock(return_value=httpx.Response(200, json={"results": []}))
+
+    key = two_users[0]["key"]
+    response = client.post(
+        "/v1/read/recall",
+        json={"scope": "user", "query": "database", "kinds": ["decision"]},
+        headers=_headers(key),
+    )
+
+    assert response.status_code == 200
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["tags"] == ["schema:ach-retain-v1", "type:decision"]
+    assert sent["tags_match"] == "all_strict"
+    assert set(sent["types"]) == {"world", "observation"}
+    assert "profile_eligible" not in json.dumps(sent)
+
+
+@respx.mock
+def test_read_recall_withheld_bank_is_currentness_unavailable(client, two_users, session, tenant):
+    """An ACH-mediated safety mutation with an unproven upstream outcome
+    withholds ordinary current reads for that bank (SPEC §5.8) -- proven here
+    without ever reaching Hindsight."""
+    from memory.currentness import withhold_bank
+    from memory.models import User
+    from memory.retained_records import LogicalBankRef
+
+    user_id = two_users[0]["user_id"]
+    key = two_users[0]["key"]
+    user = session.get(User, user_id)
+    bank = LogicalBankRef(tenant, "user", user_id, None, user.bank_id)
+    withhold_bank(session, bank, "op-unknown")
+    session.commit()
+
+    response = client.post(
+        "/v1/read/recall",
+        json={"scope": "user", "query": "database"},
+        headers=_headers(key),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "BANK_CURRENTNESS_UNAVAILABLE"
 
 
 @respx.mock

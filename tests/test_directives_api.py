@@ -39,6 +39,17 @@ def _mock_bank() -> None:
     )
 
 
+def _create_project(client, headers: dict[str, str], slug: str) -> None:
+    """Typed retain is existing-only (create=False); several tests here need
+    an already-owned project to exercise IDOR behavior against, so they
+    create it directly rather than relying on retain's old lazy-creation
+    side effect."""
+    response = client.post(
+        "/v1/projects", json={"project_slug": slug}, headers=headers
+    )
+    assert response.status_code == 201, response.text
+
+
 DIR_ID = "11111111-1111-1111-1111-111111111111"
 
 
@@ -336,14 +347,7 @@ def test_list_directives_rejects_a_negative_offset(client, juan, tenant):
 def test_idor_create_directive_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     create = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/directives$"
     ).mock(return_value=httpx.Response(201, json={"id": DIR_ID}))
@@ -367,14 +371,7 @@ def test_idor_create_directive_cannot_reach_an_unauthorized_bank(
 def test_idor_update_directive_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     update = respx.patch(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/directives/[^/]+"
     ).mock(return_value=httpx.Response(200, json={"id": DIR_ID}))
@@ -397,14 +394,7 @@ def test_idor_update_directive_cannot_reach_an_unauthorized_bank(
 def test_idor_delete_directive_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     delete = respx.delete(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/directives/[^/]+"
     ).mock(return_value=httpx.Response(200, json={"deleted": True}))
@@ -424,14 +414,7 @@ def test_idor_delete_directive_cannot_reach_an_unauthorized_bank(
 def test_idor_list_directives_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     listed = respx.get(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/directives(\?|$)"
     ).mock(return_value=httpx.Response(200, json={"directives": []}))
@@ -450,14 +433,7 @@ def test_idor_list_directives_cannot_reach_an_unauthorized_bank(
 def test_idor_get_directive_cannot_reach_an_unauthorized_bank(
     client, juan, alice, tenant
 ):
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     get = respx.get(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/directives/[^/]+"
     ).mock(return_value=httpx.Response(200, json={"id": DIR_ID}))
@@ -490,14 +466,7 @@ def test_a_group_member_who_is_not_the_owner_can_manage_directives(
     client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
     client.put(f"/v1/groups/grp_payments/members/{bob}", headers=master_headers)
     _mock_bank()
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     client.patch(
         "/v1/projects/payments-api/owner",
         json={"type": "group", "id": "grp_payments"},
@@ -525,14 +494,7 @@ def test_a_group_member_who_is_not_the_owner_can_manage_directives(
 @respx.mock
 def test_a_master_key_can_manage_directives_on_any_bank(client, juan, master_headers, tenant):
     _mock_bank()
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     create = respx.post(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/directives$"
     ).mock(return_value=httpx.Response(201, json={"id": DIR_ID}))

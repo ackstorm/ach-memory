@@ -39,6 +39,17 @@ def _mock_bank() -> None:
     )
 
 
+def _create_project(client, headers: dict[str, str], slug: str) -> None:
+    """Typed retain is existing-only (create=False); several tests here need
+    an already-owned project to exercise IDOR behavior against, so they
+    create it directly rather than relying on retain's old lazy-creation
+    side effect."""
+    response = client.post(
+        "/v1/projects", json={"project_slug": slug}, headers=headers
+    )
+    assert response.status_code == 201, response.text
+
+
 @respx.mock
 def test_list_memories_reaches_the_list_subpath(client, juan, tenant):
     route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list").mock(
@@ -113,6 +124,77 @@ def test_correct_edits_the_text(client, juan, tenant):
 
 
 @respx.mock
+def test_forget_on_a_tracked_record_uses_the_outcome_safe_path(client, juan, tenant, session):
+    """A memory ACH itself retained routes forget through curation_service:
+    proven success marks the durable provenance row forgotten, not just the
+    upstream fact."""
+    import json
+    import uuid
+
+    mem_id = "22222222-2222-2222-2222-222222222222"
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
+        return_value=httpx.Response(
+            200, json={"status": "completed", "result": {"memory_id": mem_id}}
+        )
+    )
+    retain_response = client.post(
+        "/v1/memory/sync_retain",
+        json={
+            "scope": "user", "content": "we use uv", "memory_type": "convention",
+            "basis": "human_explicit", "trigger": "user_requested",
+            "evidence": [{"kind": "user_quote", "raw": "we use uv"}],
+            "operation_id": str(uuid.uuid4()),
+        },
+        headers=juan["headers"],
+    )
+    assert retain_response.status_code == 200, retain_response.text
+    assert retain_response.json()["status"] == "completed"
+
+    curate = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": mem_id}))
+
+    response = client.post(
+        "/v1/memory/forget",
+        json={"scope": "user", "memory_id": mem_id, "reason": "obsolete"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200, response.text
+    assert curate.calls.last.request.method == "PATCH"
+    sent = json.loads(curate.calls.last.request.read())
+    assert sent["state"] == "invalidated"
+
+    from memory.models import RetainedRecord
+
+    record = session.query(RetainedRecord).filter_by(source_memory_id=mem_id).one()
+    assert record.lifecycle == "forgotten"
+
+
+def test_forget_refuses_when_the_bank_is_already_withheld(client, juan, tenant, session):
+    from memory.currentness import withhold_bank
+    from memory.models import User
+    from memory.retained_records import LogicalBankRef
+
+    user = session.get(User, juan["user_id"])
+    bank = LogicalBankRef(tenant, "user", user.id, None, user.bank_id)
+    withhold_bank(session, bank, "op-unknown")
+    session.commit()
+
+    response = client.post(
+        "/v1/memory/forget",
+        json={"scope": "user", "memory_id": "22222222-2222-2222-2222-222222222222"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "BANK_CURRENTNESS_UNAVAILABLE"
+
+
+@respx.mock
 def test_a_missing_memory_is_a_404_not_a_backend_error(client, juan, tenant):
     # A syntactically valid but absent UUID: "ghost" would now be rejected by
     # the client's local UUID guard before the request is ever sent, so the
@@ -146,20 +228,7 @@ def test_idor_a_memory_id_cannot_be_used_to_reach_an_unauthorized_bank(
     not the bank check ran at all.
     """
     mem_id = "22222222-2222-2222-2222-222222222222"
-    _mock_bank()
-    setup_retain = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    setup = client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
-    # The project row this test relies on survives even if this call fails
-    # (retain commits before the upstream call) -- so a silently-broken mock
-    # here would otherwise go unnoticed. Assert it actually succeeded.
-    assert setup.status_code == 200
-    assert setup_retain.called
+    _create_project(client, juan["headers"], "payments-api")
     curate = respx.patch(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}"
     ).mock(return_value=httpx.Response(200, json={"id": mem_id}))
@@ -205,15 +274,7 @@ def test_idor_list_memories_cannot_reach_an_unauthorized_bank(
     each needs its own explicit IDOR test. Verified by mutation: stubbing
     `list_memories`'s `_bank()` call away (skipping authorization) leaves
     this failing on the assertion below, not passing."""
-    _mock_bank()
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     listed = respx.get(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list"
     ).mock(
@@ -240,15 +301,7 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(client, juan, alice, 
     by mutation: stubbing `get_memory`'s `_bank()` call away leaves this
     failing on the assertion below, not passing."""
     mem_id = "22222222-2222-2222-2222-222222222222"
-    _mock_bank()
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     get = respx.get(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}"
     ).mock(return_value=httpx.Response(200, json={"id": mem_id}))
@@ -270,15 +323,7 @@ def test_idor_restore_cannot_reach_an_unauthorized_bank(client, juan, alice, ten
     mutation: stubbing `restore`'s `_bank()` call away leaves this failing on
     the assertion below, not passing."""
     mem_id = "22222222-2222-2222-2222-222222222222"
-    _mock_bank()
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     restore = respx.patch(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}"
     ).mock(return_value=httpx.Response(200, json={"id": mem_id}))
@@ -301,15 +346,7 @@ def test_idor_correct_cannot_reach_an_unauthorized_bank(client, juan, alice, ten
     `correct`'s `_bank()` call away leaves this failing on the assertion
     below, not passing."""
     mem_id = "22222222-2222-2222-2222-222222222222"
-    _mock_bank()
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-    client.post(
-        "/v1/memory/retain",
-        json={"scope": "project", "project_slug": "payments-api", "content": "x"},
-        headers=juan["headers"],
-    )
+    _create_project(client, juan["headers"], "payments-api")
     correct = respx.patch(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}"
     ).mock(return_value=httpx.Response(200, json={"id": mem_id}))

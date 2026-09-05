@@ -57,7 +57,16 @@ def _bank_id(session, user_id: str) -> str:
 # time (see the test body below).
 ROUTES = {
     # memory.py
-    "retain": ("POST", "/v1/memory/retain", {"scope": "user", "content": "x"}, None, "juan"),
+    "retain": (
+        "POST", "/v1/memory/retain",
+        {
+            "scope": "user", "content": "x", "memory_type": "fact",
+            "basis": "human_explicit", "trigger": "agent_proactive",
+            "evidence": [{"kind": "user_quote", "raw": "x"}],
+            "operation_id": "44444444-4444-4444-4444-444444444444",
+        },
+        None, "juan",
+    ),
     "recall": ("POST", "/v1/memory/recall", {"scope": "user", "query": "x"}, None, "juan"),
     "reflect": ("POST", "/v1/memory/reflect", {"scope": "user", "query": "x"}, None, "juan"),
     # curation.py
@@ -164,7 +173,10 @@ def test_a_bank_id_embedded_in_an_upstream_string_is_redacted(
     assert bank_id not in response.text, (
         f"{name}: bank_id survived in the response body"
     )
-    if name != "recall":
+    # retain's typed response (v0.4.0) is built entirely from ACH's own DB
+    # row -- it never echoes any part of Hindsight's raw body -- so there is
+    # nothing upstream's bank-id-laden mock body to redact in the first place.
+    if name not in ("recall", "retain"):
         assert "REDACTED" in response.text, (
             f"{name}: nothing was redacted -- the call site is not passing bank_id"
         )

@@ -114,7 +114,7 @@ def _payload_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _document_id(operation_id: UUID) -> str:
+def document_id_for(operation_id: UUID) -> str:
     return f"ach-retain-{operation_id.hex}"
 
 
@@ -150,7 +150,7 @@ def accept_retain(
         project_internal_id=bank.project_internal_id,
         operation_id=str(request.operation_id),
         payload_hash=digest,
-        document_id=_document_id(request.operation_id),
+        document_id=document_id_for(request.operation_id),
         canonical_content=canonical_content,
         memory_type=request.memory_type,
         basis=request.basis,
@@ -171,3 +171,32 @@ def get_by_operation(
     db: Session, bank: LogicalBankRef, operation_id: str | UUID
 ) -> RetainedRecord | None:
     return db.scalar(_operation_query(bank, operation_id))
+
+
+def get_by_source_memory_id(
+    db: Session, bank: LogicalBankRef, source_memory_id: str
+) -> RetainedRecord | None:
+    """Resolve a caller-supplied Hindsight `memory_id` to ACH's own stable
+    provenance row, scoped to the already-authorized bank (SPEC §20.1: never
+    looked up globally). None for a memory Hindsight derived on its own or
+    that predates ACH's typed retain -- callers fall back to the untracked
+    path for those."""
+    return db.scalar(
+        select(RetainedRecord).where(
+            *_bank_filters(RetainedRecord, bank),
+            RetainedRecord.source_memory_id == source_memory_id,
+        )
+    )
+
+
+def get_by_document_id(
+    db: Session, bank: LogicalBankRef, document_id: str
+) -> RetainedRecord | None:
+    """Same as `get_by_source_memory_id`, keyed by the caller-managed
+    document id (SPEC §12.2's hard-delete target)."""
+    return db.scalar(
+        select(RetainedRecord).where(
+            *_bank_filters(RetainedRecord, bank),
+            RetainedRecord.document_id == document_id,
+        )
+    )

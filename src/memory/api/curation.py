@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import Field, field_validator
 from sqlalchemy.orm import Session
 
-from memory import read_context
+from memory import curation_service, read_context, read_service
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import (
     MAX_PAGE_SIZE,
@@ -17,6 +17,8 @@ from memory.api.memory import (
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.hindsight.client import get_client
+from memory.retained_records import get_by_source_memory_id
+from memory.retention import resolve_bank_ref
 
 router = APIRouter(prefix="/v1/memory", tags=["curation"])
 
@@ -143,6 +145,7 @@ def list_memories(
     bank_id, resolved_from, project_slug = _read_bank(
         body, db, principal, on_behalf_of, "memory.list"
     )
+    read_service.ensure_current_read_allowed(db, resolve_bank_ref(db, principal, body))
     result = get_client().list_memories(
         bank_id,
         q=body.q,
@@ -169,12 +172,25 @@ def get_memory(
     bank_id, resolved_from, project_slug = _read_bank(
         body, db, principal, on_behalf_of, "memory.get"
     )
+    read_service.ensure_current_read_allowed(db, resolve_bank_ref(db, principal, body))
     result = get_client().get_memory(bank_id, body.memory_id)
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,
         project_slug=project_slug,
     )
+
+
+def _tracked_record(db: Session, principal: Principal, body: MemoryIdRequest):
+    """Resolve the stable `RetainedRecord` for this bank+memory_id, if ACH
+    ever retained it, and gate on the currentness barrier either way (SPEC
+    §5.8: an unresolved prior mutation withholds the whole bank, not just
+    reads of it). Returns None to signal a fall back to a direct, untracked
+    Hindsight call -- a memory Hindsight derived on its own, or one that
+    predates typed retain, has no ACH ledger row to make outcome-safe."""
+    bank_ref = resolve_bank_ref(db, principal, body)
+    read_service.ensure_current_read_allowed(db, bank_ref)
+    return get_by_source_memory_id(db, bank_ref, body.memory_id)
 
 
 @router.post("/forget", response_model=MemoryResponse)
@@ -196,9 +212,16 @@ def forget(
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.forget", is_write=True
     )
-    result = get_client().curate(
-        bank_id, body.memory_id, state="invalidated", reason=body.reason
-    )
+    retained = _tracked_record(db, principal, body)
+    if retained is not None:
+        curation_service.forget_record(
+            db, retained, reason=body.reason, client=get_client(), bank_id=bank_id
+        )
+        result: dict = {"id": body.memory_id, "state": "invalidated"}
+    else:
+        result = get_client().curate(
+            bank_id, body.memory_id, state="invalidated", reason=body.reason
+        )
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,
@@ -216,7 +239,12 @@ def restore(
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.restore", is_write=True
     )
-    result = get_client().curate(bank_id, body.memory_id, state="valid")
+    retained = _tracked_record(db, principal, body)
+    if retained is not None:
+        curation_service.restore_record(db, retained, client=get_client(), bank_id=bank_id)
+        result: dict = {"id": body.memory_id, "state": "valid"}
+    else:
+        result = get_client().curate(bank_id, body.memory_id, state="valid")
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,
@@ -240,7 +268,14 @@ def correct(
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.correct", is_write=True
     )
-    result = get_client().curate(bank_id, body.memory_id, text=body.content)
+    retained = _tracked_record(db, principal, body)
+    if retained is not None:
+        curation_service.correct_record(
+            db, retained, body.content, client=get_client(), bank_id=bank_id
+        )
+        result: dict = {"id": body.memory_id, "text": body.content}
+    else:
+        result = get_client().curate(bank_id, body.memory_id, text=body.content)
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,

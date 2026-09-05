@@ -326,46 +326,41 @@ def test_a_history_response_rejects_an_undocumented_top_level_field():
         )
 
 
-# -- resolve_filters: deterministic view/kinds -> Hindsight filter mapping
+# -- resolve_filters: deterministic view/memory_types -> Hindsight filter
+# mapping (v0.4.0: schema:ach-retain-v1 always, no eligibility/profile axis)
 
 
-def test_current_view_prefers_observations_across_all_three_fact_types():
+def test_current_view_always_carries_the_schema_tag_and_no_experience_type():
     filters = resolve_filters("current", None)
-    assert set(filters.types) == {"observation", "world", "experience"}
-    assert filters.prefer_observations is True
-    assert filters.eligibility_tags == ()
+    assert set(filters.types) == {"world", "observation"}
+    assert filters.tags == ("schema:ach-retain-v1",)
+    assert filters.tags_match == "all_strict"
 
 
-def test_evidence_view_excludes_observations_and_defaults_to_evidence_only():
-    filters = resolve_filters("evidence", None)
-    assert set(filters.types) == {"world", "experience"}
-    assert filters.prefer_observations is False
-    assert filters.eligibility_tags == ("evidence_only",)
+@pytest.mark.parametrize("view", ["current", "evidence", "all"])
+def test_every_documented_view_resolves_to_the_same_v040_filter(view):
+    """v0.4.0 has no eligibility tag left to distinguish the three views by;
+    they resolve identically until a future contract gives them separate
+    meaning."""
+    assert resolve_filters(view, None) == resolve_filters("current", None)
 
 
-def test_all_view_widens_types_with_no_eligibility_default():
-    filters = resolve_filters("all", None)
-    assert set(filters.types) == {"observation", "world", "experience"}
-    assert filters.prefer_observations is False
-    assert filters.eligibility_tags == ()
-
-
-def test_kinds_become_bounded_memory_type_tags():
+def test_memory_types_become_bounded_type_tags_after_the_schema_tag():
     filters = resolve_filters("current", ("decision", "gotcha"))
-    assert set(filters.kind_tags) == {"type:decision", "type:gotcha"}
+    assert filters.tags == ("schema:ach-retain-v1", "type:decision", "type:gotcha")
 
 
-def test_no_kinds_means_no_kind_tags():
+def test_no_memory_types_means_only_the_schema_tag():
     filters = resolve_filters("current", None)
-    assert filters.kind_tags == ()
+    assert filters.tags == ("schema:ach-retain-v1",)
 
 
 def test_resolve_filters_never_lets_a_caller_choose_tag_syntax_directly():
     """There is no parameter here through which a `RecallRequest` value ever
     reaches Hindsight's own tag/filter DSL: `resolve_filters` only accepts a
-    closed `view` and closed `kinds`, and only ever emits the fixed
-    `type:<memory_type>` shape."""
+    closed `view` and closed `memory_types`, and only ever emits the fixed
+    `schema:ach-retain-v1`/`type:<memory_type>` shapes."""
     import inspect
 
     signature = inspect.signature(resolve_filters)
-    assert set(signature.parameters) == {"view", "kinds"}
+    assert set(signature.parameters) == {"view", "memory_types"}

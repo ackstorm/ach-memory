@@ -189,12 +189,19 @@ def test_rest_is_write_flags_match_the_governance_table(client, juan, tenant, mo
     )
 
     # Consume the whole limit with an ordinary write.
+    import uuid
+
     warmup = client.post(
         "/v1/memory/retain",
-        json={"scope": "user", "content": "warmup"},
+        json={
+            "scope": "user", "content": "warmup", "memory_type": "fact",
+            "basis": "human_explicit", "trigger": "agent_proactive",
+            "evidence": [{"kind": "user_quote", "raw": "warmup"}],
+            "operation_id": str(uuid.uuid4()),
+        },
         headers=juan["headers"],
     )
-    assert warmup.status_code == 200, warmup.text
+    assert warmup.status_code == 202, warmup.text
 
     for name, (method, path, body, params, expect_write) in GOVERNANCE_ROUTES.items():
         response = client.request(
