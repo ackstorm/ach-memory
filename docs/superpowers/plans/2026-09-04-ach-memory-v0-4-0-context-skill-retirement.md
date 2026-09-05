@@ -26,6 +26,9 @@
 - Automatic transcript capture, semantic extractor/router, structured profiles, ranking/displacement, session brief, INDEX/FULL and their flags/deployments are removed, not left disabled.
 - Frozen research remains reachable from `archive/memory-quality-v1.4-final`; it need not remain executable on the product branch.
 - Production data cleanup is not part of this plan and still requires separate operation-by-operation approval.
+- Test count is not a release KPI. Task 8 deletes tests whose product surface is removed; tests for retained
+  governance and v0.4.0 behavior remain until the post-implementation portfolio report identifies a
+  concrete duplicate or orphan and the user approves a separate cut.
 
 ---
 
@@ -668,10 +671,11 @@ rtk git commit -m "refactor(memory): remove automatic memory pipeline"
 - Create: `tests/test_v040_upgrade.py`
 - Create: `tests/test_v040_context_live.py`
 - Create: `docs/results/2026-09-04-ach-memory-v0-4-0-release.md`
+- Create: `docs/results/2026-09-04-ach-memory-v0-4-0-test-portfolio.md`
 
 **Interfaces:**
 - Consumes: complete v0.4.0 implementation and all prior plan result documents.
-- Produces: version `0.4.0`, tested clean/upgrade migrations, measured two-second context p95 and an activation report; does not execute production cleanup.
+- Produces: version `0.4.0`, tested clean/upgrade migrations, measured two-second context p95, an activation report and a bounded test-portfolio cut report; does not execute production cleanup or delete tests for retained product behavior.
 
 - [ ] **Step 1: Add clean-install and 0.3.5-upgrade tests**
 
@@ -719,13 +723,52 @@ Hindsight 0.9.2 compatibility preflight
 separate approval requirement for production cleanup
 ```
 
-- [ ] **Step 6: Verify release diff and commit**
+- [ ] **Step 6: Record the test-portfolio cutline without optimizing for a number**
+
+Create `docs/results/2026-09-04-ach-memory-v0-4-0-test-portfolio.md`. Its baseline is the integrated
+pre-Plan-4 `main` at `2cb1753`: 2,240 non-integration tests passed, 4 skipped and 6 live tests were
+deselected in 124.66 seconds. Record the post-retirement counts and runtime from Step 3, plus:
+
+```text
+tests and test files removed with the retired capture/profile/INDEX-FULL product
+remaining tests grouped by retained responsibility:
+  identity/auth/governance
+  User/Project resolution and ownership
+  typed retain/currentness/expiry
+  mental-model governance
+  context delivery
+  Working State
+  host integration, skill and packaging
+orphan tests with no retained product surface (must be zero)
+clusters where three or more tests exercise the same invariant through the same surface
+recommended cut: now, a named 0.4.x follow-up, or keep — with one sentence of product risk
+```
+
+Use this read-only counter for consistent Python LOC/file totals before and after retirement:
+
+```bash
+rtk uv run python - <<'PY'
+from pathlib import Path
+
+for root in (Path("src/memory"), Path("tests")):
+    files = sorted(root.rglob("*.py"))
+    lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in files)
+    print(f"{root}: files={len(files)} lines={lines}")
+PY
+```
+
+Task 8's explicitly retired tests are the deletion boundary for this execution. Do not delete or
+merge any additional retained-product test merely to reduce the count, and do not add a new eval
+framework. Finish the report with `READY_FOR_TEST_PORTFOLIO_CUT_REVIEW`; the user decides any
+further consolidation after Plan 4 from this evidence.
+
+- [ ] **Step 7: Verify release diff and commit**
 
 ```bash
 rtk uv lock --check
 rtk git diff --check
 rtk git status --short
-rtk git add pyproject.toml uv.lock README.md docs/releases/0.4.0.md tests/test_v040_upgrade.py tests/test_v040_context_live.py docs/results/2026-09-04-ach-memory-v0-4-0-release.md
+rtk git add pyproject.toml uv.lock README.md docs/releases/0.4.0.md tests/test_v040_upgrade.py tests/test_v040_context_live.py docs/results/2026-09-04-ach-memory-v0-4-0-release.md docs/results/2026-09-04-ach-memory-v0-4-0-test-portfolio.md
 rtk git commit -m "chore(release): prepare ach-memory 0.4.0"
 ```
 
@@ -741,5 +784,7 @@ Do not tag, publish, deploy, enable production behavior or run Phase 0 in this t
 - Automatic capture, extractor/router, structured profiles, session brief, INDEX/FULL, experiments and their deployment/runtime surfaces are absent from the product branch.
 - Clean install, 0.3.5 upgrade, non-live suite and disposable Hindsight gates pass.
 - Version/release notes are `0.4.0`; production activation and one-off cleanup remain separate human-approved actions.
+- The test-portfolio report proves that removed-product tests are gone, every remaining test maps to a
+  retained responsibility and any further cut is a named human decision rather than a numeric target.
 
 After this gate, use `superpowers:finishing-a-development-branch` to present merge/release options. Do not execute the SPEC §13 production cleanup until the user separately approves each numbered operation.
