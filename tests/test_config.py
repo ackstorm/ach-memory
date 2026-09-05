@@ -269,26 +269,5 @@ def test_both_providers_may_be_enabled_together(monkeypatch):
     assert settings.auth_jwt_enabled and settings.auth_platform_enabled
 
 
-def test_profile_delivery_defaults_to_legacy(monkeypatch):
-    """SPEC Phase 4 non-negotiable contract: structured delivery is reachable
-    only by naming it, per deployment. Nothing else -- no route, no other
-    setting -- may move this default."""
-    from memory.config import Settings
-
-    _base_env(monkeypatch)
-    assert Settings().profile_delivery_mode == "legacy"
 
 
-def test_an_unknown_profile_delivery_mode_refuses_to_boot(monkeypatch):
-    """A typo must not silently mean `legacy`. This flag decides which memory
-    every session on the deployment is served, so a container that cannot
-    honour what it was configured with has to fail at startup rather than
-    serve something else convincingly."""
-    import pytest
-
-    from memory.config import Settings
-
-    _base_env(monkeypatch)
-    monkeypatch.setenv("MEMORY_PROFILE_DELIVERY_MODE", "strucutred")
-    with pytest.raises(ValueError, match="profile_delivery_mode"):
-        Settings()

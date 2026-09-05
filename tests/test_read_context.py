@@ -25,8 +25,6 @@ from memory.errors import (
 from memory.models import (
     ApiKey,
     AuditEvent,
-    CaptureSlice,
-    ContextRevision,
     ExternalIdentity,
     Group,
     GroupMember,
@@ -50,10 +48,8 @@ _DOMAIN_MODELS = [
     GroupMember,
     Project,
     ProjectSlug,
-    ContextRevision,
     WorkingSession,
     WorkingState,
-    CaptureSlice,
 ]
 
 

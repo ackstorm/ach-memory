@@ -386,13 +386,6 @@ its server registration's `extra_headers`.
 | `MEMORY_AUTH_PLATFORM_CACHE_TTL` | `300` |
 | `MEMORY_AUTH_PLATFORM_USER_FIELD` | empty (required when platform auth is enabled) |
 | `MEMORY_AUTH_PLATFORM_GROUPS_FIELD` | empty (required when platform auth is enabled) |
-| `MEMORY_CAPTURE_WORKER_ENABLED` | `false` |
-| `MEMORY_CAPTURE_WORKER_POLL_INTERVAL_SECONDS` | `5` |
-| `MEMORY_CAPTURE_WORKER_LEASE_SECONDS` | `60` |
-| `MEMORY_CAPTURE_WORKER_MAX_ATTEMPTS` | `8` |
-| `MEMORY_CAPTURE_WORKER_BATCH_SIZE` | `5` |
-| `MEMORY_CAPTURE_CORRECTION_REFRESH_ENABLED` | `false` |
-| `MEMORY_PROFILE_DELIVERY_MODE` | `legacy` (`legacy` or `structured`) |
 
 The three required variables are supplied by Compose for local setup; deployed
 service operators configure them separately. See
