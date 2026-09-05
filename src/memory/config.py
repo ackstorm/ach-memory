@@ -1,6 +1,5 @@
 import logging
 from functools import lru_cache
-from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -132,42 +131,6 @@ class Settings(BaseSettings):
     # Activity rows are operational telemetry, not the audit trail: they age
     # out. 0 disables pruning entirely.
     activity_retention_days: int = Field(default=30, ge=0)
-
-    # Server-side capture worker (SPEC Phase 3). Off by default: disabled
-    # means no lease acquisition at all, not "lease then skip" -- a worker
-    # that leases and no-ops still holds rows other workers could otherwise
-    # claim. Separate from MEMORY_CAPTURE_ENABLED, which gates the local
-    # hook client and is read directly from the environment (the hook has no
-    # database, so it never goes through this Settings object at all) --
-    # the client-side and server-side rollouts are deliberately independent
-    # steps.
-    capture_worker_enabled: bool = False
-    capture_worker_poll_interval_seconds: float = Field(default=5.0, gt=0)
-    capture_worker_lease_seconds: int = Field(default=60, gt=0)
-    capture_worker_max_attempts: int = Field(default=8, ge=1)
-    capture_worker_batch_size: int = Field(default=5, ge=1)
-    # Mental-model refresh on an explicit human correction. Default off:
-    # observation-only mental-model inputs stay disabled until the Phase 0
-    # invalidation/delta-refresh probe passes (SPEC Phase 3 non-negotiable
-    # contract) -- this flag is Phase 3's plumbing for that later switch,
-    # not the switch itself.
-    capture_correction_refresh_enabled: bool = False
-
-    # Which mental model the session brief's user/project sections are
-    # compiled from (SPEC Phase 4). `legacy` reads the prose digest in
-    # `ach-memory-session-brief`; `structured` reads the typed
-    # `reflect_response.structured_output` of `ach-memory-profile-v1`
-    # instead, with no fallback between them -- a structured read that finds
-    # nothing serves no section rather than a prose item a correction may
-    # already have superseded.
-    #
-    # Default `legacy` everywhere. The structured model is provisioned by an
-    # explicit admin call and nothing refreshes it on its own yet, so a bank
-    # that has never been provisioned would deliver an empty brief the moment
-    # this flipped. Flipping it is a separately authorized rollout step, per
-    # deployment, after Task 7's evaluator has measured what the synthesis
-    # actually produces.
-    profile_delivery_mode: Literal["legacy", "structured"] = "legacy"
 
     @field_validator("master_key_hash")
     @classmethod

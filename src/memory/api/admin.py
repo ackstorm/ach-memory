@@ -7,21 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from memory import audit
-
-
-# Legacy provisioning handlers are retained only as unreachable compatibility
-# definitions while the route surface is removed in the release integration.
-class _RetiredProvisioning:
-    USER_QUERY = ""
-    PROJECT_QUERY = ""
-    @staticmethod
-    def provision_section(*args, **kwargs):
-        raise RuntimeError("retired")
-    @staticmethod
-    def provision_profile(*args, **kwargs):
-        raise RuntimeError("retired")
-brief = _RetiredProvisioning()
-profiles = brief
 from memory.api.app import current_on_behalf_of, require_master
 from memory.api.memory import (
     MAX_PAGE_SIZE,
@@ -271,116 +256,6 @@ def delete_bank(
     db.commit()
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=resolved_slug,
-    )
-
-
-def provision_brief_model(
-    scope: Scope,
-    principal: Annotated[Principal, Depends(require_master)],
-    on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
-    db: Session = Depends(get_session),
-    user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
-    project_slug: str | None = None,
-    body: AdminScopeBody | None = None,
-) -> MemoryResponse:
-    """Create a bank's brief model, or reconcile the one it has.
-
-    The read path no longer provisions, so this is the moment a model comes
-    into existence and the moment a changed source query reaches one that
-    already exists. Master key only, for the same reason `clear` is: the
-    first refresh spends an LLM generation, which is not a decision a read --
-    or an agent -- gets to make.
-
-    Addressed with `?user_id=` like every other `/v1/admin/*` route, and
-    deliberately not like `GET /v1/session-brief`, which is header-first only
-    because the console's Brief tab addresses a user that way. No console
-    caller for provisioning exists; `On-Behalf-Of` stays audit-only here.
-
-    `create=False` (via `_resolve_bank`), for `clear`'s reason: an admin must
-    not be able to conjure a bank into existence by provisioning a brief for
-    one that never existed.
-    """
-    scoped = _admin_scope(scope, user_id, project_slug, body)
-    bank_id, resolved_from, resolved_slug = _resolve_bank(
-        scoped,
-        db,
-        principal,
-        on_behalf_of,
-        "admin.brief.provision",
-        create=False,
-        is_write=True,
-    )
-    source_query = brief.USER_QUERY if scope == "user" else brief.PROJECT_QUERY
-    # Commit AFTER the upstream call, for clear/delete's reason: the audited
-    # action IS the claim that the model now exists or now matches this
-    # deploy, so a 502 must not leave a row saying it does. `create=False`
-    # above means resolution created nothing, so there is no local state that
-    # needs to survive the failure.
-    outcome = brief.provision_section(get_client(), bank_id, source_query)
-    db.commit()
-    # No `_strip_bank_id`: this payload is built here and never carried a
-    # bank id, unlike the upstream results the neighbouring routes pass on.
-    return MemoryResponse(
-        result={"outcome": outcome},
-        resolved_from=resolved_from,
-        project_slug=resolved_slug,
-    )
-
-
-def provision_profile_model(
-    scope: Scope,
-    principal: Annotated[Principal, Depends(require_master)],
-    on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
-    db: Session = Depends(get_session),
-    user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
-    project_slug: str | None = None,
-    body: AdminScopeBody | None = None,
-) -> MemoryResponse:
-    """Create a bank's structured profile model, or reconcile the one it has.
-
-    Same shape and reasoning as `provision_brief_model` above -- this is the
-    only place `ach-memory-profile-v1` comes into existence, or the moment a
-    changed source query, budget, trigger or response schema reaches one
-    that already exists, because `profiles.py` wires no read path to it at
-    all yet (that arrives with Task 4). Master key only, for the same reason
-    `clear`/`provision_brief_model` are: the first refresh spends an LLM
-    generation, which is not a decision a read -- or an agent -- gets to
-    make.
-
-    `create=False` (via `_resolve_bank`), for `provision_brief_model`'s
-    reason: an admin must not be able to conjure a bank into existence by
-    provisioning a profile for one that never existed.
-
-    A dedicated route rather than a format selector on
-    `/brief/{scope}/provision`: the two models coexist during the Phase 3/4
-    migration-shadowing period as independent targets, and folding this
-    into the brief route would complicate its simple signature for no
-    benefit.
-    """
-    scoped = _admin_scope(scope, user_id, project_slug, body)
-    bank_id, resolved_from, resolved_slug = _resolve_bank(
-        scoped,
-        db,
-        principal,
-        on_behalf_of,
-        "admin.profile.provision",
-        create=False,
-        is_write=True,
-    )
-    # Commit AFTER the upstream call, for clear/delete/provision_brief_model's
-    # reason: the audited action IS the claim that the model now exists or
-    # now matches this deploy, so a 502 must not leave a row saying it does.
-    outcome = profiles.provision_profile(get_client(), bank_id, scope)
-    db.commit()
-    # `scope` is echoed in `result` -- unlike `provision_brief_model`'s
-    # response, which never needs it because that route only ever targets
-    # one model name regardless of scope, this task's spec calls for it
-    # explicitly so a caller scripting both provision calls can tell the two
-    # results apart without re-reading which request it sent.
-    return MemoryResponse(
-        result={"outcome": outcome, "scope": scope},
         resolved_from=resolved_from,
         project_slug=resolved_slug,
     )

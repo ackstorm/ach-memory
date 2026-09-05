@@ -297,7 +297,12 @@ def clear(
         objective="clear", git_locator=git_locator,
     )
     _verify_session(db, principal, project.internal_id, request)
-    session_row = db.get(WorkingSession, session_epoch)
+    session_row = db.execute(
+        select(WorkingSession).where(WorkingSession.session_epoch == session_epoch).with_for_update()
+    ).scalar_one()
+    # Serialize clear and replace on the same scope-wide fence before either
+    # operation examines or removes the current payload.
+    latest = _latest_completed(db, principal, project.internal_id, workspace_id)
     current = _locked(db, principal, project.internal_id, workspace_id)
     if current is not None:
         pair = (session_epoch, checkpoint_seq)
@@ -305,7 +310,6 @@ def clear(
         if pair < stored:
             raise WorkingStateStale("a newer checkpoint already exists", stored_session_epoch=current.session_epoch, stored_checkpoint_seq=current.checkpoint_seq)
         db.delete(current)
-    latest = _latest_completed(db, principal, project.internal_id, workspace_id)
     if current is None and latest is not None and (session_epoch, checkpoint_seq) < latest:
         raise WorkingStateStale("a newer clear already exists", stored_session_epoch=latest[0], stored_checkpoint_seq=latest[1])
     session_row.completed_checkpoint_seq = checkpoint_seq
@@ -321,7 +325,7 @@ def _latest_completed(db: Session, principal: Principal, project_internal_id: st
         WorkingSession.project_internal_id == project_internal_id,
         WorkingSession.workspace_id == workspace_id,
         WorkingSession.completed_checkpoint_seq.is_not(None),
-    )).all()
+    ).with_for_update()).all()
     if not rows:
         return None
     return max((row.session_epoch, row.completed_checkpoint_seq) for row in rows)

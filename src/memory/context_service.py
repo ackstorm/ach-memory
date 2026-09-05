@@ -50,8 +50,13 @@ class ContextService:
         project_bank = self._bank("project", project) if project else None
         sections: list[DeliverySection] = []
         omissions = []
+        registration_scope = (
+            ((MentalModelRegistration.scope == "user") & (MentalModelRegistration.user_id == self.principal.user_id))
+            | ((MentalModelRegistration.scope == "project") & (MentalModelRegistration.project_internal_id == (project.internal_id if project else None)))
+        )
         rows = list(self.db.scalars(select(MentalModelRegistration).where(
             MentalModelRegistration.tenant_id == self.principal.tenant_id,
+            registration_scope,
             MentalModelRegistration.lifecycle_state != "deleted",
             MentalModelRegistration.always_in_context.is_(True),
         )))
@@ -112,7 +117,9 @@ class ContextService:
                 rendered = working_state.render_full_section(state, datetime.now(UTC)).text
                 sections.append(DeliverySection("3:working-state", "Working State", rendered, 512))
         payload = assemble_context(sections)
-        payload.omissions.extend(omissions)
+        payload.omissions.extend(
+            {"key": item["key"], "reason": item["reason"]} for item in omissions
+        )
         return payload
 
 

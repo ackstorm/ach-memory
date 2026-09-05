@@ -708,9 +708,8 @@ def _serve_mcp(url_argument: str | None = None) -> int:
         proxy.bootstrap(_base_url(base), key, slug) if bootstrap_enabled else None
     )
 
-    # Cache first, network in the background: startup must not wait on the
-    # service merely to gain orientation. A cached index may be one session
-    # behind, which its brief_revision makes visible to consumers.
+    # Fetch fresh authorized context once; failures are fail-open and never
+    # persist user context on the host.
     instructions = proxy.startup_instructions(
         _base_url(base), key, slug, locator, workspace_id=workspace_id
     )
@@ -721,338 +720,16 @@ def _serve_mcp(url_argument: str | None = None) -> int:
     return 0
 
 
-def _print_brief(url_argument: str | None) -> int:
-    """Print exactly the text a session would receive, metadata to stderr.
-
-    The text goes to stdout alone so it can be diffed or piped; everything a
-    human needs to explain a missing section goes to stderr.
-    """
-    from memory.mcp import proxy
-
-    key = os.environ.get("ACH_MEMORY_API_KEY", "")
-    if not key:
-        print(
-            "ach-memory: ACH_MEMORY_API_KEY must be set to read the brief",
-            file=sys.stderr,
-        )
-        return 1
-    base = _base_url(url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000")
-    slug, locator = proxy.resolve_project_context()
-    workspace_id = proxy.resolve_workspace_context()
-    brief = proxy.fetch_brief(base, key, slug, locator, workspace_id=workspace_id)
-    if not brief:
-        print(f"ach-memory: no brief from {base}", file=sys.stderr)
-        return 1
-    print(brief["instructions"])
-    sections = brief.get("sections") or {}
-    for name in ("user", "project"):
-        state = "present" if sections.get(name) else "absent"
-        print(f"  {name}: {state}", file=sys.stderr)
-    print(f"  generated_at: {brief.get('generated_at')}", file=sys.stderr)
-    return 0
 
 
-def _capture_checkpoint(url_argument: str | None) -> int:
-    """Silent by design: Claude interprets Stop hook output as feedback and
-    can re-enter the loop (SPEC Phase 3 non-negotiable contract), so this
-    command must never print anything or fail loudly, on any input.
-    The checkpoint helper already fails closed on every missing
-    prerequisite or transport error; this wrapper only makes sure a
-    malformed or unreadable stdin can't escape that same contract.
-
-    Carries the same unmuted-httpx bank-id exposure `_profile_check` fixes
-    below -- see the comment there. Not fixed here to keep Phase 4 Task 7's
-    diff scoped to the command it added.
-    """
-    capture_local = None
-
-    env = dict(os.environ)
-    if url_argument:
-        env["ACH_MEMORY_URL"] = url_argument
-
-    try:
-        raw = sys.stdin.read()
-        hook_event = json.loads(raw) if raw.strip() else {}
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return 0
-    if not isinstance(hook_event, dict):
-        return 0
-
-    capture_local.checkpoint(hook_event, env=env)
-    return 0
 
 
-def _capture_worker(*, once: bool) -> int:
-    """`--once` for deterministic tests and one-off operational runs; the
-    loop form polls with interruptible waits (SIGINT/SIGTERM) rather than a
-    tight loop or an unbounded sleep.
-
-    Carries the same unmuted-httpx bank-id exposure `_profile_check` fixes
-    below -- see the comment there. It is the worst-placed of the three:
-    this one is a long-lived process making a Hindsight call per leased row.
-    Not fixed here to keep Phase 4 Task 7's diff scoped to the command it
-    added.
-    """
-    import signal
-    import threading
-
-    capture_worker = None
-    from memory.db import session_scope
-    from memory.hindsight.client import get_client
-
-    client = get_client()
-
-    if once:
-        with session_scope() as db:
-            capture_worker.run_once(db, client)
-        return 0
-
-    stop = threading.Event()
-
-    def _request_stop(signum: int, frame: object) -> None:
-        stop.set()
-
-    signal.signal(signal.SIGTERM, _request_stop)
-    signal.signal(signal.SIGINT, _request_stop)
-    capture_worker.run_forever(session_scope, client, stop=stop)
-    return 0
 
 
-def _capture_check(*, scope: str, project_slug: str) -> int:
-    """Read-only dry-run verification; no config or memory mutation (SPEC
-    Phase 3 §9). `--scope project` checks the named project's own bank;
-    `--scope user` checks that project's owning user's bank -- there is no
-    separate --user flag, so a user-owned project is how this command
-    identifies which user bank to check.
-
-    Carries the same unmuted-httpx bank-id exposure `_profile_check` fixes
-    below -- see the comment there. Not fixed here to keep Phase 4 Task 7's
-    diff scoped to the command it added.
-    """
-    configuration = None
-    from memory.config import get_settings
-    from memory.db import session_scope
-    from memory.hindsight.client import get_client
-    from memory.models import Project, ProjectSlug, User
-
-    with session_scope() as db:
-        project = (
-            db.query(Project)
-            .join(ProjectSlug, ProjectSlug.project_internal_id == Project.internal_id)
-            .filter(
-                Project.tenant_id == get_settings().tenant_id,
-                ProjectSlug.tenant_id == Project.tenant_id,
-                ProjectSlug.slug == project_slug,
-                ProjectSlug.is_canonical.is_(True),
-            )
-            .first()
-        )
-        if project is None:
-            print(f"ach-memory: no such project {project_slug!r}", file=sys.stderr)
-            return 2
-        if scope == "project":
-            bank_id = project.bank_id
-            desired = configuration.desired_project_config()
-        else:
-            if project.owner_type != "user":
-                print(
-                    "ach-memory: --scope user needs a user-owned project", file=sys.stderr
-                )
-                return 2
-            owner = db.get(User, project.owner_id)
-            bank_id = owner.bank_id
-            desired = configuration.desired_user_config()
-
-    client = get_client()
-    result = configuration.verify_bank(client, bank_id, desired)
-
-    if not result.extraction_ok:
-        print(
-            "ach-memory: candidate_verbatim did not return the exact claim once:",
-            file=sys.stderr,
-        )
-        for fact in result.facts:
-            print(f"  - {fact!r}", file=sys.stderr)
-    if result.config_drift:
-        print("ach-memory: config drift from desired:", file=sys.stderr)
-        redacted = configuration.redact_for_display(result.config_drift, bank_id)
-        print(json.dumps(redacted, indent=2), file=sys.stderr)
-    if result.ok:
-        print(f"ach-memory: capture-check OK ({scope} {project_slug})", file=sys.stderr)
-        return 0
-    return 1
 
 
-def _format_evaluation(result) -> str:
-    """The human report for one evaluation: counts, timings and codes only.
-
-    Deliberately narrower than `capture-check`'s output, which echoes the
-    project slug it was given: this command's output is designed to be
-    collected by a nightly job into a log, so nothing it writes on any path
-    carries content or an identifier -- not a claim, not an evidence ID, not
-    a bank id, not the slug on its own argv.
-    """
-
-    def number(value) -> str:
-        return "-" if value is None else str(value)
-
-    # Grounding gets a line of its own rather than a bare code on the
-    # `warnings:` line. When the upstream preview reports no `based_on`,
-    # `evaluate_dry_run` grounds against the IDs the preview itself cites,
-    # which makes that gate a no-op for the run: a model that fabricated
-    # evidence IDs would pass it invisibly, and the run can still print
-    # `outcome: ok` and exit 0. An operator recording seven runs against the
-    # rollout gate has to be able to see that at a glance, so the report
-    # states it in words -- NO_BASED_ON alone only means something to
-    # somebody who has read `evaluate_dry_run`'s docstring. It is
-    # deliberately not an error: with no live Hindsight instance to say
-    # whether a preview ever carries `based_on`, failing on it could fail
-    # every run there will ever be.
-    grounding = (
-        "NOT VERIFIED (upstream reported no based_on; a fabricated evidence "
-        "id would be invisible to this run)"
-        if "NO_BASED_ON" in result.warning_codes
-        else "verified against the preview's own based_on"
-    )
-
-    lines = [
-        f"profile-check {result.scope}",
-        f"  outcome: {result.outcome}",
-        f"  mode: {result.requested_mode} requested / {result.effective_mode} evaluated",
-        f"  schema_valid: {str(result.schema_valid).lower()}",
-        f"  would_persist: {str(result.would_persist).lower()}",
-        (
-            f"  items: {result.candidate_item_count} candidate -> "
-            f"{result.delivered_item_count} delivered "
-            f"({result.displacement_count} displaced by budget)"
-        ),
-        f"  grounding: {grounding}",
-        (
-            f"  facts: {number(result.retrieved_fact_count)} retrieved -> "
-            f"{number(result.used_fact_count)} used"
-        ),
-        (
-            f"  tokens: {number(result.input_tokens)} in / "
-            f"{number(result.output_tokens)} out / {number(result.total_tokens)} total"
-        ),
-        f"  duration_ms: {number(result.duration_ms)}",
-        f"  warnings: {', '.join(result.warning_codes) or '-'}",
-    ]
-    return "\n".join(lines)
 
 
-def _profile_check(*, scope: str, project_slug: str, as_json: bool) -> int:
-    """Measure the structured profile without mutating anything (SPEC Phase
-    4; plan "Hindsight target and safe rollout").
-
-    The two Hindsight calls below are the ONLY ones this command may make,
-    and both are reads: the mental-model listing that finds the bank's
-    already-provisioned `ach-memory-profile-v1`, and Hindsight's own
-    non-persisting `dry-run-refresh` preview of what a refresh would
-    produce. It never provisions, never updates, never issues the real
-    refresh, never retains, and resolves an existing bank only -- it never
-    asks for one to be created. A measurement command that mutated
-    production state would be the worst possible bug in this file. There is
-    deliberately no HTTP or MCP route for any of it: this is a local/admin
-    operation only.
-
-    `--scope project` measures the named project's own bank; `--scope user`
-    measures that project's owning user's bank -- the same slug semantics as
-    `capture-check` above, for the same reason (there is no separate --user
-    flag).
-
-    Exit status is 0 only for a schema-valid `ok` measurement; any schema,
-    quality or budget finding, a missing model, or an upstream refusal is
-    nonzero, so a nightly job fails loudly instead of logging quietly.
-    """
-    import logging
-
-    from memory import metrics, profiles
-    from memory.config import get_settings
-    from memory.db import session_scope
-    from memory.errors import DomainError
-    from memory.hindsight.client import get_client
-    from memory.models import Project, ProjectSlug, User
-
-    # httpx logs the full request URL at INFO and our Hindsight URLs carry
-    # the bank ID -- `create_app()` mutes it for the same reason. This
-    # command has no app to do that: it is meant to run as a nightly job
-    # whose entire stdout and stderr get collected, so one
-    # basicConfig(level=INFO) anywhere upstream would put a bank id in every
-    # collected line of an evaluation that is otherwise content-free.
-    #
-    # Every other Hindsight-calling command in this file has the same
-    # exposure and none of them mutes it (see the docstrings on
-    # _capture_checkpoint, _capture_worker and _capture_check above). It is
-    # latent today only because nothing configures the root logger. Muting
-    # it once for all subcommands belongs in a change that owns those three
-    # commands, not in the one that added this one.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-
-    with session_scope() as db:
-        project = (
-            db.query(Project)
-            .join(ProjectSlug, ProjectSlug.project_internal_id == Project.internal_id)
-            .filter(
-                Project.tenant_id == get_settings().tenant_id,
-                ProjectSlug.tenant_id == Project.tenant_id,
-                ProjectSlug.slug == project_slug,
-                ProjectSlug.is_canonical.is_(True),
-            )
-            .first()
-        )
-        if project is None:
-            # Deliberately narrower than capture-check's version above,
-            # which echoes the slug: every byte this command writes, on
-            # every path, is meant to be safe to collect from a nightly job.
-            print("ach-memory: no such project", file=sys.stderr)
-            return 2
-        if scope == "project":
-            bank_id = project.bank_id
-        else:
-            if project.owner_type != "user":
-                print(
-                    "ach-memory: --scope user needs a user-owned project", file=sys.stderr
-                )
-                return 2
-            bank_id = db.get(User, project.owner_id).bank_id
-
-    client = get_client()
-    try:
-        model = profiles._find_profile(client, bank_id)
-        if model is None:
-            result = profiles.EvaluationResult(scope=scope, outcome="no_model")
-        else:
-            result = profiles.evaluate_dry_run(
-                scope, client.dry_run_refresh_mental_model(bank_id, model["id"])
-            )
-    except DomainError as exc:
-        # The code is a closed SPEC §18 constant; the message is not, and can
-        # carry the bank id, so only the code is ever printed.
-        print(f"ach-memory: profile-check upstream error ({exc.code})", file=sys.stderr)
-        result = profiles.EvaluationResult(scope=scope, outcome="upstream_error")
-
-    metrics.PROFILE_EVALUATION.labels(
-        scope=result.scope, mode=result.effective_mode, outcome=result.outcome
-    ).inc()
-    if result.duration_ms is not None:
-        metrics.PROFILE_EVALUATION_DURATION.labels(scope=result.scope).observe(
-            result.duration_ms / 1000
-        )
-    for direction, tokens in (
-        ("input", result.input_tokens),
-        ("output", result.output_tokens),
-    ):
-        if tokens is not None:
-            metrics.PROFILE_EVALUATION_TOKENS.labels(
-                scope=result.scope, direction=direction
-            ).observe(tokens)
-
-    # The report is the payload, so it goes to stdout in both formats and
-    # stderr carries only the failures above -- `--json | jq` and the plain
-    # form then read the same run the same way.
-    print(json.dumps(result.to_dict()) if as_json else _format_evaluation(result))
-    return 0 if result.schema_valid and result.outcome == "ok" else 1
 
 
 def _context_load() -> int:
@@ -1084,28 +761,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "mcp":
         return _serve_mcp(args.url)
 
-    if args.command == "brief":
-        return _print_brief(args.url)
-
     if args.command == "context" and args.context_command == "load":
         return _context_load()
     if args.command == "hook" and args.hook_command == "pre-compact":
         print("Before context is compacted, retain any durable decision, constraint, convention, fact or verified gotcha that is not yet in ach-memory. If project work is incomplete, update Working State. Do not retain the transcript or a generic session summary.")
         return 0
-
-    if args.command == "capture-checkpoint":
-        return _capture_checkpoint(args.url)
-
-    if args.command == "capture-worker":
-        return _capture_worker(once=args.once)
-
-    if args.command == "capture-check":
-        return _capture_check(scope=args.scope, project_slug=args.project)
-
-    if args.command == "profile-check":
-        return _profile_check(
-            scope=args.scope, project_slug=args.project, as_json=args.json
-        )
 
     base = os.environ.get("ACH_MEMORY_URL")
     mode = "http" if args.http else ("local" if args.local else "stdio")

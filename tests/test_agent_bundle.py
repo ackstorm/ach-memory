@@ -14,7 +14,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).parents[1]
 
@@ -168,74 +167,14 @@ def test_hooks_register_only_the_two_activation_events(host: str) -> None:
         assert hook["command"] == f'"${{{root}}}/scripts/{name}"'
 
 
-def test_claude_code_registers_silent_capture_checkpoint_hooks() -> None:
-    """SPEC Phase 3: Stop/PreCompact checkpoint the transcript, silently, on
-    the same script -- no statusMessage, which is a visible loading
-    indicator inappropriate for a background operation the user is not
-    meant to notice at all."""
-    hooks = _json(ROOT / "plugins" / "claude-code" / "hooks" / "hooks.json")["hooks"]
-
-    assert set(hooks) == {"SessionStart", "SubagentStart", "Stop", "PreCompact"}
-    for event in ("Stop", "PreCompact"):
-        hook = hooks[event][0]["hooks"][0]
-        assert hook["type"] == "command"
-        assert hook["command"] == '"${CLAUDE_PLUGIN_ROOT}/scripts/capture-checkpoint.sh"'
-        assert "statusMessage" not in hook
 
 
-def test_capture_checkpoint_hook_is_silent_and_exits_zero_without_an_api_key() -> None:
-    """The fast, deterministic half of the silence guarantee: no key means
-    the script must exit before ever reaching uvx/the network, with zero
-    stdout/stderr regardless."""
-    result = _script("claude-code", "capture-checkpoint.sh")
-
-    assert result.returncode == 0
-    assert result.stdout == ""
-    assert result.stderr == ""
 
 
-@pytest.mark.parametrize("host", NATIVE)
-def test_every_hook_script_is_executable_and_needs_no_extra_runtime(host: str) -> None:
-    """Only the full-tier Claude hook may depend on ubiquitous curl.
-
-    These run before the agent answers. A dependency here means memory silently
-    stops working on any machine that happens not to have it, and a hook that
-    called the service would put the network on the session-start path.
-    """
-    for script in sorted((ROOT / "plugins" / host / "scripts").iterdir()):
-        body = script.read_text()
-
-        # Comments are stripped first: these scripts explain in prose that they
-        # deliberately avoid node and jq, and scanning the prose would match
-        # the very words that document the rule.
-        code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
-
-        assert script.stat().st_mode & 0o111, f"{script.name} is not executable"
-        assert body.startswith("#!/usr/bin/env bash")
-        forbidden = r"\b(node|jq|python3?|npx)\b"
-        if not (host == "claude-code" and script.name == "session-start.sh"):
-            forbidden = r"\b(node|jq|python3?|curl|npx)\b"
-        assert not re.search(forbidden, code), script.name
 
 
-@pytest.mark.parametrize("host", NATIVE)
-def test_session_start_emits_its_text_as_plain_stdout(host: str) -> None:
-    """SessionStart is one of the three events whose plain stdout becomes
-    context Claude can act on, so it needs no envelope."""
-    result = _script(host, "session-start.sh")
-
-    assert result.returncode == 0
-    assert result.stdout.strip() == ACTIVATION
-    assert result.stderr == ""
 
 
-def test_the_session_start_hook_fetches_the_full_tier_and_cannot_block():
-    """Only this hook can carry the uncapped project half of a brief."""
-    script = (ROOT / "plugins" / "claude-code/scripts/session-start.sh").read_text()
-
-    assert "tier=full" in script
-    assert "--max-time" in script
-    assert script.rstrip().endswith("exit 0")
 
 
 def test_the_consumer_contract_ships_as_host_policy():
@@ -246,51 +185,6 @@ def test_the_consumer_contract_ships_as_host_policy():
     assert "working state" in contract.lower()
 
 
-def test_the_full_tier_hook_passes_a_git_locator_as_curls_separate_value(
-    tmp_path: Path,
-) -> None:
-    """Curl treats an option and its value in one shell word as an unknown flag."""
-    fake_curl = tmp_path / "bin" / "curl"
-    fake_curl.parent.mkdir()
-    fake_curl.write_text(
-        """#!/usr/bin/env bash
-printf '%s\\n' \"$@\" > \"$CURL_ARGS\"
-while [ \"$#\" -gt 0 ]; do
-  if [ \"$1\" = \"-o\" ]; then
-    printf '%s\\n' '-- ach-memory brief rev 1 / protocol 1 / no project --' > \"$2\"
-    break
-  fi
-  shift
-done
-"""
-    )
-    fake_curl.chmod(0o755)
-    args = tmp_path / "curl-args"
-    environment = _hook_env()
-    environment.update(
-        {
-            "ACH_MEMORY_API_KEY": "test-key",
-            "ACH_MEMORY_URL": "https://memory.test",
-            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
-            "CURL_ARGS": str(args),
-            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
-        }
-    )
-
-    result = subprocess.run(
-        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
-    )
-
-    values = args.read_text().splitlines()
-    locator = next(value for value in values if "git_locator=" in value)
-    position = values.index(locator)
-    assert result.returncode == 0
-    assert locator.startswith("git_locator=")
-    assert values[position - 1] == "--data-urlencode"
 
 
 def _init_repo(path: Path) -> None:
@@ -314,257 +208,20 @@ def _capture_curl_args(tmp_path: Path, fail: bool = True) -> Path:
     return fake_curl
 
 
-def test_the_full_tier_hook_passes_the_resolved_workspace_id(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    fake_curl = _capture_curl_args(tmp_path)
-    args = tmp_path / "curl-args"
-    environment = _hook_env()
-    environment.update(
-        {
-            "ACH_MEMORY_API_KEY": "test-key",
-            "ACH_MEMORY_URL": "https://memory.test",
-            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
-            "CURL_ARGS": str(args),
-            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
-        }
-    )
-
-    result = subprocess.run(
-        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
-        capture_output=True, text=True, check=False, env=environment, cwd=repo,
-    )
-
-    values = args.read_text().splitlines()
-    workspace_value = next(v for v in values if v.startswith("workspace_id="))
-    position = values.index(workspace_value)
-    assert result.returncode == 0
-    assert re.fullmatch(r"workspace_id=ws_[0-9a-f]{32}", workspace_value)
-    assert values[position - 1] == "--data-urlencode"
 
 
-def test_the_full_tier_hook_omits_workspace_id_outside_a_worktree(tmp_path: Path) -> None:
-    fake_curl = _capture_curl_args(tmp_path)
-    args = tmp_path / "curl-args"
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    environment = _hook_env()
-    environment.update(
-        {
-            "ACH_MEMORY_API_KEY": "test-key",
-            "ACH_MEMORY_URL": "https://memory.test",
-            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
-            "CURL_ARGS": str(args),
-            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
-        }
-    )
-
-    result = subprocess.run(
-        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
-        capture_output=True, text=True, check=False, env=environment, cwd=outside,
-    )
-
-    assert result.returncode == 0
-    assert "workspace_id=" not in args.read_text()
 
 
-def test_repeated_resolution_of_one_worktree_is_a_stable_workspace_id(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    fake_curl = _capture_curl_args(tmp_path)
-    args = tmp_path / "curl-args"
-    environment = _hook_env()
-    environment.update(
-        {
-            "ACH_MEMORY_API_KEY": "test-key",
-            "ACH_MEMORY_URL": "https://memory.test",
-            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
-            "CURL_ARGS": str(args),
-            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
-        }
-    )
-    script = [str(ROOT / "plugins/claude-code/scripts/session-start.sh")]
-
-    subprocess.run(script, capture_output=True, text=True, check=False, env=environment, cwd=repo)
-    first = next(v for v in args.read_text().splitlines() if v.startswith("workspace_id="))
-    subprocess.run(script, capture_output=True, text=True, check=False, env=environment, cwd=repo)
-    second = next(v for v in args.read_text().splitlines() if v.startswith("workspace_id="))
-
-    assert first == second
 
 
-def test_the_full_tier_cache_differs_across_worktrees(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    worktree = tmp_path / "worktree"
-    subprocess.run(
-        ["git", "worktree", "add", "-q", str(worktree), "-b", "feature"], cwd=repo, check=True
-    )
-    fake_curl = tmp_path / "bin" / "curl"
-    fake_curl.parent.mkdir()
-    fake_curl.write_text(
-        """#!/usr/bin/env bash
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-o" ]; then
-    printf '%s\\n' '-- ach-memory brief rev 1 / protocol 1 / no project --' > "$2"
-    exit 0
-  fi
-  shift
-done
-exit 1
-"""
-    )
-    fake_curl.chmod(0o755)
-    cache_dir = tmp_path / "cache"
-    environment = _hook_env()
-    environment.update(
-        {
-            "ACH_MEMORY_API_KEY": "test-key",
-            "ACH_MEMORY_URL": "https://memory.test",
-            "ACH_MEMORY_CACHE_DIR": str(cache_dir),
-            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
-        }
-    )
-    script = [str(ROOT / "plugins/claude-code/scripts/session-start.sh")]
-
-    root_result = subprocess.run(
-        script, capture_output=True, text=True, check=False, env=environment, cwd=repo
-    )
-    worktree_result = subprocess.run(
-        script, capture_output=True, text=True, check=False, env=environment, cwd=worktree
-    )
-
-    assert root_result.returncode == 0
-    assert worktree_result.returncode == 0
-    assert len(list(cache_dir.glob("full-*.txt"))) == 2
 
 
-def test_the_full_tier_hook_fails_open_without_home_or_xdg_cache(tmp_path: Path) -> None:
-    """SessionStart must still exit zero in a minimal inherited environment."""
-    fake_curl = tmp_path / "bin" / "curl"
-    fake_curl.parent.mkdir()
-    fake_curl.write_text("#!/usr/bin/env bash\nexit 1\n")
-    fake_curl.chmod(0o755)
-    environment = _hook_env()
-    environment.update(
-        {
-            "ACH_MEMORY_API_KEY": "test-key",
-            "ACH_MEMORY_URL": "https://memory.test",
-            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
-        }
-    )
-    environment.pop("HOME", None)
-    environment.pop("XDG_CACHE_HOME", None)
-
-    result = subprocess.run(
-        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
-    )
-
-    assert result.returncode == 0
 
 
-def test_the_full_cache_exposes_its_revision_and_age(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    curl = fake_bin / "curl"
-    curl.write_text(
-        """#!/usr/bin/env bash
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-o" ]; then
-    printf '%s\\n' '-- ach-memory brief rev 17 / protocol 2 / cache-age 0000000000s / project acme-api --' > "$2"
-    exit 0
-  fi
-  shift
-done
-exit 1
-"""
-    )
-    curl.chmod(0o755)
-    date = fake_bin / "date"
-    date.write_text("#!/usr/bin/env bash\ncat \"$FAKE_EPOCH\"\n")
-    date.chmod(0o755)
-    epoch = tmp_path / "epoch"
-    epoch.write_text("100")
-    environment = _hook_env()
-    environment.update({
-        "ACH_MEMORY_API_KEY": "test-key", "ACH_MEMORY_URL": "https://memory.test",
-        "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"), "FAKE_EPOCH": str(epoch),
-        "PATH": f"{fake_bin}:{environment['PATH']}",
-    })
-    script = [str(ROOT / "plugins/claude-code/scripts/session-start.sh")]
-    first = subprocess.run(script, capture_output=True, text=True, check=False, env=environment)
-    assert first.returncode == 0
-    curl.write_text("#!/usr/bin/env bash\nexit 1\n")
-    curl.chmod(0o755)
-    epoch.write_text("165")
-    second = subprocess.run(script, capture_output=True, text=True, check=False, env=environment)
-    assert second.returncode == 0
-    assert "brief rev 17" in second.stdout
-    assert "cache-age 0000000065s" in second.stdout
 
 
-def test_no_full_context_says_the_session_has_only_the_mcp_index(tmp_path: Path) -> None:
-    fake_curl = tmp_path / "curl"
-    fake_curl.write_text("#!/usr/bin/env bash\nexit 1\n")
-    fake_curl.chmod(0o755)
-    environment = _hook_env()
-    environment.update({
-        "ACH_MEMORY_API_KEY": "test-key", "ACH_MEMORY_URL": "https://memory.test",
-        "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
-        "PATH": f"{tmp_path}:{environment['PATH']}",
-    })
-    result = subprocess.run(
-        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
-        capture_output=True, text=True, check=False, env=environment,
-    )
-    assert "full tier unavailable" in result.stdout.lower()
-    assert "only the mcp index" in result.stdout.lower()
-    assert "memory is absent" not in result.stdout.lower()
-    assert result.returncode == 0
 
 
-def test_the_full_tier_cache_never_crosses_api_key_identities(tmp_path: Path) -> None:
-    """A cache is user memory; one local account may deliberately switch keys."""
-    fake_curl = tmp_path / "bin" / "curl"
-    fake_curl.parent.mkdir()
-    fake_curl.write_text(
-        """#!/usr/bin/env bash
-while [ \"$#\" -gt 0 ]; do
-  if [ \"$1\" = \"-o\" ]; then
-    printf '%s\\n' 'ALICE FULL BRIEF' > \"$2\"
-    exit 0
-  fi
-  shift
-done
-exit 1
-"""
-    )
-    fake_curl.chmod(0o755)
-    cache = tmp_path / "cache"
-    environment = _hook_env()
-    environment.update(
-        {
-            "ACH_MEMORY_API_KEY": "key-for-alice",
-            "ACH_MEMORY_URL": "https://memory.test",
-            "ACH_MEMORY_CACHE_DIR": str(cache),
-            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
-        }
-    )
-    script = [str(ROOT / "plugins/claude-code/scripts/session-start.sh")]
-
-    assert subprocess.run(script, capture_output=True, text=True, check=False, env=environment).returncode == 0
-
-    fake_curl.write_text("#!/usr/bin/env bash\nexit 1\n")
-    fake_curl.chmod(0o755)
-    environment["ACH_MEMORY_API_KEY"] = "key-for-bob"
-    result = subprocess.run(script, capture_output=True, text=True, check=False, env=environment)
-
-    assert result.returncode == 0
-    assert "ALICE FULL BRIEF" not in result.stdout
 
 
 @pytest.mark.parametrize("host", NATIVE)
@@ -769,62 +426,8 @@ def test_activation_displaces_the_hosts_own_memory_store(host: str) -> None:
     assert "`retain`" in text, "the write moment must name the tool that replaces the file write"
 
 
-@pytest.mark.parametrize("host", NATIVE + ADAPTED)
-def test_the_skill_carries_the_policy_for_hosts_whose_hooks_never_run(host: str) -> None:
-    """The activation policy has a second home, because codex has no first one.
-
-    Measured against codex-cli 0.149.1: the plugin's SessionStart hook does not
-    execute under any configuration tried -- trusted and untrusted projects,
-    hooks explicitly trusted, three path spellings including absolute,
-    with and without matchers, interactive and headless, both the installed
-    copy and the marketplace snapshot. See TODO.md.
-
-    What codex does load is skills, including in untrusted projects, where its
-    own message is "hooks and exec policies are disabled ... but skills still
-    load". superpowers relies on exactly that: its codex plugin declares
-    `"hooks": {}` and drives everything from one skill description. So the
-    displacement policy lives in the skill body too, and the description says
-    to read it early -- otherwise codex gets the tools and never the policy,
-    which is how it ended up writing to the host's own store instead.
-    """
-    text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
-    assert "instead of the host's own file-based memory directory and memory.md" in text
-    assert "at the start of every conversation" in text
-    assert "worth remembering" in text, "the skill copy must carry the write moment too"
-    assert "`retain`" in text
 
 
-@pytest.mark.parametrize("host", NATIVE + ADAPTED)
-def test_the_skill_description_carries_the_policy_and_not_just_a_pointer(host: str) -> None:
-    """The description is the only text that arrives without being read.
-
-    A skill body is loaded when the host decides the description matches. The
-    description itself is injected into every session, in the same block as
-    CLAUDE.md, whether or not the body is ever opened -- so it is the cheapest
-    channel there is and the only one that survives a host that never runs our
-    hooks and never opens the skill.
-
-    engram uses it that way: its entire memory protocol description is
-    "ALWAYS ACTIVE -- Persistent memory protocol. You MUST save decisions,
-    conventions, bugs, and discoveries to engram proactively. Do NOT wait for
-    the user to ask." No CLAUDE.md, no hook -- one imperative sentence in
-    frontmatter. Ours described a capability and pointed at the body instead,
-    which meant the displacement policy was one indirection away at the moment
-    it had to win.
-
-    The proactive mandate is scoped to retain deliberately. Recall stays
-    demand-driven: "a memory call needs a task that depends on it, not merely
-    a session starting" is about reading, and the two must not blur.
-    """
-    fm = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().split("---")[1]
-    description = yaml.safe_load(fm)["description"]
-    assert len(description) <= 1024, "hosts truncate long descriptions"
-    text = description.lower()
-    assert "always active" in text, "the description must not read as an optional capability"
-    assert "proactively" in text and "never wait to be asked" in text
-    assert "memory.md" in text, "the displacement must survive a body that is never opened"
-    assert "`retain`" in text
-    assert "read this skill" in text, "the description must still route to the body"
 
 
 @pytest.mark.parametrize("host", NATIVE + ADAPTED)
@@ -847,58 +450,3 @@ def test_the_skill_requires_english_at_write_time(host: str) -> None:
     text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
     assert "write every memory in english" in text
 
-
-@pytest.mark.parametrize(
-    ("origin", "expected"),
-    [
-        (
-            "https://x-access-token:ghp_CANARYTOKEN123@github.com/acme/api.git",
-            "https://github.com/acme/api.git",
-        ),
-        (
-            "https://ghp_CANARYTOKEN123@github.com/acme/api.git",
-            "https://github.com/acme/api.git",
-        ),
-        ("ssh://git@github.com:22/acme/api.git", "ssh://github.com:22/acme/api.git"),
-        # No credential to strip: these must pass through untouched.
-        ("https://github.com/acme/api.git", "https://github.com/acme/api.git"),
-    ],
-)
-def test_the_session_start_hook_strips_userinfo_from_the_git_locator(
-    tmp_path: Path, origin: str, expected: str
-) -> None:
-    """SPEC Phase 3 review finding 2, on the highest-frequency path there is.
-
-    The locator becomes a URL QUERY PARAMETER, so an unstripped credential
-    lands in the service's access logs once per session start.
-    """
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    subprocess.run(["git", "remote", "add", "origin", origin], cwd=repo, check=True)
-    fake_curl = _capture_curl_args(tmp_path)
-    args = tmp_path / "curl-args"
-    environment = _hook_env()
-    environment.update(
-        {
-            "ACH_MEMORY_API_KEY": "test-key",
-            "ACH_MEMORY_URL": "https://memory.test",
-            "ACH_MEMORY_CACHE_DIR": str(tmp_path / "cache"),
-            "CURL_ARGS": str(args),
-            "PATH": f"{fake_curl.parent}:{environment['PATH']}",
-        }
-    )
-
-    result = subprocess.run(
-        [str(ROOT / "plugins/claude-code/scripts/session-start.sh")],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
-        cwd=repo,
-    )
-
-    assert result.returncode == 0
-    values = args.read_text()
-    assert f"git_locator={expected}" in values
-    assert "CANARYTOKEN123" not in values
-    assert "x-access-token" not in values

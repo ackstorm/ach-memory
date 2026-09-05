@@ -528,178 +528,18 @@ def test_deleting_a_users_bank_leaves_the_user_row_and_its_bank_id_intact(
     assert after.bank_id == before
 
 
-def test_provision_brief_refuses_a_user_key_even_the_banks_own_owner(
-    client, juan, tenant
-):
-    """The first refresh of a brief model spends an LLM generation. Master key
-    only, like `clear`: not a decision an agent's own key gets to make."""
-    response = client.post(
-        "/v1/admin/brief/user/provision",
-        params={"user_id": juan["user_id"]},
-        headers=juan["headers"],
-    )
-
-    assert response.status_code == 403
 
 
-@respx.mock
-def test_provision_creates_the_model_when_the_bank_has_none(
-    client, juan, master_headers, tenant
-):
-    """The read path stopped provisioning, so this route is the only way a
-    brief model comes into existence."""
-    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
-        return_value=httpx.Response(200, json={"mental_models": []})
-    )
-    route = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$"
-    ).mock(return_value=httpx.Response(201, json={"id": "mm-new"}))
-
-    response = client.post(
-        "/v1/admin/brief/user/provision",
-        params={"user_id": juan["user_id"]},
-        headers=master_headers,
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["result"] == {"outcome": "created"}
-    assert route.called
 
 
-@respx.mock
-def test_provision_reconciles_a_model_whose_query_drifted(
-    client, juan, master_headers, tenant
-):
-    """A deploy that changes USER_QUERY no longer reaches live models on the
-    next read -- this call is the post-deploy step that carries it there."""
-    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "mental_models": [
-                    {
-                        "id": "mm-1",
-                        "name": "ach-memory-session-brief",
-                        "source_query": "an older query",
-                    }
-                ]
-            },
-        )
-    )
-    route = respx.patch(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-1$"
-    ).mock(return_value=httpx.Response(200, json={"id": "mm-1"}))
-
-    response = client.post(
-        "/v1/admin/brief/user/provision",
-        params={"user_id": juan["user_id"]},
-        headers=master_headers,
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["result"] == {"outcome": "reconciled"}
-    assert route.called
 
 
-@respx.mock
-def test_provision_addresses_the_user_id_not_the_on_behalf_of_header(
-    client, master_headers, two_users, session
-):
-    """`?user_id=` names the target here, like every other `/v1/admin/*` route;
-    `On-Behalf-Of` is audit-only. `GET /v1/session-brief` is deliberately the
-    other way round -- header-first, because the console's Brief tab addresses
-    a user that way -- and that side is pinned in test_brief.py. Pinning only
-    one of the two would let a "harmonisation" flip this one in silence.
-
-    Pinned to the named user's own bank: a `banks/[^/]+/` regex answers for
-    either user, so it would prove a model was provisioned and not whose.
-    """
-    from memory.models import User
-
-    named, header_subject = two_users
-    bank_id = session.get(User, named["user_id"]).bank_id
-    respx.get(url__regex=rf"{BASE}/v1/default/banks/{bank_id}/mental-models").mock(
-        return_value=httpx.Response(200, json={"mental_models": []})
-    )
-    route = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/{bank_id}/mental-models$"
-    ).mock(return_value=httpx.Response(201, json={"id": "mm-new"}))
-
-    response = client.post(
-        "/v1/admin/brief/user/provision",
-        params={"user_id": named["user_id"]},
-        headers={**master_headers, "On-Behalf-Of": header_subject["user_id"]},
-    )
-
-    assert response.status_code == 200, response.text
-    assert route.called
 
 
-@respx.mock
-def test_provision_on_an_unknown_project_slug_404s_without_creating_it(
-    client, master_headers, tenant
-):
-    """`create=False`: an admin must not conjure a bank into existence by
-    provisioning a brief for one that never existed."""
-    response = client.post(
-        "/v1/admin/brief/project/provision",
-        params={"project_slug": "ghost"},
-        headers=master_headers,
-    )
-
-    assert response.status_code == 404
-    listed = client.get("/v1/projects", headers=master_headers).json()
-    assert listed == []
 
 
-@respx.mock
-def test_provision_writes_an_audit_event(
-    client, juan, master_headers, tenant, session
-):
-    from memory.models import AuditEvent
-
-    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
-        return_value=httpx.Response(200, json={"mental_models": []})
-    )
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
-        return_value=httpx.Response(201, json={"id": "mm-new"})
-    )
-
-    client.post(
-        "/v1/admin/brief/user/provision",
-        params={"user_id": juan["user_id"]},
-        headers=master_headers,
-    )
-
-    actions = [e.action for e in session.query(AuditEvent).all()]
-    assert "admin.brief.provision" in actions
 
 
-@respx.mock
-def test_a_failed_provision_leaves_no_audit_row(
-    client, juan, master_headers, tenant, session
-):
-    """Same claim as the clear/delete siblings: the row says the model now
-    exists, so a 502 that means it does not must leave none. Goes red if the
-    `db.commit()` moves back above the upstream call."""
-    from memory.models import AuditEvent
-
-    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models").mock(
-        return_value=httpx.Response(200, json={"mental_models": []})
-    )
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
-        return_value=httpx.Response(503, json={})
-    )
-
-    response = client.post(
-        "/v1/admin/brief/user/provision",
-        params={"user_id": juan["user_id"]},
-        headers=master_headers,
-    )
-
-    assert response.status_code == 502
-    actions = [e.action for e in session.query(AuditEvent).all()]
-    assert "admin.brief.provision" not in actions
 
 
 def test_release_slug_frees_the_name_and_leaves_the_project_alone(

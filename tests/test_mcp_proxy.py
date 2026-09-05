@@ -3,9 +3,7 @@
 import asyncio
 import io
 import json
-import os
 import subprocess
-from datetime import UTC, datetime
 
 import pytest
 
@@ -646,57 +644,6 @@ import httpx
 import respx
 
 from memory.mcp import proxy
-from memory.mcp.proxy import fetch_brief
-
-
-@respx.mock
-def test_fetch_brief_sends_the_resolved_project_context():
-    route = respx.get("https://memory.test/v1/session-brief").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "instructions": "POLICY + BRIEF",
-                "generated_at": None,
-                "sections": {"user": True, "project": False},
-            },
-        )
-    )
-
-    result = fetch_brief("https://memory.test", "k", "acme-api", "git@host:acme/api.git")
-
-    assert result["instructions"] == "POLICY + BRIEF"
-    request = route.calls.last.request
-    assert request.url.params["project_slug"] == "acme-api"
-    assert request.url.params["git_locator"] == "git@host:acme/api.git"
-    assert request.headers["authorization"] == "Bearer k"
-    assert "workspace_id" not in request.url.params
-
-
-@respx.mock
-def test_fetch_brief_includes_workspace_id_only_when_resolved():
-    route = respx.get("https://memory.test/v1/session-brief").mock(
-        return_value=httpx.Response(
-            200, json={"instructions": "BRIEF", "generated_at": None, "sections": {}}
-        )
-    )
-
-    fetch_brief("https://memory.test", "k", None, None, workspace_id="ws_" + "a" * 32)
-
-    assert route.calls.last.request.url.params["workspace_id"] == "ws_" + "a" * 32
-
-
-def test_cache_paths_differ_by_workspace_with_no_credential_or_raw_path():
-    workspace_a = "ws_" + "a" * 32
-    workspace_b = "ws_" + "b" * 32
-    no_workspace = proxy._cache_path("https://memory.test", "acme-api", None)
-    path_a = proxy._cache_path("https://memory.test", "acme-api", None, workspace_a)
-    path_b = proxy._cache_path("https://memory.test", "acme-api", None, workspace_b)
-
-    assert len({no_workspace, path_a, path_b}) == 3
-    for path in (no_workspace, path_a, path_b):
-        assert "acme-api" not in path.name
-        assert workspace_a not in path.name
-        assert workspace_b not in path.name
 
 
 @respx.mock
@@ -803,178 +750,18 @@ async def test_project_scope_tool_calls_are_routed_locally_after_a_bootstrap_fai
     assert user_reply[0]["result"] == {}
 
 
-@respx.mock
-@pytest.mark.parametrize(
-    "failure",
-    [
-        httpx.Response(500),
-        httpx.Response(401),
-        httpx.Response(200, text="not json"),
-        httpx.ConnectError("down"),
-    ],
-)
-def test_a_brief_that_cannot_be_fetched_is_simply_absent(failure):
-    """Every failure is silent and returns None for the caller to handle."""
-    if isinstance(failure, Exception):
-        respx.get("https://memory.test/v1/session-brief").mock(side_effect=failure)
-    else:
-        respx.get("https://memory.test/v1/session-brief").mock(return_value=failure)
-
-    assert fetch_brief("https://memory.test", "k", None, None) is None
 
 
-def test_the_proxy_serves_a_cached_index_without_waiting(tmp_path, monkeypatch):
-    """Startup must not depend on the network once a cache exists.
-
-    The previous pre-``run()`` fetch made a slow service delay every MCP
-    session, despite having a usable brief from the prior session on disk.
-    """
-    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    proxy.store_cached_index("https://memory.test", "k", "acme-api", None, "INDEX rev 42")
-
-    def _never_called(*args, **kwargs):
-        raise AssertionError("startup must not block on a fetch when a cache exists")
-
-    monkeypatch.setattr(proxy.httpx, "get", _never_called)
-
-    assert "rev 42" in proxy.startup_instructions(
-        "https://memory.test", "k", "acme-api", None, refresh=False
-    )
 
 
-def test_a_cached_index_exposes_its_revision_and_age(tmp_path, monkeypatch):
-    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    index = (
-        "-- ach-memory brief rev 42 / protocol 2 / "
-        "cache-age 0000000000s / project acme-api --\n\n"
-        "-- What else memory holds --"
-    )
-    stored = datetime(2026, 8, 29, 10, 0, tzinfo=UTC)
-    now = datetime(2026, 8, 29, 10, 2, 3, tzinfo=UTC)
-    proxy.store_cached_index("https://memory.test", "k", "acme-api", None, index, stored_at=stored)
-    text = proxy.startup_instructions(
-        "https://memory.test", "k", "acme-api", None, refresh=False, now=now
-    )
-    assert "brief rev 42" in text
-    assert "cache-age 0000000123s" in text
-    assert len(text) == len(index)
 
 
-def test_a_legacy_index_cache_uses_its_file_mtime_for_age(tmp_path, monkeypatch):
-    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    index = "-- ach-memory brief rev 42 / protocol 2 / cache-age 0000000000s --"
-    path = proxy._cache_path("https://memory.test", "acme-api", None)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"owner": proxy._cache_owner("k"), "instructions": index}))
-    legacy_time = datetime(2026, 8, 29, 10, 0, tzinfo=UTC).timestamp()
-    os.utime(path, (legacy_time, legacy_time))
-    cached = proxy.load_cached_index("https://memory.test", "k", "acme-api", None)
-    assert cached is not None
-    assert cached.instructions == index
-    assert cached.stored_at.timestamp() == legacy_time
 
 
-def test_a_pre_protocol_2_cached_index_still_shows_a_visible_age(tmp_path, monkeypatch):
-    """stamp_cache_age substitutes into a reserved header slot that protocol 2
-    introduced. A payload compiled before that slot existed has nowhere for
-    the substitution to land, so the served cache silently carried no age at
-    all."""
-    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    index = (
-        "-- ach-memory brief rev 7 / protocol 1 / project acme-api --\n\n"
-        "-- What memory knows about you --\n"
-        "a stored rule\n\n"
-        "-- What else memory holds --"
-    )
-    path = proxy._cache_path("https://memory.test", "acme-api", None)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"owner": proxy._cache_owner("k"), "instructions": index}))
-    legacy_time = datetime(2026, 8, 29, 10, 0, tzinfo=UTC).timestamp()
-    os.utime(path, (legacy_time, legacy_time))
-    now = datetime(2026, 8, 29, 10, 2, 3, tzinfo=UTC)
-
-    class ImmediateThread:
-        def __init__(self, *, target, args, daemon):
-            self.target, self.args = target, args
-
-        def start(self):
-            self.target(*self.args)
-
-    monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)  # a failed refresh
-    monkeypatch.setattr(proxy.threading, "Thread", ImmediateThread)
-
-    text = proxy.startup_instructions(
-        "https://memory.test", "k", "acme-api", None, refresh=True, now=now
-    )
-
-    assert "brief rev 7" in text
-    assert "cached-index age 123s" in text
-    assert len(text) <= proxy.brief.SMALLEST_BUDGET
 
 
-def test_with_no_cache_and_no_service_the_proxy_still_starts(tmp_path, monkeypatch):
-    """A broken service costs a session its brief, never its startup."""
-    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)
-
-    text = proxy.startup_instructions("https://memory.test", "k", None, None, refresh=False)
-
-    assert "unavailable" in text.lower()
 
 
-def test_a_cached_index_never_crosses_api_key_identities(tmp_path, monkeypatch):
-    """The cache holds user memory, while one Unix account may switch keys."""
-    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    proxy.store_cached_index(
-        "https://memory.test", "key-for-alice", "acme-api", None, "ALICE INDEX"
-    )
-    monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)
-
-    text = proxy.startup_instructions(
-        "https://memory.test", "key-for-bob", "acme-api", None, refresh=False
-    )
-
-    assert "ALICE INDEX" not in text
-    assert "unavailable" in text.lower()
 
 
-def test_a_corrupt_cache_is_a_miss_not_a_startup_failure(tmp_path, monkeypatch):
-    """A killed or manually edited cache must not prevent MCP startup."""
-    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    path = proxy._cache_path("https://memory.test", None, None)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"\xff")
-    monkeypatch.setattr(proxy, "fetch_brief", lambda *a, **k: None)
 
-    text = proxy.startup_instructions("https://memory.test", "k", None, None, refresh=False)
-
-    assert "unavailable" in text.lower()
-
-
-def test_a_cache_hit_refreshes_the_index_for_the_next_session(tmp_path, monkeypatch):
-    """The served cache is immediate; its replacement is an index-tier fetch."""
-    monkeypatch.setenv("ACH_MEMORY_CACHE_DIR", str(tmp_path))
-    proxy.store_cached_index("https://memory.test", "k", None, None, "OLD INDEX")
-    calls = []
-
-    def fake_fetch(*args, **kwargs):
-        calls.append(kwargs)
-        return {"instructions": "NEW INDEX"}
-
-    class ImmediateThread:
-        def __init__(self, *, target, args, daemon):
-            self.target = target
-            self.args = args
-            self.daemon = daemon
-
-        def start(self):
-            self.target(*self.args)
-
-    monkeypatch.setattr(proxy, "fetch_brief", fake_fetch)
-    monkeypatch.setattr(proxy.threading, "Thread", ImmediateThread)
-
-    assert "OLD INDEX" in proxy.startup_instructions("https://memory.test", "k", None, None)
-    assert calls == [{"tier": "index", "workspace_id": None}]
-    assert (
-        proxy.load_cached_index("https://memory.test", "k", None, None).instructions == "NEW INDEX"
-    )

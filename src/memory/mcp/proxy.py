@@ -18,15 +18,11 @@ not a second MCP server and it does not mirror the remote tool registry.
 import asyncio
 import copy
 import hashlib
-import hmac
 import inspect
 import json
 import os
 import subprocess
 import sys
-import tempfile
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -37,7 +33,9 @@ from mcp.shared.inbound import (
     x_mcp_header_map,
 )
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
-from memory.slugs import slug_from_locator
+
+from memory.errors import ProjectInvalidSlug
+from memory.slugs import canonical_locator, slug_from_locator
 
 CONTEXT_TIMEOUT_SECONDS = 2.0
 
@@ -73,7 +71,13 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
         locator = subprocess.run(["git", "remote", "get-url", "origin"], cwd=cwd or os.getcwd(), capture_output=True, text=True, timeout=3, check=False).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         locator = ""
-    return (slug_from_locator(locator) if locator else None), (locator or None)
+    if not locator:
+        return None, None
+    try:
+        canonical = canonical_locator(locator)
+    except ProjectInvalidSlug:
+        return None, None
+    return slug_from_locator(canonical), canonical
 
 
 def bootstrap(base_url: str, api_key: str, project_slug: str | None) -> str | None:
@@ -592,8 +596,6 @@ def fetch_context(
     locator: str | None,
     timeout: float = CONTEXT_TIMEOUT_SECONDS,
     *,
-    tier: str = "index",
-    host: str | None = None,
     workspace_id: str | None = None,
 ) -> dict | None:
     """The bounded context response, or None -- never an exception.
@@ -619,159 +621,10 @@ def fetch_context(
         return {"instructions": body["text"]}
     return None
 
-# Compatibility symbol for older host tests; new callers use fetch_context.
-fetch_brief = fetch_context
 
 
-def _cache_path(
-    base_url: str, slug: str | None, locator: str | None, workspace_id: str | None = None
-) -> Path:
-    """One private cache file per memory service, project and workspace.
-
-    A credential never contributes to a filename: filenames are observable
-    metadata, while the cache content itself is protected because it holds the
-    current user's memory. workspace_id joins the digest only when resolved,
-    so two git worktrees of the same project never share a cache file, while
-    the existing no-workspace digest is unchanged -- a resolved workspace
-    must never read or overwrite that cache, which could replay another
-    worktree's state, but a session outside any worktree still finds the
-    cache file it always has.
-    """
-    root = Path(
-        os.environ.get("ACH_MEMORY_CACHE_DIR")
-        or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ach-memory"
-    )
-    key = f"{base_url}|{slug or ''}|{locator or ''}"
-    if workspace_id:
-        key = f"{key}|{workspace_id}"
-    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
-    return root / f"index-{digest}.txt"
 
 
-def _cache_owner(api_key: str) -> str:
-    """A private cache-record fingerprint, never a filename component."""
-    return hashlib.sha256(api_key.encode()).hexdigest()
-
-
-@dataclass(frozen=True)
-class CachedIndex:
-    instructions: str
-    stored_at: datetime
-
-
-def load_cached_index(
-    base_url: str,
-    api_key: str,
-    slug: str | None,
-    locator: str | None,
-    workspace_id: str | None = None,
-) -> CachedIndex | None:
-    """Return a last-good index, if this host can safely read one."""
-    try:
-        record = json.loads(_cache_path(base_url, slug, locator, workspace_id).read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(record, dict):
-        return None
-    owner = record.get("owner")
-    instructions = record.get("instructions")
-    if not isinstance(owner, str) or not isinstance(instructions, str):
-        return None
-    if not hmac.compare_digest(owner, _cache_owner(api_key)):
-        return None
-    if not instructions:
-        return None
-    stored_at = None
-    if record.get("version") == 2:
-        value = record.get("stored_at")
-        if isinstance(value, str):
-            try:
-                stored_at = datetime.fromisoformat(value)
-                if stored_at.tzinfo is None:
-                    stored_at = None
-            except ValueError:
-                pass
-    if stored_at is None:
-        try:
-            stored_at = datetime.fromtimestamp(
-                _cache_path(base_url, slug, locator, workspace_id).stat().st_mtime, UTC
-            )
-        except (OSError, ValueError, OverflowError):
-            return None
-    return CachedIndex(instructions=instructions, stored_at=stored_at.astimezone(UTC))
-
-
-def store_cached_index(
-    base_url: str,
-    api_key: str,
-    slug: str | None,
-    locator: str | None,
-    instructions: str,
-    *,
-    stored_at: datetime | None = None,
-    workspace_id: str | None = None,
-) -> None:
-    """Atomically replace the private last-good index, or quietly give up."""
-    path = _cache_path(base_url, slug, locator, workspace_id)
-    temporary: str | None = None
-    try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        with os.fdopen(descriptor, "w") as file:
-            timestamp = (stored_at or datetime.now(UTC)).astimezone(UTC)
-            json.dump(
-                {
-                    "version": 2,
-                    "owner": _cache_owner(api_key),
-                    "stored_at": timestamp.isoformat(),
-                    "instructions": instructions,
-                },
-                file,
-            )
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        temporary = None
-    except OSError:
-        # A read-only home directory must cost this session its cache, not its
-        # MCP server. A later session may run somewhere writable.
-        pass
-    finally:
-        if temporary:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-
-
-def _refresh_cached_index(
-    base_url: str,
-    api_key: str,
-    slug: str | None,
-    locator: str | None,
-    workspace_id: str | None = None,
-) -> None:
-    brief = fetch_context(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
-    if brief:
-        store_cached_index(
-            base_url, api_key, slug, locator, brief["instructions"], workspace_id=workspace_id
-        )
-
-
-def _stamp_or_append_cache_age(instructions: str, age_seconds: int) -> str:
-    """Make a served cache's age visible, whichever protocol compiled it.
-
-    A payload compiled under protocol 2 already reserves a cache-age slot;
-    stamping it costs no budget. A payload compiled before that slot existed
-    has nowhere to put the number, so append one compact line instead and
-    trim only complete trailing lines -- never the header, never a partial
-    line -- until it fits SMALLEST_BUDGET. A cache entry must never be served
-    with its age invisible.
-    """
-    age_line = f"cached-index age {age_seconds}s"
-    lines = instructions.split("\n")
-    while len(lines) > 1 and len("\n".join([*lines, age_line])) > 512:
-        lines.pop()
-    return "\n".join([*lines, age_line])
 
 
 def startup_instructions(
@@ -780,12 +633,10 @@ def startup_instructions(
     slug: str | None,
     locator: str | None,
     *,
-    refresh: bool = True,
-    now: datetime | None = None,
     workspace_id: str | None = None,
 ) -> str:
     """Fetch fresh authorized context; failures are fail-open and empty."""
-    fetched = fetch_context(base_url, api_key, slug, locator, tier="index", workspace_id=workspace_id)
+    fetched = fetch_context(base_url, api_key, slug, locator, workspace_id=workspace_id)
     if fetched:
         return fetched["instructions"]
     return ""
