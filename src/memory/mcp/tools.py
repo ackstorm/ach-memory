@@ -84,8 +84,9 @@ def register(mcp: MCPServer) -> None:
     """Register each product-owned MCP surface on one server."""
     # Kept local so product modules can import the shared contracts above
     # without creating an import-time cycle back through this aggregator.
-    from memory.mcp import memory_tools, model_tools, working_state_tools
+    from memory.mcp import context_tools, memory_tools, model_tools, working_state_tools
 
     memory_tools.register(mcp)
     model_tools.register(mcp)
     working_state_tools.register(mcp)
+    context_tools.register(mcp)

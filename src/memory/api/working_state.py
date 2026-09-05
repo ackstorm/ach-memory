@@ -59,6 +59,16 @@ class WorkingStateResponse(RenameForwarding):
     changed: bool
 
 
+class ClearWorkingStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_slug: str
+    workspace_id: WorkspaceId
+    session_id: SessionId
+    session_epoch: int
+    checkpoint_seq: int
+    git_locator: str | None = None
+
+
 def _reject_master(principal: Principal) -> None:
     if principal.is_master:
         raise Forbidden(
@@ -162,3 +172,20 @@ def set_working_state(
         updated_at=state.updated_at,
         changed=changed,
     )
+
+
+@router.delete("", status_code=204)
+def clear_working_state(
+    body: ClearWorkingStateRequest,
+    principal: Annotated[Principal, Depends(current_principal)],
+    db: Session = Depends(get_session),
+) -> None:
+    _reject_master(principal)
+    resolution = projects.resolve(db, principal, body.project_slug, git_locator=body.git_locator, create=False)
+    domain.clear(
+        db, principal, project_slug=resolution.current_slug, workspace_id=body.workspace_id,
+        session_id=body.session_id, session_epoch=body.session_epoch,
+        checkpoint_seq=body.checkpoint_seq, git_locator=body.git_locator,
+    )
+    _record(action="working_state.clear", principal=principal, project=resolution.project, current_slug=resolution.current_slug)
+    db.commit()

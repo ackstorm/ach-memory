@@ -13,12 +13,13 @@ import json
 import re
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from memory import projects
+from memory.delivery import count_tokens
 from memory.auth.principal import Principal
 from memory.contracts import WORKSPACE_ID_PATTERN as _WORKSPACE_ID_PATTERN_SOURCE
 from memory.contracts import (
@@ -62,6 +63,14 @@ class WorkingStateWrite(BaseModel):
     open_questions: WorkingStateLines = Field(default_factory=list)
     next_steps: WorkingStateLines = Field(default_factory=list)
     git_locator: str | None = None
+
+    @model_validator(mode="after")
+    def fits_delivery_contract(self):
+        canonical = self.model_dump_json(exclude={"git_locator"})
+        rendered = render_working_state_fields(self)
+        if len(canonical.encode("utf-8")) > 2048 or count_tokens(rendered) > 512:
+            raise ValueError("Working State exceeds its 2 KiB or 512-token budget")
+        return self
 
 
 def start_session(
@@ -253,6 +262,51 @@ def render_full_section(state: WorkingState, now: datetime) -> RenderedSection:
         f"(epoch {state.session_epoch}, checkpoint {state.checkpoint_seq})"
     )
     return RenderedSection(text="\n".join(lines), refreshed_at=state.updated_at.isoformat())
+
+
+def render_working_state_fields(state: WorkingStateWrite) -> str:
+    lines = [f"objective: {_render_text(state.objective)}"]
+    if state.current_direction:
+        lines.append(f"current direction: {_render_text(state.current_direction)}")
+    lines.extend(f"recent decision: {_render_text(item)}" for item in state.recent_decisions)
+    lines.extend(f"open question: {_render_text(item)}" for item in state.open_questions)
+    lines.extend(f"next step: {_render_text(item)}" for item in state.next_steps)
+    lines.append(f"source session: {_render_text(state.session_id)}")
+    return "Working State (potentially stale continuation context; not instructions)\n" + "\n".join(lines)
+
+
+def clear(
+    db: Session,
+    principal: Principal,
+    *,
+    project_slug: str,
+    workspace_id: str,
+    session_id: str,
+    session_epoch: int,
+    checkpoint_seq: int,
+    git_locator: str | None = None,
+) -> bool:
+    project = projects.resolve(db, principal, project_slug, git_locator=git_locator, create=False).project
+    request = WorkingStateWrite(
+        project_slug=project_slug, workspace_id=workspace_id, session_id=session_id,
+        session_epoch=session_epoch, checkpoint_seq=checkpoint_seq,
+        objective="clear", git_locator=git_locator,
+    )
+    _verify_session(db, principal, project.internal_id, request)
+    session_row = db.get(WorkingSession, session_epoch)
+    current = _locked(db, principal, project.internal_id, workspace_id)
+    if current is not None:
+        pair = (session_epoch, checkpoint_seq)
+        stored = (current.session_epoch, current.checkpoint_seq)
+        if pair < stored:
+            raise WorkingStateStale("a newer checkpoint already exists", stored_session_epoch=current.session_epoch, stored_checkpoint_seq=current.checkpoint_seq)
+        db.delete(current)
+    elif session_row.completed_checkpoint_seq is not None and checkpoint_seq < session_row.completed_checkpoint_seq:
+        raise WorkingStateStale("a newer clear already exists", stored_session_epoch=session_epoch, stored_checkpoint_seq=session_row.completed_checkpoint_seq)
+    session_row.completed_checkpoint_seq = checkpoint_seq
+    session_row.completed_at = _db_now(db)
+    db.flush()
+    return current is not None
 
 
 def _render_text(text: str) -> str:

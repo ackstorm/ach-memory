@@ -133,6 +133,7 @@ def create_app() -> FastAPI:
     from memory.api import bootstrap as bootstrap_routes
     from memory.api import brief as brief_routes
     from memory.api import capture as capture_routes
+    from memory.api import context as context_routes
     from memory.api import curation as curation_routes
     from memory.api import directives as directive_routes
     from memory.api import documents as document_routes
@@ -222,6 +223,7 @@ def create_app() -> FastAPI:
     app.include_router(directive_routes.router)
     app.include_router(mental_model_routes.router)
     app.include_router(working_state_routes.router)
+    app.include_router(context_routes.router)
 
     if get_settings().metrics_enabled:
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest

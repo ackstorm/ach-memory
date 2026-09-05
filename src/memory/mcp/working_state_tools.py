@@ -147,6 +147,18 @@ def _set_working_state(db, principal, body: WorkingStateWrite) -> ToolResult:
     )
 
 
+def _clear_working_state(db, principal, body: dict) -> ToolResult:
+    resolution = projects.resolve(db, principal, body["project_slug"], git_locator=body.get("git_locator"), create=False)
+    changed = working_state_domain.clear(
+        db, principal, project_slug=resolution.current_slug,
+        workspace_id=body["workspace_id"], session_id=body["session_id"],
+        session_epoch=body["session_epoch"], checkpoint_seq=body["checkpoint_seq"],
+        git_locator=body.get("git_locator"),
+    )
+    _record_working_state_call(action="working_state.clear", principal=principal, project=resolution.project, current_slug=resolution.current_slug)
+    return ToolResult(result={"cleared": changed}, project_slug=resolution.current_slug, resolved_from=resolution.resolved_from)
+
+
 def register(mcp: MCPServer) -> None:
     @mcp.tool(
         description=(
@@ -225,7 +237,25 @@ def register(mcp: MCPServer) -> None:
             _set_working_state,
         )
 
+    @mcp.tool(
+        description="Destructively clear Working State after explicit confirmation; stale session/checkpoint pairs are rejected.",
+        annotations=ToolAnnotations(idempotentHint=True, destructiveHint=True),
+    )
+    def clear_working_state(
+        project_slug: str, workspace_id: WorkspaceId, session_id: SessionId,
+        session_epoch: SessionEpoch, checkpoint_seq: CheckpointSeq, ctx: Context,
+        git_locator: str | None = None,
+    ) -> ToolResult:
+        return _run_working_state(
+            ctx,
+            lambda: {"project_slug": project_slug, "workspace_id": workspace_id,
+                     "session_id": session_id, "session_epoch": session_epoch,
+                     "checkpoint_seq": checkpoint_seq, "git_locator": git_locator},
+            _clear_working_state,
+        )
+
     REGISTRY.update(
         start_working_session=start_working_session,
         set_working_state=set_working_state,
+        clear_working_state=clear_working_state,
     )
