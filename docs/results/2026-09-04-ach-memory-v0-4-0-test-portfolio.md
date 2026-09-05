@@ -2,12 +2,12 @@
 
 Baseline: integrated pre-Plan-4 `main` at `2cb1753`: 2,240 non-integration tests passed, 4 skipped and 6 live tests deselected in 124.66 seconds.
 
-The post-change count is finalized by the release gate; the latest complete checkpoint is 1,309 passed and 2 skipped in 88.42 seconds, before four additional positive release-gate assertions were added. No test exists merely to remember a removed product surface.
+Final post-change gate: 1,313 passed and 2 skipped in 92.29 seconds. No test exists merely to remember a removed product surface.
 
 | Tree | Baseline files / lines | Current files / lines | Change |
 |---|---:|---:|---:|
 | `src/memory` | 86 / 20,483 | 76 / 14,630 | -10 files / -5,853 lines |
-| `tests` | 111 / 39,767 | 87 / 24,715 | -24 files / -15,052 lines |
+| `tests` | 111 / 39,767 | 87 / 24,712 | -24 files / -15,055 lines |
 
 The retained suite maps to current product responsibilities:
 
