@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from memory import model_registry
+from memory.builtin_models import BuiltinModelDefinition
 from memory.errors import (
     BuiltinModelImmutable,
     ContextBudgetExceeded,
@@ -79,6 +80,9 @@ class MentalModelView(BaseModel):
     name: str
     scope: Literal["user", "project"]
     origin: Literal["builtin", "user"]
+    # Only meaningful for origin="builtin" (SPEC §7.2); always None for a
+    # custom model.
+    definition_version: int | None = None
     source_query: str
     source_tags: tuple[str, ...]
     tags_match: Literal["all"]
@@ -162,6 +166,7 @@ def _to_view(row: MentalModelRegistration) -> MentalModelView:
         name=row.name,
         scope=row.scope,
         origin=row.origin,
+        definition_version=row.definition_version,
         source_query=row.source_query,
         source_tags=tuple(row.source_tags),
         tags_match=row.tags_match,
@@ -381,5 +386,108 @@ def refresh_model(db: Session, bank: LogicalBankRef, model_key: str, *, client) 
     result = client.refresh_mental_model(bank.bank_id, row.upstream_model_id)
     operation_id = result.get("operation_id") or result.get("id")
     withheld = model_registry.withhold_model(db, bank, model_key, operation_id)
+    db.commit()
+    return _to_view(withheld)
+
+
+def reconcile_builtin(
+    db: Session, bank: LogicalBankRef, definition: BuiltinModelDefinition, *, client
+) -> MentalModelView:
+    """Ensure `bank` has `definition` registered at its current version (SPEC
+    §7.4/§7.5): create it if missing, upgrade only the prompt/source
+    definition when the compiled version increased (preserving the user's
+    `always_in_context` choice), and leave an explicitly disabled built-in
+    (`lifecycle_state="disabled"`) or an already-current one untouched.
+    """
+    existing = model_registry.get_registered_model(db, bank, definition.key)
+    if existing is not None and existing.lifecycle_state == "disabled":
+        return _to_view(existing)
+    if existing is None:
+        return _create_builtin(db, bank, definition, client=client)
+    if existing.definition_version < definition.version:
+        return _upgrade_builtin(db, bank, existing, definition, client=client)
+    return _to_view(existing)
+
+
+def _create_builtin(
+    db: Session, bank: LogicalBankRef, definition: BuiltinModelDefinition, *, client
+) -> MentalModelView:
+    upstream_name = _upstream_name(definition.key)
+    listed = client.list_mental_models(bank.bank_id, detail="full")
+    if any(item.get("name") == upstream_name for item in _upstream_items(listed)):
+        # An unrecognized upstream model already occupies this built-in's
+        # internal locator (SPEC §7.3/§12.3): never silently adopt or mutate
+        # it, and never create a second, colliding model under the same name.
+        raise CurationNeedsOperator(
+            "an unrecognized upstream model already uses this built-in's internal name"
+        )
+
+    live = model_registry.locked_bank_models(db, bank)
+    model_registry.register_model(
+        db,
+        bank,
+        origin="builtin",
+        model_key=definition.key,
+        name=definition.name,
+        source_query=definition.source_query,
+        source_tags=list(definition.source_tags),
+        tags_match=definition.tags_match,
+        max_tokens=definition.max_tokens,
+        trigger=dict(definition.trigger),
+        builtin_key=definition.key,
+        definition_version=definition.version,
+        lifecycle_state="creating",
+        always_in_context=definition.always_in_context,
+        delivery_state="ready",
+        existing=live,
+    )
+    db.commit()
+
+    upstream = client.create_mental_model(
+        bank.bank_id,
+        name=upstream_name,
+        source_query=definition.source_query,
+        max_tokens=definition.max_tokens,
+        trigger=dict(definition.trigger),
+        tags=list(definition.source_tags),
+    )
+    activated = model_registry.activate_model(db, bank, definition.key, upstream["id"])
+    db.commit()
+    return _to_view(activated)
+
+
+def _upgrade_builtin(
+    db: Session,
+    bank: LogicalBankRef,
+    existing: MentalModelRegistration,
+    definition: BuiltinModelDefinition,
+    *,
+    client,
+) -> MentalModelView:
+    upstream_changes: dict[str, object] = {}
+    if definition.source_query != existing.source_query:
+        upstream_changes["source_query"] = definition.source_query
+    if definition.max_tokens != existing.max_tokens:
+        upstream_changes["max_tokens"] = definition.max_tokens
+    if dict(definition.trigger) != existing.trigger:
+        upstream_changes["trigger"] = dict(definition.trigger)
+    if upstream_changes and existing.upstream_model_id is not None:
+        client.update_mental_model(bank.bank_id, existing.upstream_model_id, **upstream_changes)
+
+    existing.source_query = definition.source_query
+    existing.max_tokens = definition.max_tokens
+    existing.trigger = dict(definition.trigger)
+    existing.definition_version = definition.version
+    # always_in_context is deliberately untouched: an upgrade never re-enables
+    # a user's disabled delivery choice (SPEC §7.4).
+    _touch(db, existing)
+    db.flush()
+
+    if existing.upstream_model_id is not None:
+        result = client.refresh_mental_model(bank.bank_id, existing.upstream_model_id)
+        operation_id = result.get("operation_id") or result.get("id")
+        withheld = model_registry.withhold_model(db, bank, definition.key, operation_id)
+    else:
+        withheld = existing
     db.commit()
     return _to_view(withheld)

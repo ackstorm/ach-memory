@@ -15,6 +15,7 @@ from memory.api.app import create_app
 # and -- like clear_memories/delete_bank -- absent from
 # tests/test_mcp_tools.py's EXPECTED_TOOLS on purpose.
 EXPECTED_ROUTES = {
+    ("POST", "/v1/bootstrap"),
     ("POST", "/v1/users"),
     ("GET", "/v1/users"),
     ("GET", "/v1/users/{user_id}"),

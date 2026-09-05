@@ -130,6 +130,7 @@ def current_on_behalf_of(
 def create_app() -> FastAPI:
     from memory.api import activity as activity_routes
     from memory.api import admin as admin_routes
+    from memory.api import bootstrap as bootstrap_routes
     from memory.api import brief as brief_routes
     from memory.api import capture as capture_routes
     from memory.api import curation as curation_routes
@@ -206,6 +207,7 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(user_routes.router)
+    app.include_router(bootstrap_routes.router)
     app.include_router(activity_routes.router)
     app.include_router(brief_routes.router)
     app.include_router(capture_routes.router)
