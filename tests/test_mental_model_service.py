@@ -1,0 +1,373 @@
+from dataclasses import dataclass
+from unittest import mock
+from uuid import uuid4
+
+import pytest
+
+from memory import ids, model_registry
+from memory.builtin_models import USER_CONTEXT_V1
+from memory.errors import (
+    BuiltinModelImmutable,
+    ContextBudgetExceeded,
+    CurationNeedsOperator,
+    IdempotencyConflict,
+    MentalModelNotFound,
+    MentalModelQuotaExceeded,
+)
+from memory.hindsight.client import HindsightClient
+from memory.mental_model_service import (
+    CustomModelCreateRequest,
+    CustomModelUpdateRequest,
+    create_custom_model,
+    delete_model,
+    get_model,
+    list_models,
+    refresh_model,
+    resume_model_mutation,
+    update_model,
+)
+from memory.models import User
+from memory.retained_records import LogicalBankRef
+
+REQUIRED_TAGS = ("schema:ach-retain-v1", "validity:indefinite")
+TRIGGER = {"mode": "manual"}
+
+
+@pytest.fixture
+def bank(session, tenant):
+    user = User(id="usr_svc", tenant_id=tenant, bank_id=ids.new_user_bank_id())
+    session.add(user)
+    session.flush()
+    return LogicalBankRef(tenant, "user", user.id, None, user.bank_id)
+
+
+@pytest.fixture
+def hindsight():
+    client = mock.MagicMock(spec=HindsightClient)
+    counter = iter(range(1, 1000))
+    client.create_mental_model.side_effect = lambda *a, **k: {"id": f"mm-upstream-{next(counter)}"}
+    return client
+
+
+def custom_request(
+    *, name="review-context", max_tokens=256, always_in_context=True, operation_id=None
+) -> CustomModelCreateRequest:
+    return CustomModelCreateRequest(
+        name=name,
+        source_query="Summarize review conventions.",
+        source_tags=REQUIRED_TAGS,
+        tags_match="all",
+        max_tokens=max_tokens,
+        trigger=TRIGGER,
+        always_in_context=always_in_context,
+        operation_id=operation_id or str(uuid4()),
+    )
+
+
+CUSTOM_REQUEST = CustomModelCreateRequest(
+    name="overflow",
+    source_query="Summarize overflow.",
+    source_tags=REQUIRED_TAGS,
+    tags_match="all",
+    max_tokens=256,
+    trigger=TRIGGER,
+    always_in_context=False,
+    operation_id=str(uuid4()),
+)
+
+
+@pytest.fixture
+def create_request():
+    return custom_request(always_in_context=False)
+
+
+@pytest.fixture
+def five_custom_models(session, bank):
+    for index in range(5):
+        model_registry.register_model(
+            session,
+            bank,
+            origin="user",
+            model_key=f"mm_{index:032x}",
+            name=f"m{index}",
+            source_query="Summarize.",
+            source_tags=list(REQUIRED_TAGS),
+            tags_match="all",
+            max_tokens=256,
+            trigger=TRIGGER,
+            always_in_context=False,
+            delivery_state="ready",
+        )
+    session.commit()
+
+
+@pytest.fixture
+def user_bank_with_builtin(session, bank):
+    definition = USER_CONTEXT_V1
+    model_registry.register_model(
+        session,
+        bank,
+        origin="builtin",
+        model_key=definition.key,
+        name="User context",
+        source_query=definition.source_query,
+        source_tags=list(definition.source_tags),
+        tags_match=definition.tags_match,
+        max_tokens=definition.max_tokens,
+        trigger=dict(definition.trigger),
+        builtin_key=definition.key,
+        definition_version=definition.version,
+        always_in_context=definition.always_in_context,
+        delivery_state="ready",
+    )
+    session.commit()
+    return bank
+
+
+@dataclass
+class PendingRegistration:
+    model_key: str
+    operation_id: str
+    source_query: str
+    max_tokens: int
+    trigger: dict
+    source_tags: tuple[str, ...]
+
+    def exact_upstream(self) -> dict:
+        return {
+            "id": "mm-resumed-upstream",
+            "name": f"ach:{self.model_key}",
+            "source_query": self.source_query,
+            "max_tokens": self.max_tokens,
+            "trigger": self.trigger,
+            "tags": list(self.source_tags),
+        }
+
+
+@pytest.fixture
+def pending_registration(session, bank):
+    operation_id = str(uuid4())
+    model_key = ids.new_model_key()
+    model_registry.register_model(
+        session,
+        bank,
+        origin="user",
+        model_key=model_key,
+        name="pending",
+        source_query="Summarize pending state.",
+        source_tags=list(REQUIRED_TAGS),
+        tags_match="all",
+        max_tokens=256,
+        trigger=TRIGGER,
+        lifecycle_state="creating",
+        mutation_operation_id=operation_id,
+        mutation_payload_hash="unused-in-this-test",
+        always_in_context=False,
+        delivery_state="ready",
+    )
+    session.commit()
+    return PendingRegistration(
+        model_key=model_key,
+        operation_id=operation_id,
+        source_query="Summarize pending state.",
+        max_tokens=256,
+        trigger=TRIGGER,
+        source_tags=REQUIRED_TAGS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Create: key generation, quota, budget, idempotency
+# ---------------------------------------------------------------------------
+
+
+def test_custom_create_returns_ach_key_and_hides_upstream_id(session, bank, hindsight, create_request):
+    result = create_custom_model(session, bank, create_request, client=hindsight)
+
+    assert result.model_key.startswith("mm_")
+    assert result.name == create_request.name
+    assert hindsight.create_mental_model.call_args.kwargs["name"] == f"ach:{result.model_key}"
+    assert not hasattr(result, "upstream_model_id")
+    assert not hasattr(result, "bank_id")
+
+
+def test_sixth_custom_create_is_rejected_before_hindsight(session, bank, hindsight, five_custom_models):
+    with pytest.raises(MentalModelQuotaExceeded):
+        create_custom_model(session, bank, CUSTOM_REQUEST, client=hindsight)
+    hindsight.create_mental_model.assert_not_called()
+
+
+def test_always_in_context_budget_is_enforced_separately_from_quota(
+    session, user_bank_with_builtin, hindsight
+):
+    for index in range(2):
+        create_custom_model(
+            session,
+            user_bank_with_builtin,
+            custom_request(name=f"selected-{index}", max_tokens=256),
+            client=hindsight,
+        )
+
+    with pytest.raises(ContextBudgetExceeded):
+        create_custom_model(
+            session,
+            user_bank_with_builtin,
+            custom_request(name="over-budget", max_tokens=256),
+            client=hindsight,
+        )
+
+
+def test_create_retry_with_same_operation_id_and_payload_is_idempotent(session, bank, hindsight):
+    request = custom_request(always_in_context=False, operation_id=str(uuid4()))
+
+    first = create_custom_model(session, bank, request, client=hindsight)
+    second = create_custom_model(session, bank, request, client=hindsight)
+
+    assert first.model_key == second.model_key
+    hindsight.create_mental_model.assert_called_once()
+
+
+def test_create_retry_with_same_operation_id_and_different_payload_conflicts(session, bank, hindsight):
+    operation_id = str(uuid4())
+    create_custom_model(
+        session, bank, custom_request(name="first", operation_id=operation_id), client=hindsight
+    )
+
+    with pytest.raises(IdempotencyConflict):
+        create_custom_model(
+            session, bank, custom_request(name="different", operation_id=operation_id), client=hindsight
+        )
+
+
+def test_create_rejects_a_source_selection_missing_a_required_tag():
+    with pytest.raises(ValueError):
+        CustomModelCreateRequest(
+            name="bad",
+            source_query="q",
+            source_tags=("schema:ach-retain-v1",),
+            tags_match="all",
+            max_tokens=256,
+            trigger=TRIGGER,
+            always_in_context=False,
+            operation_id=str(uuid4()),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Resume: crash recovery for a lost create response
+# ---------------------------------------------------------------------------
+
+
+def test_create_retry_adopts_only_exact_matching_upstream_model(session, bank, hindsight, pending_registration):
+    hindsight.list_mental_models.return_value = {"items": [pending_registration.exact_upstream()]}
+
+    result = resume_model_mutation(session, bank, pending_registration.operation_id, client=hindsight)
+
+    assert result.model_key == pending_registration.model_key
+    hindsight.create_mental_model.assert_not_called()
+
+
+def test_resume_retries_creation_when_no_upstream_model_exists(session, bank, hindsight, pending_registration):
+    hindsight.list_mental_models.return_value = {"items": []}
+    hindsight.create_mental_model.return_value = {"id": "mm-freshly-created"}
+
+    result = resume_model_mutation(session, bank, pending_registration.operation_id, client=hindsight)
+
+    assert result.model_key == pending_registration.model_key
+    hindsight.create_mental_model.assert_called_once()
+
+
+def test_resume_requires_operator_action_on_multiple_matches(session, bank, hindsight, pending_registration):
+    upstream = pending_registration.exact_upstream()
+    hindsight.list_mental_models.return_value = {"items": [upstream, {**upstream, "id": "mm-other"}]}
+
+    with pytest.raises(CurationNeedsOperator):
+        resume_model_mutation(session, bank, pending_registration.operation_id, client=hindsight)
+    hindsight.create_mental_model.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# List / get: registry metadata plus unknown-upstream inventory
+# ---------------------------------------------------------------------------
+
+
+def test_list_models_reports_unknown_upstream_count_without_adopting_it(
+    session, bank, hindsight, create_request
+):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    hindsight.list_mental_models.return_value = {
+        "items": [
+            {"id": "mm-upstream-1", "name": f"ach:{created.model_key}"},
+            {"id": "mm-unknown", "name": "some-legacy-model"},
+        ]
+    }
+
+    result = list_models(session, bank, client=hindsight)
+
+    assert [m.model_key for m in result.models] == [created.model_key]
+    assert result.unknown_upstream_count == 1
+
+
+def test_get_model_raises_for_unknown_key(session, bank):
+    with pytest.raises(MentalModelNotFound):
+        get_model(session, bank, "mm_does_not_exist")
+
+
+# ---------------------------------------------------------------------------
+# Update / delete / refresh
+# ---------------------------------------------------------------------------
+
+
+def test_update_changes_source_query_and_forwards_it_upstream(session, bank, hindsight, create_request):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+
+    updated = update_model(
+        session,
+        bank,
+        created.model_key,
+        CustomModelUpdateRequest(source_query="Summarize new conventions.", operation_id=str(uuid4())),
+        client=hindsight,
+    )
+
+    assert updated.source_query == "Summarize new conventions."
+    assert updated.model_key == created.model_key
+    hindsight.update_mental_model.assert_called_once_with(
+        bank.bank_id, "mm-upstream-1", source_query="Summarize new conventions."
+    )
+
+
+def test_update_cannot_change_a_builtin(session, user_bank_with_builtin, hindsight):
+    with pytest.raises(BuiltinModelImmutable):
+        update_model(
+            session,
+            user_bank_with_builtin,
+            USER_CONTEXT_V1.key,
+            CustomModelUpdateRequest(name="renamed", operation_id=str(uuid4())),
+            client=hindsight,
+        )
+
+
+def test_delete_is_idempotent_and_a_404_upstream_satisfies_it(session, bank, hindsight, create_request):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    hindsight.delete_mental_model.side_effect = MentalModelNotFound("gone")
+
+    delete_model(session, bank, created.model_key, client=hindsight)
+    delete_model(session, bank, created.model_key, client=hindsight)  # second call: no-op
+
+    with pytest.raises(MentalModelNotFound):
+        get_model(session, bank, created.model_key)
+
+
+def test_delete_a_builtin_is_rejected(session, user_bank_with_builtin, hindsight):
+    with pytest.raises(BuiltinModelImmutable):
+        delete_model(session, user_bank_with_builtin, USER_CONTEXT_V1.key, client=hindsight)
+
+
+def test_refresh_withholds_delivery_until_the_operation_completes(session, bank, hindsight, create_request):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-123"}
+
+    refreshed = refresh_model(session, bank, created.model_key, client=hindsight)
+
+    assert refreshed.delivery_state == "withheld"
+    assert refreshed.refresh_status == "pending"

@@ -10,7 +10,12 @@ from sqlalchemy.orm import sessionmaker
 from memory import ids
 from memory.errors import MentalModelQuotaExceeded
 from memory.model_registry import (
+    activate_model,
+    find_by_operation,
+    get_registered_model,
     list_registered_models,
+    locked_bank_models,
+    mark_deleted,
     ready_model,
     register_model,
     withhold_model,
@@ -132,6 +137,90 @@ def test_model_delivery_requires_the_exact_refresh_operation(session, model_bank
     assert ready.delivery_state == "ready"
     assert ready.refresh_status == "succeeded"
     assert ready.last_refreshed_at is not None
+
+
+def test_activate_model_records_upstream_id_and_flips_to_active(session, model_bank):
+    model = register_model(
+        session,
+        model_bank,
+        origin="user",
+        model_key=f"mm_{uuid4().hex}",
+        name="Pending model",
+        lifecycle_state="creating",
+        mutation_operation_id=str(uuid4()),
+        mutation_payload_hash="hash",
+        **CUSTOM,
+    )
+
+    activated = activate_model(session, model_bank, model.model_key, "mm-upstream-1")
+
+    assert activated.lifecycle_state == "active"
+    assert activated.upstream_model_id == "mm-upstream-1"
+
+
+def test_mark_deleted_is_excluded_from_the_five_custom_quota(session, model_bank):
+    model = register_model(
+        session, model_bank, origin="user", model_key=f"mm_{uuid4().hex}", name="Doomed", **CUSTOM
+    )
+
+    deleted = mark_deleted(session, model_bank, model.model_key)
+
+    assert deleted.lifecycle_state == "deleted"
+    for index in range(5):
+        register_model(
+            session, model_bank, origin="user", model_key=f"mm_{index:032x}", name=f"m{index}", **CUSTOM
+        )
+
+
+def test_get_registered_model_is_an_unlocked_read(session, model_bank):
+    assert get_registered_model(session, model_bank, "mm_missing") is None
+
+    model = register_model(
+        session, model_bank, origin="user", model_key=f"mm_{uuid4().hex}", name="Found", **CUSTOM
+    )
+    assert get_registered_model(session, model_bank, model.model_key).name == "Found"
+
+
+def test_find_by_operation_locates_a_creating_registration(session, model_bank):
+    operation_id = str(uuid4())
+    model = register_model(
+        session,
+        model_bank,
+        origin="user",
+        model_key=f"mm_{uuid4().hex}",
+        name="In flight",
+        lifecycle_state="creating",
+        mutation_operation_id=operation_id,
+        mutation_payload_hash="hash",
+        **CUSTOM,
+    )
+
+    found = find_by_operation(session, model_bank, operation_id)
+
+    assert found is not None and found.model_key == model.model_key
+    assert find_by_operation(session, model_bank, str(uuid4())) is None
+
+
+def test_locked_bank_models_can_seed_register_models_existing_arg(session, model_bank):
+    register_model(
+        session, model_bank, origin="user", model_key=f"mm_{uuid4().hex}", name="Seed", **CUSTOM
+    )
+
+    locked = locked_bank_models(session, model_bank)
+    assert len(locked) == 1
+
+    # register_model must accept a pre-locked `existing` list without re-querying
+    # and still enforce the same quota against it.
+    register_model(
+        session,
+        model_bank,
+        origin="user",
+        model_key=f"mm_{uuid4().hex}",
+        name="Second",
+        existing=locked,
+        **CUSTOM,
+    )
+    assert len(list_registered_models(session, model_bank)) == 2
 
 
 def _wait_for_lock(engine, application_name: str) -> str:

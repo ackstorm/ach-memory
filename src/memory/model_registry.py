@@ -24,6 +24,34 @@ def _db_now(db: Session):
     return db.execute(select(func.now())).scalar_one()
 
 
+def locked_bank_models(db: Session, bank: LogicalBankRef) -> list[MentalModelRegistration]:
+    """Lock the logical bank and return every one of its registrations.
+
+    Exposed so a caller that must validate something ELSE (e.g. a delivery
+    token budget) against the same locked row set can do so before calling
+    `register_model`/`update` without acquiring the same locks twice.
+    """
+    _lock_bank(db, bank)
+    return list(db.scalars(_models_query(bank).with_for_update()).all())
+
+
+def get_registered_model(
+    db: Session, bank: LogicalBankRef, model_key: str
+) -> MentalModelRegistration | None:
+    """Unlocked read for ordinary get/list -- never provisions or locks."""
+    return db.scalar(_model_query(bank, model_key))
+
+
+def find_by_operation(
+    db: Session, bank: LogicalBankRef, operation_id: str
+) -> MentalModelRegistration | None:
+    """A registration by its recorded mutation operation id, any lifecycle
+    state -- the crash-recovery lookup a lost create response resumes from."""
+    return db.scalar(
+        _models_query(bank).where(MentalModelRegistration.mutation_operation_id == operation_id)
+    )
+
+
 def register_model(
     db: Session,
     bank: LogicalBankRef,
@@ -47,14 +75,19 @@ def register_model(
     refresh_operation_id: str | None = None,
     refresh_status: str | None = None,
     repair_not_before=None,
+    existing: list[MentalModelRegistration] | None = None,
 ) -> MentalModelRegistration:
+    """`existing`, when given, must already be this bank's locked row set
+    (from `locked_bank_models`) -- lets a caller that locked for its own
+    reason (e.g. a budget check) skip re-querying here. Left None, this
+    function locks and queries for itself exactly as before."""
     if origin not in {"builtin", "user"}:
         raise ValueError("model origin must be builtin or user")
     if (origin == "builtin") != (builtin_key is not None and definition_version is not None):
         raise ValueError("only built-ins have a key and definition version")
 
-    _lock_bank(db, bank)
-    existing = list(db.scalars(_models_query(bank).with_for_update()).all())
+    if existing is None:
+        existing = locked_bank_models(db, bank)
     live = [row for row in existing if row.lifecycle_state != "deleted"]
     if origin == "builtin" and any(row.origin == "builtin" for row in live):
         raise MentalModelQuotaExceeded("a logical bank may register only one built-in model")
@@ -108,6 +141,28 @@ def _locked_model(db: Session, bank: LogicalBankRef, model_key: str) -> MentalMo
     row = db.scalar(_model_query(bank, model_key).with_for_update())
     if row is None:
         raise MentalModelNotFound("no registered model with that logical key")
+    return row
+
+
+def activate_model(
+    db: Session, bank: LogicalBankRef, model_key: str, upstream_model_id: str
+) -> MentalModelRegistration:
+    """Record the upstream id Hindsight assigned and leave `creating` for
+    `active` -- the second half of create, run only after Hindsight's call
+    actually succeeds."""
+    row = _locked_model(db, bank, model_key)
+    row.upstream_model_id = upstream_model_id
+    row.lifecycle_state = "active"
+    row.updated_at = _db_now(db)
+    db.flush()
+    return row
+
+
+def mark_deleted(db: Session, bank: LogicalBankRef, model_key: str) -> MentalModelRegistration:
+    row = _locked_model(db, bank, model_key)
+    row.lifecycle_state = "deleted"
+    row.updated_at = _db_now(db)
+    db.flush()
     return row
 
 

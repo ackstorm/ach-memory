@@ -735,6 +735,14 @@ ach-memory maintains a registry keyed by tenant, logical bank and stable model k
 Upstream IDs and physical bank IDs remain implementation details. Public callers address a model
 by logical scope and model key.
 
+The upstream mental-model NAME Hindsight stores is the stable internal locator `ach:{model_key}`,
+never the caller-authored display `name`: that display name is mutable ACH product metadata and
+lives only in the registry and the public `MentalModelView`. This split is what makes crash
+recovery possible after a create's Hindsight response is lost -- ACH lists upstream models by the
+exact internal locator and adopts only an exact match (§7.3) -- and it is also why an update to the
+display name alone never calls Hindsight at all. Public responses and logs still never expose the
+upstream mental-model ID itself, only the ACH `model_key`.
+
 ### 7.3 Limit
 
 Each bank may register one built-in plus five custom models. The built-in is outside the custom

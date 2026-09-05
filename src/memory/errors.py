@@ -259,6 +259,18 @@ class MentalModelQuotaExceeded(DomainError):
     status = 409
 
 
+class BuiltinModelImmutable(DomainError):
+    """A built-in's definition is versioned and ACH-owned, not caller-authored.
+
+    SPEC §7.4: "immutable through custom-model CRUD... cannot be deleted
+    while enabled as a built-in" -- the custom create/update/delete surface
+    must refuse a built-in model_key rather than silently mutating it.
+    """
+
+    code = "BUILTIN_MODEL_IMMUTABLE"
+    status = 409
+
+
 class ContextBudgetExceeded(DomainError):
     code = "CONTEXT_BUDGET_EXCEEDED"
     status = 409
