@@ -1,89 +1,75 @@
-"""SPEC §14: mental models are REST API-only, never an MCP tool.
+"""SPEC §7: governed mental-model lifecycle, addressed by ACH `model_key`.
 
-A mental model is persisted, synthesized project knowledge Hindsight builds
-from a source query and feeds back into reflection -- it can become
-high-priority shared context for every user and agent on a project. Same
-reasoning as directives.py: writing or refreshing one is governance for the
-whole project, not a private note, so it stays off the LLM-facing MCP surface
-(§14.2, §14.4) even though the underlying knowledge is exactly the kind of
-thing an agent would otherwise want to curate for itself. Authorization is
-the same §7 bank rule as everywhere else in this service -- this file adds no
-new permission model, only a narrower surface.
+Public paths keep `/v1/mental-models/{model_key}` but every route resolves
+through `mental_model_service` -- never a raw upstream mental-model id, and
+never `bank_id`. `mental_model_service.MentalModelView`/`ModelListResult`
+already close their own field set (`extra="forbid"`), so responses are
+returned flat, with no `MemoryResponse`/`resolved_from` envelope: unlike the
+old REST-only passthrough this file used to be, there is no arbitrary
+upstream JSON left to redact or forward slugs for.
 """
 
 import json
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, Query, Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from memory import mental_model_service
 from memory.api.app import current_on_behalf_of, current_principal
-from memory.api.common import RenameForwarding
 from memory.api.memory import (
-    MAX_PAGE_SIZE,
-    MemoryResponse,
     ScopedRequest,
+    UUID4Str,
     _check_content_size,
     _resolve_bank,
-    _strip_bank_id,
     scoped_query_params,
 )
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.hindsight.client import get_client
+from memory.mental_model_service import (
+    REQUIRED_SOURCE_TAGS,
+    CustomModelCreateRequest,
+    CustomModelUpdateRequest,
+    MentalModelView,
+    ModelListResult,
+)
+from memory.models import Project
+from memory.retained_records import LogicalBankRef
 
 router = APIRouter(prefix="/v1/mental-models", tags=["mental-models"])
 
 
 class MentalModelTrigger(BaseModel):
-    # Pass-through by design (SPEC §14.5) EXCEPT `mode`, which upstream types
-    # as Literal["full","delta"]: an unknown value was a 422 upstream and a
-    # 502 here. Everything else stays unvalidated on purpose -- Hindsight's
-    # own defaults already mean "no automatic refresh".
+    # Same validated-subset pass-through the pre-governance REST surface
+    # used: `mode` is bound to Hindsight's own enum so an unknown value is a
+    # typed 422 here instead of a 502 blaming the backend; every other field
+    # is forwarded verbatim.
     model_config = ConfigDict(extra="allow")
 
     mode: Literal["full", "delta"] | None = None
 
 
-class MentalModelHistoryResponse(RenameForwarding):
-    """`result` is a LIST here, not the dict every other route in this service
-    returns.
-
-    Hindsight's history endpoint answers with a bare array, newest first, and
-    it is forwarded in that shape (SPEC §14.5). Wrapping it as
-    `{"items": [...]}` to rhyme with this service's own list routes would put
-    a reshaping layer in front of an ordering-sensitive structure, which is
-    the one place an off-by-one produces a wrong version that still looks
-    plausible.
-    """
-
-    result: list[dict[str, Any]]
-    # Mirrors MemoryResponse.project_slug (SPEC §8.6).
-    project_slug: str | None = None
-
-
 class CreateMentalModelRequest(ScopedRequest):
-    # max_length on name mirrors every other bounded identifier in the
-    # service; source_query gets the MEMORY_MAX_CONTENT_BYTES check below
-    # rather than a character bound, because the ceiling is in bytes.
     name: str = Field(max_length=256)
     source_query: str
-    # Mirrors hindsight-api 0.9.1's own Field(ge=256, le=8192). Upstream is
-    # FastAPI, so its rejection is a 422 that _request cannot distinguish from
-    # a backend fault -- it became a 502 (review finding I6).
-    max_tokens: int | None = Field(default=None, ge=256, le=8192)
-    # Passed through verbatim, never defaulted or shape-validated (SPEC
-    # §14.5): Hindsight's own defaults (`refresh_after_consolidation=false`,
-    # `refresh_cron=null`) already mean "no automatic refresh" when this is
-    # omitted -- the cheapest and safest behavior. A caller who sets
-    # `refresh_after_consolidation: true` is choosing to spend a full
-    # `reflect` per refresh (§19.4: unattributable spend), and that choice is
-    # never made for them here.
-    trigger: MentalModelTrigger | None = None
-    # No "tags", no "id": tags is Hindsight's in-bank visibility scope this
-    # service does not model (same as directives); id is not exposed because
-    # nothing in the brief calls for caller-assigned mental-model ids.
+    source_tags: tuple[str, ...]
+    tags_match: Literal["all"]
+    max_tokens: int = Field(ge=256, le=8192)
+    always_in_context: bool
+    trigger: MentalModelTrigger
+    operation_id: UUID4Str
+
+    @field_validator("source_tags")
+    @classmethod
+    def _validate_source_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if frozenset(value) != REQUIRED_SOURCE_TAGS:
+            raise ValueError(
+                "source_tags must select exactly schema:ach-retain-v1 and validity:indefinite"
+            )
+        return value
 
 
 class UpdateMentalModelRequest(ScopedRequest):
@@ -91,233 +77,179 @@ class UpdateMentalModelRequest(ScopedRequest):
     source_query: str | None = None
     max_tokens: int | None = Field(default=None, ge=256, le=8192)
     trigger: MentalModelTrigger | None = None
+    always_in_context: bool | None = None
+    operation_id: UUID4Str
 
 
-def _bank(
+class MutationScopedRequest(ScopedRequest):
+    """`ScopedRequest` plus the operation id every mutation-by-verb (DELETE,
+    the refresh POST) carries as a query param -- the JSON-body mutations
+    (create, update) get theirs from `CreateMentalModelRequest`/
+    `UpdateMentalModelRequest` above instead."""
+
+    operation_id: UUID4Str
+
+
+def mutation_query_params(
+    scope: Literal["user", "project"],
+    operation_id: str,
+    user_id: Annotated[str | None, Query(pattern=r"^[^\x00-\x1f\x7f]*$")] = None,
+    project_slug: str | None = None,
+    git_locator: Annotated[
+        str | None, Query(max_length=512, pattern=r"^[^\x00-\x1f\x7f]*$")
+    ] = None,
+) -> MutationScopedRequest:
+    return MutationScopedRequest(
+        scope=scope,
+        operation_id=operation_id,
+        user_id=user_id,
+        project_slug=project_slug,
+        git_locator=git_locator,
+    )
+
+
+def _resolve_logical_bank(
     body: ScopedRequest,
     db: Session,
     principal: Principal,
     on_behalf_of: str | None,
     action: str,
     *,
-    is_write: bool = False,
-) -> tuple[str, str | None, str | None]:
-    """Authorize first, always -- same shape as directives.py.
+    is_write: bool,
+) -> LogicalBankRef:
+    """`_resolve_bank`'s authorization/audit/rate-limit path, re-shaped into
+    the `LogicalBankRef` the governed model service addresses instead of a
+    bare `bank_id`.
 
-    create=False: a mental-model route is maintenance over an existing bank
-    (SPEC §11.3), never first-touch project creation.
+    A mental-model route is maintenance over an existing bank (SPEC §7),
+    never first-touch project creation -- every route here resolves with
+    `create=False`, matching the pre-governance surface's own rule.
     """
-    bank_id, resolved_from, project_slug = _resolve_bank(
+    bank_id, _resolved_from, _project_slug = _resolve_bank(
         body, db, principal, on_behalf_of, action, create=False, is_write=is_write
     )
-    db.commit()
-    return bank_id, resolved_from, project_slug
+    if body.scope == "user":
+        target_id = body.user_id if (principal.is_master and body.user_id) else principal.user_id
+        return LogicalBankRef(principal.tenant_id, "user", target_id, None, bank_id)
+
+    project_internal_id = db.scalar(
+        select(Project.internal_id).where(
+            Project.tenant_id == principal.tenant_id, Project.bank_id == bank_id
+        )
+    )
+    return LogicalBankRef(principal.tenant_id, "project", None, project_internal_id, bank_id)
 
 
-@router.post("", response_model=MemoryResponse, status_code=201)
+@router.post("", response_model=MentalModelView, status_code=201)
 def create_mental_model(
     body: CreateMentalModelRequest,
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-) -> MemoryResponse:
-    """Create persisted, synthesized project knowledge from a source query.
-
-    Not an MCP tool (SPEC §14.2/§14.4): a mental model feeds reflection for
-    everyone on the project, so managing it is governance an agent cannot
-    grant itself.
-    """
+) -> MentalModelView:
     _check_content_size(body.source_query)
-    # trigger is extra="allow" (SPEC §14.5) with no shape bound, forwarded
-    # verbatim -- every other caller-authored blob in this service is capped
-    # (review finding 5, 2026-08-23). The pass-through itself stays: only
-    # the size is bounded.
-    if body.trigger is not None:
-        _check_content_size(json.dumps(body.trigger.model_dump(exclude_none=True)))
-    bank_id, resolved_from, project_slug = _bank(
+    # MentalModelTrigger is extra="allow" (pass-through), so an oversize
+    # caller-authored key is otherwise the last uncapped blob on this route.
+    _check_content_size(json.dumps(body.trigger.model_dump(exclude_none=True)))
+    bank = _resolve_logical_bank(
         body, db, principal, on_behalf_of, "mental_models.create", is_write=True
     )
-    result = get_client().create_mental_model(
-        bank_id,
+    db.commit()
+    request = CustomModelCreateRequest(
         name=body.name,
         source_query=body.source_query,
+        source_tags=body.source_tags,
+        tags_match=body.tags_match,
         max_tokens=body.max_tokens,
-        trigger=body.trigger.model_dump(exclude_none=True) if body.trigger else None,
+        trigger=body.trigger.model_dump(exclude_none=True),
+        always_in_context=body.always_in_context,
+        operation_id=body.operation_id,
     )
-    return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
+    return mental_model_service.create_custom_model(db, bank, request, client=get_client())
 
 
-@router.get("", response_model=MemoryResponse)
+@router.get("", response_model=ModelListResult)
 def list_mental_models(
     scoped: Annotated[ScopedRequest, Depends(scoped_query_params)],
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-    detail: str | None = None,
-    limit: Annotated[int | None, Query(ge=1, le=MAX_PAGE_SIZE)] = None,
-    offset: Annotated[int | None, Query(ge=0)] = None,
-) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
-        scoped, db, principal, on_behalf_of, "mental_models.list"
+) -> ModelListResult:
+    bank = _resolve_logical_bank(
+        scoped, db, principal, on_behalf_of, "mental_models.list", is_write=False
     )
-    result = get_client().list_mental_models(
-        bank_id, detail=detail, limit=limit, offset=offset
-    )
-    return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
+    db.commit()
+    return mental_model_service.list_models(db, bank, client=get_client())
 
 
-@router.get("/{mental_model_id}", response_model=MemoryResponse)
+@router.get("/{model_key}", response_model=MentalModelView)
 def get_mental_model(
-    mental_model_id: str,
+    model_key: str,
     scoped: Annotated[ScopedRequest, Depends(scoped_query_params)],
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
-        scoped, db, principal, on_behalf_of, "mental_models.get"
+) -> MentalModelView:
+    bank = _resolve_logical_bank(
+        scoped, db, principal, on_behalf_of, "mental_models.get", is_write=False
     )
-    result = get_client().get_mental_model(bank_id, mental_model_id)
-    return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
+    db.commit()
+    return mental_model_service.get_model(db, bank, model_key)
 
 
-@router.get("/{mental_model_id}/history", response_model=MentalModelHistoryResponse)
-def list_mental_model_history(
-    mental_model_id: str,
-    scoped: Annotated[ScopedRequest, Depends(scoped_query_params)],
-    principal: Annotated[Principal, Depends(current_principal)],
-    on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
-    db: Session = Depends(get_session),
-) -> MentalModelHistoryResponse:
-    """Every previous version of the content, newest first.
-
-    Exists because `last_refreshed_at` is not a freshness signal. Measured in
-    production: the `session-brief-user` model reported
-    `last_refreshed_at=2026-08-27T17:26:03`, equal to its `created_at`, while
-    its content had actually been rewritten at 17:35:56 -- ten minutes later.
-    On another bank the two agreed to within 170ms, so the divergence is
-    silent and intermittent, and anything asking "is this stale?" has to ask
-    `history[0].changed_at` instead.
-
-    A read: no `is_write`. Unlike `refresh`, this spends nothing upstream --
-    it is a database read of versions Hindsight already stored.
-    """
-    bank_id, resolved_from, project_slug = _bank(
-        scoped, db, principal, on_behalf_of, "mental_models.history"
-    )
-    result = get_client().list_mental_model_history(bank_id, mental_model_id)
-    return MentalModelHistoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
-
-
-@router.patch("/{mental_model_id}", response_model=MemoryResponse)
+@router.patch("/{model_key}", response_model=MentalModelView)
 def update_mental_model(
-    mental_model_id: str,
+    model_key: str,
     body: UpdateMentalModelRequest,
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-) -> MemoryResponse:
-    # An UPDATE may legitimately omit source_query; only bound it when supplied.
+) -> MentalModelView:
     if body.source_query is not None:
         _check_content_size(body.source_query)
-    # Same bound as create_mental_model's trigger check above.
     if body.trigger is not None:
         _check_content_size(json.dumps(body.trigger.model_dump(exclude_none=True)))
-    bank_id, resolved_from, project_slug = _bank(
+    bank = _resolve_logical_bank(
         body, db, principal, on_behalf_of, "mental_models.update", is_write=True
     )
-    result = get_client().update_mental_model(
-        bank_id,
-        mental_model_id,
+    db.commit()
+    request = CustomModelUpdateRequest(
         name=body.name,
         source_query=body.source_query,
         max_tokens=body.max_tokens,
         trigger=body.trigger.model_dump(exclude_none=True) if body.trigger else None,
+        always_in_context=body.always_in_context,
+        operation_id=body.operation_id,
     )
-    return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
+    return mental_model_service.update_model(db, bank, model_key, request, client=get_client())
 
 
-@router.delete("/{mental_model_id}", response_model=MemoryResponse)
+@router.delete("/{model_key}", status_code=204)
 def delete_mental_model(
-    mental_model_id: str,
-    scoped: Annotated[ScopedRequest, Depends(scoped_query_params)],
+    model_key: str,
+    scoped: Annotated[MutationScopedRequest, Depends(mutation_query_params)],
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
+) -> Response:
+    bank = _resolve_logical_bank(
         scoped, db, principal, on_behalf_of, "mental_models.delete", is_write=True
     )
-    result = get_client().delete_mental_model(bank_id, mental_model_id)
-    return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
+    db.commit()
+    mental_model_service.delete_model(db, bank, model_key, client=get_client())
+    return Response(status_code=204)
 
 
-@router.post("/{mental_model_id}/refresh", response_model=MemoryResponse)
+@router.post("/{model_key}/refresh", response_model=MentalModelView)
 def refresh_mental_model(
-    mental_model_id: str,
-    scoped: Annotated[ScopedRequest, Depends(scoped_query_params)],
+    model_key: str,
+    scoped: Annotated[MutationScopedRequest, Depends(mutation_query_params)],
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
-) -> MemoryResponse:
-    """Force an immediate refresh.
-
-    Costs a full `reflect` upstream every time (SPEC §14.5, §19.4), same as
-    the data-plane `reflect` route -- `is_write=True` here for the same
-    reason it is there: the spend, not a Hindsight write, is what needs rate
-    limiting. `dry-run-refresh` exists upstream and is deliberately never
-    wired on any surface (SPEC §11.7): it costs the same as this route while
-    inviting the caller to treat it as free.
-    """
-    bank_id, resolved_from, project_slug = _bank(
+) -> MentalModelView:
+    bank = _resolve_logical_bank(
         scoped, db, principal, on_behalf_of, "mental_models.refresh", is_write=True
     )
-    result = get_client().refresh_mental_model(bank_id, mental_model_id)
-    return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
-
-
-@router.post("/{mental_model_id}/clear", response_model=MemoryResponse)
-def clear_mental_model(
-    mental_model_id: str,
-    scoped: Annotated[ScopedRequest, Depends(scoped_query_params)],
-    principal: Annotated[Principal, Depends(current_principal)],
-    on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
-    db: Session = Depends(get_session),
-) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
-        scoped, db, principal, on_behalf_of, "mental_models.clear", is_write=True
-    )
-    result = get_client().clear_mental_model(bank_id, mental_model_id)
-    return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
-        resolved_from=resolved_from,
-        project_slug=project_slug,
-    )
+    db.commit()
+    return mental_model_service.refresh_model(db, bank, model_key, client=get_client())

@@ -33,9 +33,15 @@ def juan(client, master_headers, tenant) -> dict[str, str]:
 
 
 DIR_ID = "11111111-1111-1111-1111-111111111111"
-MM_ID = "mm-1234567890abcdef1234567890abcdef"
+MM_ID = "mm_1234567890abcdef1234567890abcdef"
 MEM_ID = "33333333-3333-3333-3333-333333333333"
 OP_ID = "44444444-4444-4444-4444-444444444444"
+MM_OP_ID = "55555555-5555-5555-5555-555555555555"
+MM_CREATE_FIELDS = {
+    "source_tags": ["schema:ach-retain-v1", "validity:indefinite"],
+    "tags_match": "all", "max_tokens": 512, "always_in_context": False,
+    "trigger": {"mode": "delta"},
+}
 
 # name -> (method, path, json_body, params, expected is_write)
 GOVERNANCE_ROUTES: dict[str, tuple[str, str, dict | None, dict | None, bool]] = {
@@ -56,29 +62,25 @@ GOVERNANCE_ROUTES: dict[str, tuple[str, str, dict | None, dict | None, bool]] = 
     ),
     "mental_models.create": (
         "POST", "/v1/mental-models",
-        {"scope": "user", "name": "n", "source_query": "q"}, None, True,
+        {"scope": "user", "name": "n", "source_query": "q", "operation_id": MM_OP_ID,
+         **MM_CREATE_FIELDS},
+        None, True,
     ),
     "mental_models.list": ("GET", "/v1/mental-models", None, {"scope": "user"}, False),
     "mental_models.get": (
         "GET", f"/v1/mental-models/{MM_ID}", None, {"scope": "user"}, False,
     ),
-    # A read: it lists versions Hindsight already stored and spends nothing
-    # upstream, unlike refresh, which pays for a full reflect every call.
-    "mental_models.history": (
-        "GET", f"/v1/mental-models/{MM_ID}/history", None, {"scope": "user"}, False,
-    ),
     "mental_models.update": (
         "PATCH", f"/v1/mental-models/{MM_ID}",
-        {"scope": "user", "source_query": "q2"}, None, True,
+        {"scope": "user", "source_query": "q2", "operation_id": MM_OP_ID}, None, True,
     ),
     "mental_models.delete": (
-        "DELETE", f"/v1/mental-models/{MM_ID}", None, {"scope": "user"}, True,
+        "DELETE", f"/v1/mental-models/{MM_ID}",
+        None, {"scope": "user", "operation_id": MM_OP_ID}, True,
     ),
     "mental_models.refresh": (
-        "POST", f"/v1/mental-models/{MM_ID}/refresh", None, {"scope": "user"}, True,
-    ),
-    "mental_models.clear": (
-        "POST", f"/v1/mental-models/{MM_ID}/clear", None, {"scope": "user"}, True,
+        "POST", f"/v1/mental-models/{MM_ID}/refresh",
+        None, {"scope": "user", "operation_id": MM_OP_ID}, True,
     ),
     # curation, documents, operations -- the three routers the original table
     # never reached. `correct` writes caller text into the bank and
@@ -164,7 +166,7 @@ def test_the_governance_table_covers_every_route_in_all_five_files(client):
     # ("{directive_id}"). Normalize back to the template form to compare.
     covered = {
         f"{method} {path}".replace(DIR_ID, "{directive_id}").replace(
-            MM_ID, "{mental_model_id}"
+            MM_ID, "{model_key}"
         )
         for method, path, _, _, _ in GOVERNANCE_ROUTES.values()
     }
@@ -182,13 +184,6 @@ def test_rest_is_write_flags_match_the_governance_table(client, juan, tenant, mo
     monkeypatch.setenv("MEMORY_WRITE_WINDOW_SECONDS", "60")
     get_settings.cache_clear()
     ratelimit.get_limiter.cache_clear()
-    # Registered BEFORE the catch-all, which respx would otherwise match
-    # first. Mental-model history is the one upstream route that answers with
-    # a bare array instead of an object, and its response model says so, so
-    # the catch-all's `{}` fails validation and the read looks like a 500.
-    respx.get(url__regex=r"^http://hindsight\.test/.*/mental-models/.*/history$").mock(
-        return_value=httpx.Response(200, json=[])
-    )
     respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
         return_value=httpx.Response(200, json={})
     )

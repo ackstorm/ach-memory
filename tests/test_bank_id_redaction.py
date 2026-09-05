@@ -30,9 +30,6 @@ BASE = "http://hindsight.test"
 MEMORY_ID = "11111111-1111-1111-1111-111111111111"
 OPERATION_ID = "22222222-2222-2222-2222-222222222222"
 DIRECTIVE_ID = "33333333-3333-3333-3333-333333333333"
-# mental_model_id is Hindsight-minted as "mm-<32 hex>", NOT a UUID -- only
-# traversal/charset-checked locally (paths.reject_mental_model_id_traversal).
-MENTAL_MODEL_ID = "mm-1"
 
 
 @pytest.fixture
@@ -112,28 +109,15 @@ ROUTES = {
     "delete_directive": (
         "DELETE", f"/v1/directives/{DIRECTIVE_ID}", None, {"scope": "user"}, "juan",
     ),
-    # mental_models.py -- REST-only, same query-param shape as directives.
-    "create_mental_model": (
-        "POST", "/v1/mental-models",
-        {"scope": "user", "name": "n", "source_query": "q"}, None, "juan",
-    ),
-    "list_mental_models": ("GET", "/v1/mental-models", None, {"scope": "user"}, "juan"),
-    "get_mental_model": (
-        "GET", f"/v1/mental-models/{MENTAL_MODEL_ID}", None, {"scope": "user"}, "juan",
-    ),
-    "update_mental_model": (
-        "PATCH", f"/v1/mental-models/{MENTAL_MODEL_ID}",
-        {"scope": "user", "name": "n2"}, None, "juan",
-    ),
-    "delete_mental_model": (
-        "DELETE", f"/v1/mental-models/{MENTAL_MODEL_ID}", None, {"scope": "user"}, "juan",
-    ),
-    "refresh_mental_model": (
-        "POST", f"/v1/mental-models/{MENTAL_MODEL_ID}/refresh", None, {"scope": "user"}, "juan",
-    ),
-    "clear_mental_model": (
-        "POST", f"/v1/mental-models/{MENTAL_MODEL_ID}/clear", None, {"scope": "user"}, "juan",
-    ),
+    # mental_models.py is deliberately ABSENT from this table (SPEC §7, v0.4.0
+    # governance rewrite): every route there now returns a closed
+    # `MentalModelView`/`ModelListResult` (extra="forbid", a fixed field set)
+    # built from the ACH registry, never Hindsight's raw response body -- so
+    # there is no arbitrary upstream string field left for a bank_id to hide
+    # inside. That guarantee is verified structurally in
+    # test_mental_models_api.py ("bank_id"/"upstream_model_id" absent from the
+    # response text) rather than by this file's substring-redaction table,
+    # which only applies to a route that forwards an upstream body.
     # admin.py -- require_master, scope/user_id arrive as query params, never
     # a JSON body. `user_id` is filled in from `juan` at call time below.
     "admin_clear_memories": ("POST", "/v1/admin/memory/user/clear", None, {}, "master"),

@@ -20,7 +20,10 @@ BIG = 1000000000
         ("POST", "/v1/memory/documents/list", {"scope": "user"}, None),
         ("POST", "/v1/memory/operations/list", {"scope": "user"}, None),
         ("GET", "/v1/directives", None, {"scope": "user"}),
-        ("GET", "/v1/mental-models", None, {"scope": "user"}),
+        # No /v1/mental-models row: SPEC §7's v0.4.0 governance rewrite caps
+        # a bank at one built-in plus five custom models, so `list_models`
+        # dropped limit/offset entirely rather than bound a page size nothing
+        # can ever exceed.
     ],
 )
 @pytest.mark.parametrize("value", [HUGE, BIG])

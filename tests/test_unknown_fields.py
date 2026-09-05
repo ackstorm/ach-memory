@@ -10,7 +10,9 @@ PATCH sent an empty {} upstream and answered 200 (2026-08-23 review, R2-I4).
 import pytest
 
 DIR_ID = "11111111-1111-1111-1111-111111111111"
-MM_ID = "mm-1234567890abcdef1234567890abcdef"
+MM_ID = "mm_1234567890abcdef1234567890abcdef"
+MM_OPERATION_ID = "22222222-2222-2222-2222-222222222222"
+MM_REQUIRED_TAGS = ["schema:ach-retain-v1", "validity:indefinite"]
 
 
 @pytest.mark.parametrize(
@@ -21,8 +23,22 @@ MM_ID = "mm-1234567890abcdef1234567890abcdef"
         ("POST", "/v1/memory/list", {"scope": "user", "stat": "valid"}),
         ("POST", "/v1/directives", {"scope": "user", "name": "n", "content": "c", "priorty": 9}),
         ("PATCH", f"/v1/directives/{DIR_ID}", {"scope": "user", "priorty": 9}),
-        ("POST", "/v1/mental-models", {"scope": "user", "name": "n", "source_query": "q", "max_token": 999}),
-        ("PATCH", f"/v1/mental-models/{MM_ID}", {"scope": "user", "max_token": 999}),
+        (
+            "POST",
+            "/v1/mental-models",
+            {
+                "scope": "user", "name": "n", "source_query": "q",
+                "source_tags": MM_REQUIRED_TAGS, "tags_match": "all",
+                "max_tokens": 512, "always_in_context": False,
+                "trigger": {"mode": "delta"}, "operation_id": MM_OPERATION_ID,
+                "max_token": 999,
+            },
+        ),
+        (
+            "PATCH",
+            f"/v1/mental-models/{MM_ID}",
+            {"scope": "user", "operation_id": MM_OPERATION_ID, "max_token": 999},
+        ),
     ],
 )
 def test_an_unknown_field_is_refused(client, master_headers, tenant, method, path, body):
@@ -58,6 +74,11 @@ def test_mental_model_trigger_still_passes_unknown_keys_through(client):
         scope="user",
         name="n",
         source_query="q",
+        source_tags=MM_REQUIRED_TAGS,
+        tags_match="all",
+        max_tokens=512,
+        always_in_context=False,
         trigger={"mode": "full", "refresh_cron": "0 3 * * *"},
+        operation_id=MM_OPERATION_ID,
     )
     assert body.trigger.model_dump()["refresh_cron"] == "0 3 * * *"

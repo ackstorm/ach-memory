@@ -11,31 +11,37 @@ import pytest
 
 OVERSIZE = "x" * 300_000  # MEMORY_MAX_CONTENT_BYTES defaults to 256_000
 
+MM_REQUIRED_FIELDS = {
+    "source_tags": ["schema:ach-retain-v1", "validity:indefinite"],
+    "tags_match": "all",
+    "max_tokens": 512,
+    "always_in_context": False,
+    "operation_id": "44444444-4444-4444-4444-444444444444",
+}
+
+
+def _mm_create_body(**overrides) -> dict:
+    body = {
+        "scope": "user", "name": "n", "source_query": "q", "trigger": {"mode": "delta"},
+        **MM_REQUIRED_FIELDS,
+    }
+    body.update(overrides)
+    return body
+
 
 @pytest.mark.parametrize(
     "path,body",
     [
         ("/v1/directives", {"scope": "user", "name": "n", "content": OVERSIZE}),
         ("/v1/directives", {"scope": "user", "name": OVERSIZE, "content": "c"}),
-        (
-            "/v1/mental-models",
-            {"scope": "user", "name": "n", "source_query": OVERSIZE},
-        ),
-        (
-            "/v1/mental-models",
-            {"scope": "user", "name": OVERSIZE, "source_query": "q"},
-        ),
+        ("/v1/mental-models", _mm_create_body(source_query=OVERSIZE)),
+        ("/v1/mental-models", _mm_create_body(name=OVERSIZE)),
         (
             # finding 5 (2026-08-23): MentalModelTrigger is extra="allow"
             # (SPEC §14.5, deliberate) with no size bound, forwarded
             # verbatim -- the last uncapped caller-authored blob.
             "/v1/mental-models",
-            {
-                "scope": "user",
-                "name": "n",
-                "source_query": "q",
-                "trigger": {"note": OVERSIZE},
-            },
+            _mm_create_body(trigger={"mode": "delta", "note": OVERSIZE}),
         ),
     ],
 )
@@ -54,12 +60,18 @@ def test_oversize_governance_text_is_refused(client, master_headers, tenant, pat
             {"scope": "user", "content": OVERSIZE},
         ),
         (
-            "/v1/mental-models/mm-1234567890abcdef1234567890abcdef",
-            {"scope": "user", "source_query": OVERSIZE},
+            "/v1/mental-models/mm_1234567890abcdef1234567890abcdef",
+            {
+                "scope": "user", "source_query": OVERSIZE,
+                "operation_id": MM_REQUIRED_FIELDS["operation_id"],
+            },
         ),
         (
-            "/v1/mental-models/mm-1234567890abcdef1234567890abcdef",
-            {"scope": "user", "trigger": {"note": OVERSIZE}},
+            "/v1/mental-models/mm_1234567890abcdef1234567890abcdef",
+            {
+                "scope": "user", "trigger": {"mode": "delta", "note": OVERSIZE},
+                "operation_id": MM_REQUIRED_FIELDS["operation_id"],
+            },
         ),
     ],
 )
