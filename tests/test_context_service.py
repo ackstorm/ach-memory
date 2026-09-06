@@ -415,6 +415,30 @@ def test_deadline_is_computed_once_and_never_resets_across_later_phases(
     assert ("working-state", "deadline_exceeded") in reasons
 
 
+def test_no_budget_left_for_the_registry_query_still_emits_a_machine_readable_omission(
+    session, tenant, monkeypatch
+):
+    """Every phase the deadline forces a skip on must say so -- the
+    always-in-context registry query is no exception, even when it is
+    skipped so early that no candidate model was ever identified."""
+    from memory import context_service
+
+    monkeypatch.setattr(context_service, "DEADLINE_SECONDS", 0.0)
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+    session.add(_registration(tenant, model_key="m", model_id="mm-m", user_id=juan.id))
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest())
+
+    assert ("always-in-context-models", "deadline_exceeded") in [
+        (item.key, item.reason) for item in result.omissions
+    ]
+
+
 def test_active_claims_fetches_a_bounded_prefix_not_the_whole_ledger(session, tenant):
     """1,000 active expiring claims must never be materialized whole: the
     repository query stays within the named bounded prefix, the response

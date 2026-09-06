@@ -529,14 +529,21 @@ def delete_model(db: Session, bank: LogicalBankRef, model_key: str, *, operation
         raise MentalModelNotFound("no registered model with that logical key")
     if row.origin == "builtin":
         raise BuiltinModelImmutable("a built-in model cannot be deleted through custom-model CRUD")
-    if row.lifecycle_state == "deleted":
-        return
 
+    # The ledger is consulted BEFORE the already-deleted short-circuit below,
+    # not after: a caller reusing this operation_id for a genuinely
+    # different model/action must still get IdempotencyConflict even when
+    # the model happens to already be gone, rather than that mismatch being
+    # silently swallowed by the no-op return.
     digest = _bare_mutation_payload_hash(bank, model_key, "delete")
     mutation, created = model_registry.accept_model_mutation(
         db, bank, model_key=model_key, operation_id=operation_id,
         action="delete", payload_hash=digest,
     )
+    if row.lifecycle_state == "deleted":
+        model_registry.complete_model_mutation(db, mutation)
+        db.commit()
+        return
     if not created and mutation.state == "completed":
         db.commit()
         return

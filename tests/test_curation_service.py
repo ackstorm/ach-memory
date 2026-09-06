@@ -332,6 +332,36 @@ def test_hard_delete_of_indefinite_claim_requires_and_submits_model_refresh(sess
     hindsight.refresh_mental_model.assert_called_once_with(bank.bank_id, "mm-upstream-1")
 
 
+def test_model_refresh_submission_continues_after_a_concurrently_removed_model(session, bank, hindsight):
+    """`record_model_refresh_operation`'s row lookup can fail with a
+    DomainError too (its own `_locked_model` call), not just the upstream
+    `client.refresh_mental_model` call -- both must be guarded so one
+    model's failure never aborts the rest of the batch."""
+    from memory import model_registry
+    from memory.curation_service import _submit_refresh_for_affected_models
+    from memory.models import MentalModelRegistration
+
+    survivor = model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(), name="survivor",
+        source_query="q", source_tags=["schema:ach-retain-v1"], tags_match="all",
+        max_tokens=100, trigger={}, upstream_model_id="mm-upstream-survivor",
+    )
+    removed = model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(), name="removed",
+        source_query="q", source_tags=["schema:ach-retain-v1"], tags_match="all",
+        max_tokens=100, trigger={}, upstream_model_id="mm-upstream-removed",
+    )
+    session.commit()
+    hindsight.refresh_mental_model.return_value = {"operation_id": "refresh-op"}
+    session.query(MentalModelRegistration).filter_by(id=removed.id).delete()
+    session.commit()
+
+    _submit_refresh_for_affected_models(session, bank, [survivor, removed], client=hindsight)
+
+    session.refresh(survivor)
+    assert survivor.refresh_operation_id == "refresh-op"
+
+
 def test_model_refresh_submission_failure_leaves_it_required_without_blocking_others(
     session, bank, hindsight
 ):

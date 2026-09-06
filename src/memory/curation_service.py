@@ -170,11 +170,18 @@ def _submit_refresh_for_affected_models(
             continue
         try:
             result = client.refresh_mental_model(bank.bank_id, model.upstream_model_id)
+            operation_id = result.get("operation_id") or result.get("id")
+            model_registry.record_model_refresh_operation(db, bank, model.model_key, operation_id)
+            db.commit()
         except DomainError:
+            # Covers both a failed submission AND `record_model_refresh_operation`
+            # racing a concurrent delete of this exact model (MentalModelNotFound
+            # is a DomainError too) -- either way this one model is left
+            # withheld/required for later repair, and the loop moves on to the
+            # next affected model rather than letting an uncaught exception
+            # abort the whole batch out of an already-committed curation mutation.
+            db.rollback()
             continue
-        operation_id = result.get("operation_id") or result.get("id")
-        model_registry.record_model_refresh_operation(db, bank, model.model_key, operation_id)
-        db.commit()
 
 
 def _finalize_proven_mutation(

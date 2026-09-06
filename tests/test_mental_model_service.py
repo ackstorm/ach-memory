@@ -536,12 +536,32 @@ def test_delete_is_idempotent_and_a_404_upstream_satisfies_it(session, bank, hin
     hindsight.delete_mental_model.side_effect = MentalModelNotFound("gone")
 
     delete_model(session, bank, created.model_key, operation_id=str(uuid4()), client=hindsight)
-    # second call, a DIFFERENT operation id: the row's own lifecycle_state
-    # already short-circuits before the ledger is even consulted.
+    # Second call, a DIFFERENT operation id: the ledger records it as its
+    # own fresh, immediately-completed entry (no conflict, since nothing
+    # existed under this id yet), and the row's own already-deleted
+    # lifecycle_state is what makes it a no-op either way.
     delete_model(session, bank, created.model_key, operation_id=str(uuid4()), client=hindsight)
 
     with pytest.raises(MentalModelNotFound):
         get_model(session, bank, created.model_key)
+
+
+def test_delete_reuse_of_an_operation_id_against_an_already_deleted_model_still_conflicts(
+    session, bank, hindsight, create_request
+):
+    """The ledger is consulted BEFORE the already-deleted short-circuit:
+    reusing an operation_id for a genuinely different model after the
+    first one is already gone must still raise IdempotencyConflict, not
+    silently succeed as a second no-op."""
+    first = create_custom_model(session, bank, create_request, client=hindsight)
+    second = create_custom_model(
+        session, bank, custom_request(name="second"), client=hindsight
+    )
+    operation_id = str(uuid4())
+    delete_model(session, bank, first.model_key, operation_id=operation_id, client=hindsight)
+
+    with pytest.raises(IdempotencyConflict):
+        delete_model(session, bank, second.model_key, operation_id=operation_id, client=hindsight)
 
 
 def test_delete_a_builtin_is_rejected(session, user_bank_with_builtin, hindsight):

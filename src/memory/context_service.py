@@ -150,6 +150,15 @@ class ContextService:
                 ):
                     continue
                 jobs.append((row, bank))
+        else:
+            # The deadline was already gone before the registry could even
+            # be queried (e.g. slow project/bank resolution) -- which
+            # specific always-in-context models would have been considered
+            # is unknown, but the omission must still be machine-readable
+            # rather than the section just silently never appearing.
+            omissions.append(
+                DeliveryOmission(key="always-in-context-models", reason="deadline_exceeded")
+            )
         if jobs and remaining() > 0:
             pool = ThreadPoolExecutor(max_workers=min(len(jobs), 9))
 
@@ -209,43 +218,52 @@ class ContextService:
         now = datetime.now(UTC)
         active_claims: list[tuple[str, RetainedRecord]] = []
         total_available = 0
-        if remaining() > 0:
-            for scope, bank in banks:
-                if scope in withheld_scopes:
-                    continue
-                filters = (
-                    RetainedRecord.tenant_id == self.principal.tenant_id,
-                    RetainedRecord.scope == scope,
-                    RetainedRecord.user_id == (bank.user_id if scope == "user" else None),
-                    RetainedRecord.project_internal_id == (bank.project_internal_id if scope == "project" else None),
-                    RetainedRecord.lifecycle == "active",
-                    RetainedRecord.upstream_state.in_(("accepted", "completed")),
-                    RetainedRecord.valid_until.is_not(None),
-                    RetainedRecord.valid_until > now,
-                )
-                self._set_statement_timeout(remaining())
-                total_available += (
-                    self.db.scalar(select(func.count()).select_from(RetainedRecord).where(*filters)) or 0
-                )
-                # An ordered, bounded prefix -- never the whole ledger
-                # (SPEC's currentness-over-availability boundary applies to
-                # database work too, not just the Hindsight read phase).
-                claims = self.db.scalars(
-                    select(RetainedRecord)
-                    .where(*filters)
-                    .order_by(RetainedRecord.valid_until, RetainedRecord.recorded_at, RetainedRecord.document_id)
-                    .limit(ACTIVE_CLAIMS_FETCH_LIMIT)
-                ).all()
-                active_claims.extend((scope, record) for record in claims)
-            active_claims.sort(
-                key=lambda item: (
-                    item[1].valid_until,
-                    item[1].recorded_at,
-                    item[1].document_id,
-                )
+        claims_deadline_exceeded = False
+        for scope, bank in banks:
+            if scope in withheld_scopes:
+                continue
+            if remaining() <= 0:
+                # Either the whole budget was already gone before this phase
+                # started, or an earlier scope's own queries used the rest --
+                # stop before a scope's query ever runs on a near-zero
+                # budget. `_set_statement_timeout` clamps to a 1ms floor, and
+                # a real query PostgreSQL cancels under that floor raises an
+                # uncaught OperationalError instead of a graceful omission.
+                claims_deadline_exceeded = True
+                break
+            filters = (
+                RetainedRecord.tenant_id == self.principal.tenant_id,
+                RetainedRecord.scope == scope,
+                RetainedRecord.user_id == (bank.user_id if scope == "user" else None),
+                RetainedRecord.project_internal_id == (bank.project_internal_id if scope == "project" else None),
+                RetainedRecord.lifecycle == "active",
+                RetainedRecord.upstream_state.in_(("accepted", "completed")),
+                RetainedRecord.valid_until.is_not(None),
+                RetainedRecord.valid_until > now,
             )
-            active_claims = active_claims[:ACTIVE_CLAIMS_FETCH_LIMIT]
-        else:
+            self._set_statement_timeout(remaining())
+            total_available += (
+                self.db.scalar(select(func.count()).select_from(RetainedRecord).where(*filters)) or 0
+            )
+            # An ordered, bounded prefix -- never the whole ledger (SPEC's
+            # currentness-over-availability boundary applies to database
+            # work too, not just the Hindsight read phase).
+            claims = self.db.scalars(
+                select(RetainedRecord)
+                .where(*filters)
+                .order_by(RetainedRecord.valid_until, RetainedRecord.recorded_at, RetainedRecord.document_id)
+                .limit(ACTIVE_CLAIMS_FETCH_LIMIT)
+            ).all()
+            active_claims.extend((scope, record) for record in claims)
+        active_claims.sort(
+            key=lambda item: (
+                item[1].valid_until,
+                item[1].recorded_at,
+                item[1].document_id,
+            )
+        )
+        active_claims = active_claims[:ACTIVE_CLAIMS_FETCH_LIMIT]
+        if claims_deadline_exceeded:
             omissions.append(DeliveryOmission(key="active-claims", reason="deadline_exceeded"))
         claims_text, claims_omitted = _bounded_active_claims(
             active_claims, total_available=total_available
