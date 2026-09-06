@@ -57,18 +57,13 @@ Tasks 1 and 3 may run in parallel in separate worktrees. Task 2 starts after Tas
 
 Add REST and MCP tests showing that correction rejects secrets and a 4,097-byte canonical claim, accepts exactly 4,096 bytes, and persists/sends normalized canonical content rather than caller text. Exercise both a tracked ACH source and an authorized untracked legacy Hindsight memory.
 
-Use this exact input/expectation matrix for both surfaces:
+Construct the token-shaped secret only inside the test process so repository text and agent prompts never contain a credential-shaped literal:
 
-```json
-[
-  {"content": "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "error": "content_rejected_by_sanitizer", "upstream_calls": 0},
-  {"content_length_ascii": 4097, "error": "CONTENT_TOO_LARGE", "upstream_calls": 0},
-  {"content_length_ascii": 4096, "status": "completed", "upstream_text_length": 4096},
-  {"content": "Stable\t\tclaim.  \r\n", "upstream_text": "Stable claim.\n"}
-]
+```python
+token_shaped_secret = "".join(("g", "hp", "_", "A" * 36))
 ```
 
-Name the REST tests `test_correct_rejects_secret`, `test_correct_rejects_canonical_oversize`, `test_correct_accepts_exact_canonical_limit`, and `test_correct_uses_normalized_claim`. Give the MCP twins the same suffix under `test_mcp_correct_*`. In every rejection test assert the mocked Hindsight route/client received zero calls.
+Use these exact expectations for both surfaces: `token_shaped_secret` returns `content_rejected_by_sanitizer` with zero upstream calls; `"x" * 4097` returns `CONTENT_TOO_LARGE` with zero upstream calls; `"x" * 4096` completes and sends 4,096 bytes; and `"Stable\t\tclaim.  \r\n"` sends `"Stable claim.\n"`. Name the REST tests `test_correct_rejects_secret`, `test_correct_rejects_canonical_oversize`, `test_correct_accepts_exact_canonical_limit`, and `test_correct_uses_normalized_claim`. Give the MCP twins the same suffix under `test_mcp_correct_*`.
 
 - [ ] **Step 2: Run the correction tests and confirm RED**
 
