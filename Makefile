@@ -45,9 +45,16 @@ testdb-rm: ## Remove the test Postgres and its data
 test: testdb ## Unit and API tests
 	uv run pytest -m "not integration" -q
 
+# Pinned, not `:latest`. An unpinned scanner silently changes what the gate
+# means: 8.30.1's default ruleset newly flagged four strings that are not
+# secrets (a tokenizer version, a project slug, a synthetic canary fixture),
+# turning `verify` red on untouched history with no local change to explain
+# it. Bump this deliberately and re-read the findings when you do.
+GITLEAKS_VERSION = v8.30.1
+
 .PHONY: secrets
 secrets: ## gitleaks over the git history and the working tree
-	docker run --rm -v "$(CURDIR):/repo:ro" zricethezav/gitleaks:latest \
+	docker run --rm -v "$(CURDIR):/repo:ro" zricethezav/gitleaks:$(GITLEAKS_VERSION) \
 		detect --source=/repo --redact --no-banner --config=/repo/.gitleaks.toml
 
 .PHONY: chart
