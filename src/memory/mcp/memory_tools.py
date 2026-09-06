@@ -577,8 +577,12 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         project_slug: str | None = None,
         git_locator: str | None = None,
+        operation_id: str | None = None,
     ) -> ToolResult:
+        accepted_operation_id: str | None = None
+
         def body_factory() -> CorrectRequest:
+            nonlocal accepted_operation_id
             # Reuses CorrectRequest itself rather than a bare ScopedRequest --
             # the same fix _retain already got for RetainRequest. A bare
             # ScopedRequest here dropped `content`'s min_length=1/_not_blank
@@ -589,9 +593,11 @@ def register(mcp: MCPServer) -> None:
             # rejection, the 4096-byte claim boundary) happens in `call`,
             # AFTER bank resolution -- not here -- so it runs only once
             # authorization has already cleared (see `call`'s comment).
+            accepted_operation_id = operation_id or str(uuid.uuid4())
             return CorrectRequest(
                 scope=scope, project_slug=project_slug, git_locator=git_locator,
                 memory_id=memory_id, content=content,
+                operation_id=accepted_operation_id,
             )
 
         def call(bank, db, principal, slug):
@@ -599,8 +605,14 @@ def register(mcp: MCPServer) -> None:
             read_service.ensure_current_read_allowed(db, bank_ref)
             retained = get_by_source_memory_id(db, bank_ref, memory_id)
             if retained is not None:
+                assert accepted_operation_id is not None
                 curation_service.correct_record(
-                    db, retained, content, client=get_client(), bank_id=bank
+                    db,
+                    retained,
+                    content,
+                    operation_id=accepted_operation_id,
+                    client=get_client(),
+                    bank_id=bank,
                 )
                 # Canonical text `correct_record` actually stored, never the
                 # caller's raw input.

@@ -17,6 +17,7 @@ from memory.errors import (
     BankCurrentnessUnavailable,
     CurationNeedsOperator,
     DocumentNotFound,
+    IdempotencyConflict,
     MemoryNotFound,
 )
 from memory.hindsight.client import HindsightClient, HindsightOutcomeUnknown
@@ -96,7 +97,14 @@ def test_correct_proven_success_updates_content_and_keeps_lifecycle(session, ban
     retained = _retained(session, bank)
     hindsight.curate.return_value = {"id": retained.source_memory_id}
 
-    result = correct_record(session, retained, "Updated claim text.", client=hindsight, bank_id=bank.bank_id)
+    result = correct_record(
+        session,
+        retained,
+        "Updated claim text.",
+        operation_id=str(uuid4()),
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
 
     assert result.state == "completed"
     assert retained.canonical_content == "Updated claim text."
@@ -107,7 +115,14 @@ def test_correction_preserves_prior_canonical_revision(session, bank, hindsight)
     retained = _retained(session, bank, canonical_content="old")
     hindsight.curate.return_value = {"id": retained.source_memory_id}
 
-    correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+    correct_record(
+        session,
+        retained,
+        "new",
+        operation_id=str(uuid4()),
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
 
     revision = session.query(RetainedRecordRevision).one()
     op = session.query(CurationOperation).one()
@@ -121,11 +136,93 @@ def test_exact_correction_retry_has_one_revision(session, bank, hindsight):
     retained = _retained(session, bank, canonical_content="old")
     hindsight.curate.return_value = {"id": retained.source_memory_id}
 
-    correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
-    correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+    operation_id = str(uuid4())
+    correct_record(
+        session,
+        retained,
+        "new",
+        operation_id=operation_id,
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
+    correct_record(
+        session,
+        retained,
+        "new",
+        operation_id=operation_id,
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
 
     assert session.query(RetainedRecordRevision).count() == 1
     assert hindsight.curate.call_count == 2
+
+
+def test_distinct_correction_operations_preserve_oscillating_history(
+    session, bank, hindsight
+):
+    """Removing the caller operation id from `correct_record` makes the
+    final A -> B correction reuse the first operation and lose the preceding
+    A revision. Each user action needs its own id; only transport retries of
+    that exact action deduplicate."""
+    retained = _retained(session, bank, canonical_content="A")
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+
+    for operation_id, content in (
+        ("11111111-1111-4111-8111-111111111111", "B"),
+        ("22222222-2222-4222-8222-222222222222", "A"),
+        ("33333333-3333-4333-8333-333333333333", "B"),
+    ):
+        correct_record(
+            session,
+            retained,
+            content,
+            operation_id=operation_id,
+            client=hindsight,
+            bank_id=bank.bank_id,
+        )
+
+    revisions = list(
+        session.scalars(
+            select(RetainedRecordRevision).order_by(RetainedRecordRevision.revision)
+        )
+    )
+    assert [revision.canonical_content for revision in revisions] == ["A", "B", "A"]
+    assert [revision.curation_operation_id for revision in revisions] == [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+    ]
+    assert retained.canonical_content == "B"
+
+
+def test_correction_operation_id_rejects_a_different_payload(
+    session, bank, hindsight
+):
+    retained = _retained(session, bank, canonical_content="A")
+    operation_id = "11111111-1111-4111-8111-111111111111"
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+
+    correct_record(
+        session,
+        retained,
+        "B",
+        operation_id=operation_id,
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
+    with pytest.raises(IdempotencyConflict):
+        correct_record(
+            session,
+            retained,
+            "C",
+            operation_id=operation_id,
+            client=hindsight,
+            bank_id=bank.bank_id,
+        )
+
+    assert retained.canonical_content == "B"
+    assert hindsight.curate.call_count == 1
 
 
 def test_unknown_correction_outcome_leaves_prior_canonical_content_current(session, bank, hindsight):
@@ -133,7 +230,14 @@ def test_unknown_correction_outcome_leaves_prior_canonical_content_current(sessi
     hindsight.curate.side_effect = HindsightOutcomeUnknown()
 
     with pytest.raises(BankCurrentnessUnavailable):
-        correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+        correct_record(
+            session,
+            retained,
+            "new",
+            operation_id=str(uuid4()),
+            client=hindsight,
+            bank_id=bank.bank_id,
+        )
 
     assert retained.canonical_content == "old"
     assert session.query(RetainedRecordRevision).count() == 1
@@ -142,7 +246,14 @@ def test_unknown_correction_outcome_leaves_prior_canonical_content_current(sessi
 def test_hard_delete_purges_revisions(session, bank, hindsight):
     retained = _retained(session, bank, canonical_content="old")
     hindsight.curate.return_value = {"id": retained.source_memory_id}
-    correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+    correct_record(
+        session,
+        retained,
+        "new",
+        operation_id=str(uuid4()),
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
     assert session.query(RetainedRecordRevision).count() == 1
 
     hindsight.delete_document.return_value = {"deleted": True}
@@ -219,7 +330,14 @@ def test_absent_target_needs_operator_for_correct(session, bank, hindsight):
     hindsight.curate.side_effect = MemoryNotFound()
 
     with pytest.raises(CurationNeedsOperator):
-        correct_record(session, retained, "new text", client=hindsight, bank_id=bank.bank_id)
+        correct_record(
+            session,
+            retained,
+            "new text",
+            operation_id=str(uuid4()),
+            client=hindsight,
+            bank_id=bank.bank_id,
+        )
 
     assert bank_is_withheld(session, bank) is True
     assert retained.lifecycle == "active"
@@ -238,7 +356,14 @@ def test_indefinite_correction_withholds_an_admitting_model(session, bank, hinds
     hindsight.curate.return_value = {"id": retained.source_memory_id}
     hindsight.refresh_mental_model.return_value = {"operation_id": "refresh-42"}
 
-    correct_record(session, retained, "revised", client=hindsight, bank_id=bank.bank_id)
+    correct_record(
+        session,
+        retained,
+        "revised",
+        operation_id=str(uuid4()),
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
 
     model = model_registry.list_registered_models(session, bank)[0]
     assert model.delivery_state == "withheld"
@@ -261,7 +386,14 @@ def test_expiring_correction_never_touches_models(session, bank, hindsight):
     )
     hindsight.curate.return_value = {"id": retained.source_memory_id}
 
-    correct_record(session, retained, "revised", client=hindsight, bank_id=bank.bank_id)
+    correct_record(
+        session,
+        retained,
+        "revised",
+        operation_id=str(uuid4()),
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
 
     model = model_registry.list_registered_models(session, bank)[0]
     assert model.delivery_state == "ready"
@@ -389,7 +521,14 @@ def test_model_refresh_submission_failure_leaves_it_required_without_blocking_ot
     hindsight.curate.return_value = {"id": retained.source_memory_id}
     hindsight.refresh_mental_model.side_effect = _refresh_side_effect
 
-    correct_record(session, retained, "revised", client=hindsight, bank_id=bank.bank_id)
+    correct_record(
+        session,
+        retained,
+        "revised",
+        operation_id=str(uuid4()),
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
 
     session.refresh(failing)
     session.refresh(ok)

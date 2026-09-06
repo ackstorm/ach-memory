@@ -1352,7 +1352,7 @@ EXPECTED_TOOLS = {
     "update_mental_model", "refresh_mental_model", "delete_mental_model",
 }
 
-TOOL_CONTRACT_SHA256 = "e3971e68569b5b21dfb484f0d3d0135d9b46c8da9a41139695472a0cbcb4a1fd"
+TOOL_CONTRACT_SHA256 = "637dd568a63eb338fea1b14c7a0863ce32b05e5ba0d8f6c875db892d1b9bd8ad"
 
 
 def test_tool_registration_is_stable_after_module_split():

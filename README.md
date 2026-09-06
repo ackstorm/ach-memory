@@ -28,7 +28,9 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
   English-only in 0.4.0), and stores it with typed `memory_type`/`basis`/
   `trigger`/evidence — never an implicit background capture.
 - Reversible memory curation (`forget`, `restore`, `correct`), each proving
-  its Hindsight outcome before ACH's own record changes.
+  its Hindsight outcome before ACH's own record changes. `correct` uses a
+  caller-visible operation ID so exact retries deduplicate without collapsing
+  separate corrections that happen to return to an earlier value.
 - Governed mental models: one built-in plus five custom models per bank,
   an explicit `always_in_context` delivery choice, and a model withheld
   from delivery — never served as falsely current — until its refresh

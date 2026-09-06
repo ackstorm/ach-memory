@@ -870,7 +870,7 @@ reflect(scope, query)
 list_memories(scope, ...filters)
 get_memory(scope, memory_id)
 forget(scope, memory_id)
-correct(scope, memory_id, content)
+correct(scope, memory_id, content, operation_id)
 restore(scope, memory_id)
 ```
 
@@ -1042,7 +1042,7 @@ granularities.
 | Operation | Hindsight mechanism | Granularity | Reversible | Caller |
 |---|---|---|---|---|
 | `forget(scope, memory_id)` | `PATCH .../memories/{id}` → invalidate | one memory | yes, via `restore` | agent (MCP) |
-| `correct(scope, memory_id, content)` | `PATCH .../memories/{id}` → edit | one memory | n/a | agent (MCP) |
+| `correct(scope, memory_id, content, operation_id)` | `PATCH .../memories/{id}` → edit | one memory | n/a | agent (MCP) |
 | `delete_document(scope, document_id)` | `DELETE .../documents/{id}` | a caller-defined logical source and its derived memories | **no** | agent (MCP) |
 | `clear_memories(scope, type?)` | `clear_memories` | whole bank, or one fact type (`world` / `experience` / `observation`) | **no** | admin (API + master key) |
 | `DELETE /v1/admin/memory/{scope}` | `delete_bank` | everything | **no** | admin (API + master key) |

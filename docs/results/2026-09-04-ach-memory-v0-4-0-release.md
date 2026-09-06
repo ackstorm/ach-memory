@@ -18,7 +18,7 @@ boundaries, real model-refresh operation identities, bounded context deadline):
   upgrade path proving Working Session/Working State survive `a7b8c9d0e1f2`'s removal of
   `capture_slices`/`context_revisions` while only those two tables disappear;
 - one Alembic head: `c9d0e1f2a3b4`;
-- real Hindsight 0.9.2 disposable-bank gate (confirmed via `/openapi.json`): 9 passed in 204.73
+- real Hindsight 0.9.2 disposable-bank gate (confirmed via `/openapi.json`): 9 passed in 217.01
   seconds;
 - maximum context selection (4 User + 5 Project custom models): nine live model reads, 30 warmed
   calls, p95 0.155154 seconds;
@@ -80,16 +80,14 @@ Investigated and confirmed already correct by design (not fixed):
   audit." Both the plan and the shipped test (`test_unknown_correction_outcome_leaves_prior_canonical_content_current`)
   require this; it is not an oversight.
 
-Investigated and accepted as a documented, narrow residual limitation (not fixed in this pass):
+One auditability follow-up was closed before merge: `correct` now requires a caller-visible
+`operation_id` over REST and accepts an optional one over MCP (where the adapter creates it before
+transport when omitted). Exact retries reuse one revision; distinct A→B→A→B corrections retain
+all three overwritten values. Reusing an operation ID with a different target or canonical
+content is rejected before another upstream call.
 
-- A correction's revision-dedup key is derived from `(retained_record_id, action, desired_content)`
-  with no caller-supplied nonce, matching the existing `CurationOperation` retry-identity
-  convention it reuses. Correcting a claim back to a value it held several corrections ago (an
-  oscillating A→B→A→B sequence) reuses that earlier operation's identity and silently skips
-  recording the true intermediate transition in the revision history. `retained.canonical_content`
-  itself is never affected -- only one audit-trail row in a specific, uncommon back-and-forth
-  pattern. Closing this properly needs `correct` to carry its own caller-supplied operation id
-  (a REST/MCP contract addition), which is out of this plan's scope; tracked as a follow-up.
+Two narrow residual limitations remain documented rather than silently accepted:
+
 - `update_model`'s idempotency ledger is marked `completed` only after both the upstream
   definition update and the upstream refresh submission succeed. A process crash between a
   successful `refresh_mental_model` call and that final commit means a retry re-executes the
@@ -103,11 +101,11 @@ Investigated and accepted as a documented, narrow residual limitation (not fixed
   touching an already-correct, already-tested path, at the cost of two parallel idempotency
   mechanisms in the codebase.
 
-All fixes were re-verified against the full non-live suite (1,350 passed, 2 skipped) and the
+All fixes were re-verified against the full non-live suite (1,353 passed, 2 skipped) and the
 complete disposable Hindsight 0.9.2 live gate (9 passed) after the fix commit.
 
 Not performed: production activation, production cleanup, deployment, tagging or publishing.
 
-**`production_eligible=true`**, on the evidence above, with the three residual limitations
+**`production_eligible=true`**, on the evidence above, with the two residual limitations
 recorded rather than silently accepted -- each is narrow, non-corrupting, and independently
 tracked. Activation itself remains a separate, unperformed decision.

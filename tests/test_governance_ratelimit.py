@@ -101,7 +101,12 @@ GOVERNANCE_ROUTES: dict[str, tuple[str, str, dict | None, dict | None, bool]] = 
     ),
     "memory.correct": (
         "POST", "/v1/memory/correct",
-        {"scope": "user", "memory_id": MEM_ID, "content": "fixed"}, None, True,
+        {
+            "scope": "user",
+            "memory_id": MEM_ID,
+            "content": "fixed",
+            "operation_id": "44444444-4444-4444-8444-444444444444",
+        }, None, True,
     ),
     "documents.list": (
         "POST", "/v1/memory/documents/list", {"scope": "user"}, None, False,

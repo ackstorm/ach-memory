@@ -507,7 +507,12 @@ graph currentness.
 `correct` repairs one independently correctable claim while preserving its stable `document_id`
 and source-memory ID. ACH appends an audit revision and delegates the fact edit to Hindsight's
 curation API. Hindsight owns re-embedding, removal of affected observations and links, and
-reconsolidation. A clerical `valid_until` change within the same indefinite/expiring class updates
+reconsolidation. Every `correct` request carries a caller-visible UUID `operation_id`; MCP creates
+one before transport when omitted by the agent and reuses an explicitly supplied value. Repeating
+the same operation ID with the same target and canonical content is an exact retry, while reuse
+with a different target or content returns `409`. Distinct corrections require distinct IDs even
+when content oscillates A→B→A→B, so every overwritten canonical value receives its own immutable
+revision. A clerical `valid_until` change within the same indefinite/expiring class updates
 the ACH ledger; changing that class, semantic type or scope requires a new retain and forget.
 
 If the new statement is a separate claim rather than a correction, the agent uses a new `retain`

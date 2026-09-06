@@ -7,6 +7,7 @@ import respx
 from memory.models import Project, ProjectSlug, User
 
 BASE = "http://hindsight.test"
+CORRECT_OPERATION_ID = "44444444-4444-4444-8444-444444444444"
 
 
 def _headers(key: str) -> dict[str, str]:
@@ -145,11 +146,36 @@ def test_correct_edits_the_text(client, juan, tenant):
 
     client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": mem_id, "content": "uv, not pip"},
+        json={
+            "scope": "user",
+            "memory_id": mem_id,
+            "content": "uv, not pip",
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
 
     assert b'"text":"uv, not pip"' in route.calls.last.request.read()
+
+
+@respx.mock
+def test_correct_requires_a_caller_operation_id(client, juan, tenant):
+    """Removing `operation_id` from CorrectRequest makes transport retries
+    indistinguishable from distinct A -> B -> A -> B user actions, so the
+    immutable revision ledger cannot be complete."""
+    mem_id = "22222222-2222-2222-2222-222222222222"
+    route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": mem_id}))
+
+    response = client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": mem_id, "content": "uv, not pip"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 422
+    assert route.call_count == 0
 
 
 @respx.mock
@@ -387,6 +413,7 @@ def test_idor_correct_cannot_reach_an_unauthorized_bank(client, juan, alice, ten
             "project_slug": "payments-api",
             "memory_id": mem_id,
             "content": "uv, not pip",
+            "operation_id": CORRECT_OPERATION_ID,
         },
         headers=alice["headers"],
     )
@@ -514,6 +541,7 @@ def test_correct_rejects_blank_content_at_the_boundary(client, juan, tenant):
             "scope": "user",
             "memory_id": "11111111-1111-1111-1111-111111111111",
             "content": "   ",
+            "operation_id": CORRECT_OPERATION_ID,
         },
         headers=juan["headers"],
     )
@@ -540,6 +568,7 @@ def test_correct_rejects_oversize_content(client, juan, tenant):
             "scope": "user",
             "memory_id": "11111111-1111-1111-1111-111111111111",
             "content": oversize,
+            "operation_id": CORRECT_OPERATION_ID,
         },
         headers=juan["headers"],
     )
@@ -561,7 +590,12 @@ def test_correct_rejects_secret(client, juan, tenant):
 
     response = client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": untracked_id, "content": token_shaped_secret},
+        json={
+            "scope": "user",
+            "memory_id": untracked_id,
+            "content": token_shaped_secret,
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
     assert response.status_code == 422
@@ -576,7 +610,12 @@ def test_correct_rejects_secret(client, juan, tenant):
 
     response = client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": tracked_id, "content": token_shaped_secret},
+        json={
+            "scope": "user",
+            "memory_id": tracked_id,
+            "content": token_shaped_secret,
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
     assert response.status_code == 422
@@ -595,7 +634,12 @@ def test_correct_rejects_canonical_oversize(client, juan, tenant):
 
     response = client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": untracked_id, "content": oversize},
+        json={
+            "scope": "user",
+            "memory_id": untracked_id,
+            "content": oversize,
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
     assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
@@ -609,7 +653,12 @@ def test_correct_rejects_canonical_oversize(client, juan, tenant):
 
     response = client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": tracked_id, "content": oversize},
+        json={
+            "scope": "user",
+            "memory_id": tracked_id,
+            "content": oversize,
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
     assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
@@ -627,7 +676,12 @@ def test_correct_accepts_exact_canonical_limit(client, juan, tenant):
 
     response = client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": untracked_id, "content": exact},
+        json={
+            "scope": "user",
+            "memory_id": untracked_id,
+            "content": exact,
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
     assert response.status_code == 200, response.text
@@ -642,7 +696,12 @@ def test_correct_accepts_exact_canonical_limit(client, juan, tenant):
 
     response = client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": tracked_id, "content": exact},
+        json={
+            "scope": "user",
+            "memory_id": tracked_id,
+            "content": exact,
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
     assert response.status_code == 200, response.text
@@ -662,7 +721,12 @@ def test_correct_uses_normalized_claim(client, juan, tenant):
 
     client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": untracked_id, "content": raw},
+        json={
+            "scope": "user",
+            "memory_id": untracked_id,
+            "content": raw,
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
     assert canonical in untracked_route.calls.last.request.read()
@@ -675,7 +739,12 @@ def test_correct_uses_normalized_claim(client, juan, tenant):
 
     client.post(
         "/v1/memory/correct",
-        json={"scope": "user", "memory_id": tracked_id, "content": raw},
+        json={
+            "scope": "user",
+            "memory_id": tracked_id,
+            "content": raw,
+            "operation_id": CORRECT_OPERATION_ID,
+        },
         headers=juan["headers"],
     )
     assert canonical in tracked_route.calls.last.request.read()

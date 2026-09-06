@@ -10,6 +10,7 @@ from memory.api.memory import (
     MAX_PAGE_SIZE,
     MemoryResponse,
     ScopedRequest,
+    UUID4Str,
     _check_content_size,
     _resolve_bank,
     _strip_bank_id,
@@ -66,6 +67,7 @@ class CorrectRequest(MemoryIdRequest):
     # back as 409 MEMORY_NOT_CURATABLE -- telling an agent the fact is a
     # derived observation when it simply sent nothing (review finding I5).
     content: str = Field(min_length=1)
+    operation_id: UUID4Str
 
     @field_validator("content")
     @classmethod
@@ -276,7 +278,12 @@ def correct(
     retained = _tracked_record(db, principal, body)
     if retained is not None:
         curation_service.correct_record(
-            db, retained, body.content, client=get_client(), bank_id=bank_id
+            db,
+            retained,
+            body.content,
+            operation_id=body.operation_id,
+            client=get_client(),
+            bank_id=bank_id,
         )
         # Echoes the canonical text `correct_record` actually stored, never
         # the caller's raw input (SPEC: a public response includes text only

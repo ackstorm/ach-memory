@@ -82,7 +82,12 @@ ROUTES = {
     ),
     "correct": (
         "POST", "/v1/memory/correct",
-        {"scope": "user", "memory_id": MEMORY_ID, "content": "fixed"}, None, "juan",
+        {
+            "scope": "user",
+            "memory_id": MEMORY_ID,
+            "content": "fixed",
+            "operation_id": "44444444-4444-4444-8444-444444444444",
+        }, None, "juan",
     ),
     # documents.py
     "list_documents": ("POST", "/v1/memory/documents/list", {"scope": "user"}, None, "juan"),

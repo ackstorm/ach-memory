@@ -22,6 +22,7 @@ from memory.errors import (
     CurationNeedsOperator,
     DocumentNotFound,
     DomainError,
+    IdempotencyConflict,
     MemoryNotCuratable,
     MemoryNotFound,
 )
@@ -78,15 +79,31 @@ def _accept_operation(
     *,
     action: str,
     desired_content: str | None = None,
+    operation_id: str | None = None,
 ) -> CurationOperation:
     _lock_bank(db, bank)
-    operation_id = _operation_id_for(retained.id, action, desired_content)
+    operation_id = operation_id or _operation_id_for(
+        retained.id, action, desired_content
+    )
     existing = db.scalar(
         select(CurationOperation)
         .where(CurationOperation.operation_id == operation_id)
         .with_for_update()
     )
     if existing is not None:
+        if (
+            existing.retained_record_id != retained.id
+            or existing.tenant_id != bank.tenant_id
+            or existing.scope != bank.scope
+            or existing.user_id != bank.user_id
+            or existing.project_internal_id != bank.project_internal_id
+            or existing.action != action
+            or existing.desired_content != desired_content
+        ):
+            raise IdempotencyConflict(
+                "operation_id was already used for a different curation payload",
+                operation_id=operation_id,
+            )
         return existing
     row = CurationOperation(
         operation_id=operation_id,
@@ -266,12 +283,20 @@ def _mutate(
     bank_id: str,
     desired_content: str | None = None,
     reason: str | None = None,
+    operation_id: str | None = None,
 ) -> CurationResult:
     if retained.source_memory_id is None and action != "delete":
         raise MemoryNotFound("no confirmed source memory to curate yet")
 
     bank = _bank_with_id(retained, bank_id)
-    op = _accept_operation(db, bank, retained, action=action, desired_content=desired_content)
+    op = _accept_operation(
+        db,
+        bank,
+        retained,
+        action=action,
+        desired_content=desired_content,
+        operation_id=operation_id,
+    )
     if action == "correct":
         # Snapshots retained's PRIOR canonical content -- desired_content has
         # not been assigned onto the row yet. Keyed by op.operation_id, so an
@@ -316,7 +341,13 @@ def _mutate(
 
 
 def correct_record(
-    db: Session, retained: RetainedRecord, content: str, *, client: HindsightClient, bank_id: str
+    db: Session,
+    retained: RetainedRecord,
+    content: str,
+    *,
+    operation_id: str,
+    client: HindsightClient,
+    bank_id: str,
 ) -> CurationResult:
     # Canonicalize HERE, not at the REST/MCP boundary: this is the one path
     # every tracked correction (either surface) runs through, so no caller
@@ -330,6 +361,7 @@ def correct_record(
         client=client,
         bank_id=bank_id,
         desired_content=canonical_content,
+        operation_id=operation_id,
     )
 
 
