@@ -60,7 +60,7 @@ def withheld_model(session, bank):
 
 
 def test_only_recorded_refresh_operation_can_make_model_ready(session, bank, withheld_model, hindsight):
-    hindsight.get_operation.return_value = {"id": "different", "status": "completed"}
+    hindsight.get_operation.return_value = {"operation_id": "different", "status": "completed"}
 
     result = observe_model_refresh(session, bank, withheld_model.model_key, client=hindsight)
 
@@ -68,7 +68,7 @@ def test_only_recorded_refresh_operation_can_make_model_ready(session, bank, wit
 
 
 def test_matching_completed_operation_makes_the_model_ready(session, bank, withheld_model, hindsight):
-    hindsight.get_operation.return_value = {"id": "op-real", "status": "completed"}
+    hindsight.get_operation.return_value = {"operation_id": "op-real", "status": "completed"}
 
     result = observe_model_refresh(session, bank, withheld_model.model_key, client=hindsight)
 
@@ -77,7 +77,19 @@ def test_matching_completed_operation_makes_the_model_ready(session, bank, withh
 
 
 def test_a_pending_operation_leaves_the_model_withheld(session, bank, withheld_model, hindsight):
-    hindsight.get_operation.return_value = {"id": "op-real", "status": "pending"}
+    hindsight.get_operation.return_value = {"operation_id": "op-real", "status": "pending"}
+
+    result = observe_model_refresh(session, bank, withheld_model.model_key, client=hindsight)
+
+    assert result.delivery_state == "withheld"
+    assert result.refresh_status == "pending"
+
+
+def test_a_processing_operation_leaves_the_model_withheld_not_failed(session, bank, withheld_model, hindsight):
+    """Hindsight 0.9.2 measured live: an in-progress refresh reports
+    "processing" (not "pending" the whole time, and never "running") --
+    the terminal-status whitelist must not mistake it for a failure."""
+    hindsight.get_operation.return_value = {"operation_id": "op-real", "status": "processing"}
 
     result = observe_model_refresh(session, bank, withheld_model.model_key, client=hindsight)
 
@@ -86,7 +98,7 @@ def test_a_pending_operation_leaves_the_model_withheld(session, bank, withheld_m
 
 
 def test_a_failed_operation_sets_refresh_status_failed_with_a_backoff(session, bank, withheld_model, hindsight):
-    hindsight.get_operation.return_value = {"id": "op-real", "status": "failed"}
+    hindsight.get_operation.return_value = {"operation_id": "op-real", "status": "failed"}
 
     result = observe_model_refresh(session, bank, withheld_model.model_key, client=hindsight)
 

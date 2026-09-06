@@ -700,7 +700,11 @@ def observe_model_refresh(
         return _to_view(row)
 
     operation = client.get_operation(bank.bank_id, row.refresh_operation_id)
-    if operation.get("id") != row.refresh_operation_id:
+    # Hindsight 0.9.2's get_operation response carries the id under
+    # "operation_id", never "id" -- measured live against a disposable
+    # deployment (this comparison using "id" never matched anything real,
+    # so a model could never observe its way from withheld to ready).
+    if operation.get("operation_id") != row.refresh_operation_id:
         logger.warning(
             "model_key=%s ignored a refresh operation observation whose id did not "
             "match the recorded operation",
@@ -709,19 +713,22 @@ def observe_model_refresh(
         return _to_view(row)
 
     status = operation.get("status")
-    if status in {"pending", "running"}:
-        return _to_view(row)
     if status == "completed":
         ready = model_registry.ready_model(db, bank, model_key, row.refresh_operation_id)
         db.commit()
         return _to_view(ready)
-
-    now = db.execute(select(func.now())).scalar_one()
-    failed = model_registry.mark_refresh_failed(
-        db, bank, model_key, row.refresh_operation_id, repair_not_before=_repair_not_before(now)
-    )
-    db.commit()
-    return _to_view(failed)
+    if status == "failed":
+        now = db.execute(select(func.now())).scalar_one()
+        failed = model_registry.mark_refresh_failed(
+            db, bank, model_key, row.refresh_operation_id, repair_not_before=_repair_not_before(now)
+        )
+        db.commit()
+        return _to_view(failed)
+    # Any other status (Hindsight 0.9.2 measured live: "pending", then
+    # "processing") is non-terminal -- a terminal-status whitelist, the same
+    # shape retention.py's _TERMINAL_STATUSES uses, so an unrecognized future
+    # status defaults to "still in progress" rather than "must have failed".
+    return _to_view(row)
 
 
 def repair_one_model(

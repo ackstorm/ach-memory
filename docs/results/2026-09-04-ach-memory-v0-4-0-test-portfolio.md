@@ -2,7 +2,14 @@
 
 Baseline: integrated pre-Plan-4 `main` at `2cb1753`: 2,240 non-integration tests passed, 4 skipped and 6 live tests deselected in 124.66 seconds.
 
-Final post-change gate: 1,313 passed and 2 skipped in 92.29 seconds. No test exists merely to remember a removed product surface.
+Post-cut gate (2026-09-05): 1,313 passed and 2 skipped in 92.29 seconds. No test exists merely to remember a removed product surface.
+
+Release-review closure gate (2026-09-06, on top of `fed3d50`): 1,346 passed and 2 skipped in
+171.06 seconds (`--ignore` the same five disposable/integration files this report's own gates
+enumerate). The added net count over the post-cut gate is new behavior coverage from the closure
+work itself -- immutable correction revisions, database-time expiry/validity boundaries, real
+model-refresh operation identities and the mental-model mutation ledger, the context deadline and
+bounded-ledger tests, and the majority-vote evaluator scoring tests -- not a reversal of the cut.
 
 | Tree | Baseline files / lines | Current files / lines | Change |
 |---|---:|---:|---:|

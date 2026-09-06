@@ -85,15 +85,77 @@ def test_perfect_closed_decisions_pass_the_frozen_policy():
 
     score = module.score_rows(rows, data, policy)
 
-    assert score == {
-        "passed": True,
-        "rows": 120,
-        "wrong_scope": 0,
-        "secret_retention": 0,
-        "critical_claim_recall": 1.0,
+    perfect_metrics = {
         "aggregate_recall": 1.0,
+        "critical_claim_recall": 1.0,
         "retention_precision": 1.0,
         "abstention_accuracy": 1.0,
         "memory_type_accuracy": 1.0,
+    }
+    assert score == {
+        "passed": True,
+        "raw_rows": 120,
+        "majority_outcomes": 40,
+        "wrong_scope": 0,
+        "secret_retention": 0,
+        **perfect_metrics,
+        "per_family": {family: dict(perfect_metrics) for family in policy["families"]},
+        "failing_case_ids": [],
         "reason_codes": [],
     }
+
+
+def _one_outlier_rows(module, *, corrupt: str):
+    """20 cases x 2 families x 3 repetitions, all correct, except repetition
+    0 of family[0]/case-01 -- outnumbered 2-to-1 by the other two reps."""
+    rows, data, policy = _perfect_rows(module)
+    family = policy["families"][0]
+    outlier = next(
+        row
+        for row in rows
+        if row["family"] == family and row["repetition"] == 0 and row["case_id"] == "case-01"
+    )
+    if corrupt == "action":
+        # A different, still-valid closed action -- outvoted 2-to-1 by the
+        # other two repetitions' correct decision.
+        outlier["action"] = "abstain" if outlier["action"] != "abstain" else "working_state"
+        outlier["evidence_shape"] = "none"
+    elif corrupt == "scope":
+        expected_scope = next(item for item in data if item["case_id"] == "case-01")["expected_scope"]
+        outlier["scope"] = "project" if expected_scope == "user" else "user"
+    else:  # pragma: no cover -- defensive, test-only helper
+        raise ValueError(corrupt)
+    return rows, data, policy
+
+
+def test_ordinary_metrics_use_per_family_case_majority():
+    """One outvoted repetition must not move any ordinary metric: the
+    (family, case_id) group's majority decision is what the other two
+    repetitions agree on."""
+    module = _module()
+    rows, data, policy = _one_outlier_rows(module, corrupt="action")
+
+    score = module.score_rows(rows, data, policy)
+
+    assert score["aggregate_recall"] == 1.0
+    assert score["raw_rows"] == 120
+    assert score["majority_outcomes"] == 40
+    assert score["failing_case_ids"] == []
+
+
+def test_single_raw_wrong_scope_is_never_hidden_by_majority():
+    """wrong_scope/secret_retention are raw-run scans across all 120 rows,
+    never majority-adjusted -- a single bad repetition must still fail the
+    hard gate even though the other two repetitions in its group agree on
+    the correct scope."""
+    module = _module()
+    rows, data, policy = _one_outlier_rows(module, corrupt="scope")
+
+    score = module.score_rows(rows, data, policy)
+
+    assert score["wrong_scope"] == 1
+    assert "WRONG_SCOPE" in score["reason_codes"]
+    assert score["passed"] is False
+    # The majority (2 of 3) decision for this group is still correct, so it
+    # must not appear as a failing majority outcome.
+    assert "case-01" not in score["failing_case_ids"]

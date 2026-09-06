@@ -188,12 +188,16 @@ def test_governed_mental_model_lifecycle_against_disposable_hindsight(
         )
 
     # refresh output is withheld until the exact operation completes
-    refreshed = refresh_model(session, live_bank, target.model_key, client=live_client)
+    refreshed = refresh_model(
+        session, live_bank, target.model_key, operation_id=str(uuid.uuid4()), client=live_client
+    )
     assert refreshed.delivery_state == "withheld"
     assert refreshed.refresh_status == "pending"
 
     # delete by ACH model_key removes only its mapped upstream model
-    delete_model(session, live_bank, created[4].model_key, client=live_client)
+    delete_model(
+        session, live_bank, created[4].model_key, operation_id=str(uuid.uuid4()), client=live_client
+    )
     with pytest.raises(MentalModelNotFound):
         get_model(session, live_bank, created[4].model_key)
     # its sibling remains untouched

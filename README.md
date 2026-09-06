@@ -14,17 +14,45 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
   after renames.
 - User keys for agents and a separate master key for provisioning and admin
   operations.
-- REST endpoints for memory, read-only recall/history, users, projects, groups, documents, operations,
+- REST endpoints for memory, recall/history, users, projects, groups, documents, operations,
   curation, directives, mental models, and audit access.
-- A 15-tool streamable HTTP MCP surface backed by the same authorization and
-  memory operations as REST.
-- Asynchronous retain operations, recall, reflect, and reversible memory
-  curation (`forget`, `restore`, and `correct`).
+- A streamable HTTP MCP surface backed by the same authorization and memory
+  operations as REST — memory read/write, mental-model governance, Working
+  State and bounded context loading. The exact tool set is pinned in
+  `tests/test_mcp_tools.py` rather than restated here, so this description
+  never drifts from what a host actually sees.
+- Explicit, proactive `retain` through the canonical retain/curation skill
+  shared by Claude Code, Codex, OpenCode and Pi: an agent decides when a
+  claim is durable and independently correctable enough to keep, sanitizes
+  and canonicalizes it (a 4 KiB limit, secret rejection, `ach-exact-v1`,
+  English-only in 0.4.0), and stores it with typed `memory_type`/`basis`/
+  `trigger`/evidence — never an implicit background capture.
+- Reversible memory curation (`forget`, `restore`, `correct`), each proving
+  its Hindsight outcome before ACH's own record changes.
+- Governed mental models: one built-in plus five custom models per bank,
+  an explicit `always_in_context` delivery choice, and a model withheld
+  from delivery — never served as falsely current — until its refresh
+  operation is proven complete.
+- Bounded standing-context loading (`ach-memory context load` / `load_context`):
+  always-in-context models, Project Metadata, active time-bounded claims and
+  explicit Working State, each under its own token budget, assembled inside
+  one two-second deadline that fails a slow model open rather than stalling
+  the whole response.
+- `recall`/`reflect` may also expire a bounded batch of claims already past
+  their stated expiry as a side effect of the access; both are honestly
+  advertised over MCP as non-read-only for exactly that reason.
 - Helm packaging for deployments where Postgres and Hindsight are managed
   separately.
 
-The complete contract is [SPEC-v1.md](SPEC-v1.md). The interactive REST
-reference is available at `/docs` when the service is running.
+The complete contract is [SPEC-v1.md](SPEC-v1.md); the 0.4.0 product
+specification is [docs/specs/2026-09-03-ach-memory-v0.4.0.md](docs/specs/2026-09-03-ach-memory-v0.4.0.md).
+The interactive REST reference is available at `/docs` when the service is
+running.
+
+Compatibility is measured against Hindsight 0.9.2. Shipping a release does
+not activate production behavior, mutate production banks, or perform data
+cleanup — those require separate approval (see
+[docs/releases/0.4.0.md](docs/releases/0.4.0.md)).
 
 ## Agent setup
 
@@ -72,7 +100,7 @@ arguments, credential in `env`:
 {
   "command": "uvx",
   "args": [
-    "--from", "git+https://github.com/ackstorm/ach-memory@v0.3.1",
+    "--from", "git+https://github.com/ackstorm/ach-memory@v0.4.0",
     "ach-memory", "mcp",
     "--url", "https://memory.example.com"
   ],
@@ -111,7 +139,7 @@ uv run ach-memory init opencode    # opencode | pi | all
 skipped:
 
 ```
-ach-memory 0.1.2  →  https://memory.example.com
+ach-memory 0.4.0  →  https://memory.example.com
 
   ✔ claude    plugin installed from ackstorm/ach-memory
   ✔ opencode  4 files → ~/.config/opencode
@@ -137,9 +165,11 @@ Two transport flags cover the non-default cases (`init <target> --local|--http`)
 
 Memory is explicit: installation adds memory tools, but agents do not retain or
 recall anything automatically. Ask an agent to use memory when you want it to.
-`recall` and `memory_history` are read-only and do not create projects or
-enrich repository metadata; `reflect` remains a confirmation-requiring,
-rate-limited LLM operation.
+`memory_history` and `load_context` are genuinely read-only and never create
+a project or enrich repository metadata. `recall` and `reflect` do not create
+or enrich either, but both may expire a bounded batch of past-due claims as a
+side effect of the access, so neither advertises `readOnlyHint`; `reflect`
+also remains a confirmation-requiring, rate-limited LLM operation.
 
 ## MCP
 

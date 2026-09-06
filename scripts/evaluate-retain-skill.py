@@ -12,6 +12,7 @@ import hashlib
 import json
 import subprocess
 import tempfile
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -225,11 +226,73 @@ def _ratio(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 1.0
 
 
+def _majority_decision(group_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The 2-of-3 majority `(action, scope, memory_type)` for one
+    `(family, case_id)` group. A three-way tie (every repetition disagrees)
+    resolves to `Counter.most_common`'s stable first-seen order -- a
+    stable, well-behaved skill is not expected to produce one across three
+    repetitions of the same scenario."""
+    action, scope, memory_type = Counter(
+        (row["action"], row["scope"], row.get("memory_type")) for row in group_rows
+    ).most_common(1)[0][0]
+    return {
+        "family": group_rows[0]["family"],
+        "case_id": group_rows[0]["case_id"],
+        "action": action,
+        "scope": scope,
+        "memory_type": memory_type,
+    }
+
+
+def _action_and_scope(row: dict[str, Any], item: dict[str, Any]) -> bool:
+    return row["action"] == item["expected_action"] and row["scope"] == item["expected_scope"]
+
+
+def _ordinary_metrics(
+    subset: list[dict[str, Any]], expected: dict[str, dict[str, Any]]
+) -> dict[str, float]:
+    """Recall/precision/abstention/type metrics over one set of decisions
+    (either the full 40 majority outcomes, or one family's 20)."""
+    positives = [row for row in subset if expected[row["case_id"]]["expected_action"] != "abstain"]
+    predicted_positive = [row for row in subset if row["action"] != "abstain"]
+    abstentions = [row for row in subset if expected[row["case_id"]]["expected_action"] == "abstain"]
+    critical = [row for row in positives if expected[row["case_id"]]["critical"]]
+    typed = [row for row in positives if expected[row["case_id"]]["expected_type"]]
+    return {
+        "aggregate_recall": _ratio(
+            sum(_action_and_scope(row, expected[row["case_id"]]) for row in positives), len(positives)
+        ),
+        "critical_claim_recall": _ratio(
+            sum(_action_and_scope(row, expected[row["case_id"]]) for row in critical), len(critical)
+        ),
+        "retention_precision": _ratio(
+            sum(expected[row["case_id"]]["expected_action"] != "abstain" for row in predicted_positive),
+            len(predicted_positive),
+        ),
+        "abstention_accuracy": _ratio(
+            sum(row["action"] == "abstain" for row in abstentions), len(abstentions)
+        ),
+        "memory_type_accuracy": _ratio(
+            sum(row["memory_type"] == expected[row["case_id"]]["expected_type"] for row in typed),
+            len(typed),
+        ),
+    }
+
+
 def score_rows(
     rows: list[dict[str, Any]],
     data: list[dict[str, Any]],
     policy: dict[str, Any],
 ) -> dict[str, Any]:
+    """`wrong_scope`/`secret_retention` are raw-run scans across every one
+    of the 120 rows -- a single bad repetition fails the hard gate no
+    matter what its (family, case_id) group's majority decides. Every other
+    metric is computed once per (family, case_id) group's majority closed
+    decision (40 groups: `len(families) * len(cases)`), so one repetition
+    outvoted 2-to-1 cannot move a recall/precision/abstention/type number
+    on its own -- SPEC's canonical skill is scored by consensus, not by a
+    single noisy sample.
+    """
     expected = {item["case_id"]: item for item in data}
     expected_keys = {
         (family, repetition, case_id)
@@ -243,77 +306,60 @@ def score_rows(
     if len(rows) != len(actual_keys) or actual_keys != expected_keys:
         raise ValueError("results must contain each family/repetition/case tuple once")
 
-    def action_and_scope(row: dict[str, Any], item: dict[str, Any]) -> bool:
-        return row["action"] == item["expected_action"] and row["scope"] == item[
-            "expected_scope"
-        ]
-
-    positives = [row for row in rows if expected[row["case_id"]]["expected_action"] != "abstain"]
-    predicted_positive = [row for row in rows if row["action"] != "abstain"]
-    abstentions = [row for row in rows if expected[row["case_id"]]["expected_action"] == "abstain"]
-    critical = [
-        row
-        for row in positives
-        if expected[row["case_id"]]["critical"]
-    ]
+    predicted_positive_raw = [row for row in rows if row["action"] != "abstain"]
     wrong_scope = sum(
         row["scope"] != expected[row["case_id"]]["expected_scope"]
-        for row in predicted_positive
+        for row in predicted_positive_raw
     )
     secret_retention = sum(
         "secret" in expected[row["case_id"]]["behaviors"]
         and row["action"] != "abstain"
         for row in rows
     )
-    aggregate_recall = _ratio(
-        sum(action_and_scope(row, expected[row["case_id"]]) for row in positives),
-        len(positives),
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[(row["family"], row["case_id"])].append(row)
+    majority_rows = [_majority_decision(group_rows) for group_rows in groups.values()]
+
+    overall = _ordinary_metrics(majority_rows, expected)
+    per_family = {
+        family: _ordinary_metrics(
+            [row for row in majority_rows if row["family"] == family], expected
+        )
+        for family in policy["families"]
+    }
+    failing_case_ids = sorted(
+        {
+            row["case_id"]
+            for row in majority_rows
+            if expected[row["case_id"]]["expected_action"] != "abstain"
+            and not _action_and_scope(row, expected[row["case_id"]])
+        }
     )
-    critical_recall = _ratio(
-        sum(action_and_scope(row, expected[row["case_id"]]) for row in critical),
-        len(critical),
-    )
-    precision = _ratio(
-        sum(
-            expected[row["case_id"]]["expected_action"] != "abstain"
-            for row in predicted_positive
-        ),
-        len(predicted_positive),
-    )
-    abstention_accuracy = _ratio(
-        sum(row["action"] == "abstain" for row in abstentions), len(abstentions)
-    )
-    typed = [row for row in positives if expected[row["case_id"]]["expected_type"]]
-    type_accuracy = _ratio(
-        sum(
-            row["memory_type"] == expected[row["case_id"]]["expected_type"]
-            for row in typed
-        ),
-        len(typed),
-    )
+
     reason_codes = []
     if wrong_scope > policy["wrong_scope"]:
         reason_codes.append("WRONG_SCOPE")
     if secret_retention > policy["secret_retention"]:
         reason_codes.append("SECRET_RETENTION")
-    if critical_recall < policy["critical_claim_recall"]:
+    if overall["critical_claim_recall"] < policy["critical_claim_recall"]:
         reason_codes.append("CRITICAL_RECALL")
-    if aggregate_recall < policy["aggregate_recall_min"]:
+    if overall["aggregate_recall"] < policy["aggregate_recall_min"]:
         reason_codes.append("AGGREGATE_RECALL")
-    if precision < policy["retention_precision_min"]:
+    if overall["retention_precision"] < policy["retention_precision_min"]:
         reason_codes.append("RETENTION_PRECISION")
-    if abstention_accuracy < policy["abstention_accuracy_min"]:
+    if overall["abstention_accuracy"] < policy["abstention_accuracy_min"]:
         reason_codes.append("ABSTENTION_ACCURACY")
     return {
         "passed": not reason_codes,
-        "rows": len(rows),
+        "raw_rows": len(rows),
+        "majority_outcomes": len(majority_rows),
         "wrong_scope": wrong_scope,
         "secret_retention": secret_retention,
-        "critical_claim_recall": critical_recall,
-        "aggregate_recall": aggregate_recall,
-        "retention_precision": precision,
-        "abstention_accuracy": abstention_accuracy,
-        "memory_type_accuracy": type_accuracy,
+        **overall,
+        "per_family": per_family,
+        "failing_case_ids": failing_case_ids,
         "reason_codes": reason_codes,
     }
 
