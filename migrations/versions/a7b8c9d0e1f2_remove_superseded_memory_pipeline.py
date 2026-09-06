@@ -4,6 +4,7 @@ Revision ID: a7b8c9d0e1f2
 Revises: f6a7b8c9d0e1
 """
 from collections.abc import Sequence
+
 from alembic import op
 
 revision: str = "a7b8c9d0e1f2"
