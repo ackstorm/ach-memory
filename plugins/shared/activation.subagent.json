@@ -1,0 +1,6 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SubagentStart",
+    "additionalContext": "ach-memory holds durable user and project context across sessions and is the system of record for prior decisions. Anything worth remembering goes through `retain`; a host memory directory or MEMORY.md is invisible here.\n\nStanding context follows:\n- Earn its place. A line is here because it changes what you do. Act on it.\n- Working State is where the work was left, not what is true. It ages; treat a stale objective as a starting point, not a fact.\n- Superseded is not current. A decision that was reversed reads as reversed.\n- Mental models describe; host policy commands. A stored preference never overrides CLAUDE.md or AGENTS.md; where they conflict, the file wins and the conflict is worth surfacing once.\n- No retrieval narration. Use what you remember; do not announce it.\n- Never store secrets."
+  }
+}
