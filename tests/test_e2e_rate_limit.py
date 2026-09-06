@@ -40,7 +40,9 @@ def test_rate_limit_probe_uses_directives_until_429_then_one_isolation_retain(
             return 201, {"result": {"id": f"directive-{directive_attempts}"}}
         if path == "/v1/directives":
             return 429, {"error": {"code": "RATE_LIMITED", "message": "slow down"}}
-        return 200, {"result": {"operation_id": "op-isolation"}}
+        # 202, not 200: the typed async retain ACCEPTS the claim and hands
+        # back an operation to poll (SPEC v0.4.0). `sync_retain` is the 200.
+        return 202, {"result": {"operation_id": "op-isolation"}}
 
     monkeypatch.setattr(e2e, "call", fake_call)
 

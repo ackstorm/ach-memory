@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """End-to-end test of the entire ach-memory product against real infrastructure.
 
-Unlike scripts/smoke.sh (REST happy path only) and scripts/mcp-smoke.py (7 of
-15 MCP tools), this exercises every documented surface: identity/access,
-projects, memory in both scopes, curation, documents, operations, directives,
-mental models, admin, all fifteen MCP tools, and rate limiting -- against an
-isolated docker-compose stack. Hindsight, its worker and both databases are
+Unlike scripts/smoke.sh (REST happy path only) and scripts/mcp-smoke.py (a
+subset of the MCP tools), this exercises every documented surface:
+identity/access, projects, memory in both scopes, curation, documents,
+operations, directives, mental models, admin, the advertised MCP tool set,
+and rate limiting -- against an isolated docker-compose stack. Hindsight, its worker and both databases are
 real; Hindsight's built-in MockLLM replaces only external model calls.
 
 Usage:
@@ -137,6 +137,29 @@ def sc_body(scope: str, **kw: Any) -> dict:
     """A ScopedRequest-shaped JSON body: scope plus whichever of
     user_id/project_slug/git_locator/... the caller supplies."""
     body = {"scope": scope}
+    body.update({k: v for k, v in kw.items() if v is not None})
+    return body
+
+
+def retain_body(scope: str, content: str, **kw: Any) -> dict:
+    """A `TypedRetainRequest` body (SPEC v0.4.0 typed retain).
+
+    Every retain now carries the claim's type, its evidence basis, what
+    triggered it, at least one bounded evidence item, and a caller-supplied
+    `operation_id` that makes the write idempotent. `document_id` is no
+    longer caller-chosen -- it is derived from `operation_id` server-side and
+    returned in the response -- and `update_mode` is gone entirely, so both
+    are rejected by the model's `extra="forbid"`.
+    """
+    body: dict[str, Any] = {
+        "scope": scope,
+        "content": content,
+        "memory_type": kw.pop("memory_type", "fact"),
+        "basis": kw.pop("basis", "human_explicit"),
+        "trigger": kw.pop("trigger", "user_requested"),
+        "evidence": kw.pop("evidence", [{"kind": "user_quote", "raw": content[:1024]}]),
+        "operation_id": kw.pop("operation_id", str(uuid.uuid4())),
+    }
     body.update({k: v for k, v in kw.items() if v is not None})
     return body
 
@@ -463,8 +486,12 @@ async def _() -> None:
     need("project.transfer", "key.bob")
     slug = S["project.transfer"]
     status, data = await call("GET", f"/v1/projects/{slug}", S["key.bob"])
-    expect_status("GET", f"/v1/projects/{slug}", None, status, data, 403)
-    expect_code("GET", f"/v1/projects/{slug}", None, status, data, "PROJECT_ACCESS_DENIED")
+    # 404, not 403: `projects._authorize_resolution` deliberately reports an
+    # unauthorized project exactly as an absent one, so a non-member cannot
+    # confirm the slug exists. Pinned by
+    # test_an_outsider_sees_the_same_error_as_an_unknown_project.
+    expect_status("GET", f"/v1/projects/{slug}", None, status, data, 404)
+    expect_code("GET", f"/v1/projects/{slug}", None, status, data, "PROJECT_NOT_FOUND")
 
 
 @scenario("projects.retain_before_transfer")
@@ -482,7 +509,7 @@ async def _() -> None:
     need("project.transfer", "key.alice")
     slug = S["project.transfer"]
     content = "The deploy runbook lives in docs/runbooks/deploy.md."
-    body = sc_body("project", project_slug=slug, content=content)
+    body = retain_body("project", content, project_slug=slug)
     status, data = await call(
         "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
     )
@@ -505,17 +532,32 @@ async def _() -> None:
     expect_status("GET", f"/v1/projects/{slug}", None, status, data, 200)
 
 
-@scenario("projects.outsider_refused_names_slug_and_kind_not_identity")
+@scenario("projects.outsider_refusal_discloses_nothing_about_the_project")
 async def _() -> None:
+    """An outsider must not learn that the project exists, who owns it, or
+    even what KIND of owner it has.
+
+    This used to expect a 403 naming the slug and `owner_type` while hiding
+    the owner's identity. That was tightened to full non-disclosure: the
+    refusal is now byte-identical to the one an unknown slug produces, so
+    membership cannot be probed by comparing responses.
+    """
     need("project.transfer", "group.team", "key.carol", "user.alice", "user.bob")
     slug, gid = S["project.transfer"], S["group.team"]
     status, data = await call("GET", f"/v1/projects/{slug}", S["key.carol"])
-    expect_status("GET", f"/v1/projects/{slug}", None, status, data, 403)
-    expect_code("GET", f"/v1/projects/{slug}", None, status, data, "PROJECT_ACCESS_DENIED")
-    details = data["error"].get("details", {})
-    assert details.get("project_slug") == slug, f"refusal did not name the slug: {data}"
-    assert details.get("owner_type") == "group", f"refusal did not name the owner kind: {data}"
+    expect_status("GET", f"/v1/projects/{slug}", None, status, data, 404)
+    expect_code("GET", f"/v1/projects/{slug}", None, status, data, "PROJECT_NOT_FOUND")
+
+    unknown_slug = f"e2e-no-such-project-{RUN}"
+    status, unknown = await call("GET", f"/v1/projects/{unknown_slug}", S["key.carol"])
+    expect_status("GET", f"/v1/projects/{unknown_slug}", None, status, unknown, 404)
+    assert data["error"]["message"] == unknown["error"]["message"], (
+        f"an unauthorized project is distinguishable from an absent one: "
+        f"{data} vs {unknown}"
+    )
+
     blob = json.dumps(data)
+    assert "owner_type" not in blob, f"refusal disclosed the owner kind: {data}"
     for leaked_identity in (gid, S["user.alice"], S["user.bob"]):
         assert leaked_identity not in blob, (
             f"refusal disclosed an owner identity ({leaked_identity!r}): {data}"
@@ -596,10 +638,19 @@ async def _() -> None:
     I1): a project's first locator otherwise poisons it for every future
     caller presenting a different one, with no documented way back.
 
-    Creates a fresh project already carrying "wrong", confirms a
-    sync_retain naming "right" is refused with PROJECT_LOCATOR_MISMATCH,
-    PATCHes the locator to "right", then confirms the identical retain now
-    succeeds.
+    Creates a fresh project already carrying "wrong", confirms a call naming
+    "right" is refused with PROJECT_LOCATOR_MISMATCH, PATCHes the locator to
+    "right", then confirms the identical call now succeeds.
+
+    Probed through `memory/documents/list`, which is the narrowest route
+    that still reaches the check. Typed retain forbids `git_locator`
+    outright (the field only ever served enrichment for a lazily-created
+    project); `reflect`, `recall` and `memory/list` all resolve through
+    `read_context.resolve_read_bank`, which deliberately drops the locator
+    rather than let a read bind repository metadata onto a project
+    (`curation._read_bank`). The document/operation routes still resolve
+    via `_resolve_bank`, which forwards it into `projects.resolve`, so this
+    is where the SPEC 8.4 mismatch is observable over HTTP.
     """
     need("key.alice")
     slug = f"e2e-proj-locator-{RUN}"
@@ -613,16 +664,11 @@ async def _() -> None:
     )
     expect_status("POST", "/v1/projects", {"project_slug": slug}, status, data, 201)
 
-    body = sc_body(
-        "project", project_slug=slug, git_locator=right, content="poisoned locator probe"
-    )
-    status, data = await call(
-        "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
-    )
-    expect_status("POST", "/v1/memory/sync_retain", body, status, data, 409)
-    expect_code(
-        "POST", "/v1/memory/sync_retain", body, status, data, "PROJECT_LOCATOR_MISMATCH"
-    )
+    route = "/v1/memory/documents/list"
+    body = sc_body("project", project_slug=slug, git_locator=right, limit=1)
+    status, data = await call("POST", route, S["key.alice"], json_body=body, timeout=60.0)
+    expect_status("POST", route, body, status, data, 409)
+    expect_code("POST", route, body, status, data, "PROJECT_LOCATOR_MISMATCH")
 
     patch_body = {"git_locator": right}
     status, data = await call(
@@ -631,10 +677,16 @@ async def _() -> None:
     expect_status("PATCH", f"/v1/projects/{slug}", patch_body, status, data, 200)
     assert data["git_locator"] == right, f"PATCH did not repair the locator: {data}"
 
+    status, data = await call("POST", route, S["key.alice"], json_body=body, timeout=60.0)
+    expect_status("POST", route, body, status, data, 200)
+
+    # The read boundary is the other half of SPEC 8.4 and must NOT 409: it
+    # accepts `git_locator` for wire compatibility and drops it on purpose.
+    stale = sc_body("project", project_slug=slug, git_locator=wrong, limit=1)
     status, data = await call(
-        "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
+        "POST", "/v1/memory/list", S["key.alice"], json_body=stale, timeout=60.0
     )
-    expect_status("POST", "/v1/memory/sync_retain", body, status, data, 200)
+    expect_status("POST", "/v1/memory/list", stale, status, data, 200)
 
 
 # ===========================================================================
@@ -650,7 +702,7 @@ USER_FACT_QUERY = "how are Python dependencies managed here"
 @scenario("memory.sync_retain_and_recall_user_scope")
 async def _() -> None:
     need("key.alice")
-    body = sc_body("user", content=USER_FACT_CONTENT)
+    body = retain_body("user", USER_FACT_CONTENT)
     status, data = await call(
         "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
     )
@@ -684,11 +736,18 @@ async def _() -> None:
 async def _() -> None:
     need("key.alice")
     content = f"E2E-{RUN}: scenario P, the async retain lifecycle marker."
-    body = sc_body("user", content=content)
+    body = retain_body("user", content)
     status, data = await call("POST", "/v1/memory/retain", S["key.alice"], json_body=body)
-    expect_status("POST", "/v1/memory/retain", body, status, data, 200)
-    op_id = data["result"].get("operation_id")
+    # 202, not 200: the typed async retain ACCEPTS the claim and returns the
+    # operation to follow, rather than reporting a completed write.
+    expect_status("POST", "/v1/memory/retain", body, status, data, 202)
+    # TypedRetainResponse is returned flat -- there is no `result` envelope
+    # and no arbitrary upstream JSON left to forward.
+    op_id = data.get("operation_id")
     assert op_id, f"retain did not return an operation_id: {data}"
+    assert data.get("status") in ("pending", "accepted"), (
+        f"async retain reported a terminal status immediately: {data}"
+    )
     S["operation.async_retain"] = op_id
 
 
@@ -707,7 +766,7 @@ async def _() -> None:
     need("project.group", "key.bob", "key.alice")
     slug = S["project.group"]
     content = "Migrations in this project run with alembic upgrade head."
-    body = sc_body("project", project_slug=slug, content=content)
+    body = retain_body("project", content, project_slug=slug)
     status, data = await call(
         "POST", "/v1/memory/sync_retain", S["key.bob"], json_body=body, timeout=60.0
     )
@@ -729,8 +788,10 @@ async def _() -> None:
     slug = S["project.group"]
     body = sc_body("project", project_slug=slug, query="how do migrations run")
     status, data = await call("POST", "/v1/memory/recall", S["key.carol"], json_body=body)
-    expect_status("POST", "/v1/memory/recall", body, status, data, 403)
-    expect_code("POST", "/v1/memory/recall", body, status, data, "PROJECT_ACCESS_DENIED")
+    # Same non-disclosure as the project routes: an outsider's recall cannot
+    # confirm the project exists.
+    expect_status("POST", "/v1/memory/recall", body, status, data, 404)
+    expect_code("POST", "/v1/memory/recall", body, status, data, "PROJECT_NOT_FOUND")
 
 
 @scenario("memory.transferred_project_memory_reaches_new_member")
@@ -812,7 +873,9 @@ async def _() -> None:
     need("memory.curated_id", "key.alice")
     mid = S["memory.curated_id"]
     new_text = f"E2E-{RUN}-corrected: this project pins dependencies with uv, corrected copy."
-    body = sc_body("user", memory_id=mid, content=new_text)
+    body = sc_body(
+        "user", memory_id=mid, content=new_text, operation_id=str(uuid.uuid4())
+    )
     status, data = await call("POST", "/v1/memory/correct", S["key.alice"], json_body=body)
     expect_status("POST", "/v1/memory/correct", body, status, data, 200)
 
@@ -851,9 +914,8 @@ async def _() -> None:
     need("key.carol")
     obs = None
     for i in range(5):
-        body = sc_body(
-            "user",
-            content=f"This project pins its Python dependencies with uv (attempt {i}).",
+        body = retain_body(
+            "user", f"This project pins its Python dependencies with uv (attempt {i})."
         )
         status, data = await call(
             "POST", "/v1/memory/sync_retain", S["key.carol"], json_body=body, timeout=60.0
@@ -890,10 +952,16 @@ async def _() -> None:
 # 5. Documents
 # ===========================================================================
 
-DOC_ID = "github:acme/api:pr:382"
+# The document id is no longer caller-chosen: typed retain derives it from
+# the request's `operation_id` (`retained_records.document_id_for`) and
+# returns it, so the round trip is proven against the id the SERVER minted
+# rather than one this script picked. The colon/slash-bearing id these
+# scenarios used to assert is not expressible through the public surface any
+# more -- `TypedRetainRequest` forbids `document_id` -- but the property that
+# actually mattered (an id survives list/get/delete unmangled) still is.
 
 
-@scenario("documents.retain_with_colon_and_slash_id")
+@scenario("documents.retain_returns_a_server_derived_id")
 async def _() -> None:
     # sync_retain, not retain: the document row and the async retain's own
     # extraction settle on different schedules, and an immediate
@@ -902,41 +970,44 @@ async def _() -> None:
     # blocks until the write, including the document, is complete.
     need("key.alice")
     content = "PR 382 fixes the document id round trip."
-    body = sc_body("user", content=content, document_id=DOC_ID)
+    body = retain_body("user", content)
     status, data = await call(
         "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
     )
     expect_status("POST", "/v1/memory/sync_retain", body, status, data, 200)
+    doc_id = data.get("document_id")
+    assert doc_id, f"sync_retain returned no document_id: {data}"
+    S["document.id"] = doc_id
     S["document.roundtrip_written"] = True
 
 
 @scenario("documents.list_finds_it")
 async def _() -> None:
-    need("document.roundtrip_written", "key.alice")
+    need("document.roundtrip_written", "document.id", "key.alice")
     body = sc_body("user")
     status, data = await call(
         "POST", "/v1/memory/documents/list", S["key.alice"], json_body=body
     )
     expect_status("POST", "/v1/memory/documents/list", body, status, data, 200)
     ids = {d["id"] for d in data["result"].get("items", [])}
-    assert DOC_ID in ids, f"documents/list did not round-trip the colon/slash id: {data}"
+    assert S["document.id"] in ids, f"documents/list did not surface the document: {data}"
 
 
-@scenario("documents.get_by_colon_and_slash_id")
+@scenario("documents.get_by_derived_id")
 async def _() -> None:
-    need("document.roundtrip_written", "key.alice")
-    body = sc_body("user", document_id=DOC_ID)
+    need("document.roundtrip_written", "document.id", "key.alice")
+    body = sc_body("user", document_id=S["document.id"])
     status, data = await call(
         "POST", "/v1/memory/documents/get", S["key.alice"], json_body=body
     )
     expect_status("POST", "/v1/memory/documents/get", body, status, data, 200)
-    assert data["result"]["id"] == DOC_ID, f"document id mangled in transit: {data}"
+    assert data["result"]["id"] == S["document.id"], f"document id mangled in transit: {data}"
 
 
 @scenario("documents.delete_then_confirm_gone")
 async def _() -> None:
-    need("document.roundtrip_written", "key.alice")
-    body = sc_body("user", document_id=DOC_ID)
+    need("document.roundtrip_written", "document.id", "key.alice")
+    body = sc_body("user", document_id=S["document.id"])
     status, data = await call(
         "POST", "/v1/memory/documents/delete", S["key.alice"], json_body=body
     )
@@ -949,41 +1020,33 @@ async def _() -> None:
     expect_code("POST", "/v1/memory/documents/get", body, status, data, "DOCUMENT_NOT_FOUND")
 
 
-APPEND_DOC_ID = "session:e2e-append"
-
-
-@scenario("retain.append_accumulates_document_text")
+@scenario("retain.replaying_one_operation_id_is_idempotent")
 async def _() -> None:
-    # Before Plan 6 this whole scenario 502'd (sync route) or hung its parent
-    # operation `pending` forever with the real error buried in
-    # child_operations[0].error_message (async route): our own
-    # store_document_text=false made hindsight-api reject an append. sync_retain,
-    # not retain, so the write -- including the document -- is guaranteed
-    # complete before documents/get runs.
+    """What replaced `update_mode`.
+
+    Accumulating text into a caller-named document via `update_mode="append"`
+    is gone from the public surface. The v0.4.0 property in its place: one
+    `operation_id` names one durable claim, so replaying the identical
+    request -- the way a client recovers from a lost response -- returns the
+    SAME record and document instead of writing a second copy.
+    """
     need("key.alice")
-    first_line = "the first line of the session"
-    second_line = "the second line of the session"
-
-    body = sc_body("user", content=first_line, document_id=APPEND_DOC_ID, update_mode="replace")
-    status, data = await call(
+    body = retain_body("user", "the first line of the session")
+    status, first = await call(
         "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
     )
-    expect_status("POST", "/v1/memory/sync_retain", body, status, data, 200)
+    expect_status("POST", "/v1/memory/sync_retain", body, status, first, 200)
 
-    body = sc_body("user", content=second_line, document_id=APPEND_DOC_ID, update_mode="append")
-    status, data = await call(
+    status, replay = await call(
         "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
     )
-    expect_status("POST", "/v1/memory/sync_retain", body, status, data, 200)
-
-    body = sc_body("user", document_id=APPEND_DOC_ID)
-    status, data = await call(
-        "POST", "/v1/memory/documents/get", S["key.alice"], json_body=body
+    expect_status("POST", "/v1/memory/sync_retain", body, status, replay, 200)
+    assert replay["record_id"] == first["record_id"], (
+        f"replaying one operation_id minted a second record: {first} vs {replay}"
     )
-    expect_status("POST", "/v1/memory/documents/get", body, status, data, 200)
-    text = data["result"].get("original_text") or ""
-    assert first_line in text, f"first line missing from accumulated document: {data}"
-    assert second_line in text, f"second line missing from accumulated document: {data}"
+    assert replay["document_id"] == first["document_id"], (
+        f"replaying one operation_id minted a second document: {first} vs {replay}"
+    )
 
 
 # ===========================================================================
@@ -1127,87 +1190,152 @@ async def _() -> None:
 # ===========================================================================
 
 
+@scenario("bootstrap.provisions_the_builtin_user_model")
+async def _() -> None:
+    """SPEC §7.5: `POST /v1/bootstrap` is what materializes the ACH-owned
+    built-in models. Nothing else does -- an ordinary read never creates or
+    reconciles a definition -- so the mental-model scenarios below depend on
+    this having run. The stdio proxy calls it once at startup for exactly
+    this reason.
+    """
+    need("key.alice")
+    status, data = await call(
+        "POST", "/v1/bootstrap", S["key.alice"], json_body={}, timeout=90.0
+    )
+    expect_status("POST", "/v1/bootstrap", {}, status, data, 200)
+    user_model = data.get("user_model")
+    assert user_model, f"bootstrap provisioned no user model: {data}"
+    assert user_model["model_key"] == "user-context", user_model
+    assert user_model["origin"] == "builtin", user_model
+    S["bootstrap.done"] = True
+
+
 @scenario("mental_models.create")
 async def _() -> None:
+    """v0.4.0 governs the whole definition, so create states all of it.
+
+    `source_tags` must select exactly the ACH retain schema and the
+    indefinite-validity tag (`REQUIRED_SOURCE_TAGS`) -- a model may only ever
+    be built from durable typed claims -- and `operation_id` makes the
+    creation idempotent the same way retain's does. The response is a
+    `MentalModelView` returned FLAT: no `result` envelope, and the model is
+    addressed by the ACH-owned `model_key`, never an upstream id.
+    """
     need("key.alice")
     name = f"e2e-mentalmodel-{RUN}"
     body = sc_body(
-        "user", name=name, source_query="What tool manages Python dependencies here?"
+        "user",
+        name=name,
+        source_query="What tool manages Python dependencies here?",
+        source_tags=["schema:ach-retain-v1", "validity:indefinite"],
+        tags_match="all",
+        max_tokens=512,
+        always_in_context=False,
+        trigger={"mode": "delta"},
+        operation_id=str(uuid.uuid4()),
     )
     status, data = await call("POST", "/v1/mental-models", S["key.alice"], json_body=body)
     expect_status("POST", "/v1/mental-models", body, status, data, 201)
-    mm_id = data["result"].get("mental_model_id") or data["result"].get("id")
-    assert mm_id, f"create_mental_model returned no usable id: {data}"
-    S["mental_model.id"] = mm_id
+    model_key = data.get("model_key")
+    assert model_key, f"create_mental_model returned no model_key: {data}"
+    assert data["origin"] == "user", f"a custom model reported origin={data.get('origin')!r}"
+    S["mental_model.key"] = model_key
 
 
-@scenario("mental_models.list")
+@scenario("mental_models.list_includes_the_builtin_and_the_custom_one")
 async def _() -> None:
-    need("mental_model.id", "key.alice")
+    """The built-in user-context model is ACH-owned and always present, so
+    list must show it alongside the custom one this run created."""
+    need("mental_model.key", "key.alice", "bootstrap.done")
     status, data = await call(
         "GET", "/v1/mental-models", S["key.alice"], params={"scope": "user"}
     )
     expect_status("GET", "/v1/mental-models", None, status, data, 200)
-    ids = {m["id"] for m in data["result"].get("items", [])}
-    assert S["mental_model.id"] in ids, f"mental model missing from list: {data}"
+    # `models`, not `items`: ModelListResult closes its own field set and
+    # carries `unknown_upstream_count` alongside.
+    keys = {m["model_key"] for m in data.get("models", [])}
+    assert S["mental_model.key"] in keys, f"custom model missing from list: {data}"
+    assert "user-context" in keys, f"the built-in user-context model is missing: {data}"
+    assert data["unknown_upstream_count"] == 0, (
+        f"list reported upstream models ACH does not know about: {data}"
+    )
 
 
 @scenario("mental_models.get")
 async def _() -> None:
-    need("mental_model.id", "key.alice")
-    mid = S["mental_model.id"]
+    need("mental_model.key", "key.alice")
+    key = S["mental_model.key"]
     status, data = await call(
-        "GET", f"/v1/mental-models/{mid}", S["key.alice"], params={"scope": "user"}
+        "GET", f"/v1/mental-models/{key}", S["key.alice"], params={"scope": "user"}
     )
-    expect_status("GET", f"/v1/mental-models/{mid}", None, status, data, 200)
-    assert data["result"]["id"] == mid, data
+    expect_status("GET", f"/v1/mental-models/{key}", None, status, data, 200)
+    assert data["model_key"] == key, data
 
 
 @scenario("mental_models.update")
 async def _() -> None:
-    need("mental_model.id", "key.alice")
-    mid = S["mental_model.id"]
-    body = sc_body("user", max_tokens=1024)
+    need("mental_model.key", "key.alice")
+    key = S["mental_model.key"]
+    body = sc_body("user", max_tokens=1024, operation_id=str(uuid.uuid4()))
     status, data = await call(
-        "PATCH", f"/v1/mental-models/{mid}", S["key.alice"], json_body=body
+        "PATCH", f"/v1/mental-models/{key}", S["key.alice"], json_body=body
     )
-    expect_status("PATCH", f"/v1/mental-models/{mid}", body, status, data, 200)
+    expect_status("PATCH", f"/v1/mental-models/{key}", body, status, data, 200)
+    assert data["max_tokens"] == 1024, f"update did not take: {data}"
+
+
+@scenario("mental_models.builtin_is_immutable_through_custom_crud")
+async def _() -> None:
+    """SPEC §7.4: a built-in's definition is ACH-owned and versioned, so the
+    custom-model CRUD surface must refuse it rather than silently mutate it."""
+    need("key.alice", "bootstrap.done")
+    body = sc_body("user", max_tokens=1024, operation_id=str(uuid.uuid4()))
+    status, data = await call(
+        "PATCH", "/v1/mental-models/user-context", S["key.alice"], json_body=body
+    )
+    expect_status("PATCH", "/v1/mental-models/user-context", body, status, data, 409)
+    expect_code(
+        "PATCH", "/v1/mental-models/user-context", body, status, data,
+        "BUILTIN_MODEL_IMMUTABLE",
+    )
 
 
 @scenario("mental_models.refresh")
 async def _() -> None:
     """Costs a full reflect upstream -- slow. Bounded wait: a generous
-    client-side timeout, no naked retry loop."""
-    need("mental_model.id", "key.alice")
-    mid = S["mental_model.id"]
+    client-side timeout, no naked retry loop. `operation_id` rides as a query
+    param here, the way every mutation-by-verb carries one."""
+    need("mental_model.key", "key.alice")
+    key = S["mental_model.key"]
+    params = {"scope": "user", "operation_id": str(uuid.uuid4())}
     status, data = await call(
         "POST",
-        f"/v1/mental-models/{mid}/refresh",
+        f"/v1/mental-models/{key}/refresh",
         S["key.alice"],
-        params={"scope": "user"},
+        params=params,
         timeout=90.0,
     )
-    expect_status("POST", f"/v1/mental-models/{mid}/refresh", None, status, data, 200)
-
-
-@scenario("mental_models.clear")
-async def _() -> None:
-    need("mental_model.id", "key.alice")
-    mid = S["mental_model.id"]
-    status, data = await call(
-        "POST", f"/v1/mental-models/{mid}/clear", S["key.alice"], params={"scope": "user"}
-    )
-    expect_status("POST", f"/v1/mental-models/{mid}/clear", None, status, data, 200)
+    expect_status("POST", f"/v1/mental-models/{key}/refresh", params, status, data, 200)
 
 
 @scenario("mental_models.delete")
 async def _() -> None:
-    need("mental_model.id", "key.alice")
-    mid = S["mental_model.id"]
+    need("mental_model.key", "key.alice")
+    key = S["mental_model.key"]
+    params = {"scope": "user", "operation_id": str(uuid.uuid4())}
     status, data = await call(
-        "DELETE", f"/v1/mental-models/{mid}", S["key.alice"], params={"scope": "user"}
+        "DELETE", f"/v1/mental-models/{key}", S["key.alice"], params=params
     )
-    expect_status("DELETE", f"/v1/mental-models/{mid}", None, status, data, 200)
+    # 204: the deletion carries no body to forward.
+    expect_status("DELETE", f"/v1/mental-models/{key}", params, status, data, 204)
+
+    status, data = await call(
+        "GET", f"/v1/mental-models/{key}", S["key.alice"], params={"scope": "user"}
+    )
+    expect_status("GET", f"/v1/mental-models/{key}", None, status, data, 404)
+    expect_code(
+        "GET", f"/v1/mental-models/{key}", None, status, data, "MENTAL_MODEL_NOT_FOUND"
+    )
 
 
 # ===========================================================================
@@ -1264,7 +1392,7 @@ async def _() -> None:
 async def _() -> None:
     need("user.victim", "key.victim")
     keyword = "uv"
-    body = sc_body("user", content="This bank also pins its dependencies with uv.")
+    body = retain_body("user", "This bank also pins its dependencies with uv.")
     status, data = await call(
         "POST", "/v1/memory/sync_retain", S["key.victim"], json_body=body, timeout=60.0
     )
@@ -1303,7 +1431,7 @@ async def _() -> None:
     expect_status("DELETE", "/v1/admin/memory/user", None, status, data, 200)
 
     # A torn-down bank re-materializes transparently on the next write.
-    body = sc_body("user", content=f"E2E-{RUN}: victim writes again after delete_bank.")
+    body = retain_body("user", f"E2E-{RUN}: victim writes again after delete_bank.")
     status, data = await call(
         "POST", "/v1/memory/sync_retain", S["key.victim"], json_body=body, timeout=60.0
     )
@@ -1325,14 +1453,25 @@ async def _() -> None:
 
 
 # ===========================================================================
-# 10. The MCP surface -- all fifteen tools, plus the master-key refusal.
+# 10. The MCP surface -- the advertised set, plus the master-key refusal.
 # ===========================================================================
 
+# The advertised set, pinned. v0.4.0 added the read, mental-model,
+# working-state and context tools on top of the original fifteen; this is the
+# one place the surface is stated, so an accidental registration (or an
+# accidental removal) fails here rather than reaching an agent.
 EXPECTED_MCP_TOOLS = {
-    "retain", "sync_retain", "recall", "reflect",
+    # memory
+    "retain", "sync_retain", "recall", "reflect", "memory_history",
     "list_memories", "get_memory", "forget", "correct", "restore",
     "list_documents", "get_document", "delete_document",
     "get_operation", "list_operations", "cancel_operation",
+    # mental models
+    "create_mental_model", "list_mental_models", "get_mental_model",
+    "update_mental_model", "refresh_mental_model", "delete_mental_model",
+    # working state and standing context
+    "start_working_session", "set_working_state", "clear_working_state",
+    "load_context",
 }
 
 
@@ -1345,7 +1484,7 @@ def mcp_unwrap(label: str, result) -> dict:
     return result.structured_content["result"]
 
 
-@scenario("mcp.list_tools_is_exactly_fifteen")
+@scenario("mcp.advertised_tool_set_is_exactly_the_pinned_set")
 async def _() -> None:
     need("key.mcpuser")
     authed = httpx2.AsyncClient(
@@ -1358,21 +1497,19 @@ async def _() -> None:
         await session.discover()
         tools = await session.list_tools()
         names = {t.name for t in tools.tools}
-        assert len(names) == 15, f"expected 15 tools, got {len(names)}: {sorted(names)}"
         assert names == EXPECTED_MCP_TOOLS, (
             f"advertised tool set drifted: extra={sorted(names - EXPECTED_MCP_TOOLS)} "
             f"missing={sorted(EXPECTED_MCP_TOOLS - names)}"
         )
 
 
-@scenario("mcp.exercise_all_fifteen_tools")
+@scenario("mcp.exercise_every_memory_tool")
 async def _() -> None:
     need("key.mcpuser")
     authed = httpx2.AsyncClient(
         headers={"Authorization": f"Bearer {S['key.mcpuser']}"}, timeout=30.0
     )
     content = "This service pins its Python dependencies with uv, never with pip."
-    doc_id = "mcp:e2e:doc-1"
     async with (
         streamable_http_client(MCP_URL, http_client=authed) as (read, write),
         ClientSession(read, write) as session,
@@ -1385,8 +1522,24 @@ async def _() -> None:
             res = await session.call_tool(name, args)
             return mcp_unwrap(f"mcp:{name}", res)
 
+        def retain_args(text: str, **kw) -> dict:
+            """The MCP twin of `retain_body`. The tool signature carries the
+            same typed contract REST does -- the SDK derives the advertised
+            JSON Schema from it -- so a bare {scope, content} call is refused
+            on both surfaces identically."""
+            return {
+                "scope": "user",
+                "content": text,
+                "memory_type": "fact",
+                "basis": "human_explicit",
+                "trigger": "user_requested",
+                "evidence": [{"kind": "user_quote", "raw": text[:1024]}],
+                "operation_id": kw.pop("operation_id", str(uuid.uuid4())),
+                **kw,
+            }
+
         # 1. sync_retain
-        await tool("sync_retain", {"scope": "user", "content": content})
+        await tool("sync_retain", retain_args(content))
         # 2. recall
         recalled = await tool(
             "recall", {"scope": "user", "query": "how are python dependencies managed"}
@@ -1394,7 +1547,7 @@ async def _() -> None:
         assert "uv" in json.dumps(recalled).lower(), f"mcp recall missed the fact: {recalled}"
         # 4. retain (async) -- done before reflect so reflect (#3, called later)
         # has real elapsed time for consolidation, not immediately after a write.
-        op = await tool("retain", {"scope": "user", "content": "Scenario P via mcp."})
+        op = await tool("retain", retain_args("Scenario P via mcp."))
         op_id = op.get("operation_id")
         assert op_id, f"mcp retain returned no operation_id: {op}"
         # 5. get_operation
@@ -1454,12 +1607,12 @@ async def _() -> None:
             "mcp restore did not bring the memory back"
         )
         # sync_retain a document (not async retain -- same materialization-race
-        # reasoning as documents.retain_with_colon_and_slash_id) to exercise
-        # the document tools.
-        await tool(
-            "sync_retain",
-            {"scope": "user", "content": "mcp document round trip.", "document_id": doc_id},
-        )
+        # reasoning as documents.retain_returns_a_server_derived_id) to
+        # exercise the document tools. The id comes back from the write; it
+        # is no longer a value this script can choose.
+        written = await tool("sync_retain", retain_args("mcp document round trip."))
+        doc_id = written.get("document_id")
+        assert doc_id, f"mcp sync_retain returned no document_id: {written}"
         # 13. list_documents
         docs = await tool("list_documents", {"scope": "user"})
         assert doc_id in {d["id"] for d in docs.get("items", [])}, (
@@ -1475,15 +1628,29 @@ async def _() -> None:
         )
         assert del_res.is_error, "get_document still found a document mcp just deleted"
 
+        # 16. memory_history -- the read surface's rationale lookup.
+        history = await tool("memory_history", {"scope": "user", "memory_id": mem_id})
+        assert isinstance(history, dict), f"mcp memory_history returned no object: {history}"
+
         # 3. reflect -- last, so real time has passed since the writes above.
         await mcp_reflect_with_retry(
             tool,
             {"scope": "user", "query": "what tool manages python dependencies"}, "uv"
         )
 
+        # Only the memory tools are exercised here. The mental-model,
+        # working-state and context tools are REST-covered above and by the
+        # unit suite; this scenario is about the memory surface behaving
+        # identically over MCP, which is what used to drift.
+        memory_tools = EXPECTED_MCP_TOOLS - {
+            "create_mental_model", "list_mental_models", "get_mental_model",
+            "update_mental_model", "refresh_mental_model", "delete_mental_model",
+            "start_working_session", "set_working_state", "clear_working_state",
+            "load_context",
+        }
         exercised = set(called) | {"list_memories", "get_memory"}
-        missing = EXPECTED_MCP_TOOLS - exercised
-        assert not missing, f"did not exercise every tool: missing {missing}"
+        missing = memory_tools - exercised
+        assert not missing, f"did not exercise every memory tool: missing {missing}"
 
 
 @scenario("mcp.master_key_refused")
@@ -1529,11 +1696,11 @@ async def _() -> None:
     print(f"    note: rate-limited after {attempts} directive writes on one credential")
 
     # A different credential must be unaffected.
-    other_body = sc_body("user", content=f"E2E-{RUN}: unaffected credential check.")
+    other_body = retain_body("user", f"E2E-{RUN}: unaffected credential check.")
     status, data = await call(
         "POST", "/v1/memory/retain", S["key.alice"], json_body=other_body
     )
-    expect_status("POST", "/v1/memory/retain", other_body, status, data, 200)
+    expect_status("POST", "/v1/memory/retain", other_body, status, data, 202)
 
 
 # ===========================================================================
