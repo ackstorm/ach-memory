@@ -27,7 +27,13 @@ from memory.errors import (
 )
 from memory.hindsight.client import HindsightClient, HindsightOutcomeUnknown
 from memory.models import CurationOperation, MentalModelRegistration, RetainedRecord
-from memory.retained_records import LogicalBankRef, _bank_filters, _lock_bank
+from memory.retained_records import (
+    LogicalBankRef,
+    _bank_filters,
+    _lock_bank,
+    append_correction_revision,
+)
+from memory.sanitization import normalize_claim
 
 # forget/expire/delete all remove a claim from current standing; a target
 # already absent upstream proves that removed state (SPEC §5.8's terminal
@@ -190,27 +196,41 @@ def _mutate(
 
     bank = _bank_with_id(retained, bank_id)
     op = _accept_operation(db, bank, retained, action=action, desired_content=desired_content)
+    if action == "correct":
+        # Snapshots retained's PRIOR canonical content -- desired_content has
+        # not been assigned onto the row yet. Keyed by op.operation_id, so an
+        # exact retry (same op row) returns the existing revision rather than
+        # appending a second one.
+        append_correction_revision(db, retained, curation_operation_id=op.operation_id)
     db.commit()
     record_id = str(retained.id)
 
-    try:
-        _issue(client, bank_id, op, retained, reason=reason)
-    except (MemoryNotFound, DocumentNotFound):
-        if action not in _REMOVAL_ACTIONS:
-            op.state = "needs_operator"
+    now = _db_now(db)
+    already_expired_restore = (
+        action == "restore"
+        and retained.valid_until is not None
+        and retained.valid_until <= now
+    )
+
+    if not already_expired_restore:
+        try:
+            _issue(client, bank_id, op, retained, reason=reason)
+        except (MemoryNotFound, DocumentNotFound):
+            if action not in _REMOVAL_ACTIONS:
+                op.state = "needs_operator"
+                withhold_bank(db, bank, op.operation_id)
+                db.commit()
+                raise CurationNeedsOperator(
+                    "the target memory is absent; this action cannot be proven safe to repeat automatically"
+                ) from None
+            # Absent already satisfies every removal action (SPEC §5.8).
+        except HindsightOutcomeUnknown:
+            op.state = "unknown"
             withhold_bank(db, bank, op.operation_id)
             db.commit()
-            raise CurationNeedsOperator(
-                "the target memory is absent; this action cannot be proven safe to repeat automatically"
+            raise BankCurrentnessUnavailable(
+                "this action's outcome could not be confirmed; the bank is withheld pending reconciliation"
             ) from None
-        # Absent already satisfies every removal action (SPEC §5.8).
-    except HindsightOutcomeUnknown:
-        op.state = "unknown"
-        withhold_bank(db, bank, op.operation_id)
-        db.commit()
-        raise BankCurrentnessUnavailable(
-            "this action's outcome could not be confirmed; the bank is withheld pending reconciliation"
-        ) from None
 
     if action == "correct":
         retained.canonical_content = desired_content
@@ -218,9 +238,9 @@ def _mutate(
         db.query(CurationOperation).filter_by(retained_record_id=retained.id).delete()
         db.delete(retained)
     else:
-        _apply_lifecycle(retained, action, now=_db_now(db))
+        _apply_lifecycle(retained, action, now=now)
         op.state = "completed"
-        op.completed_at = _db_now(db)
+        op.completed_at = now
         _withhold_affected_models(db, bank, retained)
     ready_bank(db, bank, op.operation_id)
     db.commit()
@@ -230,7 +250,19 @@ def _mutate(
 def correct_record(
     db: Session, retained: RetainedRecord, content: str, *, client: HindsightClient, bank_id: str
 ) -> CurationResult:
-    return _mutate(db, retained, action="correct", client=client, bank_id=bank_id, desired_content=content)
+    # Canonicalize HERE, not at the REST/MCP boundary: this is the one path
+    # every tracked correction (either surface) runs through, so no caller
+    # can bypass the same 4096-byte/secret-rejection boundary typed retain
+    # already enforces (SPEC's canonical-claim invariant).
+    canonical_content = normalize_claim(content)
+    return _mutate(
+        db,
+        retained,
+        action="correct",
+        client=client,
+        bank_id=bank_id,
+        desired_content=canonical_content,
+    )
 
 
 def forget_record(

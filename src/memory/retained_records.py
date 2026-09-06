@@ -9,12 +9,12 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from memory.auth.principal import Principal
-from memory.errors import IdempotencyConflict
-from memory.models import Project, RetainedRecord, User
+from memory.errors import IdempotencyConflict, InvalidValidityWindow
+from memory.models import Project, RetainedRecord, RetainedRecordRevision, User
 from memory.v040_contracts import TypedRetainRequest
 
 
@@ -134,6 +134,7 @@ def accept_retain(
 
     digest = _payload_hash(bank, request, canonical_content, sanitized_evidence)
     _lock_bank(db, bank)
+    now = db.execute(select(func.now())).scalar_one()
     existing = db.scalar(_operation_query(bank, request.operation_id).with_for_update())
     if existing is not None:
         if existing.payload_hash != digest:
@@ -142,6 +143,16 @@ def accept_retain(
                 operation_id=str(request.operation_id),
             )
         return existing, False
+
+    # Pydantic's `valid_until > datetime.now(UTC)` check (v040_contracts.py) is
+    # early feedback only. The database's clock, read under the same bank
+    # lock, is authoritative: it is what `restore_record`/expiry decisions
+    # compare against later, so a value that clears the application clock but
+    # not the database's would silently create an already-expired claim.
+    if request.valid_until is not None and request.valid_until <= now:
+        raise InvalidValidityWindow(
+            "valid_until must be later than the database-recorded time"
+        )
 
     row = RetainedRecord(
         tenant_id=bank.tenant_id,
@@ -156,6 +167,8 @@ def accept_retain(
         basis=request.basis,
         trigger=request.trigger,
         sanitized_evidence=sanitized_evidence,
+        recorded_at=now,
+        valid_from=now,
         valid_until=request.valid_until,
         lifecycle="active",
         upstream_state="pending",
@@ -200,3 +213,47 @@ def get_by_document_id(
             RetainedRecord.document_id == document_id,
         )
     )
+
+
+def append_correction_revision(
+    db: Session,
+    retained: RetainedRecord,
+    *,
+    curation_operation_id: str,
+) -> RetainedRecordRevision:
+    """Append the prior canonical state once for this correction operation.
+
+    Called before the upstream correction is issued, while `retained` still
+    holds its PRIOR canonical content: this snapshots the value a correction
+    is about to overwrite, keyed by the deterministic `curation_operation_id`
+    so an exact retry finds and returns the same row instead of appending a
+    second one (SPEC's immutable-revision requirement).
+    """
+    existing = db.scalar(
+        select(RetainedRecordRevision).where(
+            RetainedRecordRevision.curation_operation_id == curation_operation_id
+        )
+    )
+    if existing is not None:
+        return existing
+
+    last_revision = db.scalar(
+        select(func.max(RetainedRecordRevision.revision)).where(
+            RetainedRecordRevision.retained_record_id == retained.id
+        )
+    )
+    row = RetainedRecordRevision(
+        retained_record_id=retained.id,
+        curation_operation_id=curation_operation_id,
+        revision=(last_revision or 0) + 1,
+        canonical_content=retained.canonical_content,
+        payload_hash=retained.payload_hash,
+        memory_type=retained.memory_type,
+        basis=retained.basis,
+        trigger=retained.trigger,
+        sanitized_evidence=retained.sanitized_evidence,
+        valid_until=retained.valid_until,
+    )
+    db.add(row)
+    db.flush()
+    return row

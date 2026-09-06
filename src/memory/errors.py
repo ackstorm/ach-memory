@@ -259,6 +259,16 @@ class ContextBudgetExceeded(DomainError):
     status = 409
 
 
+class InvalidValidityWindow(DomainError):
+    """The database's own clock, not the application's, is authoritative for
+    whether `valid_until` is still in the future (SPEC §5.8/§20 boundary):
+    the same request can pass Pydantic's early check and still be stale by
+    the time `accept_retain` reads database time under the bank lock."""
+
+    code = "INVALID_VALIDITY_WINDOW"
+    status = 422
+
+
 class BankCurrentnessUnavailable(DomainError):
     code = "BANK_CURRENTNESS_UNAVAILABLE"
     status = 503

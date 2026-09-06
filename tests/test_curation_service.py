@@ -2,6 +2,7 @@ from unittest.mock import create_autospec
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import func, select
 
 from memory import ids
 from memory.curation_service import (
@@ -19,7 +20,7 @@ from memory.errors import (
     MemoryNotFound,
 )
 from memory.hindsight.client import HindsightClient, HindsightOutcomeUnknown
-from memory.models import CurationOperation, RetainedRecord, User
+from memory.models import CurationOperation, RetainedRecord, RetainedRecordRevision, User
 from memory.retained_records import LogicalBankRef
 
 
@@ -102,6 +103,54 @@ def test_correct_proven_success_updates_content_and_keeps_lifecycle(session, ban
     assert retained.lifecycle == "active"
 
 
+def test_correction_preserves_prior_canonical_revision(session, bank, hindsight):
+    retained = _retained(session, bank, canonical_content="old")
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+
+    correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+
+    revision = session.query(RetainedRecordRevision).one()
+    op = session.query(CurationOperation).one()
+    assert revision.retained_record_id == retained.id
+    assert revision.canonical_content == "old"
+    assert revision.curation_operation_id == op.operation_id
+    assert retained.canonical_content == "new"
+
+
+def test_exact_correction_retry_has_one_revision(session, bank, hindsight):
+    retained = _retained(session, bank, canonical_content="old")
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+
+    correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+    correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+
+    assert session.query(RetainedRecordRevision).count() == 1
+    assert hindsight.curate.call_count == 2
+
+
+def test_unknown_correction_outcome_leaves_prior_canonical_content_current(session, bank, hindsight):
+    retained = _retained(session, bank, canonical_content="old")
+    hindsight.curate.side_effect = HindsightOutcomeUnknown()
+
+    with pytest.raises(BankCurrentnessUnavailable):
+        correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+
+    assert retained.canonical_content == "old"
+    assert session.query(RetainedRecordRevision).count() == 1
+
+
+def test_hard_delete_purges_revisions(session, bank, hindsight):
+    retained = _retained(session, bank, canonical_content="old")
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+    correct_record(session, retained, "new", client=hindsight, bank_id=bank.bank_id)
+    assert session.query(RetainedRecordRevision).count() == 1
+
+    hindsight.delete_document.return_value = {"deleted": True}
+    delete_record(session, retained, client=hindsight, bank_id=bank.bank_id)
+
+    assert session.query(RetainedRecordRevision).count() == 0
+
+
 def test_restore_never_resurrects_an_already_expired_claim(session, bank, hindsight):
     from datetime import UTC, datetime, timedelta
 
@@ -115,6 +164,25 @@ def test_restore_never_resurrects_an_already_expired_claim(session, bank, hindsi
 
     assert result.state == "completed"
     assert retained.lifecycle == "expired"
+
+
+def test_restore_expired_claim_keeps_upstream_invalidated(session, bank, hindsight):
+    """The preceding proven forget already established invalidation upstream
+    -- restoring an already-expired claim must not re-send `state="valid"`
+    and risk reactivating it there, even though ACH's own ledger ends up
+    right either way (`_apply_lifecycle` would re-derive "expired")."""
+    from datetime import timedelta
+
+    db_now = session.execute(select(func.now())).scalar_one()
+    retained = _retained(
+        session, bank, lifecycle="forgotten", valid_until=db_now - timedelta(seconds=1)
+    )
+
+    result = restore_record(session, retained, client=hindsight, bank_id=bank.bank_id)
+
+    assert result.state == "completed"
+    assert retained.lifecycle == "expired"
+    assert hindsight.curate.call_count == 0
 
 
 def test_delete_proven_success_purges_the_record(session, bank, hindsight):

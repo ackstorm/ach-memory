@@ -298,6 +298,24 @@ def _mock_bank() -> None:
     )
 
 
+def _seed_tracked_memory(call_tool, key: str, mem_id: str) -> None:
+    """Create an ACH-tracked `RetainedRecord` resolving to `mem_id`, via
+    `sync_retain`. Assumes `_mock_bank()` already ran; registers the retain
+    routes itself."""
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
+        return_value=httpx.Response(
+            200, json={"status": "completed", "result": {"memory_id": mem_id}}
+        )
+    )
+    result = call_tool(
+        "sync_retain", key, scope="user", content="seed claim", **_retain_kwargs()
+    )
+    assert result.result["status"] == "completed"
+
+
 def test_create_is_keyword_only_on_run():
     """`create=False` guards against permanently squatting a project slug
     (see resolve_project_bank's docstring); eleven more tools copy `_run`'s
@@ -768,6 +786,112 @@ def test_correct_rejects_blank_content_at_the_boundary_over_mcp(call_tool):
     assert exc_info.value.code == "INVALID_REQUEST"
     assert exc_info.value.code != "MEMORY_NOT_CURATABLE"
     assert route.call_count == 0
+
+
+@respx.mock
+def test_mcp_correct_rejects_secret(call_tool):
+    """Exercises both surfaces of `correct`'s canonical boundary: an
+    authorized untracked legacy Hindsight memory, and a tracked ACH source.
+    Neither may reach Hindsight with a secret-shaped claim."""
+    token_shaped_secret = "".join(("g", "hp", "_", "A" * 36))
+    _mock_bank()
+    key = call_tool.make_user()
+
+    untracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
+    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("correct", key, scope="user", memory_id=GHOST, content=token_shaped_secret)
+    assert exc_info.value.code == "CONTENT_REJECTED_BY_SANITIZER"
+    assert untracked_route.call_count == 0
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(call_tool, key, tracked_id)
+    tracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("correct", key, scope="user", memory_id=tracked_id, content=token_shaped_secret)
+    assert exc_info.value.code == "CONTENT_REJECTED_BY_SANITIZER"
+    assert tracked_route.call_count == 0
+
+
+@respx.mock
+def test_mcp_correct_rejects_canonical_oversize(call_tool):
+    oversize = "x" * 4097
+    _mock_bank()
+    key = call_tool.make_user()
+
+    untracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
+    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("correct", key, scope="user", memory_id=GHOST, content=oversize)
+    assert exc_info.value.code == "CONTENT_TOO_LARGE"
+    assert untracked_route.call_count == 0
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(call_tool, key, tracked_id)
+    tracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("correct", key, scope="user", memory_id=tracked_id, content=oversize)
+    assert exc_info.value.code == "CONTENT_TOO_LARGE"
+    assert tracked_route.call_count == 0
+
+
+@respx.mock
+def test_mcp_correct_accepts_exact_canonical_limit(call_tool):
+    exact = "x" * 4096
+    _mock_bank()
+    key = call_tool.make_user()
+
+    untracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
+    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+
+    call_tool("correct", key, scope="user", memory_id=GHOST, content=exact)
+    sent = untracked_route.calls.last.request.read()
+    assert len(sent.split(b'"text":"')[1].rsplit(b'"', 1)[0]) == 4096
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(call_tool, key, tracked_id)
+    tracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
+
+    call_tool("correct", key, scope="user", memory_id=tracked_id, content=exact)
+    sent = tracked_route.calls.last.request.read()
+    assert len(sent.split(b'"text":"')[1].rsplit(b'"', 1)[0]) == 4096
+
+
+@respx.mock
+def test_mcp_correct_uses_normalized_claim(call_tool):
+    raw = "Stable\t\tclaim.  \r\n"
+    canonical = b'"Stable claim.\\n"'
+    _mock_bank()
+    key = call_tool.make_user()
+
+    untracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
+    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+
+    call_tool("correct", key, scope="user", memory_id=GHOST, content=raw)
+    assert canonical in untracked_route.calls.last.request.read()
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(call_tool, key, tracked_id)
+    tracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
+
+    call_tool("correct", key, scope="user", memory_id=tracked_id, content=raw)
+    assert canonical in tracked_route.calls.last.request.read()
 
 
 @respx.mock

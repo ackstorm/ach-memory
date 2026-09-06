@@ -63,6 +63,7 @@ from memory.mcp.tools import (
 from memory.memory_types import EvidenceBasis, MemoryType, RetainTrigger
 from memory.retained_records import get_by_document_id, get_by_source_memory_id
 from memory.retention import submit_retain
+from memory.sanitization import normalize_claim
 from memory.v040_contracts import RetainEvidence, TypedRetainRequest
 
 logger = logging.getLogger("memory.mcp")
@@ -577,14 +578,14 @@ def register(mcp: MCPServer) -> None:
             # bound, so a blank correct on a valid memory reached Hindsight and
             # came back as 409 MEMORY_NOT_CURATABLE -- telling the caller the
             # memory is a derived observation when it simply sent nothing
-            # (review finding I5, reopened as F1). Also runs
-            # _check_content_size here, which only retain's paths ran before.
-            body = CorrectRequest(
+            # (review finding I5, reopened as F1). Canonicalization (secret
+            # rejection, the 4096-byte claim boundary) happens in `call`,
+            # AFTER bank resolution -- not here -- so it runs only once
+            # authorization has already cleared (see `call`'s comment).
+            return CorrectRequest(
                 scope=scope, project_slug=project_slug, git_locator=git_locator,
                 memory_id=memory_id, content=content,
             )
-            _check_content_size(body.content)
-            return body
 
         def call(bank, db, principal, slug):
             bank_ref = retention.resolve_bank_ref(db, principal, body_factory())
@@ -594,8 +595,14 @@ def register(mcp: MCPServer) -> None:
                 curation_service.correct_record(
                     db, retained, content, client=get_client(), bank_id=bank
                 )
-                return {"id": memory_id, "text": content}
-            return get_client().curate(bank, memory_id, text=content)
+                # Canonical text `correct_record` actually stored, never the
+                # caller's raw input.
+                return {"id": memory_id, "text": retained.canonical_content}
+            # Untracked legacy fallback: no `curation_service` call in this
+            # branch, so canonicalization happens here, right before the one
+            # upstream call, same as the REST twin.
+            canonical_content = normalize_claim(content)
+            return get_client().curate(bank, memory_id, text=canonical_content)
 
         return _run(ctx, body_factory, "memory.correct", call, create=False, is_write=True)
 

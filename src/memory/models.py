@@ -412,6 +412,48 @@ class RetainedRecord(Base):
     )
 
 
+class RetainedRecordRevision(Base):
+    """One immutable prior canonical value a correction overwrote.
+
+    Never updated once written -- `retained_records.append_correction_revision`
+    only ever inserts, keyed by the correction's own deterministic
+    `curation_operation_id` so an exact retry returns the existing row instead
+    of appending a second one. `ON DELETE CASCADE` ties a claim's whole
+    correction history to its own hard delete (SPEC §12.2): no orphaned
+    revision can outlive the claim it revised.
+    """
+
+    __tablename__ = "retained_record_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "retained_record_id",
+            "revision",
+            name="uq_retained_record_revisions_record_revision",
+        ),
+    )
+
+    id: Mapped[uuid_module.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid_module.uuid4
+    )
+    retained_record_id: Mapped[uuid_module.UUID] = mapped_column(
+        ForeignKey("retained_records.id", ondelete="CASCADE")
+    )
+    curation_operation_id: Mapped[str] = mapped_column(String(128), unique=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    canonical_content: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    memory_type: Mapped[str] = mapped_column(String(16))
+    basis: Mapped[str] = mapped_column(String(32))
+    trigger: Mapped[str] = mapped_column(String(32))
+    sanitized_evidence: Mapped[list[dict[str, str | None]]] = mapped_column(JSON)
+    valid_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class CurationOperation(Base):
     """A durable desired curation outcome and its upstream proof state."""
 

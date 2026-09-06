@@ -5,12 +5,12 @@ from threading import Event
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import sessionmaker
 
 from memory import ids
 from memory.auth.principal import Principal
-from memory.errors import IdempotencyConflict
+from memory.errors import IdempotencyConflict, InvalidValidityWindow
 from memory.models import RetainedRecord, Tenant, User
 from memory.retained_records import LogicalBankRef, accept_retain, get_by_operation
 from memory.v040_contracts import RetainEvidence, TypedRetainRequest
@@ -137,6 +137,47 @@ def test_payload_hash_canonicalizes_equivalent_expiry_offsets(session, retained_
     )
 
     assert first.payload_hash == second.payload_hash
+
+
+def test_accept_retain_rejects_valid_until_not_after_database_recorded_at(
+    session, retained_bank
+):
+    """Pydantic's own `valid_until > datetime.now(UTC)` check only catches a
+    clearly-past value at the moment the request object is built; it cannot
+    see what the database's clock will say once `accept_retain` actually
+    takes the bank lock. `model_construct` bypasses that early validator
+    entirely -- the same way an application clock running behind the
+    database's would -- so this test reaches only `accept_retain`'s own
+    database-time boundary. `session` holds one open transaction for the
+    whole test, and PostgreSQL's `now()` is fixed for a transaction's
+    duration, so reading it here returns the exact value `accept_retain`
+    will read again later under the bank lock."""
+    principal, bank = retained_bank
+    db_now = session.execute(select(func.now())).scalar_one()
+    request = TypedRetainRequest.model_construct(
+        scope="user",
+        user_id=None,
+        project_slug=None,
+        content="claim",
+        memory_type="fact",
+        basis="human_explicit",
+        trigger="user_requested",
+        valid_until=db_now,
+        evidence=(RetainEvidence(kind="user_quote", raw="quote"),),
+        operation_id=uuid4(),
+    )
+
+    with pytest.raises(InvalidValidityWindow):
+        accept_retain(
+            session,
+            principal,
+            request,
+            bank=bank,
+            canonical_content="claim",
+            sanitized_evidence=[{"kind": "user_quote", "raw": "quote", "source_ref": None}],
+        )
+
+    assert session.query(RetainedRecord).count() == 0
 
 
 def _wait_for_lock(engine, application_name: str, query_fragment: str) -> str:

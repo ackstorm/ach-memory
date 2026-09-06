@@ -19,6 +19,7 @@ from memory.db import get_session
 from memory.hindsight.client import get_client
 from memory.retained_records import get_by_source_memory_id
 from memory.retention import resolve_bank_ref
+from memory.sanitization import normalize_claim
 
 router = APIRouter(prefix="/v1/memory", tags=["curation"])
 
@@ -259,12 +260,16 @@ def correct(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
-    # `correct` puts caller text into a memory exactly as `retain` does, so it
-    # gets the same MEMORY_MAX_CONTENT_BYTES ceiling (SPEC §20). It was missed
-    # when the cap was written for retain only; the MCP twin got it in Plan 6's
-    # F1 fix, and leaving REST uncapped would recreate the one-surface-
-    # validated drift that F1 existed to close.
-    _check_content_size(body.content)
+    # Authorize first, always (this module's own rule -- see `_bank`'s
+    # docstring): the bank is resolved BEFORE content is canonicalized, so an
+    # unauthorized caller cannot use the sanitizer's secret/size rejection as
+    # a free oracle. `correct_record` canonicalizes internally for the
+    # tracked path; the untracked legacy fallback below canonicalizes here,
+    # since it calls Hindsight directly with no `curation_service` in between.
+    # This replaces `_check_content_size` as correct's security contract --
+    # that check remains right for document/query transports, but a canonical
+    # claim's boundary is `normalize_claim`'s 4096-byte/secret-rejection rule
+    # (SPEC's canonical-claim invariant), not the much larger transport cap.
     bank_id, resolved_from, project_slug = _bank(
         body, db, principal, on_behalf_of, "memory.correct", is_write=True
     )
@@ -273,9 +278,13 @@ def correct(
         curation_service.correct_record(
             db, retained, body.content, client=get_client(), bank_id=bank_id
         )
-        result: dict = {"id": body.memory_id, "text": body.content}
+        # Echoes the canonical text `correct_record` actually stored, never
+        # the caller's raw input (SPEC: a public response includes text only
+        # in its canonical form).
+        result: dict = {"id": body.memory_id, "text": retained.canonical_content}
     else:
-        result = get_client().curate(bank_id, body.memory_id, text=body.content)
+        canonical_content = normalize_claim(body.content)
+        result = get_client().curate(bank_id, body.memory_id, text=canonical_content)
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,

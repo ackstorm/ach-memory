@@ -1,3 +1,5 @@
+import uuid
+
 import httpx
 import pytest
 import respx
@@ -48,6 +50,33 @@ def _create_project(client, headers: dict[str, str], slug: str) -> None:
         "/v1/projects", json={"project_slug": slug}, headers=headers
     )
     assert response.status_code == 201, response.text
+
+
+def _seed_tracked_memory(client, headers: dict[str, str], mem_id: str) -> None:
+    """Create an ACH-tracked `RetainedRecord` resolving to `mem_id`, via a
+    mocked synchronous retain round trip -- the same pattern
+    `test_forget_on_a_tracked_record_uses_the_outcome_safe_path` uses. Must
+    run inside an active `@respx.mock` context; registers its own routes."""
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
+        return_value=httpx.Response(
+            200, json={"status": "completed", "result": {"memory_id": mem_id}}
+        )
+    )
+    response = client.post(
+        "/v1/memory/sync_retain",
+        json={
+            "scope": "user", "content": "seed claim", "memory_type": "fact",
+            "basis": "human_explicit", "trigger": "user_requested",
+            "evidence": [{"kind": "user_quote", "raw": "seed claim"}],
+            "operation_id": str(uuid.uuid4()),
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "completed"
 
 
 @respx.mock
@@ -516,6 +545,140 @@ def test_correct_rejects_oversize_content(client, juan, tenant):
     )
 
     assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
+
+
+@respx.mock
+def test_correct_rejects_secret(client, juan, tenant):
+    """Exercises both surfaces of `correct`'s canonical boundary: an
+    authorized untracked legacy Hindsight memory, and a tracked ACH source.
+    Neither may reach Hindsight with a secret-shaped claim."""
+    token_shaped_secret = "".join(("g", "hp", "_", "A" * 36))
+
+    untracked_id = "22222222-2222-2222-2222-222222222222"
+    untracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{untracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": untracked_id}))
+
+    response = client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": untracked_id, "content": token_shaped_secret},
+        headers=juan["headers"],
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CONTENT_REJECTED_BY_SANITIZER"
+    assert untracked_route.call_count == 0
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(client, juan["headers"], tracked_id)
+    tracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
+
+    response = client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": tracked_id, "content": token_shaped_secret},
+        headers=juan["headers"],
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CONTENT_REJECTED_BY_SANITIZER"
+    assert tracked_route.call_count == 0
+
+
+@respx.mock
+def test_correct_rejects_canonical_oversize(client, juan, tenant):
+    oversize = "x" * 4097
+
+    untracked_id = "22222222-2222-2222-2222-222222222222"
+    untracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{untracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": untracked_id}))
+
+    response = client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": untracked_id, "content": oversize},
+        headers=juan["headers"],
+    )
+    assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
+    assert untracked_route.call_count == 0
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(client, juan["headers"], tracked_id)
+    tracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
+
+    response = client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": tracked_id, "content": oversize},
+        headers=juan["headers"],
+    )
+    assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
+    assert tracked_route.call_count == 0
+
+
+@respx.mock
+def test_correct_accepts_exact_canonical_limit(client, juan, tenant):
+    exact = "x" * 4096
+
+    untracked_id = "22222222-2222-2222-2222-222222222222"
+    untracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{untracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": untracked_id}))
+
+    response = client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": untracked_id, "content": exact},
+        headers=juan["headers"],
+    )
+    assert response.status_code == 200, response.text
+    sent = untracked_route.calls.last.request.read()
+    assert len(sent.split(b'"text":"')[1].rsplit(b'"', 1)[0]) == 4096
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(client, juan["headers"], tracked_id)
+    tracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
+
+    response = client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": tracked_id, "content": exact},
+        headers=juan["headers"],
+    )
+    assert response.status_code == 200, response.text
+    sent = tracked_route.calls.last.request.read()
+    assert len(sent.split(b'"text":"')[1].rsplit(b'"', 1)[0]) == 4096
+
+
+@respx.mock
+def test_correct_uses_normalized_claim(client, juan, tenant):
+    raw = "Stable\t\tclaim.  \r\n"
+    canonical = b'"Stable claim.\\n"'
+
+    untracked_id = "22222222-2222-2222-2222-222222222222"
+    untracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{untracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": untracked_id}))
+
+    client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": untracked_id, "content": raw},
+        headers=juan["headers"],
+    )
+    assert canonical in untracked_route.calls.last.request.read()
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(client, juan["headers"], tracked_id)
+    tracked_route = respx.patch(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
+    ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
+
+    client.post(
+        "/v1/memory/correct",
+        json={"scope": "user", "memory_id": tracked_id, "content": raw},
+        headers=juan["headers"],
+    )
+    assert canonical in tracked_route.calls.last.request.read()
 
 
 @respx.mock
