@@ -1,5 +1,0 @@
-{"type":"user","message":{"role":"user","content":"Can you check whether the auth middleware handles expired tokens?"},"sessionId":"sess-basic","cwd":"/repo","timestamp":"2026-08-31T10:00:00Z","uuid":"u1"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll check the auth middleware for expired-token handling."},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"grep -n 'exp' src/auth/middleware.py"}}]},"sessionId":"sess-basic","cwd":"/repo","timestamp":"2026-08-31T10:00:05Z","uuid":"u2"}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"42: if payload[\"exp\"] < now: raise Expired","is_error":false}]},"sessionId":"sess-basic","cwd":"/repo","timestamp":"2026-08-31T10:00:06Z","uuid":"u3"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Yes, line 42 raises Expired when the exp claim is in the past."}]},"sessionId":"sess-basic","cwd":"/repo","timestamp":"2026-08-31T10:00:10Z","uuid":"u4"}
-{"type":"summary","summary":"Hey there! Thanks for the quick chat about auth.","leafUuid":"u4"}
