@@ -24,6 +24,7 @@ from memory import activity, mental_model_service, metrics
 from memory.api.memory import ScopedRequest, _check_content_size
 from memory.api.mental_models import (
     CreateMentalModelRequest,
+    MutationScopedRequest,
     UpdateMentalModelRequest,
     resolve_logical_bank,
 )
@@ -276,11 +277,16 @@ def register(mcp: MCPServer) -> None:
         git_locator: str | None = None,
         operation_id: str | None = None,
     ) -> ToolResult:
-        def body_factory() -> ScopedRequest:
-            return ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
+        def body_factory() -> MutationScopedRequest:
+            return MutationScopedRequest(
+                scope=scope, project_slug=project_slug, git_locator=git_locator,
+                operation_id=operation_id or str(uuid.uuid4()),
+            )
 
-        def call(bank, db, body):
-            view = mental_model_service.refresh_model(db, bank, model_key, client=get_client())
+        def call(bank, db, body: MutationScopedRequest):
+            view = mental_model_service.refresh_model(
+                db, bank, model_key, operation_id=body.operation_id, client=get_client()
+            )
             return view.model_dump(mode="json")
 
         return _model_run(ctx, body_factory, "mental_models.refresh", call, is_write=True)
@@ -303,11 +309,16 @@ def register(mcp: MCPServer) -> None:
         git_locator: str | None = None,
         operation_id: str | None = None,
     ) -> ToolResult:
-        def body_factory() -> ScopedRequest:
-            return ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
+        def body_factory() -> MutationScopedRequest:
+            return MutationScopedRequest(
+                scope=scope, project_slug=project_slug, git_locator=git_locator,
+                operation_id=operation_id or str(uuid.uuid4()),
+            )
 
-        def call(bank, db, body):
-            mental_model_service.delete_model(db, bank, model_key, client=get_client())
+        def call(bank, db, body: MutationScopedRequest):
+            mental_model_service.delete_model(
+                db, bank, model_key, operation_id=body.operation_id, client=get_client()
+            )
             return {"deleted": True, "model_key": model_key}
 
         return _model_run(ctx, body_factory, "mental_models.delete", call, is_write=True)

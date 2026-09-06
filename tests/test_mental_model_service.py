@@ -18,6 +18,7 @@ from memory.hindsight.client import HindsightClient
 from memory.mental_model_service import (
     CustomModelCreateRequest,
     CustomModelUpdateRequest,
+    _payload_hash,
     create_custom_model,
     delete_model,
     get_model,
@@ -267,6 +268,46 @@ def test_create_retry_with_same_operation_id_and_different_payload_conflicts(ses
         )
 
 
+def test_create_retry_resumes_a_still_creating_row_to_active(session, bank, hindsight):
+    """The bug this closes: `create_custom_model` found the matching
+    `creating` duplicate and just echoed it back verbatim -- a retry after a
+    lost create response never actually recovered to `active`."""
+    operation_id = "11111111-1111-4111-8111-111111111111"
+    request = custom_request(operation_id=operation_id)
+    model_key = ids.new_model_key()
+    digest = _payload_hash(bank, request)
+    model_registry.register_model(
+        session, bank, origin="user", model_key=model_key, name=request.name,
+        source_query=request.source_query, source_tags=list(request.source_tags),
+        tags_match=request.tags_match, max_tokens=request.max_tokens, trigger=request.trigger,
+        lifecycle_state="creating", mutation_operation_id=operation_id,
+        mutation_payload_hash=digest, always_in_context=request.always_in_context,
+        delivery_state="ready",
+    )
+    session.commit()
+    hindsight.list_mental_models.return_value = {
+        "items": [
+            {
+                "id": "mm-resumed-upstream",
+                "name": f"ach:{model_key}",
+                "source_query": request.source_query,
+                "max_tokens": request.max_tokens,
+                "trigger": {
+                    "mode": "full", "refresh_after_consolidation": False,
+                    "exclude_mental_models": False, "keep_trace": False,
+                },
+                "tags": list(request.source_tags),
+            }
+        ]
+    }
+
+    create_custom_model(session, bank, request, client=hindsight)
+
+    row = model_registry.get_registered_model(session, bank, model_key)
+    assert row.lifecycle_state == "active"
+    hindsight.create_mental_model.assert_not_called()
+
+
 def test_create_rejects_a_source_selection_missing_a_required_tag():
     with pytest.raises(ValueError):
         CustomModelCreateRequest(
@@ -365,6 +406,7 @@ def test_get_model_raises_for_unknown_key(session, bank):
 
 def test_update_changes_source_query_and_forwards_it_upstream(session, bank, hindsight, create_request):
     created = create_custom_model(session, bank, create_request, client=hindsight)
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-update-refresh"}
 
     updated = update_model(
         session,
@@ -379,6 +421,27 @@ def test_update_changes_source_query_and_forwards_it_upstream(session, bank, hin
     hindsight.update_mental_model.assert_called_once_with(
         bank.bank_id, "mm-upstream-1", source_query="Summarize new conventions."
     )
+    assert updated.delivery_state == "withheld"
+    assert updated.refresh_status == "pending"
+    row = model_registry.get_registered_model(session, bank, created.model_key)
+    assert row.refresh_operation_id == "op-update-refresh"
+
+
+def test_update_name_only_does_not_withhold_or_refresh(session, bank, hindsight, create_request):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    before = model_registry.get_registered_model(session, bank, created.model_key)
+    before_refresh_operation_id = before.refresh_operation_id
+
+    updated = update_model(
+        session, bank, created.model_key,
+        CustomModelUpdateRequest(name="renamed", operation_id=str(uuid4())),
+        client=hindsight,
+    )
+
+    assert updated.name == "renamed"
+    hindsight.refresh_mental_model.assert_not_called()
+    row = model_registry.get_registered_model(session, bank, created.model_key)
+    assert row.refresh_operation_id == before_refresh_operation_id
 
 
 def test_update_to_manual_refresh_explicitly_disables_upstream_automation(
@@ -398,6 +461,7 @@ def test_update_to_manual_refresh_explicitly_disables_upstream_automation(
         ),
         client=hindsight,
     )
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-trigger-refresh"}
 
     updated = update_model(
         session,
@@ -415,6 +479,47 @@ def test_update_to_manual_refresh_explicitly_disables_upstream_automation(
     }
 
 
+def test_update_with_a_lost_upstream_response_leaves_model_required_for_repair(
+    session, bank, hindsight, create_request
+):
+    from memory.errors import HindsightError
+
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    hindsight.update_mental_model.side_effect = HindsightError("backend unreachable")
+
+    with pytest.raises(HindsightError):
+        update_model(
+            session, bank, created.model_key,
+            CustomModelUpdateRequest(source_query="new query", operation_id=str(uuid4())),
+            client=hindsight,
+        )
+
+    row = model_registry.get_registered_model(session, bank, created.model_key)
+    assert row.delivery_state == "withheld"
+    assert row.refresh_status == "required"
+    assert row.source_query != "new query"
+
+
+def test_update_refresh_submission_failure_leaves_model_required(
+    session, bank, hindsight, create_request
+):
+    from memory.errors import HindsightError
+
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    hindsight.refresh_mental_model.side_effect = HindsightError("backend unreachable")
+
+    with pytest.raises(HindsightError):
+        update_model(
+            session, bank, created.model_key,
+            CustomModelUpdateRequest(source_query="new query", operation_id=str(uuid4())),
+            client=hindsight,
+        )
+
+    row = model_registry.get_registered_model(session, bank, created.model_key)
+    assert row.delivery_state == "withheld"
+    assert row.refresh_status == "required"
+
+
 def test_update_cannot_change_a_builtin(session, user_bank_with_builtin, hindsight):
     with pytest.raises(BuiltinModelImmutable):
         update_model(
@@ -430,8 +535,10 @@ def test_delete_is_idempotent_and_a_404_upstream_satisfies_it(session, bank, hin
     created = create_custom_model(session, bank, create_request, client=hindsight)
     hindsight.delete_mental_model.side_effect = MentalModelNotFound("gone")
 
-    delete_model(session, bank, created.model_key, client=hindsight)
-    delete_model(session, bank, created.model_key, client=hindsight)  # second call: no-op
+    delete_model(session, bank, created.model_key, operation_id=str(uuid4()), client=hindsight)
+    # second call, a DIFFERENT operation id: the row's own lifecycle_state
+    # already short-circuits before the ledger is even consulted.
+    delete_model(session, bank, created.model_key, operation_id=str(uuid4()), client=hindsight)
 
     with pytest.raises(MentalModelNotFound):
         get_model(session, bank, created.model_key)
@@ -439,14 +546,73 @@ def test_delete_is_idempotent_and_a_404_upstream_satisfies_it(session, bank, hin
 
 def test_delete_a_builtin_is_rejected(session, user_bank_with_builtin, hindsight):
     with pytest.raises(BuiltinModelImmutable):
-        delete_model(session, user_bank_with_builtin, USER_CONTEXT_V1.key, client=hindsight)
+        delete_model(
+            session, user_bank_with_builtin, USER_CONTEXT_V1.key,
+            operation_id=str(uuid4()), client=hindsight,
+        )
+
+
+def test_delete_exact_retry_calls_upstream_once(session, bank, hindsight, create_request):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    operation_id = "11111111-1111-4111-8111-111111111111"
+
+    delete_model(session, bank, created.model_key, operation_id=operation_id, client=hindsight)
+    delete_model(session, bank, created.model_key, operation_id=operation_id, client=hindsight)
+
+    hindsight.delete_mental_model.assert_called_once()
 
 
 def test_refresh_withholds_delivery_until_the_operation_completes(session, bank, hindsight, create_request):
     created = create_custom_model(session, bank, create_request, client=hindsight)
     hindsight.refresh_mental_model.return_value = {"operation_id": "op-123"}
 
-    refreshed = refresh_model(session, bank, created.model_key, client=hindsight)
+    refreshed = refresh_model(
+        session, bank, created.model_key, operation_id=str(uuid4()), client=hindsight
+    )
 
     assert refreshed.delivery_state == "withheld"
     assert refreshed.refresh_status == "pending"
+
+
+def test_refresh_exact_retry_calls_upstream_once(session, bank, hindsight, create_request):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-123"}
+    operation_id = "11111111-1111-4111-8111-111111111111"
+
+    refresh_model(session, bank, created.model_key, operation_id=operation_id, client=hindsight)
+    refresh_model(session, bank, created.model_key, operation_id=operation_id, client=hindsight)
+
+    hindsight.refresh_mental_model.assert_called_once()
+
+
+def test_update_exact_retry_calls_upstream_once(session, bank, hindsight, create_request):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-retry-refresh"}
+    operation_id = "11111111-1111-4111-8111-111111111111"
+    request = CustomModelUpdateRequest(source_query="Summarize new conventions.", operation_id=operation_id)
+
+    first = update_model(session, bank, created.model_key, request, client=hindsight)
+    second = update_model(session, bank, created.model_key, request, client=hindsight)
+
+    assert first.source_query == second.source_query == "Summarize new conventions."
+    hindsight.update_mental_model.assert_called_once()
+    hindsight.refresh_mental_model.assert_called_once()
+
+
+def test_update_retry_with_same_operation_id_and_different_payload_conflicts(
+    session, bank, hindsight, create_request
+):
+    created = create_custom_model(session, bank, create_request, client=hindsight)
+    operation_id = str(uuid4())
+    update_model(
+        session, bank, created.model_key,
+        CustomModelUpdateRequest(name="first", operation_id=operation_id),
+        client=hindsight,
+    )
+
+    with pytest.raises(IdempotencyConflict):
+        update_model(
+            session, bank, created.model_key,
+            CustomModelUpdateRequest(name="different", operation_id=operation_id),
+            client=hindsight,
+        )

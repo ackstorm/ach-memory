@@ -162,6 +162,29 @@ def test_repair_ignores_a_model_still_inside_its_backoff(session, bank, hindsigh
     hindsight.refresh_mental_model.assert_not_called()
 
 
+def test_repair_also_finds_a_required_model_with_no_operation_id(session, bank, hindsight):
+    """`require_model_refresh` withholds with `refresh_status='required'` and
+    no invented operation id (e.g. a submission was never attempted or was
+    lost) -- the repair selector must pick this up exactly like a failed one,
+    even though `refresh_operation_id IS NULL`."""
+    now = datetime.now(UTC)
+    row = model_registry.register_model(
+        session, bank, origin="user", model_key=f"mm_{'7' * 32}", name="m",
+        source_query="q", source_tags=list(REQUIRED_TAGS), tags_match="all",
+        max_tokens=256, trigger=TRIGGER, always_in_context=False,
+        upstream_model_id="mm-upstream-required",
+    )
+    model_registry.require_model_refresh(session, bank, row.model_key, repair_not_before=now)
+    session.commit()
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-required-repair"}
+
+    result = repair_one_model(session, bank, now=now, client=hindsight)
+
+    assert result.model_key == row.model_key
+    assert result.refresh_status == "pending"
+    hindsight.refresh_mental_model.assert_called_once_with(bank.bank_id, "mm-upstream-required")
+
+
 def test_repair_finds_nothing_when_no_model_is_failed(session, bank, hindsight):
     result = repair_one_model(session, bank, now=datetime.now(UTC), client=hindsight)
 

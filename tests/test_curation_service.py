@@ -233,14 +233,18 @@ def test_indefinite_correction_withholds_an_admitting_model(session, bank, hinds
         session, bank, origin="user", model_key=ids.new_model_key(),
         name="n", source_query="q", source_tags=["schema:ach-retain-v1"],
         tags_match="all", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-1",
     )
     hindsight.curate.return_value = {"id": retained.source_memory_id}
+    hindsight.refresh_mental_model.return_value = {"operation_id": "refresh-42"}
 
     correct_record(session, retained, "revised", client=hindsight, bank_id=bank.bank_id)
 
     model = model_registry.list_registered_models(session, bank)[0]
     assert model.delivery_state == "withheld"
-    assert model.refresh_operation_id is not None
+    assert model.refresh_status == "pending"
+    assert model.refresh_operation_id == "refresh-42"
+    hindsight.refresh_mental_model.assert_called_once_with(bank.bank_id, "mm-upstream-1")
 
 
 def test_expiring_correction_never_touches_models(session, bank, hindsight):
@@ -253,6 +257,7 @@ def test_expiring_correction_never_touches_models(session, bank, hindsight):
         session, bank, origin="user", model_key=ids.new_model_key(),
         name="n", source_query="q", source_tags=["schema:ach-retain-v1"],
         tags_match="all", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-1",
     )
     hindsight.curate.return_value = {"id": retained.source_memory_id}
 
@@ -260,6 +265,108 @@ def test_expiring_correction_never_touches_models(session, bank, hindsight):
 
     model = model_registry.list_registered_models(session, bank)[0]
     assert model.delivery_state == "ready"
+    hindsight.refresh_mental_model.assert_not_called()
+
+
+def test_forget_of_indefinite_claim_requires_and_submits_model_refresh(session, bank, hindsight):
+    from memory import model_registry
+
+    retained = _retained(session, bank)
+    model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(),
+        name="n", source_query="q", source_tags=["schema:ach-retain-v1"],
+        tags_match="all", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-1",
+    )
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+    hindsight.refresh_mental_model.return_value = {"operation_id": "refresh-forget"}
+
+    forget_record(session, retained, client=hindsight, bank_id=bank.bank_id)
+
+    model = model_registry.list_registered_models(session, bank)[0]
+    assert model.refresh_operation_id == "refresh-forget"
+
+
+def test_restore_of_indefinite_claim_requires_and_submits_model_refresh(session, bank, hindsight):
+    from memory import model_registry
+
+    retained = _retained(session, bank)
+    model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(),
+        name="n", source_query="q", source_tags=["schema:ach-retain-v1"],
+        tags_match="all", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-1",
+    )
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+    hindsight.refresh_mental_model.return_value = {"operation_id": "refresh-restore"}
+
+    restore_record(session, retained, client=hindsight, bank_id=bank.bank_id)
+
+    model = model_registry.list_registered_models(session, bank)[0]
+    assert model.refresh_operation_id == "refresh-restore"
+
+
+def test_hard_delete_of_indefinite_claim_requires_and_submits_model_refresh(session, bank, hindsight):
+    """The bug this closes: hard delete used to purge the retained row
+    without ever computing which models it might have fed, so no refresh
+    was ever required or submitted for them."""
+    from memory import model_registry
+
+    retained = _retained(session, bank)
+    retained_id = retained.id
+    model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(),
+        name="n", source_query="q", source_tags=["schema:ach-retain-v1"],
+        tags_match="all", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-1",
+    )
+    hindsight.delete_document.return_value = {"deleted": True}
+    hindsight.refresh_mental_model.return_value = {"operation_id": "refresh-42"}
+
+    delete_record(session, retained, client=hindsight, bank_id=bank.bank_id)
+
+    assert session.get(RetainedRecord, retained_id) is None
+    model = model_registry.list_registered_models(session, bank)[0]
+    assert model.delivery_state == "withheld"
+    assert model.refresh_operation_id == "refresh-42"
+    hindsight.refresh_mental_model.assert_called_once_with(bank.bank_id, "mm-upstream-1")
+
+
+def test_model_refresh_submission_failure_leaves_it_required_without_blocking_others(
+    session, bank, hindsight
+):
+    from memory import model_registry
+    from memory.errors import HindsightError
+
+    retained = _retained(session, bank)
+    failing = model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(),
+        name="failing", source_query="q", source_tags=["schema:ach-retain-v1"],
+        tags_match="all", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-failing",
+    )
+    ok = model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(),
+        name="ok", source_query="q", source_tags=["schema:ach-retain-v1"],
+        tags_match="all", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-ok",
+    )
+    def _refresh_side_effect(bank_id, upstream_model_id):
+        if upstream_model_id == "mm-upstream-failing":
+            raise HindsightError("backend unreachable")
+        return {"operation_id": "refresh-ok"}
+
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+    hindsight.refresh_mental_model.side_effect = _refresh_side_effect
+
+    correct_record(session, retained, "revised", client=hindsight, bank_id=bank.bank_id)
+
+    session.refresh(failing)
+    session.refresh(ok)
+    assert failing.delivery_state == "withheld"
+    assert failing.refresh_status == "required"
+    assert failing.refresh_operation_id is None
+    assert ok.refresh_operation_id == "refresh-ok"
 
 
 # -- reconcile_bank_once ------------------------------------------------

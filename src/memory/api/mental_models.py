@@ -242,7 +242,9 @@ def delete_mental_model(
         scoped, db, principal, on_behalf_of, "mental_models.delete", is_write=True
     )
     db.commit()
-    mental_model_service.delete_model(db, bank, model_key, client=get_client())
+    mental_model_service.delete_model(
+        db, bank, model_key, operation_id=scoped.operation_id, client=get_client()
+    )
     return Response(status_code=204)
 
 
@@ -258,4 +260,6 @@ def refresh_mental_model(
         scoped, db, principal, on_behalf_of, "mental_models.refresh", is_write=True
     )
     db.commit()
-    return mental_model_service.refresh_model(db, bank, model_key, client=get_client())
+    return mental_model_service.refresh_model(
+        db, bank, model_key, operation_id=scoped.operation_id, client=get_client()
+    )

@@ -638,3 +638,58 @@ class MentalModelRegistration(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class MentalModelMutation(Base):
+    """Idempotency ledger for the update/refresh/delete mutations of an
+    already-registered mental model.
+
+    `create` has its own ledger already -- `MentalModelRegistration`'s own
+    `mutation_operation_id`/`mutation_payload_hash` columns, since a fresh
+    `creating` row IS the durable idempotency record for that action. Update/
+    refresh/delete act on an EXISTING row that may be mutated many times over
+    its life, so each needs its own operation identity kept separately here
+    rather than overwriting the row's single create-time pair.
+    """
+
+    __tablename__ = "mental_model_mutations"
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'user' AND user_id IS NOT NULL AND project_internal_id IS NULL) "
+            "OR (scope = 'project' AND user_id IS NULL AND project_internal_id IS NOT NULL)",
+            name="ck_mental_model_mutations_scope_identity",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "scope",
+            "user_id",
+            "project_internal_id",
+            "operation_id",
+            name="uq_mental_model_mutations_bank_operation",
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+    id: Mapped[uuid_module.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid_module.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"))
+    scope: Mapped[str] = mapped_column(String(8))
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    project_internal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.internal_id"), nullable=True
+    )
+    model_key: Mapped[str] = mapped_column(String(64))
+    operation_id: Mapped[str] = mapped_column(String(128))
+    action: Mapped[str] = mapped_column(String(16))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(16))
+    upstream_operation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

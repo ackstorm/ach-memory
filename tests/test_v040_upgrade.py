@@ -165,4 +165,4 @@ def test_released_v035_data_survives_upgrade_to_v040(
         ("current-name", True),
         ("previous-name", False),
     ]
-    assert head == "b8c9d0e1f2a3"
+    assert head == "c9d0e1f2a3b4"

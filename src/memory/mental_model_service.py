@@ -145,7 +145,7 @@ class MentalModelView(BaseModel):
     trigger: dict[str, object]
     always_in_context: bool
     delivery_state: Literal["ready", "withheld"]
-    refresh_status: Literal["pending", "failed", "succeeded"] | None
+    refresh_status: Literal["required", "pending", "failed", "succeeded"] | None
     last_refreshed_at: datetime | None
 
 
@@ -215,6 +215,54 @@ def _touch(db: Session, row: MentalModelRegistration) -> None:
     row.updated_at = db.execute(select(func.now())).scalar_one()
 
 
+def _update_payload_hash(
+    bank: LogicalBankRef, model_key: str, request: CustomModelUpdateRequest
+) -> str:
+    payload = {
+        "schema": "ach-model-update-idempotency-v1",
+        "scope": {
+            "tenant_id": bank.tenant_id,
+            "scope": bank.scope,
+            "user_id": bank.user_id,
+            "project_internal_id": bank.project_internal_id,
+        },
+        "model_key": model_key,
+        "name": request.name,
+        "source_query": request.source_query,
+        "max_tokens": request.max_tokens,
+        "trigger": request.trigger,
+        "always_in_context": request.always_in_context,
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _bare_mutation_payload_hash(bank: LogicalBankRef, model_key: str, action: str) -> str:
+    """Refresh and delete carry no caller-authored content -- the payload
+    identity is just which model, in which bank, under which action, so a
+    reused operation id can never legitimately mean two different things
+    for either of these (`IdempotencyConflict` still exists as a boundary,
+    but only a caller genuinely reusing an id for a DIFFERENT model or
+    action can ever trip it)."""
+    payload = {
+        "schema": "ach-model-mutation-idempotency-v1",
+        "scope": {
+            "tenant_id": bank.tenant_id,
+            "scope": bank.scope,
+            "user_id": bank.user_id,
+            "project_internal_id": bank.project_internal_id,
+        },
+        "model_key": model_key,
+        "action": action,
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _to_view(row: MentalModelRegistration) -> MentalModelView:
     return MentalModelView(
         model_key=row.model_key,
@@ -278,6 +326,11 @@ def create_custom_model(
                 "operation_id was already used with a different canonical payload",
                 operation_id=request.operation_id,
             )
+        if duplicate.lifecycle_state == "creating":
+            # A lost create response: the row was durably committed but
+            # never activated. Resume rather than echo the stale `creating`
+            # state back to a caller retrying the exact same request.
+            return resume_model_mutation(db, bank, request.operation_id, client=client)
         return _to_view(duplicate)
 
     if request.always_in_context:
@@ -405,6 +458,15 @@ def update_model(
             "a built-in model's definition cannot be changed through custom-model CRUD"
         )
 
+    digest = _update_payload_hash(bank, model_key, request)
+    mutation, created = model_registry.accept_model_mutation(
+        db, bank, model_key=model_key, operation_id=request.operation_id,
+        action="update", payload_hash=digest,
+    )
+    if not created and mutation.state == "completed":
+        db.commit()
+        return _to_view(row)
+
     new_always = row.always_in_context if request.always_in_context is None else request.always_in_context
     new_tokens = row.max_tokens if request.max_tokens is None else request.max_tokens
     if new_always:
@@ -423,6 +485,18 @@ def update_model(
         upstream_changes["trigger"] = (
             request.trigger or dict(_MANUAL_TRIGGER_UPDATE)
         )
+    # A display-name-only or always_in_context-only update changes nothing
+    # the synthesis reads from, so it never touches delivery currentness
+    # (SPEC §6.4). Any of the three source-affecting fields does: the model
+    # is withheld as refresh-required BEFORE the upstream definition update
+    # is even sent, so a crash between here and the eventual refresh leaves
+    # a repairable withheld model, never a falsely-current one.
+    requires_refresh = bool(upstream_changes) and row.upstream_model_id is not None
+    if requires_refresh:
+        now = db.execute(select(func.now())).scalar_one()
+        model_registry.require_model_refresh(db, bank, model_key, repair_not_before=now)
+        db.commit()
+
     if upstream_changes and row.upstream_model_id is not None:
         client.update_mental_model(bank.bank_id, row.upstream_model_id, **upstream_changes)
 
@@ -438,17 +512,33 @@ def update_model(
         row.always_in_context = request.always_in_context
     _touch(db, row)
     db.flush()
+
+    if requires_refresh:
+        result = client.refresh_mental_model(bank.bank_id, row.upstream_model_id)
+        refresh_operation_id = result.get("operation_id") or result.get("id")
+        model_registry.record_model_refresh_operation(db, bank, model_key, refresh_operation_id)
+
+    model_registry.complete_model_mutation(db, mutation)
     db.commit()
     return _to_view(row)
 
 
-def delete_model(db: Session, bank: LogicalBankRef, model_key: str, *, client) -> None:
+def delete_model(db: Session, bank: LogicalBankRef, model_key: str, *, operation_id: str, client) -> None:
     row = model_registry.get_registered_model(db, bank, model_key)
     if row is None:
         raise MentalModelNotFound("no registered model with that logical key")
     if row.origin == "builtin":
         raise BuiltinModelImmutable("a built-in model cannot be deleted through custom-model CRUD")
     if row.lifecycle_state == "deleted":
+        return
+
+    digest = _bare_mutation_payload_hash(bank, model_key, "delete")
+    mutation, created = model_registry.accept_model_mutation(
+        db, bank, model_key=model_key, operation_id=operation_id,
+        action="delete", payload_hash=digest,
+    )
+    if not created and mutation.state == "completed":
+        db.commit()
         return
 
     if row.upstream_model_id is not None:
@@ -458,17 +548,28 @@ def delete_model(db: Session, bank: LogicalBankRef, model_key: str, *, client) -
             pass  # an absent upstream source already satisfies deletion
 
     model_registry.mark_deleted(db, bank, model_key)
+    model_registry.complete_model_mutation(db, mutation)
     db.commit()
 
 
-def refresh_model(db: Session, bank: LogicalBankRef, model_key: str, *, client) -> MentalModelView:
+def refresh_model(db: Session, bank: LogicalBankRef, model_key: str, *, operation_id: str, client) -> MentalModelView:
     row = model_registry.get_registered_model(db, bank, model_key)
     if row is None or row.lifecycle_state == "deleted" or row.upstream_model_id is None:
         raise MentalModelNotFound("no registered model with that logical key")
 
+    digest = _bare_mutation_payload_hash(bank, model_key, "refresh")
+    mutation, created = model_registry.accept_model_mutation(
+        db, bank, model_key=model_key, operation_id=operation_id,
+        action="refresh", payload_hash=digest,
+    )
+    if not created and mutation.state == "completed":
+        db.commit()
+        return _to_view(row)
+
     result = client.refresh_mental_model(bank.bank_id, row.upstream_model_id)
-    operation_id = result.get("operation_id") or result.get("id")
-    withheld = model_registry.withhold_model(db, bank, model_key, operation_id)
+    refresh_operation_id = result.get("operation_id") or result.get("id")
+    withheld = model_registry.withhold_model(db, bank, model_key, refresh_operation_id)
+    model_registry.complete_model_mutation(db, mutation, upstream_operation_id=refresh_operation_id)
     db.commit()
     return _to_view(withheld)
 
@@ -640,7 +741,7 @@ def repair_one_model(
     try:
         result = client.refresh_mental_model(bank.bank_id, row.upstream_model_id)
         operation_id = result.get("operation_id") or result.get("id")
-        repaired = model_registry.withhold_model(db, bank, row.model_key, operation_id)
+        repaired = model_registry.record_model_refresh_operation(db, bank, row.model_key, operation_id)
     except DomainError:
         repaired = model_registry.mark_refresh_failed(
             db, bank, row.model_key, row.refresh_operation_id,

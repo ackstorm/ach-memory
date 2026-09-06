@@ -195,6 +195,54 @@ def test_mental_model_tools_never_return_a_physical_or_upstream_id(call_tool, se
 
 
 @respx.mock
+def test_mcp_refresh_and_delete_forward_the_callers_operation_id_to_the_ledger(call_tool, session):
+    """The bug this closes: `refresh_mental_model`/`delete_mental_model`'s MCP
+    body factories built a bare `ScopedRequest`, discarding the caller's
+    `operation_id` before it ever reached the service layer's idempotency
+    ledger -- unlike `update_mental_model`, which already threaded it
+    through `UpdateMentalModelRequest`."""
+    from memory.models import MentalModelMutation
+
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
+        return_value=httpx.Response(
+            201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-create"}
+        )
+    )
+    key = call_tool.make_user()
+
+    created = call_tool(
+        "create_mental_model", key, scope="user", name="n", source_query="q",
+        source_tags=MM_REQUIRED_TAGS, tags_match="all", max_tokens=512,
+        always_in_context=False, trigger={"mode": "delta"},
+    )
+    model_key = created.result["model_key"]
+
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1/refresh$").mock(
+        return_value=httpx.Response(200, json={"operation_id": "op-refresh"})
+    )
+    refresh_operation_id = "22222222-2222-4222-8222-222222222222"
+    call_tool(
+        "refresh_mental_model", key, scope="user", model_key=model_key,
+        operation_id=refresh_operation_id,
+    )
+
+    mutation = session.query(MentalModelMutation).filter_by(model_key=model_key, action="refresh").one()
+    assert mutation.operation_id == refresh_operation_id
+
+    respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1$").mock(
+        return_value=httpx.Response(200, json={"deleted": True})
+    )
+    delete_operation_id = "33333333-3333-4333-8333-333333333333"
+    call_tool(
+        "delete_mental_model", key, scope="user", model_key=model_key,
+        operation_id=delete_operation_id,
+    )
+
+    mutation = session.query(MentalModelMutation).filter_by(model_key=model_key, action="delete").one()
+    assert mutation.operation_id == delete_operation_id
+
+
+@respx.mock
 def test_a_tool_cannot_reach_another_users_project(call_tool):
     """A DomainError raised inside `_run` must surface as `MCPToolError`, not
     escape raw. Resolution hides the existing project behind the same typed

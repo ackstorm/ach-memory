@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
-from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -22,6 +21,7 @@ from memory.errors import (
     BankCurrentnessUnavailable,
     CurationNeedsOperator,
     DocumentNotFound,
+    DomainError,
     MemoryNotCuratable,
     MemoryNotFound,
 )
@@ -129,19 +129,88 @@ def _model_admits(model: MentalModelRegistration, source_tags: list[str]) -> boo
     return True
 
 
-def _withhold_affected_models(db: Session, bank: LogicalBankRef, retained: RetainedRecord) -> None:
-    """After a proven INDEFINITE-source lifecycle change, withhold every
-    registered model whose static tags might have drawn on this source.
-    Expiring records never feed a registered model (SPEC §5.6/§6.4), so this
-    is a no-op for one."""
+def _affected_models(
+    db: Session, bank: LogicalBankRef, retained: RetainedRecord
+) -> list[MentalModelRegistration]:
+    """Registered models whose static tag filter might have drawn on this
+    INDEFINITE source. Expiring records never feed a registered model
+    (SPEC §5.6/§6.4), so this is always empty for one."""
     if retained.valid_until is not None:
-        return
+        return []
     source_tags = _tags_for(retained)
-    for model in model_registry.list_registered_models(db, bank):
-        if model.lifecycle_state == "deleted":
+    return [
+        model
+        for model in model_registry.list_registered_models(db, bank)
+        if model.lifecycle_state != "deleted" and _model_admits(model, source_tags)
+    ]
+
+
+def _require_refresh_for_affected_models(
+    db: Session, bank: LogicalBankRef, models: list[MentalModelRegistration], *, now: datetime
+) -> None:
+    """Durably withhold every affected model with `refresh_status='required'`
+    and no invented operation id, BEFORE any upstream refresh is attempted --
+    a crash here leaves a repairable withheld model, never a falsely-current
+    one (SPEC §5.8's "currentness correctness over availability")."""
+    for model in models:
+        model_registry.require_model_refresh(db, bank, model.model_key, repair_not_before=now)
+
+
+def _submit_refresh_for_affected_models(
+    db: Session, bank: LogicalBankRef, models: list[MentalModelRegistration], *, client: HindsightClient
+) -> None:
+    """One independent refresh request per affected model. A submission
+    failure leaves that model withheld/required -- repairable later by
+    `mental_model_service.repair_one_model` -- without blocking the others
+    (SPEC: unrelated models remain independently available). A model with no
+    upstream identity yet (still `creating`) has nothing to refresh; its own
+    create/resume flow owns its eventual delivery state."""
+    for model in models:
+        if model.upstream_model_id is None:
             continue
-        if _model_admits(model, source_tags):
-            model_registry.withhold_model(db, bank, model.model_key, str(uuid4()))
+        try:
+            result = client.refresh_mental_model(bank.bank_id, model.upstream_model_id)
+        except DomainError:
+            continue
+        operation_id = result.get("operation_id") or result.get("id")
+        model_registry.record_model_refresh_operation(db, bank, model.model_key, operation_id)
+        db.commit()
+
+
+def _finalize_proven_mutation(
+    db: Session,
+    bank: LogicalBankRef,
+    retained: RetainedRecord,
+    op: CurationOperation,
+    *,
+    action: str,
+    desired_content: str | None,
+    now: datetime,
+    client: HindsightClient,
+) -> None:
+    """Common tail once an action's upstream outcome is proven (or, for an
+    already-expired restore, correctly skipped): compute affected models
+    BEFORE any row is deleted, mark them refresh-required, apply ACH's own
+    lifecycle change and release the bank barrier -- all in one commit --
+    then submit one independent refresh request per affected model."""
+    affected = _affected_models(db, bank, retained)
+    if affected:
+        _require_refresh_for_affected_models(db, bank, affected, now=now)
+
+    if action == "correct":
+        retained.canonical_content = desired_content
+    if action == "delete":
+        db.query(CurationOperation).filter_by(retained_record_id=retained.id).delete()
+        db.delete(retained)
+    else:
+        _apply_lifecycle(retained, action, now=now)
+        op.state = "completed"
+        op.completed_at = now
+    ready_bank(db, bank, op.operation_id)
+    db.commit()
+
+    if affected:
+        _submit_refresh_for_affected_models(db, bank, affected, client=client)
 
 
 def _issue(
@@ -232,18 +301,10 @@ def _mutate(
                 "this action's outcome could not be confirmed; the bank is withheld pending reconciliation"
             ) from None
 
-    if action == "correct":
-        retained.canonical_content = desired_content
-    if action == "delete":
-        db.query(CurationOperation).filter_by(retained_record_id=retained.id).delete()
-        db.delete(retained)
-    else:
-        _apply_lifecycle(retained, action, now=now)
-        op.state = "completed"
-        op.completed_at = now
-        _withhold_affected_models(db, bank, retained)
-    ready_bank(db, bank, op.operation_id)
-    db.commit()
+    _finalize_proven_mutation(
+        db, bank, retained, op,
+        action=action, desired_content=desired_content, now=now, client=client,
+    )
     return CurationResult(state="completed", record_id=record_id, action=action)
 
 
@@ -327,13 +388,10 @@ def reconcile_bank_once(db: Session, bank: LogicalBankRef, *, client: HindsightC
 
     if not present:
         if op.action in _REMOVAL_ACTIONS:
-            if op.action == "delete":
-                db.query(CurationOperation).filter_by(retained_record_id=retained.id).delete()
-                db.delete(retained)
-            else:
-                _apply_lifecycle(retained, op.action, now=_db_now(db))
-            ready_bank(db, bank, op.operation_id)
-            db.commit()
+            _finalize_proven_mutation(
+                db, bank, retained, op,
+                action=op.action, desired_content=None, now=_db_now(db), client=client,
+            )
             return CurationResult(state="completed", record_id=record_id, action=op.action)
         op.state = "needs_operator"
         db.commit()
@@ -352,16 +410,8 @@ def reconcile_bank_once(db: Session, bank: LogicalBankRef, *, client: HindsightC
         db.commit()
         return CurationResult(state="needs_operator", record_id=record_id, action=op.action)
 
-    if op.action == "correct":
-        retained.canonical_content = op.desired_content
-    if op.action == "delete":
-        db.query(CurationOperation).filter_by(retained_record_id=retained.id).delete()
-        db.delete(retained)
-    else:
-        _apply_lifecycle(retained, op.action, now=_db_now(db))
-        op.state = "completed"
-        op.completed_at = _db_now(db)
-        _withhold_affected_models(db, bank, retained)
-    ready_bank(db, bank, op.operation_id)
-    db.commit()
+    _finalize_proven_mutation(
+        db, bank, retained, op,
+        action=op.action, desired_content=op.desired_content, now=_db_now(db), client=client,
+    )
     return CurationResult(state="completed", record_id=record_id, action=op.action)

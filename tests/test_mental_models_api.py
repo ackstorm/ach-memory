@@ -231,6 +231,12 @@ def test_update_forwards_only_the_changed_field_upstream(client, juan):
     route = respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1$").mock(
         return_value=httpx.Response(200, json={"id": "mm-upstream-1"})
     )
+    # A source_query change is one of the three source-affecting fields, so
+    # it also requires and submits a refresh (SPEC §6.4) -- unlike a
+    # display-name-only update, which never reaches this route.
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1/refresh$").mock(
+        return_value=httpx.Response(200, json={"operation_id": "op-update-refresh"})
+    )
 
     response = client.patch(
         f"/v1/mental-models/{created['model_key']}",
@@ -240,6 +246,7 @@ def test_update_forwards_only_the_changed_field_upstream(client, juan):
 
     assert response.status_code == 200, response.text
     assert response.json()["source_query"] == "new query"
+    assert response.json()["delivery_state"] == "withheld"
     sent = json.loads(route.calls.last.request.content)
     assert sent == {"source_query": "new query"}
 

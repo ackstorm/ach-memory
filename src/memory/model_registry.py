@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from memory.errors import MentalModelNotFound, MentalModelQuotaExceeded
-from memory.models import MentalModelRegistration
+from memory.errors import IdempotencyConflict, MentalModelNotFound, MentalModelQuotaExceeded
+from memory.models import MentalModelMutation, MentalModelRegistration
 from memory.retained_records import LogicalBankRef, _bank_filters, _lock_bank
 
 MAX_CUSTOM_MODELS = 5
@@ -187,6 +189,45 @@ def withhold_model(
     return row
 
 
+def require_model_refresh(
+    db: Session,
+    bank: LogicalBankRef,
+    model_key: str,
+    *,
+    repair_not_before: datetime,
+) -> MentalModelRegistration:
+    """Withhold now, with no invented operation id -- a model this bank knows
+    needs refreshing, but for which no upstream refresh has been submitted
+    (or attempted-and-failed) yet. `repair_not_before` governs when a repair
+    access is first eligible to pick this row up: the caller passes `now`
+    for a freshly-required model (repairable immediately) or a backed-off
+    time for one whose submission just failed."""
+    row = _locked_model(db, bank, model_key)
+    row.delivery_state = "withheld"
+    row.refresh_operation_id = None
+    row.refresh_status = "required"
+    row.repair_not_before = repair_not_before
+    row.updated_at = _db_now(db)
+    db.flush()
+    return row
+
+
+def record_model_refresh_operation(
+    db: Session, bank: LogicalBankRef, model_key: str, operation_id: str
+) -> MentalModelRegistration:
+    """Replace a required/failed state with the exact upstream operation
+    identity a refresh submission actually returned. Never invented locally
+    -- `operation_id` must be Hindsight's own id, so later observation
+    compares against the exact recorded value (SPEC §6.4)."""
+    row = _locked_model(db, bank, model_key)
+    row.refresh_operation_id = operation_id
+    row.refresh_status = "pending"
+    row.repair_not_before = None
+    row.updated_at = _db_now(db)
+    db.flush()
+    return row
+
+
 def ready_model(
     db: Session, bank: LogicalBankRef, model_key: str, operation_id: str
 ) -> MentalModelRegistration:
@@ -224,18 +265,83 @@ def mark_refresh_failed(
     return row
 
 
+def _mutation_query(bank: LogicalBankRef, operation_id: str):
+    return select(MentalModelMutation).where(
+        *_bank_filters(MentalModelMutation, bank),
+        MentalModelMutation.operation_id == operation_id,
+    )
+
+
+def accept_model_mutation(
+    db: Session,
+    bank: LogicalBankRef,
+    *,
+    model_key: str,
+    operation_id: str,
+    action: str,
+    payload_hash: str,
+) -> tuple[MentalModelMutation, bool]:
+    """Idempotency ledger entry for update/refresh/delete (create keeps its
+    own mechanism -- see `MentalModelMutation`'s docstring). Returns
+    `(row, created)`: `created=False` with the existing row for an exact
+    retry (same operation id, same canonical payload); raises
+    `IdempotencyConflict` for a reused operation id whose payload, model or
+    action differs."""
+    _lock_bank(db, bank)
+    existing = db.scalar(_mutation_query(bank, operation_id).with_for_update())
+    if existing is not None:
+        if (
+            existing.payload_hash != payload_hash
+            or existing.model_key != model_key
+            or existing.action != action
+        ):
+            raise IdempotencyConflict(
+                "operation_id was already used with a different canonical payload",
+                operation_id=operation_id,
+            )
+        return existing, False
+
+    row = MentalModelMutation(
+        tenant_id=bank.tenant_id,
+        scope=bank.scope,
+        user_id=bank.user_id,
+        project_internal_id=bank.project_internal_id,
+        model_key=model_key,
+        operation_id=operation_id,
+        action=action,
+        payload_hash=payload_hash,
+        state="pending",
+    )
+    db.add(row)
+    db.flush()
+    return row, True
+
+
+def complete_model_mutation(
+    db: Session, mutation: MentalModelMutation, *, upstream_operation_id: str | None = None
+) -> MentalModelMutation:
+    mutation.state = "completed"
+    mutation.upstream_operation_id = upstream_operation_id
+    mutation.completed_at = _db_now(db)
+    db.flush()
+    return mutation
+
+
 def oldest_failed_model(
     db: Session, bank: LogicalBankRef, *, now
 ) -> MentalModelRegistration | None:
-    """The one eligible failed registration a single repair access may act
-    on: withheld, failed, and past its own backoff -- oldest first."""
+    """The one eligible registration a single repair access may act on:
+    withheld and past its own backoff, oldest first -- either a previously
+    failed refresh submission, or one newly marked `required` (no operation
+    id was ever submitted for it, e.g. `require_model_refresh` recorded a
+    safe state but the refresh request itself was never attempted or lost)."""
     _lock_bank(db, bank)
     return db.scalar(
         _models_query(bank)
         .where(
             MentalModelRegistration.lifecycle_state != "deleted",
             MentalModelRegistration.delivery_state == "withheld",
-            MentalModelRegistration.refresh_status == "failed",
+            MentalModelRegistration.refresh_status.in_(("failed", "required")),
             MentalModelRegistration.repair_not_before <= now,
         )
         .order_by(MentalModelRegistration.updated_at.asc())
