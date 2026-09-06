@@ -1,3 +1,4 @@
+import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -12,8 +13,46 @@ from memory.models import (
     ProjectSlug,
     RetainedRecord,
     User,
+    WorkingState,
 )
 from memory.v040_contracts import LoadContextRequest
+
+
+class _StepClock:
+    """A `clock: Callable[[], float]` test double: `advance()` moves it
+    forward by a caller-controlled amount, independent of real wall time."""
+
+    def __init__(self, start: float = 0.0):
+        self.value = start
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class _DeadlineProbeClient:
+    """`get_mental_model` for the FAST model returns immediately and pushes
+    the shared `_StepClock` well past the deadline, simulating "reaching
+    this point consumed the whole budget" without any real delay. The SLOW
+    model blocks briefly on a real event -- an over-budget call the deadline
+    must not wait out."""
+
+    def __init__(self, clock: _StepClock, *, slow_model_id: str, advance_seconds: float):
+        self.clock = clock
+        self.slow_model_id = slow_model_id
+        self.advance_seconds = advance_seconds
+        self.calls: list[tuple[str, str, float | None]] = []
+        self._slow_gate = threading.Event()
+
+    def get_mental_model(self, bank_id: str, model_id: str, *, timeout: float | None = None) -> dict:
+        self.calls.append((bank_id, model_id, timeout))
+        if model_id == self.slow_model_id:
+            self._slow_gate.wait(timeout=0.3)
+            return {"text": f"content:{model_id}"}
+        self.clock.advance(self.advance_seconds)
+        return {"text": f"content:{model_id}"}
 
 
 class RecordingClient:
@@ -310,6 +349,106 @@ def test_model_reads_receive_the_remaining_deadline_and_do_not_hold_startup(
     assert len(client.calls) == 1
     assert client.calls[0][2] is not None
     assert 0 < client.calls[0][2] <= 0.05
-    assert [(item.key, item.reason) for item in result.omissions] == [
-        ("slow", "model_unavailable")
-    ]
+    # The active-claims phase runs AFTER the model-wait phase and must not
+    # spend any of its own time once the shared deadline is already gone.
+    assert {(item.key, item.reason) for item in result.omissions} == {
+        ("slow", "model_unavailable"),
+        ("active-claims", "deadline_exceeded"),
+    }
+
+
+def test_deadline_is_computed_once_and_never_resets_across_later_phases(
+    session, tenant, monkeypatch
+):
+    """One shared deadline for the whole request, not one per phase: a slow
+    peer that exhausts it must not let a LATER phase (Working State) start
+    fresh with its own full budget."""
+    from memory import context_service
+
+    monkeypatch.setattr(context_service, "DEADLINE_SECONDS", 0.05)
+    juan = _user(tenant, "usr_juan")
+    alpha = _project(tenant, juan.id, "alpha")
+    session.add_all([juan, alpha])
+    session.flush()
+    session.add_all(
+        [
+            _registration(tenant, model_key="fast", model_id="mm-fast", user_id=juan.id),
+            _registration(
+                tenant, model_key="slow", model_id="mm-slow", project_internal_id=alpha.internal_id
+            ),
+        ]
+    )
+    workspace_id = "ws_" + "0" * 32
+    session.add(
+        WorkingState(
+            tenant_id=tenant,
+            user_id=juan.id,
+            project_internal_id=alpha.internal_id,
+            workspace_id=workspace_id,
+            objective="should never be read once the deadline is gone",
+            current_direction=None,
+            recent_decisions=[],
+            open_questions=[],
+            next_steps=[],
+            updated_at=datetime.now(UTC),
+            session_id="s1",
+            session_epoch=0,
+            checkpoint_seq=0,
+        )
+    )
+    session.flush()
+    clock = _StepClock()
+    client = _DeadlineProbeClient(clock, slow_model_id="mm-slow", advance_seconds=10.0)
+
+    result = ContextService(
+        session,
+        Principal(tenant, juan.id, False, "key_juan"),
+        client=client,
+        clock=clock,
+    ).load(LoadContextRequest(project_slug="alpha", workspace_id=workspace_id))
+
+    assert "content:mm-fast" in result.text
+    assert "User · fast" in result.headings
+    assert "Working State" not in result.headings
+    reasons = {(item.key, item.reason) for item in result.omissions}
+    assert ("slow", "model_unavailable") in reasons
+    assert ("working-state", "deadline_exceeded") in reasons
+
+
+def test_active_claims_fetches_a_bounded_prefix_not_the_whole_ledger(session, tenant):
+    """1,000 active expiring claims must never be materialized whole: the
+    repository query stays within the named bounded prefix, the response
+    stays within its 4,608-token ceiling, and the reported omission counts
+    every row not rendered -- fetched-but-trimmed AND never-fetched alike."""
+    from memory.context_service import ACTIVE_CLAIMS_FETCH_LIMIT
+
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+    session.add_all(
+        [
+            _claim(
+                tenant,
+                content=f"claim number {index:04d}",
+                user_id=juan.id,
+            )
+            for index in range(1000)
+        ]
+    )
+    session.flush()
+    assert session.query(RetainedRecord).filter_by(tenant_id=tenant).count() == 1000
+
+    result = ContextService(
+        session,
+        Principal(tenant, juan.id, False, "key_juan"),
+        client=RecordingClient(),
+    ).load(LoadContextRequest())
+
+    assert result.total_tokens <= 4608
+    omission = next(item for item in result.omissions if item.key == "active-claims")
+    assert omission.reason == "section_budget"
+    rendered_claims = sum(
+        1 for index in range(1000) if f"claim number {index:04d}" in result.text
+    )
+    assert rendered_claims < ACTIVE_CLAIMS_FETCH_LIMIT
+    assert omission.omitted_count == 1000 - rendered_claims

@@ -330,8 +330,11 @@ def register(mcp: MCPServer) -> None:
             "also expire a bounded batch (at most 32) of claims already past "
             "their stated expiry as a side effect of this access."
         ),
+        # readOnlyHint=False: run_access_maintenance below can claim expiry
+        # work and commit database changes -- a client that skips
+        # confirmation for "read-only" tools must not skip it here.
         annotations=ToolAnnotations(
-            readOnlyHint=True, destructiveHint=False,
+            readOnlyHint=False, destructiveHint=False,
             idempotentHint=True, openWorldHint=False,
         ),
     )
@@ -399,6 +402,10 @@ def register(mcp: MCPServer) -> None:
             "expiry as a side effect of this access."
         ),
         # Reflect still spends LLM tokens and keeps confirmation/rate limiting.
+        # readOnlyHint=False, explicit rather than relying on the SDK's
+        # unannotated default: run_access_maintenance below can commit
+        # database changes, same as recall.
+        annotations=ToolAnnotations(readOnlyHint=False),
     )
     def reflect(
         scope: Scope,

@@ -27,15 +27,19 @@ def _manager():
 
 
 # tool -> may it advertise readOnlyHint?
+# recall/reflect: False -- run_access_maintenance can claim expiry work and
+# commit database changes, so a client that skips confirmation for
+# "read-only" tools must not skip it here. load_context: True -- unlike
+# recall/reflect, it enqueues no maintenance and performs no write of its own.
 READONLY = {
     "retain": False, "sync_retain": False, "reflect": False,
-    "recall": True, "memory_history": True,
+    "recall": False, "memory_history": True,
     "list_memories": True, "get_memory": True, "forget": False, "correct": False,
     "restore": False, "list_documents": True, "get_document": True,
     "delete_document": False, "get_operation": True, "list_operations": True,
     "cancel_operation": False, "start_working_session": False,
     "set_working_state": False,
-    "clear_working_state": False, "load_context": False,
+    "clear_working_state": False, "load_context": True,
     "create_mental_model": False, "list_mental_models": True, "get_mental_model": True,
     "update_mental_model": False, "refresh_mental_model": False, "delete_mental_model": False,
 }

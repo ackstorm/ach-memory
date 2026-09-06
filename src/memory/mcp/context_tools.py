@@ -9,8 +9,10 @@ from memory.v040_contracts import LoadContextRequest
 
 def register(mcp: MCPServer) -> None:
     @mcp.tool(
-        description="Load authorized bounded standing context. It creates no project, bank, model or claim; it may enqueue one existing safety repair.",
-        annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True),
+        description="Load authorized bounded standing context. It creates no project, bank, model or claim, and performs no write of its own.",
+        # Genuinely read-only: unlike recall/reflect, load_context enqueues
+        # no maintenance and never calls run_access_maintenance.
+        annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
     )
     def load_context(
         ctx: Context,

@@ -1,10 +1,11 @@
 """Authorized, bounded standing-context assembly."""
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from time import monotonic
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from memory import projects, working_state
@@ -25,6 +26,12 @@ from memory.v040_contracts import LoadContextRequest
 
 DEADLINE_SECONDS = 2.0
 ACTIVE_CLAIMS_TOKENS = 256
+# An ordered, bounded prefix -- never the whole ledger. Generously larger
+# than the 256-token budget could ever hold (even single-word claims run a
+# few tokens apiece once the "Scope · " prefix and separators are counted),
+# so the fetch bound never itself becomes the reason a claim that would have
+# fit is left out.
+ACTIVE_CLAIMS_FETCH_LIMIT = 256
 
 
 def _model_text(raw: dict) -> str:
@@ -36,11 +43,18 @@ def _model_text(raw: dict) -> str:
 
 
 def _bounded_active_claims(
-    entries: list[tuple[str, RetainedRecord]],
+    entries: list[tuple[str, RetainedRecord]], *, total_available: int
 ) -> tuple[str, int]:
+    """`entries` is the already-fetched, ordered, bounded prefix (soonest
+    expiry first); `total_available` is the TRUE count across all scopes,
+    which may exceed `len(entries)` when the ledger is larger than the fetch
+    bound. The reported omission always reflects that true gap -- rows never
+    even fetched are omitted just as surely as ones trimmed for the token
+    budget."""
     lines = [f"{scope.title()} · {record.canonical_content}" for scope, record in entries]
+    never_fetched = max(0, total_available - len(lines))
     for kept in range(len(lines), -1, -1):
-        omitted = len(lines) - kept
+        omitted = never_fetched + (len(lines) - kept)
         marker = (
             [f"[{omitted} more active claims omitted; use recall]"]
             if omitted
@@ -49,14 +63,22 @@ def _bounded_active_claims(
         body = "\n".join([*lines[:kept], *marker])
         if count_tokens(body) <= ACTIVE_CLAIMS_TOKENS:
             return body, omitted
-    return "", len(lines)
+    return "", total_available
 
 
 class ContextService:
-    def __init__(self, db: Session, principal: Principal, *, client=None):
+    def __init__(
+        self,
+        db: Session,
+        principal: Principal,
+        *,
+        client=None,
+        clock: Callable[[], float] = monotonic,
+    ):
         self.db = db
         self.principal = principal
         self.client = client or get_client()
+        self.clock = clock
 
     def _bank(self, scope: str, project: Project | None = None) -> LogicalBankRef:
         if scope == "user":
@@ -65,8 +87,27 @@ class ContextService:
         assert project is not None
         return LogicalBankRef(self.principal.tenant_id, "project", None, project.internal_id, project.bank_id)
 
+    def _set_statement_timeout(self, remaining_seconds: float) -> None:
+        """A transaction-local backstop for a query that turns out to be
+        slower than expected -- `0` means "no timeout" to PostgreSQL, the
+        opposite of what a caller with no time left wants, so this is only
+        ever called when `remaining_seconds > 0` (callers check first).
+
+        `SET LOCAL` does not accept a bind parameter (PostgreSQL requires a
+        literal here) -- safe to inline since `ms` is always our own
+        `int(...)` computation, never caller-supplied text.
+        """
+        ms = max(1, int(remaining_seconds * 1000))
+        self.db.execute(text(f"SET LOCAL statement_timeout = {ms}"))
+
     def load(self, request: LoadContextRequest) -> ContextPayload:
-        started = monotonic()
+        # Computed ONCE, here -- every phase below measures against this
+        # same deadline, and none of them ever recomputes it.
+        deadline = self.clock() + DEADLINE_SECONDS
+
+        def remaining() -> float:
+            return max(0.0, deadline - self.clock())
+
         project = None
         if request.project_slug:
             project = projects.resolve(self.db, self.principal, request.project_slug, create=False).project
@@ -90,38 +131,40 @@ class ContextService:
             ((MentalModelRegistration.scope == "user") & (MentalModelRegistration.user_id == self.principal.user_id))
             | ((MentalModelRegistration.scope == "project") & (MentalModelRegistration.project_internal_id == (project.internal_id if project else None)))
         )
-        rows = list(self.db.scalars(select(MentalModelRegistration).where(
-            MentalModelRegistration.tenant_id == self.principal.tenant_id,
-            registration_scope,
-            MentalModelRegistration.lifecycle_state != "deleted",
-            MentalModelRegistration.always_in_context.is_(True),
-        )))
         jobs = []
-        for row in rows:
-            bank = user_bank if row.scope == "user" else project_bank
-            if (
-                bank is None
-                or row.scope in withheld_scopes
-                or row.delivery_state != "ready"
-                or not row.upstream_model_id
-            ):
-                continue
-            jobs.append((row, bank))
-        if jobs:
-            deadline = started + DEADLINE_SECONDS
+        if remaining() > 0:
+            self._set_statement_timeout(remaining())
+            rows = list(self.db.scalars(select(MentalModelRegistration).where(
+                MentalModelRegistration.tenant_id == self.principal.tenant_id,
+                registration_scope,
+                MentalModelRegistration.lifecycle_state != "deleted",
+                MentalModelRegistration.always_in_context.is_(True),
+            )))
+            for row in rows:
+                bank = user_bank if row.scope == "user" else project_bank
+                if (
+                    bank is None
+                    or row.scope in withheld_scopes
+                    or row.delivery_state != "ready"
+                    or not row.upstream_model_id
+                ):
+                    continue
+                jobs.append((row, bank))
+        if jobs and remaining() > 0:
             pool = ThreadPoolExecutor(max_workers=min(len(jobs), 9))
 
             def fetch(row, bank):
-                remaining = max(0.001, deadline - monotonic())
+                call_timeout = max(0.001, remaining())
                 return self.client.get_mental_model(
-                    bank.bank_id, row.upstream_model_id, timeout=remaining
+                    bank.bank_id, row.upstream_model_id, timeout=call_timeout
                 )
 
             futures = {
                 pool.submit(fetch, row, bank): (row, bank) for row, bank in jobs
             }
-            remaining = max(0.0, deadline - monotonic())
-            done, pending = wait(futures, timeout=remaining)
+            # Real wall-clock wait, bounded by whatever `remaining()` reports
+            # right now -- never re-derived from `deadline` a second time.
+            done, pending = wait(futures, timeout=remaining())
             for future in pending:
                 row, _ = futures[future]
                 future.cancel()
@@ -132,14 +175,14 @@ class ContextService:
                 row, _ = futures[future]
                 try:
                     raw = future.result()
-                    text = _model_text(raw if isinstance(raw, dict) else {})
-                    if text:
+                    model_text = _model_text(raw if isinstance(raw, dict) else {})
+                    if model_text:
                         prefix = "0" if row.scope == "user" else "2"
                         sections.append(
                             DeliverySection(
                                 f"{prefix}:{row.model_key}",
                                 f"{row.scope.title()} · {row.model_key}",
-                                text,
+                                model_text,
                                 row.max_tokens,
                             )
                         )
@@ -147,35 +190,66 @@ class ContextService:
                     omissions.append(
                         DeliveryOmission(key=row.model_key, reason="model_unavailable")
                     )
+            # An over-deadline peer must never delay the response: cancel
+            # whatever is still outstanding instead of waiting for threads
+            # blocked on a client call past the timeout it was given.
             pool.shutdown(wait=False, cancel_futures=True)
+        elif jobs:
+            # The deadline was already exhausted before this phase even
+            # started (e.g. project resolution or the registry query itself
+            # ran long) -- every candidate model is unavailable, none tried.
+            for row, _ in jobs:
+                omissions.append(
+                    DeliveryOmission(key=row.model_key, reason="model_unavailable")
+                )
         if project is not None:
             metadata = "\n".join(filter(None, [f"name: {project.name}" if project.name else None, f"purpose: {project.purpose}" if project.purpose else None, f"spec: {project.canonical_spec}" if project.canonical_spec else None]))
             if metadata:
                 sections.append(DeliverySection("1:project-metadata", "Project Metadata", metadata, 256))
         now = datetime.now(UTC)
         active_claims: list[tuple[str, RetainedRecord]] = []
-        for scope, bank in banks:
-            if scope in withheld_scopes:
-                continue
-            claims = self.db.scalars(select(RetainedRecord).where(
-                RetainedRecord.tenant_id == self.principal.tenant_id,
-                RetainedRecord.scope == scope,
-                RetainedRecord.user_id == (bank.user_id if scope == "user" else None),
-                RetainedRecord.project_internal_id == (bank.project_internal_id if scope == "project" else None),
-                RetainedRecord.lifecycle == "active",
-                RetainedRecord.upstream_state.in_(("accepted", "completed")),
-                RetainedRecord.valid_until.is_not(None),
-                RetainedRecord.valid_until > now,
-            ).order_by(RetainedRecord.valid_until, RetainedRecord.recorded_at, RetainedRecord.document_id)).all()
-            active_claims.extend((scope, record) for record in claims)
-        active_claims.sort(
-            key=lambda item: (
-                item[1].valid_until,
-                item[1].recorded_at,
-                item[1].document_id,
+        total_available = 0
+        if remaining() > 0:
+            for scope, bank in banks:
+                if scope in withheld_scopes:
+                    continue
+                filters = (
+                    RetainedRecord.tenant_id == self.principal.tenant_id,
+                    RetainedRecord.scope == scope,
+                    RetainedRecord.user_id == (bank.user_id if scope == "user" else None),
+                    RetainedRecord.project_internal_id == (bank.project_internal_id if scope == "project" else None),
+                    RetainedRecord.lifecycle == "active",
+                    RetainedRecord.upstream_state.in_(("accepted", "completed")),
+                    RetainedRecord.valid_until.is_not(None),
+                    RetainedRecord.valid_until > now,
+                )
+                self._set_statement_timeout(remaining())
+                total_available += (
+                    self.db.scalar(select(func.count()).select_from(RetainedRecord).where(*filters)) or 0
+                )
+                # An ordered, bounded prefix -- never the whole ledger
+                # (SPEC's currentness-over-availability boundary applies to
+                # database work too, not just the Hindsight read phase).
+                claims = self.db.scalars(
+                    select(RetainedRecord)
+                    .where(*filters)
+                    .order_by(RetainedRecord.valid_until, RetainedRecord.recorded_at, RetainedRecord.document_id)
+                    .limit(ACTIVE_CLAIMS_FETCH_LIMIT)
+                ).all()
+                active_claims.extend((scope, record) for record in claims)
+            active_claims.sort(
+                key=lambda item: (
+                    item[1].valid_until,
+                    item[1].recorded_at,
+                    item[1].document_id,
+                )
             )
+            active_claims = active_claims[:ACTIVE_CLAIMS_FETCH_LIMIT]
+        else:
+            omissions.append(DeliveryOmission(key="active-claims", reason="deadline_exceeded"))
+        claims_text, claims_omitted = _bounded_active_claims(
+            active_claims, total_available=total_available
         )
-        claims_text, claims_omitted = _bounded_active_claims(active_claims)
         if claims_text:
             sections.append(
                 DeliverySection(
@@ -194,10 +268,14 @@ class ContextService:
                 )
             )
         if project is not None and request.workspace_id:
-            state = working_state.get_current(self.db, self.principal, project.internal_id, request.workspace_id)
-            if state:
-                rendered = working_state.render_full_section(state, datetime.now(UTC)).text
-                sections.append(DeliverySection("4:working-state", "Working State", rendered, 512))
+            if remaining() > 0:
+                self._set_statement_timeout(remaining())
+                state = working_state.get_current(self.db, self.principal, project.internal_id, request.workspace_id)
+                if state:
+                    rendered = working_state.render_full_section(state, datetime.now(UTC)).text
+                    sections.append(DeliverySection("4:working-state", "Working State", rendered, 512))
+            else:
+                omissions.append(DeliveryOmission(key="working-state", reason="deadline_exceeded"))
         payload = assemble_context(sections)
         payload.omissions.extend(omissions)
         return payload
