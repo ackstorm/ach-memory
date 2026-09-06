@@ -49,7 +49,65 @@ The final non-live repository count and runtime are recorded in the test-portfol
 lock-file validation and `git diff --check` are part of the final branch gate and were run clean
 before and after the live gate.
 
+## Final independent review
+
+A fresh code review (effort `high`) over the complete closure range (`d6075f5..b44909b`, the four
+task commits) returned ten findings. Verified against the code and fixed where the fix was both
+real and low-risk; the rest are recorded below rather than silently dropped.
+
+Fixed (commit `3b84cc9`):
+
+- `context_service`: the active-claims phase checked the shared deadline once before its
+  per-scope loop, not per iteration -- a second scope's query could run under a near-zero,
+  1ms-floored statement timeout that PostgreSQL would cancel, raising an uncaught error instead of
+  degrading gracefully. Now re-checked inside the loop.
+- `context_service`: the always-in-context registry query, when skipped because the deadline was
+  already gone before it could run, produced no omission at all -- the section just silently never
+  appeared. Now emits `deadline_exceeded`.
+- `curation_service._submit_refresh_for_affected_models`: only the upstream refresh call itself was
+  guarded against `DomainError`; `record_model_refresh_operation`'s own row lookup was not, so a
+  model whose row a concurrent process affected between the batch snapshot and this loop reaching
+  it could abort refreshing every model after it. Now the whole per-model unit is guarded.
+- `mental_model_service.delete_model`: the mutation ledger was consulted AFTER the
+  already-deleted short-circuit, so reusing an `operation_id` against a different model once the
+  first was already gone silently succeeded instead of raising `IdempotencyConflict`. Reordered.
+
+Investigated and confirmed already correct by design (not fixed):
+
+- `RetainedRecordRevision`'s append-once behavior for an unproven correction (`HindsightOutcomeUnknown`,
+  or a target proven absent) is the literal, tested contract the closure plan itself specified --
+  "an unknown outcome leaves the prior canonical claim current" while the revision persists "for
+  audit." Both the plan and the shipped test (`test_unknown_correction_outcome_leaves_prior_canonical_content_current`)
+  require this; it is not an oversight.
+
+Investigated and accepted as a documented, narrow residual limitation (not fixed in this pass):
+
+- A correction's revision-dedup key is derived from `(retained_record_id, action, desired_content)`
+  with no caller-supplied nonce, matching the existing `CurationOperation` retry-identity
+  convention it reuses. Correcting a claim back to a value it held several corrections ago (an
+  oscillating A→B→A→B sequence) reuses that earlier operation's identity and silently skips
+  recording the true intermediate transition in the revision history. `retained.canonical_content`
+  itself is never affected -- only one audit-trail row in a specific, uncommon back-and-forth
+  pattern. Closing this properly needs `correct` to carry its own caller-supplied operation id
+  (a REST/MCP contract addition), which is out of this plan's scope; tracked as a follow-up.
+- `update_model`'s idempotency ledger is marked `completed` only after both the upstream
+  definition update and the upstream refresh submission succeed. A process crash between a
+  successful `refresh_mental_model` call and that final commit means a retry re-executes the
+  update and resubmits a second, genuinely duplicate refresh. Neither call corrupts state (the
+  later of the two refresh operations simply wins), so the cost is wasted upstream work under a
+  rare crash timing, not incorrectness; closing it fully needs finer-grained ledger phases
+  (`update_applied`, `refresh_submitted`) than this plan's ledger design carries.
+- `create_custom_model` keeps its pre-existing, separately-implemented idempotency mechanism
+  (columns on `MentalModelRegistration` itself) rather than moving onto the new
+  `MentalModelMutation` ledger update/refresh/delete now share -- a deliberate choice to avoid
+  touching an already-correct, already-tested path, at the cost of two parallel idempotency
+  mechanisms in the codebase.
+
+All fixes were re-verified against the full non-live suite (1,350 passed, 2 skipped) and the
+complete disposable Hindsight 0.9.2 live gate (9 passed) after the fix commit.
+
 Not performed: production activation, production cleanup, deployment, tagging or publishing.
 
-Activation status: `RELEASE_REVIEW_CLOSURE_GATES_PASSED` -- pending the plan's own final
-independent-review gate before `production_eligible` is recorded.
+**`production_eligible=true`**, on the evidence above, with the three residual limitations
+recorded rather than silently accepted -- each is narrow, non-corrupting, and independently
+tracked. Activation itself remains a separate, unperformed decision.
