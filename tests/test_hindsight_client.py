@@ -11,7 +11,7 @@ from memory.errors import (
     OperationNotFound,
     UpstreamRejected,
 )
-from memory.hindsight.client import HindsightClient
+from memory.hindsight.client import HindsightClient, RetainItem
 
 BASE = "http://hindsight.test"
 BANK = "user_11111111-1111-1111-1111-111111111111"
@@ -33,9 +33,21 @@ def test_httpx_logger_is_muted_by_the_app(caplog, configured_env):
     assert logging.getLogger("httpx").level >= logging.WARNING
 
 
+
+def _retain(client, *, bank: str = BANK, is_async: bool = True):
+    """One real write through `retain_items`, the only retain path there is.
+
+    Several tests below exercise `_request`'s error mapping, redaction and
+    metrics rather than retain itself, and need any POST that reaches the
+    `/memories` route to do it.
+    """
+    return client.retain_items(
+        bank, [RetainItem(content="x")], operation_id=OP_ID, is_async=is_async
+    )
+
 @pytest.fixture
 def client() -> HindsightClient:
-    return HindsightClient(base_url=BASE, api_key="secret", tenant_id="default")
+    return HindsightClient(base_url=BASE, api_key="secret")
 
 
 @respx.mock
@@ -48,48 +60,6 @@ def test_get_version_uses_the_root_version_endpoint(client):
 
     assert route.called
     assert result["api_version"] == "0.9.2"
-
-
-@respx.mock
-def test_retain_posts_the_item_envelope(client):
-    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories").mock(
-        return_value=httpx.Response(200, json={"success": True, "operation_id": "op-1"})
-    )
-
-    result = client.retain(BANK, "we use uv", metadata={"agent": "codex"})
-
-    assert result["operation_id"] == "op-1"
-    body = route.calls.last.request.read()
-    import json
-
-    payload = json.loads(body)
-    assert payload["items"][0]["content"] == "we use uv"
-    assert payload["items"][0]["metadata"] == {"agent": "codex"}
-    assert payload["async"] is True
-
-
-@respx.mock
-def test_retain_sends_the_api_key(client):
-    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-
-    client.retain(BANK, "x")
-
-    assert route.calls.last.request.headers["authorization"] == "Bearer secret"
-
-
-@respx.mock
-def test_sync_retain_sets_async_false(client):
-    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories").mock(
-        return_value=httpx.Response(200, json={"success": True})
-    )
-
-    client.retain(BANK, "x", is_async=False)
-
-    import json
-
-    assert json.loads(route.calls.last.request.read())["async"] is False
 
 
 @respx.mock
@@ -428,7 +398,7 @@ def test_upstream_failure_becomes_a_hindsight_error(client):
     )
 
     with pytest.raises(HindsightError):
-        client.retain(BANK, "x")
+        _retain(client)
 
 
 @respx.mock
@@ -438,7 +408,7 @@ def test_hindsight_error_does_not_carry_the_bank_id(client):
     )
 
     with pytest.raises(HindsightError) as caught:
-        client.retain(BANK, "x")
+        _retain(client)
 
     assert BANK not in str(caught.value)
     assert BANK not in str(caught.value.details)
@@ -451,7 +421,7 @@ def test_transport_failure_does_not_chain_the_bank_id(client):
     )
 
     with pytest.raises(HindsightError) as caught:
-        client.retain(BANK, "x")
+        _retain(client)
 
     error = caught.value
     assert error.__cause__ is None
@@ -620,18 +590,6 @@ def test_list_documents_uses_the_documents_path(client):
     url = route.calls.last.request.url
     assert url.path == f"/v1/default/banks/{BANK}/documents"
     assert dict(url.params) == {"q": "onboarding", "limit": "5"}
-
-
-@respx.mock
-def test_consolidate_uses_the_async_bank_operation(client):
-    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/consolidate").mock(
-        return_value=httpx.Response(200, json={"operation_id": OP_ID})
-    )
-
-    result = client.consolidate(BANK)
-
-    assert route.calls.last.request.content == b"{}"
-    assert result == {"operation_id": OP_ID}
 
 
 @respx.mock
@@ -916,16 +874,11 @@ def test_a_dot_segment_mental_model_id_is_rejected_locally_with_no_http_call(cli
         client.delete_mental_model(BANK, "..")
     with pytest.raises(MentalModelNotFound):
         client.refresh_mental_model(BANK, "..")
-    with pytest.raises(MentalModelNotFound):
-        client.clear_mental_model(BANK, "..")
-    with pytest.raises(MentalModelNotFound):
-        client.dry_run_refresh_mental_model(BANK, "..")
 
 
 # ---------------------------------------------------------------------------
-# Trusted tags and dry-run-refresh (Phase 4 Task 2): explicit server-owned
-# `tags` on create/update, and a wholly separate internal-only dry-run-refresh
-# client method. Neither is reachable from CreateMentalModelRequest/
+# Trusted tags (Phase 4 Task 2): explicit server-owned `tags` on
+# create/update, not reachable from CreateMentalModelRequest/
 # UpdateMentalModelRequest or any route -- see test_mental_models_api.py for
 # the public-boundary side of this.
 # ---------------------------------------------------------------------------
@@ -1065,68 +1018,6 @@ def test_list_mental_models_full_detail_forwards_structured_output_unmangled(cli
 
 
 @respx.mock
-def test_dry_run_refresh_mental_model_sends_no_request_body(client):
-    route = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/{BANK}/mental-models/{MM_ID}/dry-run-refresh$"
-    ).mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "usage": {"input_tokens": 1000, "output_tokens": 200},
-                "duration_ms": 4321,
-                "diff": {"added": 2, "removed": 1},
-                "preview_content": '{"user_profile": {}}',
-            },
-        )
-    )
-
-    result = client.dry_run_refresh_mental_model(BANK, MM_ID)
-
-    assert route.calls.last.request.content == b""
-    # A dict pass-through, same as every other method in this file -- no
-    # response parsing/validation added at this layer.
-    assert result["usage"] == {"input_tokens": 1000, "output_tokens": 200}
-    assert result["duration_ms"] == 4321
-    assert result["diff"] == {"added": 2, "removed": 1}
-    assert result["preview_content"] == '{"user_profile": {}}'
-
-
-@respx.mock
-def test_dry_run_refresh_mental_model_404_is_mental_model_not_found(client):
-    respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/{BANK}/mental-models/{MM_ID}/dry-run-refresh$"
-    ).mock(return_value=httpx.Response(404, json={"detail": "nope"}))
-
-    with pytest.raises(MentalModelNotFound):
-        client.dry_run_refresh_mental_model(BANK, MM_ID)
-
-
-@respx.mock
-def test_dry_run_refresh_does_not_hit_refresh_or_clear_and_vice_versa(client):
-    """Same overlap trap as test_mental_models_api.py's
-    test_clear_uses_the_clear_suffix_not_the_refresh_suffix: `.../refresh`,
-    `.../clear`, `.../history` and `.../dry-run-refresh` all overlap under an
-    unanchored regex on this shared `{id}` prefix. Every mock here is
-    `$`-anchored, and each call must hit exactly one of the three routes."""
-    refresh = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/{BANK}/mental-models/{MM_ID}/refresh$"
-    ).mock(return_value=httpx.Response(200, json={"status": "refreshing"}))
-    clear = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/{BANK}/mental-models/{MM_ID}/clear$"
-    ).mock(return_value=httpx.Response(200, json={"status": "cleared"}))
-    dry_run = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/{BANK}/mental-models/{MM_ID}/dry-run-refresh$"
-    ).mock(return_value=httpx.Response(200, json={"usage": {}, "duration_ms": 1}))
-
-    result = client.dry_run_refresh_mental_model(BANK, MM_ID)
-
-    assert result == {"usage": {}, "duration_ms": 1}
-    assert dry_run.call_count == 1
-    assert refresh.call_count == 0
-    assert clear.call_count == 0
-
-
-@respx.mock
 def test_a_curate_refused_upstream_is_not_a_backend_error(client):
     """Hindsight 400s a curate on a derived `observation` -- "only
     world/experience facts can be curated". That is a property of the memory
@@ -1171,7 +1062,7 @@ def test_an_upstream_422_is_not_reported_as_a_backend_fault(client):
     )
 
     with pytest.raises(UpstreamRejected) as excinfo:
-        client.retain(BANK, "content")
+        _retain(client)
 
     assert excinfo.value.status == 400
 
@@ -1191,12 +1082,12 @@ def test_the_llm_bound_calls_get_a_longer_read_timeout(configured_env):
 
     with respx.mock:
         sync = respx.post(url__regex=r".*/memories$").respond(200, json={})
-        client.retain("user_x", "content", is_async=False)
+        _retain(client, is_async=False)
         assert sync.calls.last.request.extensions["timeout"]["read"] >= 180
 
     with respx.mock:
         asy = respx.post(url__regex=r".*/memories$").respond(200, json={})
-        client.retain("user_x", "content", is_async=True)
+        _retain(client, is_async=True)
         assert asy.calls.last.request.extensions["timeout"]["read"] <= 30
 
     with respx.mock:
@@ -1208,13 +1099,6 @@ def test_the_llm_bound_calls_get_a_longer_read_timeout(configured_env):
         cheap = respx.get(url__regex=r".*/memories/list$").respond(200, json={})
         client.list_memories("user_x")
         assert cheap.calls.last.request.extensions["timeout"]["read"] <= 30
-
-    with respx.mock:
-        # Same reasoning as refresh_mental_model's own comment: dry-run-refresh
-        # costs exactly the same LLM call as a real refresh.
-        dry = respx.post(url__regex=r".*/dry-run-refresh$").respond(200, json={})
-        client.dry_run_refresh_mental_model("user_x", MM_ID)
-        assert dry.calls.last.request.extensions["timeout"]["read"] >= 180
 
 
 def test_a_bodiless_or_non_json_success_is_not_an_internal_error(configured_env):
@@ -1260,7 +1144,7 @@ def test_an_upstream_auth_failure_does_not_report_its_status(configured_env):
     with respx.mock:
         respx.post(url__regex=r".*/memories$").respond(401, json={"detail": "nope"})
         with pytest.raises(HindsightError) as excinfo:
-            get_client().retain("user_x", "c")
+            _retain(get_client(), bank="user_x")
 
     assert "401" not in str(excinfo.value.details), excinfo.value.details
 
@@ -1278,7 +1162,7 @@ def test_upstream_calls_are_timed(client):
         "memory_hindsight_request_seconds_count", {"method": "POST", "status": "200"}
     ) or 0.0
 
-    client.retain(BANK, "hello")
+    _retain(client)
 
     after = REGISTRY.get_sample_value(
         "memory_hindsight_request_seconds_count", {"method": "POST", "status": "200"}
@@ -1300,7 +1184,7 @@ def test_transport_failure_is_timed_as_error(client):
     ) or 0.0
 
     with pytest.raises(HindsightError):
-        client.retain(BANK, "hello")
+        _retain(client)
 
     after = REGISTRY.get_sample_value(
         "memory_hindsight_request_seconds_count", {"method": "POST", "status": "error"}
@@ -1309,68 +1193,8 @@ def test_transport_failure_is_timed_as_error(client):
 
 
 # ---------------------------------------------------------------------------
-# Task 4: dry_run_extract, get_bank_config, retain_items
+# Task 4: get_bank_config, retain_items
 # ---------------------------------------------------------------------------
-
-
-@respx.mock
-def test_dry_run_extract_posts_content_and_overrides(client):
-    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/dry-run-extract").mock(
-        return_value=httpx.Response(200, json={"facts": [{"text": "we use uv"}]})
-    )
-
-    result = client.dry_run_extract(
-        BANK, "we use uv", retain_extraction_mode="verbatim", retain_mission="keep as-is"
-    )
-
-    assert result["facts"][0]["text"] == "we use uv"
-    import json
-
-    payload = json.loads(route.calls.last.request.read())
-    assert payload == {
-        "content": "we use uv",
-        "retain_extraction_mode": "verbatim",
-        "retain_mission": "keep as-is",
-    }
-
-
-@respx.mock
-def test_dry_run_extract_omits_absent_overrides(client):
-    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/dry-run-extract").mock(
-        return_value=httpx.Response(200, json={"facts": []})
-    )
-
-    client.dry_run_extract(BANK, "we use uv")
-
-    import json
-
-    payload = json.loads(route.calls.last.request.read())
-    assert payload == {"content": "we use uv"}
-
-
-@respx.mock
-def test_dry_run_extract_never_retains(client):
-    """No route is mocked for POST .../memories (only .../dry-run-extract):
-    if dry_run_extract ever fell through to the real retain path, respx
-    would raise on the unmocked request and this test would fail."""
-    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/dry-run-extract").mock(
-        return_value=httpx.Response(200, json={"facts": []})
-    )
-
-    client.dry_run_extract(BANK, "we use uv")
-
-
-@respx.mock
-def test_dry_run_extract_error_does_not_carry_the_bank_id(client):
-    respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/dry-run-extract").mock(
-        return_value=httpx.Response(500, text=f"bank {BANK} exploded")
-    )
-
-    with pytest.raises(HindsightError) as caught:
-        client.dry_run_extract(BANK, "x")
-
-    assert BANK not in str(caught.value)
-    assert BANK not in str(caught.value.details)
 
 
 @respx.mock

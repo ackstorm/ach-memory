@@ -117,9 +117,9 @@ def reject_mental_model_id_traversal(mental_model_id: str) -> None:
 
 # hindsight-api 0.9.1 registers all 83 bank routes under the literal segment
 # `default`; multi-tenancy upstream is resolved from the Authorization header
-# into a Postgres schema, never from the URL. The `tenant` parameter is kept
-# so the signature does not churn across the 20-odd helpers built on bank(),
-# and so this constant is the single place to change if that ever moves.
+# into a Postgres schema, never from the URL. These helpers therefore take no
+# tenant argument at all: this constant is the single place to change if that
+# ever moves.
 HINDSIGHT_TENANT = "default"
 
 
@@ -127,57 +127,44 @@ def version() -> str:
     return "/version"
 
 
-def bank(tenant: str, bank_id: str) -> str:
+def bank(bank_id: str) -> str:
     return f"/v1/{HINDSIGHT_TENANT}/banks/{bank_id}"
 
 
-def retain(tenant: str, bank_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/memories"
+def retain(bank_id: str) -> str:
+    return f"{bank(bank_id)}/memories"
 
 
-def dry_run_extract(tenant: str, bank_id: str) -> str:
-    """Read-only: Hindsight extracts as if retaining but stores nothing.
-    Used both by the Task 5 extractor (a strict custom-prompt extraction
-    pass over one sanitized item) and by the read-only verifier's
-    verbatim-strategy safety probe -- neither ever calls retain() on
-    unclassified model output."""
-    return f"{bank(tenant, bank_id)}/memories/dry-run-extract"
-
-
-def config(tenant: str, bank_id: str) -> str:
+def config(bank_id: str) -> str:
     """Read/update the trusted per-bank configuration boundary."""
-    return f"{bank(tenant, bank_id)}/config"
+    return f"{bank(bank_id)}/config"
 
 
-def clear_memories(tenant: str, bank_id: str) -> str:
+def clear_memories(bank_id: str) -> str:
     """Same path as retain(), opposite verb: DELETE wipes the bank (or one
     fact type via `?type=`), POST retains. Admin API + master key only
     (SPEC §11.7) -- never advertised over MCP."""
-    return retain(tenant, bank_id)
+    return retain(bank_id)
 
 
-def recall(tenant: str, bank_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/memories/recall"
+def recall(bank_id: str) -> str:
+    return f"{bank(bank_id)}/memories/recall"
 
 
-def reflect(tenant: str, bank_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/reflect"
+def reflect(bank_id: str) -> str:
+    return f"{bank(bank_id)}/reflect"
 
 
-def consolidate(tenant: str, bank_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/consolidate"
-
-
-def memory_list(tenant: str, bank_id: str) -> str:
+def memory_list(bank_id: str) -> str:
     # NOT `/memories`: that is retain (POST) and clear_memories (DELETE).
-    return f"{bank(tenant, bank_id)}/memories/list"
+    return f"{bank(bank_id)}/memories/list"
 
 
-def memory(tenant: str, bank_id: str, memory_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/memories/{memory_id}"
+def memory(bank_id: str, memory_id: str) -> str:
+    return f"{bank(bank_id)}/memories/{memory_id}"
 
 
-def memory_history(tenant: str, bank_id: str, memory_id: str) -> str:
+def memory_history(bank_id: str, memory_id: str) -> str:
     """"Get observation history" (openapi.json operationId
     get_observation_history, hindsight-api 0.9.2): an observation's past
     revisions, each change's source facts resolved to their text. No
@@ -185,60 +172,46 @@ def memory_history(tenant: str, bank_id: str, memory_id: str) -> str:
     and validated by `HindsightClient._require_uuid` before this is ever
     called, unlike document_id/mental_model_id, which are caller-managed and
     arbitrary."""
-    return f"{memory(tenant, bank_id, memory_id)}/history"
+    return f"{memory(bank_id, memory_id)}/history"
 
 
-def documents(tenant: str, bank_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/documents"
+def documents(bank_id: str) -> str:
+    return f"{bank(bank_id)}/documents"
 
 
-def document(tenant: str, bank_id: str, document_id: str) -> str:
+def document(bank_id: str, document_id: str) -> str:
     reject_document_traversal(document_id)
-    return f"{bank(tenant, bank_id)}/documents/{document_id}"
+    return f"{bank(bank_id)}/documents/{document_id}"
 
 
-def operations(tenant: str, bank_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/operations"
+def operations(bank_id: str) -> str:
+    return f"{bank(bank_id)}/operations"
 
 
-def operation(tenant: str, bank_id: str, operation_id: str) -> str:
+def operation(bank_id: str, operation_id: str) -> str:
     # DELETE on this path CANCELS. `{path}/delete` removes a terminal
     # operation and is deliberately not exposed in v1 (SPEC §11.5).
-    return f"{bank(tenant, bank_id)}/operations/{operation_id}"
+    return f"{bank(bank_id)}/operations/{operation_id}"
 
 
-def directives(tenant: str, bank_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/directives"
+def directives(bank_id: str) -> str:
+    return f"{bank(bank_id)}/directives"
 
 
-def directive(tenant: str, bank_id: str, directive_id: str) -> str:
-    return f"{directives(tenant, bank_id)}/{directive_id}"
+def directive(bank_id: str, directive_id: str) -> str:
+    return f"{directives(bank_id)}/{directive_id}"
 
 
-def mental_models(tenant: str, bank_id: str) -> str:
-    return f"{bank(tenant, bank_id)}/mental-models"
+def mental_models(bank_id: str) -> str:
+    return f"{bank(bank_id)}/mental-models"
 
 
-def mental_model(tenant: str, bank_id: str, mental_model_id: str) -> str:
-    return f"{mental_models(tenant, bank_id)}/{mental_model_id}"
+def mental_model(bank_id: str, mental_model_id: str) -> str:
+    return f"{mental_models(bank_id)}/{mental_model_id}"
 
 
-def mental_model_refresh(tenant: str, bank_id: str, mental_model_id: str) -> str:
+def mental_model_refresh(bank_id: str, mental_model_id: str) -> str:
     # `$`-anchored by callers, not here: `.../mental-models`,
     # `.../mental-models/{id}` and this path all overlap under an unanchored
     # regex, which is exactly the mock trap the task brief calls out.
-    return f"{mental_model(tenant, bank_id, mental_model_id)}/refresh"
-
-
-def mental_model_clear(tenant: str, bank_id: str, mental_model_id: str) -> str:
-    return f"{mental_model(tenant, bank_id, mental_model_id)}/clear"
-
-
-def mental_model_history(tenant: str, bank_id: str, mental_model_id: str) -> str:
-    return f"{mental_model(tenant, bank_id, mental_model_id)}/history"
-
-
-def mental_model_dry_run_refresh(tenant: str, bank_id: str, mental_model_id: str) -> str:
-    # Same overlap caution as mental_model_refresh above: callers must
-    # `$`-anchor their mock/route match against this path.
-    return f"{mental_model(tenant, bank_id, mental_model_id)}/dry-run-refresh"
+    return f"{mental_model(bank_id, mental_model_id)}/refresh"

@@ -9,10 +9,11 @@ never win a race by inventing a large one.
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,13 +28,34 @@ from memory.contracts import (
     WorkingStateLines,
     WorkspaceId,
 )
+from memory.db import db_now
 from memory.delivery import count_tokens
 from memory.errors import WorkingSessionNotFound, WorkingStateConflict, WorkingStateStale
 from memory.models import WorkingSession, WorkingState
-from memory.rendering import RenderedSection, format_age, render_inert
 
 # Compiled once so every Working State boundary uses the shared contract.
 WORKSPACE_ID_PATTERN = re.compile(_WORKSPACE_ID_PATTERN_SOURCE)
+
+
+@dataclass(frozen=True)
+class RenderedSection:
+    text: str
+    refreshed_at: str | None
+
+
+def render_inert(text: str) -> str:
+    return text.replace("<", "\u2039").replace(">", "\u203a")
+
+
+def format_age(updated_at: datetime, now: datetime) -> str:
+    seconds = max(int((now - updated_at).total_seconds()), 0)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
 
 
 class WorkingStateWrite(BaseModel):
@@ -145,7 +167,7 @@ def replace(db: Session, principal: Principal, request: WorkingStateWrite) -> tu
                 recent_decisions=list(request.recent_decisions),
                 open_questions=list(request.open_questions),
                 next_steps=list(request.next_steps),
-                updated_at=_db_now(db),
+                updated_at=db_now(db),
                 session_id=request.session_id,
                 session_epoch=request.session_epoch,
                 checkpoint_seq=request.checkpoint_seq,
@@ -159,13 +181,6 @@ def replace(db: Session, principal: Principal, request: WorkingStateWrite) -> tu
         if current is None:
             raise
         return _apply(db, current, request)
-
-
-def _db_now(db: Session) -> datetime:
-    """The database's clock, not this process's -- multiple API replicas can
-    disagree on wall time, and `updated_at` ordering must not depend on which
-    one happened to handle the request."""
-    return db.execute(select(func.now())).scalar_one()
 
 
 def get_current(
@@ -260,7 +275,7 @@ def clear(
     if current is None and latest is not None and (session_epoch, checkpoint_seq) < latest:
         raise WorkingStateStale("a newer clear already exists", stored_session_epoch=latest[0], stored_checkpoint_seq=latest[1])
     session_row.completed_checkpoint_seq = checkpoint_seq
-    session_row.completed_at = _db_now(db)
+    session_row.completed_at = db_now(db)
     db.flush()
     return current is not None
 
@@ -312,7 +327,7 @@ def _apply(
     current.session_id = request.session_id
     current.session_epoch = request.session_epoch
     current.checkpoint_seq = request.checkpoint_seq
-    current.updated_at = _db_now(db)
+    current.updated_at = db_now(db)
     return current, True
 
 

@@ -12,8 +12,8 @@ from memory.api.memory import (
     ScopedRequest,
     UUID4Str,
     _check_content_size,
-    _resolve_bank,
     _strip_bank_id,
+    resolve_bank_and_commit,
 )
 from memory.auth.principal import Principal
 from memory.db import get_session
@@ -75,37 +75,6 @@ class CorrectRequest(MemoryIdRequest):
         if not value.strip():
             raise ValueError("content must not be blank")
         return value
-
-
-def _bank(
-    body: ScopedRequest,
-    db: Session,
-    principal: Principal,
-    on_behalf_of: str | None,
-    action: str,
-    *,
-    is_write: bool = False,
-) -> tuple[str, str | None, str | None]:
-    """Authorize first, always.
-
-    The memory_id on these requests is meaningless outside the bank this
-    resolves to (SPEC §20.1): it is never looked up globally, and a caller who
-    cannot reach the bank is refused before their id is read at all.
-
-    create=False: a memory cannot exist in a bank the lookup call just
-    created (SPEC §11.3 -- these are maintenance routes over an existing
-    bank). List/get use the dedicated read resolver so they also cannot
-    enrich an existing project's git_locator; mutating routes retain the
-    legacy resolver because their project-management behavior is intentional.
-
-    `is_write` forwards to `_resolve_bank`'s rate-limit gate (SPEC §20) --
-    forget/correct/restore pass it, list/get don't.
-    """
-    bank_id, resolved_from, project_slug = _resolve_bank(
-        body, db, principal, on_behalf_of, action, create=False, is_write=is_write
-    )
-    db.commit()
-    return bank_id, resolved_from, project_slug
 
 
 def _read_bank(
@@ -212,7 +181,7 @@ def forget(
     # guarded like the UPDATE routes' `if x is not None`.
     if body.reason is not None:
         _check_content_size(body.reason)
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.forget", is_write=True
     )
     retained = _tracked_record(db, principal, body)
@@ -239,7 +208,7 @@ def restore(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.restore", is_write=True
     )
     retained = _tracked_record(db, principal, body)
@@ -272,7 +241,7 @@ def correct(
     # that check remains right for document/query transports, but a canonical
     # claim's boundary is `normalize_claim`'s 4096-byte/secret-rejection rule
     # (SPEC's canonical-claim invariant), not the much larger transport cap.
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.correct", is_write=True
     )
     retained = _tracked_record(db, principal, body)

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from memory.db import db_now
 from memory.errors import IdempotencyConflict, MentalModelNotFound, MentalModelQuotaExceeded
 from memory.models import MentalModelMutation, MentalModelRegistration
 from memory.retained_records import LogicalBankRef, _bank_filters, _lock_bank
@@ -20,10 +21,6 @@ def _models_query(bank: LogicalBankRef):
 
 def _model_query(bank: LogicalBankRef, model_key: str):
     return _models_query(bank).where(MentalModelRegistration.model_key == model_key)
-
-
-def _db_now(db: Session):
-    return db.execute(select(func.now())).scalar_one()
 
 
 def locked_bank_models(db: Session, bank: LogicalBankRef) -> list[MentalModelRegistration]:
@@ -163,7 +160,7 @@ def activate_model(
         row.delivery_state = "withheld"
         row.refresh_operation_id = refresh_operation_id
         row.refresh_status = "pending"
-    row.updated_at = _db_now(db)
+    row.updated_at = db_now(db)
     db.flush()
     return row
 
@@ -171,7 +168,7 @@ def activate_model(
 def mark_deleted(db: Session, bank: LogicalBankRef, model_key: str) -> MentalModelRegistration:
     row = _locked_model(db, bank, model_key)
     row.lifecycle_state = "deleted"
-    row.updated_at = _db_now(db)
+    row.updated_at = db_now(db)
     db.flush()
     return row
 
@@ -184,7 +181,7 @@ def withhold_model(
     row.refresh_operation_id = operation_id
     row.refresh_status = "pending"
     row.repair_not_before = None
-    row.updated_at = _db_now(db)
+    row.updated_at = db_now(db)
     db.flush()
     return row
 
@@ -207,7 +204,7 @@ def require_model_refresh(
     row.refresh_operation_id = None
     row.refresh_status = "required"
     row.repair_not_before = repair_not_before
-    row.updated_at = _db_now(db)
+    row.updated_at = db_now(db)
     db.flush()
     return row
 
@@ -223,7 +220,7 @@ def record_model_refresh_operation(
     row.refresh_operation_id = operation_id
     row.refresh_status = "pending"
     row.repair_not_before = None
-    row.updated_at = _db_now(db)
+    row.updated_at = db_now(db)
     db.flush()
     return row
 
@@ -234,7 +231,7 @@ def ready_model(
     row = _locked_model(db, bank, model_key)
     if row.refresh_operation_id != operation_id:
         return row
-    now = _db_now(db)
+    now = db_now(db)
     row.delivery_state = "ready"
     row.refresh_status = "succeeded"
     row.repair_not_before = None
@@ -260,7 +257,7 @@ def mark_refresh_failed(
         return row
     row.refresh_status = "failed"
     row.repair_not_before = repair_not_before
-    row.updated_at = _db_now(db)
+    row.updated_at = db_now(db)
     db.flush()
     return row
 
@@ -322,7 +319,7 @@ def complete_model_mutation(
 ) -> MentalModelMutation:
     mutation.state = "completed"
     mutation.upstream_operation_id = upstream_operation_id
-    mutation.completed_at = _db_now(db)
+    mutation.completed_at = db_now(db)
     db.flush()
     return mutation
 

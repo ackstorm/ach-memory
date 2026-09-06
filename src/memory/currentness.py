@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from memory.db import db_now
 from memory.models import BankCurrentness
 from memory.retained_records import LogicalBankRef, _bank_filters, _lock_bank
 
 
 def _query(bank: LogicalBankRef):
     return select(BankCurrentness).where(*_bank_filters(BankCurrentness, bank))
-
-
-def _db_now(db: Session):
-    return db.execute(select(func.now())).scalar_one()
 
 
 def _locked(db: Session, bank: LogicalBankRef) -> BankCurrentness | None:
@@ -38,7 +35,7 @@ def withhold_bank(db: Session, bank: LogicalBankRef, operation_id: str) -> BankC
         row.state = "withheld"
         row.blocking_operation_id = operation_id
         row.repair_not_before = None
-        row.updated_at = _db_now(db)
+        row.updated_at = db_now(db)
     db.flush()
     return row
 
@@ -60,7 +57,7 @@ def ready_bank(db: Session, bank: LogicalBankRef, operation_id: str) -> BankCurr
         row.state = "ready"
         row.blocking_operation_id = None
         row.repair_not_before = None
-        row.updated_at = _db_now(db)
+        row.updated_at = db_now(db)
     db.flush()
     return row
 

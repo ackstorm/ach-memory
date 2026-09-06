@@ -11,8 +11,8 @@ from memory.api.memory import (
     MemoryResponse,
     ScopedRequest,
     _check_content_size,
-    _resolve_bank,
     _strip_bank_id,
+    resolve_bank_and_commit,
 )
 from memory.auth.principal import Principal
 from memory.db import get_session
@@ -44,31 +44,6 @@ class DocumentIdRequest(ScopedRequest):
     document_id: str
 
 
-def _bank(
-    body: ScopedRequest,
-    db: Session,
-    principal: Principal,
-    on_behalf_of: str | None,
-    action: str,
-    *,
-    is_write: bool = False,
-) -> tuple[str, str | None, str | None]:
-    """Authorize first, always.
-
-    create=False: these are lookups/maintenance over an existing bank, not
-    first-touch creation (SPEC §11.3) -- a document route on an unknown slug
-    must 404, not squat the slug for whoever asked first.
-
-    `is_write` forwards to `_resolve_bank`'s rate-limit gate (SPEC §20) --
-    only `delete` passes it.
-    """
-    bank_id, resolved_from, project_slug = _resolve_bank(
-        body, db, principal, on_behalf_of, action, create=False, is_write=is_write
-    )
-    db.commit()
-    return bank_id, resolved_from, project_slug
-
-
 @router.post("/list", response_model=MemoryResponse)
 def list_documents(
     body: ListDocumentsRequest,
@@ -80,7 +55,7 @@ def list_documents(
     # recall's query; optional, so guarded like the UPDATE routes.
     if body.q is not None:
         _check_content_size(body.q)
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.documents.list"
     )
     read_service.ensure_current_read_allowed(db, resolve_bank_ref(db, principal, body))
@@ -101,7 +76,7 @@ def get_document(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.documents.get"
     )
     read_service.ensure_current_read_allowed(db, resolve_bank_ref(db, principal, body))
@@ -127,7 +102,7 @@ def delete_document(
     shared bank namespace, not to whoever created it, and the blast radius is
     one document inside one already-authorized bank.
     """
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.documents.delete", is_write=True
     )
     bank_ref = resolve_bank_ref(db, principal, body)

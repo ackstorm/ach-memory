@@ -66,28 +66,6 @@ HTTP = Counter(
 
 BUILD = Gauge("memory_build_info", "Deployed version.", ["version"])
 
-# `host` is caller-supplied, so it is bucketed to the hosts this repository
-# actually ships a plugin for. Anything else is "other" -- a caller must not
-# be able to mint a time series by inventing a host name.
-KNOWN_HOSTS = frozenset({"claude-code", "codex", "opencode", "pi"})
-
-_BYTE_BUCKETS = ((1_024, "1k"), (4_096, "4k"), (16_384, "16k"), (65_536, "64k"))
-
-
-def host_label(host: str) -> str:
-    """The bounded label for a client-declared host."""
-    return host if host in KNOWN_HOSTS else "other"
-
-
-def bytes_bucket(size: int) -> str:
-    """The bounded label for a payload size. Order of magnitude, never the
-    exact byte count: a size is a weak identifier of the content behind it."""
-    for limit, name in _BYTE_BUCKETS:
-        if size < limit:
-            return name
-    return "64k+"
-
-
 def _version() -> str:
     try:
         return version("ach-memory")

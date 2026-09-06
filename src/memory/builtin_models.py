@@ -66,12 +66,3 @@ PROJECT_CONTEXT_V1 = BuiltinModelDefinition(
     },
     always_in_context=True,
 )
-
-
-def definition_for_scope(scope: Literal["user", "project"]) -> BuiltinModelDefinition:
-    if scope == "user":
-        return USER_CONTEXT_V1
-    elif scope == "project":
-        return PROJECT_CONTEXT_V1
-    else:
-        raise ValueError(f"Unknown scope: {scope}")

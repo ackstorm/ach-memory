@@ -261,6 +261,38 @@ def _resolve_bank(
     return bank_id, resolved_from, project_slug
 
 
+def resolve_bank_and_commit(
+    body: ScopedRequest,
+    db: Session,
+    principal: Principal,
+    on_behalf_of: str | None,
+    action: str,
+    *,
+    is_write: bool = False,
+) -> tuple[str, str | None, str | None]:
+    """Authorize first, always -- then commit what resolution recorded.
+
+    `create=False`: the curation, document and operation routes are lookups
+    and maintenance over an EXISTING bank (SPEC §11.3), never first-touch
+    creation -- one of them on an unknown slug must 404, not squat the slug
+    for whoever asked first. A memory cannot exist in a bank the lookup just
+    created either.
+
+    The commit is not optional: `_resolve_bank` only APPENDS the master-key
+    audit row, and an uncommitted row is invisible to every other session and
+    vanishes if the request fails later.
+
+    `is_write` forwards to `_resolve_bank`'s rate-limit gate (SPEC §20) --
+    forget/correct/restore, document delete and operation cancel pass it; the
+    list/get routes do not.
+    """
+    bank_id, resolved_from, project_slug = _resolve_bank(
+        body, db, principal, on_behalf_of, action, create=False, is_write=is_write
+    )
+    db.commit()
+    return bank_id, resolved_from, project_slug
+
+
 def _strip_bank_id(value: Any, bank_id: str | None = None) -> Any:
     """Hindsight echoes bank_id; it must not reach the caller (SPEC inv. 29).
 

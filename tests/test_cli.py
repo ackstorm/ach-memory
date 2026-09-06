@@ -1082,6 +1082,24 @@ def test_mcp_requires_api_key(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     assert "ACH_MEMORY_API_KEY" in capsys.readouterr().err
 
 
+
+def _recording_bridge(calls: list):
+    """Stand in for `proxy.StdioHttpBridge`, capturing how `cli mcp` built it.
+
+    `_serve_mcp` constructs the bridge and `asyncio.run(bridge.serve())`s it
+    directly -- there is no wrapper function left to patch -- so the fake has
+    to be awaitable-compatible and do nothing.
+    """
+
+    class _Bridge:
+        def __init__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+        async def serve(self):
+            return None
+
+    return _Bridge
+
 def test_mcp_runs_stdio_http_bridge_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1101,31 +1119,28 @@ def test_mcp_runs_stdio_http_bridge_from_env(
         lambda *args: bootstrap_calls.append(args) or None,
     )
     monkeypatch.setattr(
-        "memory.mcp.proxy.startup_instructions",
-        lambda base, key, slug, locator, **_kwargs: "POLICY + BRIEF",
+        "memory.mcp.proxy.fetch_context",
+        lambda *_a, **_k: {"text": "POLICY + BRIEF"},
     )
-    monkeypatch.setattr(
-        "memory.mcp.proxy.run_stdio_bridge",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
+    monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge(calls))
     assert cli.main(["mcp"]) == 0
     # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
     assert calls == [
         (
-            (
-                "https://mem.example.com/mcp/",
-                "mem_secret",
-                "acme-api",
-                "git@github.com:acme/api.git",
-                "POLICY + BRIEF",
-            ),
-            {"workspace_id": "ws_" + "a" * 32, "project_bootstrap_error": None},
+            ("https://mem.example.com/mcp/", "mem_secret"),
+            {
+                "slug": "acme-api",
+                "locator": "git@github.com:acme/api.git",
+                "workspace_id": "ws_" + "a" * 32,
+                "instructions": "POLICY + BRIEF",
+                "project_bootstrap_error": None,
+            },
         )
     ]
     assert bootstrap_calls == [("https://mem.example.com", "mem_secret", "acme-api")]
 
 
-def test_mcp_passes_the_resolved_workspace_id_to_startup_instructions(
+def test_mcp_passes_the_resolved_workspace_id_to_the_context_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
@@ -1136,14 +1151,14 @@ def test_mcp_passes_the_resolved_workspace_id_to_startup_instructions(
         "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
     )
     monkeypatch.setattr("memory.mcp.proxy.bootstrap", lambda *args: None)
-    monkeypatch.setattr("memory.mcp.proxy.run_stdio_bridge", lambda *args, **kwargs: None)
+    monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge([]))
     seen = {}
 
-    def fake_startup_instructions(base, key, slug, locator, **kwargs):
+    def fake_fetch_context(base, key, slug, **kwargs):
         seen.update(kwargs)
-        return "POLICY"
+        return {"text": "POLICY"}
 
-    monkeypatch.setattr("memory.mcp.proxy.startup_instructions", fake_startup_instructions)
+    monkeypatch.setattr("memory.mcp.proxy.fetch_context", fake_fetch_context)
 
     assert cli.main(["mcp"]) == 0
 
@@ -1157,18 +1172,12 @@ def test_mcp_still_runs_when_standing_context_is_unavailable(monkeypatch: pytest
     calls = []
     monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
     monkeypatch.setattr("memory.mcp.proxy.bootstrap", lambda *args: None)
-    monkeypatch.setattr(
-        "memory.mcp.proxy.startup_instructions",
-        lambda *_a, **_k: "",
-    )
-    monkeypatch.setattr(
-        "memory.mcp.proxy.run_stdio_bridge",
-        lambda *args, **kwargs: calls.append(args),
-    )
+    monkeypatch.setattr("memory.mcp.proxy.fetch_context", lambda *_a, **_k: None)
+    monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge(calls))
 
     assert cli.main(["mcp"]) == 0
     assert len(calls) == 1
-    assert calls[0][-1] == ""
+    assert calls[0][1]["instructions"] == ""
 
 
 def test_context_load_resolves_local_identity_and_prints_only_text(
@@ -1185,14 +1194,8 @@ def test_context_load_resolves_local_identity_and_prints_only_text(
     )
     seen = {}
 
-    def fake_fetch(base, key, slug, locator, **kwargs):
-        seen.update(
-            base=base,
-            key=key,
-            slug=slug,
-            locator=locator,
-            workspace_id=kwargs["workspace_id"],
-        )
+    def fake_fetch(base, key, slug, **kwargs):
+        seen.update(base=base, key=key, slug=slug, workspace_id=kwargs["workspace_id"])
         return {"text": "standing context", "omissions": []}
 
     monkeypatch.setattr("memory.mcp.proxy.fetch_context", fake_fetch)
@@ -1205,7 +1208,6 @@ def test_context_load_resolves_local_identity_and_prints_only_text(
         "base": "https://mem.example.com",
         "key": "mem_secret",
         "slug": "acme-api",
-        "locator": "https://github.com/acme/api",
         "workspace_id": "ws_" + "a" * 32,
     }
 
@@ -1222,8 +1224,8 @@ def test_mcp_bootstrap_opt_out_makes_no_bootstrap_call(
     monkeypatch.setattr(
         "memory.mcp.proxy.bootstrap", lambda *args: bootstrap_calls.append(args)
     )
-    monkeypatch.setattr("memory.mcp.proxy.startup_instructions", lambda *a, **k: "POLICY")
-    monkeypatch.setattr("memory.mcp.proxy.run_stdio_bridge", lambda *args, **kwargs: None)
+    monkeypatch.setattr("memory.mcp.proxy.fetch_context", lambda *a, **k: {"text": "P"})
+    monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge([]))
 
     assert cli.main(["mcp"]) == 0
     assert bootstrap_calls == []
@@ -1245,11 +1247,8 @@ def test_project_bootstrap_failure_still_starts_the_bridge_degraded(
     monkeypatch.setattr(
         "memory.mcp.proxy.bootstrap", lambda *args: "PROJECT_SLUG_CONFLICT"
     )
-    monkeypatch.setattr("memory.mcp.proxy.startup_instructions", lambda *a, **k: "POLICY")
-    monkeypatch.setattr(
-        "memory.mcp.proxy.run_stdio_bridge",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
+    monkeypatch.setattr("memory.mcp.proxy.fetch_context", lambda *a, **k: {"text": "P"})
+    monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge(calls))
 
     assert cli.main(["mcp"]) == 0
     assert calls[0][1]["project_bootstrap_error"] == "PROJECT_SLUG_CONFLICT"

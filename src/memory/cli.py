@@ -156,11 +156,6 @@ def _installed_plugins(target: str, payload: object) -> set[str]:
     return {entry[field] for entry in entries}
 
 
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n")
-
-
 def _write_json_atomic(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -710,13 +705,17 @@ def _serve_mcp(url_argument: str | None = None) -> int:
 
     # Fetch fresh authorized context once; failures are fail-open and never
     # persist user context on the host.
-    instructions = proxy.startup_instructions(
-        _base_url(base), key, slug, locator, workspace_id=workspace_id
-    )
-    proxy.run_stdio_bridge(
-        url, key, slug, locator, instructions, workspace_id=workspace_id,
+    fetched = proxy.fetch_context(_base_url(base), key, slug, workspace_id=workspace_id)
+    bridge = proxy.StdioHttpBridge(
+        url,
+        key,
+        slug=slug,
+        locator=locator,
+        workspace_id=workspace_id,
+        instructions=fetched["text"] if fetched else "",
         project_bootstrap_error=project_bootstrap_error,
     )
+    asyncio.run(bridge.serve())
     return 0
 
 
@@ -742,11 +741,9 @@ def _context_load() -> int:
     base = _base_url(
         os.environ.get("ACH_MEMORY_URL", "http://localhost:8000")
     )
-    slug, locator = proxy.resolve_project_context()
+    slug, _locator = proxy.resolve_project_context()
     workspace_id = proxy.resolve_workspace_context()
-    payload = proxy.fetch_context(
-        base, key, slug, locator, workspace_id=workspace_id
-    )
+    payload = proxy.fetch_context(base, key, slug, workspace_id=workspace_id)
     if payload is None:
         print("ach-memory: context unavailable", file=sys.stderr)
         return 0

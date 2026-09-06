@@ -299,5 +299,8 @@ class ContextService:
         return payload
 
 
-def load_context(db: Session, principal: Principal, request: LoadContextRequest, *, client=None) -> ContextPayload:
-    return ContextService(db, principal, client=client).load(request)
+def load_context(db: Session, principal: Principal, request: LoadContextRequest) -> ContextPayload:
+    """The route-facing entry point. Tests that need a stubbed Hindsight or a
+    stubbed clock construct `ContextService` directly; nothing in production
+    overrides either, so this takes no injection parameters."""
+    return ContextService(db, principal).load(request)

@@ -1,8 +1,9 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -24,6 +25,13 @@ def get_engine() -> Engine:
     return create_engine(
         get_settings().database_url, pool_pre_ping=True, hide_parameters=True
     )
+
+
+def db_now(db: Session) -> datetime:
+    """The database's clock, not this process's -- multiple API replicas can
+    disagree on wall time, and every `updated_at`/expiry comparison in the
+    service must order the same way whichever one handled the request."""
+    return db.execute(select(func.now())).scalar_one()
 
 
 @lru_cache

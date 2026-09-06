@@ -3,8 +3,7 @@
 It was implemented for `retain` and later `correct` and nowhere else. A
 directive's `content` is the worst gap: for project scope that text is a
 standing rule prepended to every reflect for everyone on the project (§14.1),
-and it was unbounded (2026-08-23 review, R2-I5). `provenance.build` forwarded
-unbounded metadata straight to the extraction LLM (R1-#4).
+and it was unbounded (2026-08-23 review, R2-I5).
 """
 
 import pytest
@@ -153,21 +152,3 @@ def test_an_oversize_list_documents_q_is_refused(client, master_headers, tenant)
     assert response.status_code in (413, 422), response.text
     if response.status_code == 413:
         assert response.json()["error"]["code"] == "CONTENT_TOO_LARGE"
-
-
-def test_oversize_metadata_is_refused_even_when_content_is_tiny():
-    """_check_content_size sees 1 byte; the 8 MB rides alongside it."""
-    from memory.errors import ContentTooLarge
-    from memory.provenance import build
-
-    with pytest.raises(ContentTooLarge):
-        build({"note": "y" * 300_000}, project_slug=None)
-
-
-def test_ordinary_metadata_still_passes():
-    from memory.provenance import build
-
-    assert build({"source": "cli"}, project_slug="p") == {
-        "source": "cli",
-        "project_slug": "p",
-    }

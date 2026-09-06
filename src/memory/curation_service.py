@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from memory import model_registry
 from memory.currentness import ready_bank, withhold_bank
+from memory.db import db_now
 from memory.errors import (
     BankCurrentnessUnavailable,
     CurationNeedsOperator,
@@ -48,10 +49,6 @@ class CurationResult:
     state: str  # "completed" | "needs_operator" | "unknown"
     record_id: str
     action: str
-
-
-def _db_now(db: Session) -> datetime:
-    return db.execute(select(func.now())).scalar_one()
 
 
 def _bank_with_id(retained: RetainedRecord, bank_id: str) -> LogicalBankRef:
@@ -306,7 +303,7 @@ def _mutate(
     db.commit()
     record_id = str(retained.id)
 
-    now = _db_now(db)
+    now = db_now(db)
     already_expired_restore = (
         action == "restore"
         and retained.valid_until is not None
@@ -429,7 +426,7 @@ def reconcile_bank_once(db: Session, bank: LogicalBankRef, *, client: HindsightC
         if op.action in _REMOVAL_ACTIONS:
             _finalize_proven_mutation(
                 db, bank, retained, op,
-                action=op.action, desired_content=None, now=_db_now(db), client=client,
+                action=op.action, desired_content=None, now=db_now(db), client=client,
             )
             return CurationResult(state="completed", record_id=record_id, action=op.action)
         op.state = "needs_operator"
@@ -451,6 +448,6 @@ def reconcile_bank_once(db: Session, bank: LogicalBankRef, *, client: HindsightC
 
     _finalize_proven_mutation(
         db, bank, retained, op,
-        action=op.action, desired_content=op.desired_content, now=_db_now(db), client=client,
+        action=op.action, desired_content=op.desired_content, now=db_now(db), client=client,
     )
     return CurationResult(state="completed", record_id=record_id, action=op.action)

@@ -65,7 +65,7 @@ def disposable():
         pytest.skip("MEMORY_HINDSIGHT_URL is required for the v0.4.0 live gate")
     _require_safe_target(url)
     api_key = os.environ.get("MEMORY_HINDSIGHT_API_KEY", "")
-    client = HindsightClient(base_url=url, api_key=api_key, tenant_id="default")
+    client = HindsightClient(base_url=url, api_key=api_key)
 
     created: list[str] = []
 
@@ -304,6 +304,6 @@ def test_fault_injection_at_the_client_boundary():
     """429, timeout and an unavailable backend all surface as the typed,
     non-leaking `HindsightError` at the client boundary -- proven against an
     address nothing listens on, so no disposable bank is needed."""
-    broken = HindsightClient(base_url="http://127.0.0.1:1", api_key="", tenant_id="default")
+    broken = HindsightClient(base_url="http://127.0.0.1:1", api_key="")
     with pytest.raises(HindsightError):
         broken.get_bank_config("v040test-unreachable")

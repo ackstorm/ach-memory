@@ -567,33 +567,10 @@ def _project_bootstrap_error_reply(request_id: object, code: str) -> dict:
     }
 
 
-def run_stdio_bridge(
-    url: str,
-    api_key: str,
-    slug: str | None,
-    locator: str | None,
-    instructions: str,
-    *,
-    workspace_id: str | None = None,
-    project_bootstrap_error: str | None = None,
-) -> None:
-    bridge = StdioHttpBridge(
-        url,
-        api_key,
-        slug=slug,
-        locator=locator,
-        workspace_id=workspace_id,
-        instructions=instructions,
-        project_bootstrap_error=project_bootstrap_error,
-    )
-    asyncio.run(bridge.serve())
-
-
 def fetch_context(
     base_url: str,
     api_key: str,
     slug: str | None,
-    locator: str | None,
     timeout: float = CONTEXT_TIMEOUT_SECONDS,
     *,
     workspace_id: str | None = None,
@@ -619,23 +596,3 @@ def fetch_context(
     if isinstance(body, dict) and isinstance(body.get("text"), str):
         return body
     return None
-
-
-
-
-
-
-
-def startup_instructions(
-    base_url: str,
-    api_key: str,
-    slug: str | None,
-    locator: str | None,
-    *,
-    workspace_id: str | None = None,
-) -> str:
-    """Fetch fresh authorized context; failures are fail-open and empty."""
-    fetched = fetch_context(base_url, api_key, slug, locator, workspace_id=workspace_id)
-    if fetched:
-        return fetched["text"]
-    return ""

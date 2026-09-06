@@ -44,7 +44,6 @@ def _client() -> HindsightClient:
     return HindsightClient(
         base_url=settings.hindsight_url,
         api_key=settings.hindsight_api_key,
-        tenant_id=settings.tenant_id,
     )
 
 

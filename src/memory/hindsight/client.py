@@ -145,14 +145,12 @@ class RetainItem:
 
 
 class HindsightClient:
-    def __init__(self, base_url: str, api_key: str, tenant_id: str) -> None:
-        # Threaded through every paths.* call below for signature stability,
-        # but paths.bank() ignores it and always emits HINDSIGHT_TENANT
-        # ("default") -- hindsight-api 0.9.1 hardcodes that segment in all 83
-        # bank routes and resolves its own tenancy from the Authorization
-        # header, never the URL (review finding I4). MEMORY_TENANT_ID still
-        # drives our own DB tenancy; it just no longer reaches Hindsight.
-        self._tenant = tenant_id
+    def __init__(self, base_url: str, api_key: str) -> None:
+        # No tenant here on purpose: hindsight-api 0.9.1 hardcodes the
+        # `default` segment in all 83 bank routes and resolves its own tenancy
+        # from the Authorization header, never the URL (review finding I4).
+        # MEMORY_TENANT_ID still drives our own DB tenancy; it never reaches
+        # Hindsight, so paths.* take no tenant argument either.
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         settings = get_settings()
         # Connect stays short whatever the call is -- an unreachable backend
@@ -293,85 +291,15 @@ class HindsightClient:
                 "memory backend returned an unreadable response"
             ) from None
 
-    def retain(
-        self,
-        bank_id: str,
-        content: str,
-        *,
-        document_id: str | None = None,
-        metadata: dict[str, str] | None = None,
-        context: str | None = None,
-        update_mode: str = "replace",
-        is_async: bool = True,
-        operation_id: str | None = None,
-    ) -> dict:
-        item: dict[str, Any] = {"content": content, "update_mode": update_mode}
-        if document_id is not None:
-            # Applied here too, not just at get/delete's URL boundary: a
-            # document_id that get_document/delete_document would refuse
-            # (".", "..", a leading "/", control characters, ...) must not be
-            # writable either, or the document it names is created once and
-            # unreachable forever after (SPEC §12.2's hard-delete lever
-            # defeated by a name nothing can address again).
-            paths.reject_document_traversal(document_id)
-            item["document_id"] = document_id
-        if metadata:
-            item["metadata"] = metadata
-        if context is not None:
-            item["context"] = context
-
-        # No "tags" key is ever sent: v1 writes no retrieval tags (SPEC §13.6).
-        body: dict[str, Any] = {"items": [item], "async": is_async}
-        if operation_id is not None:
-            # Top-level on RetainRequest, not per-item: it identifies the
-            # whole async operation.
-            body["operation_id"] = operation_id
-        return self._request(
-            "POST", paths.retain(self._tenant, bank_id), body,
-            # Synchronous retain blocks on the extraction LLM; the async form
-            # returns an operation immediately and needs no extra headroom.
-            timeout=None if is_async else self._llm_timeout,
-        )
-
-    def dry_run_extract(
-        self,
-        bank_id: str,
-        content: str,
-        *,
-        retain_extraction_mode: str | None = None,
-        retain_mission: str | None = None,
-    ) -> dict:
-        """Extract as if retaining, store nothing (SPEC Phase 3 §9). Used by
-        the custom-prompt pass and by the read-only verifier's
-        read-only verbatim-strategy safety probe.
-
-        `retain_extraction_mode`/`retain_mission` are per-call overrides of
-        the bank's configured retain strategy -- how a caller previews a
-        strategy before ever PATCHing the bank config to make it default.
-        """
-        body: dict[str, Any] = {"content": content}
-        body.update(
-            _present(
-                {
-                    "retain_extraction_mode": retain_extraction_mode,
-                    "retain_mission": retain_mission,
-                }
-            )
-        )
-        return self._request(
-            "POST", paths.dry_run_extract(self._tenant, bank_id), body,
-            timeout=self._llm_timeout,
-        )
-
     def get_bank_config(self, bank_id: str) -> dict:
         """Read the resolved and bank-local Hindsight configuration."""
-        return self._request("GET", paths.config(self._tenant, bank_id))
+        return self._request("GET", paths.config(bank_id))
 
     def update_bank_config(self, bank_id: str, updates: dict[str, Any]) -> dict:
         """Apply trusted ACH-owned configuration overrides to an existing bank."""
         return self._request(
             "PATCH",
-            paths.config(self._tenant, bank_id),
+            paths.config(bank_id),
             {"updates": updates},
         )
 
@@ -414,7 +342,7 @@ class HindsightClient:
         }
         return self._request(
             "POST",
-            paths.retain(self._tenant, bank_id),
+            paths.retain(bank_id),
             body,
             timeout=None if is_async else self._llm_timeout,
         )
@@ -486,7 +414,7 @@ class HindsightClient:
             body["tag_groups"] = tag_groups
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
-        return self._request("POST", paths.recall(self._tenant, bank_id), body)
+        return self._request("POST", paths.recall(bank_id), body)
 
     def get_memory_history(self, bank_id: str, memory_id: str) -> Any:
         """An observation's past revisions (openapi.json "Get observation
@@ -506,29 +434,20 @@ class HindsightClient:
         _require_uuid(memory_id, MemoryNotFound)
         return self._request(
             "GET",
-            paths.memory_history(self._tenant, bank_id, memory_id),
+            paths.memory_history(bank_id, memory_id),
             not_found=MemoryNotFound,
         )
 
     def reflect(self, bank_id: str, query: str) -> dict:
         return self._request(
-            "POST", paths.reflect(self._tenant, bank_id), {"query": query},
+            "POST", paths.reflect(bank_id), {"query": query},
             timeout=self._llm_timeout,  # a full synthesis call
-        )
-
-    def consolidate(self, bank_id: str) -> dict:
-        """Start Hindsight's bank-native async consolidation operation."""
-        return self._request(
-            "POST",
-            paths.consolidate(self._tenant, bank_id),
-            {},
-            timeout=self._llm_timeout,
         )
 
     def list_memories(self, bank_id: str, **filters: Any) -> dict:
         return self._request(
             "GET",
-            paths.memory_list(self._tenant, bank_id),
+            paths.memory_list(bank_id),
             params=_present(filters),
         )
 
@@ -536,7 +455,7 @@ class HindsightClient:
         _require_uuid(memory_id, MemoryNotFound)
         return self._request(
             "GET",
-            paths.memory(self._tenant, bank_id, memory_id),
+            paths.memory(bank_id, memory_id),
             not_found=MemoryNotFound,
         )
 
@@ -559,7 +478,7 @@ class HindsightClient:
         body = _present({"text": text, "state": state, "reason": reason})
         return self._request(
             "PATCH",
-            paths.memory(self._tenant, bank_id, memory_id),
+            paths.memory(bank_id, memory_id),
             body,
             not_found=MemoryNotFound,
             # Hindsight 400s a curate on a derived `observation`. That is a
@@ -575,20 +494,20 @@ class HindsightClient:
 
     def list_documents(self, bank_id: str, **filters: Any) -> dict:
         return self._request(
-            "GET", paths.documents(self._tenant, bank_id), params=_present(filters)
+            "GET", paths.documents(bank_id), params=_present(filters)
         )
 
     def get_document(self, bank_id: str, document_id: str) -> dict:
         return self._request(
             "GET",
-            paths.document(self._tenant, bank_id, document_id),
+            paths.document(bank_id, document_id),
             not_found=DocumentNotFound,
         )
 
     def delete_document(self, bank_id: str, document_id: str) -> dict:
         return self._request(
             "DELETE",
-            paths.document(self._tenant, bank_id, document_id),
+            paths.document(bank_id, document_id),
             not_found=DocumentNotFound,
             # See curate()'s identical comment: hard delete is irreversible
             # and has no idempotency key, so an ambiguous transport failure
@@ -600,7 +519,7 @@ class HindsightClient:
         _require_uuid(operation_id, OperationNotFound)
         result = self._request(
             "GET",
-            paths.operation(self._tenant, bank_id, operation_id),
+            paths.operation(bank_id, operation_id),
             not_found=OperationNotFound,
         )
         # Measured live: an absent operation is a 200 with
@@ -613,14 +532,14 @@ class HindsightClient:
 
     def list_operations(self, bank_id: str, **filters: Any) -> dict:
         return self._request(
-            "GET", paths.operations(self._tenant, bank_id), params=_present(filters)
+            "GET", paths.operations(bank_id), params=_present(filters)
         )
 
     def cancel_operation(self, bank_id: str, operation_id: str) -> dict:
         _require_uuid(operation_id, OperationNotFound)
         return self._request(
             "DELETE",
-            paths.operation(self._tenant, bank_id, operation_id),
+            paths.operation(bank_id, operation_id),
             not_found=OperationNotFound,
             conflict=OperationNotCancellable,
         )
@@ -639,7 +558,7 @@ class HindsightClient:
         body = _present(
             {"name": name, "content": content, "priority": priority, "is_active": is_active}
         )
-        return self._request("POST", paths.directives(self._tenant, bank_id), body)
+        return self._request("POST", paths.directives(bank_id), body)
 
     def list_directives(
         self,
@@ -651,7 +570,7 @@ class HindsightClient:
     ) -> dict:
         return self._request(
             "GET",
-            paths.directives(self._tenant, bank_id),
+            paths.directives(bank_id),
             params=_present({"active_only": active_only, "limit": limit, "offset": offset}),
         )
 
@@ -659,7 +578,7 @@ class HindsightClient:
         _require_uuid(directive_id, DirectiveNotFound)
         return self._request(
             "GET",
-            paths.directive(self._tenant, bank_id, directive_id),
+            paths.directive(bank_id, directive_id),
             not_found=DirectiveNotFound,
         )
 
@@ -679,7 +598,7 @@ class HindsightClient:
         )
         return self._request(
             "PATCH",
-            paths.directive(self._tenant, bank_id, directive_id),
+            paths.directive(bank_id, directive_id),
             body,
             not_found=DirectiveNotFound,
         )
@@ -688,7 +607,7 @@ class HindsightClient:
         _require_uuid(directive_id, DirectiveNotFound)
         return self._request(
             "DELETE",
-            paths.directive(self._tenant, bank_id, directive_id),
+            paths.directive(bank_id, directive_id),
             not_found=DirectiveNotFound,
         )
 
@@ -720,7 +639,7 @@ class HindsightClient:
                 "tags": tags,
             }
         )
-        return self._request("POST", paths.mental_models(self._tenant, bank_id), body)
+        return self._request("POST", paths.mental_models(bank_id), body)
 
     def list_mental_models(
         self,
@@ -732,7 +651,7 @@ class HindsightClient:
     ) -> dict:
         return self._request(
             "GET",
-            paths.mental_models(self._tenant, bank_id),
+            paths.mental_models(bank_id),
             params=_present({"detail": detail, "limit": limit, "offset": offset}),
         )
 
@@ -746,7 +665,7 @@ class HindsightClient:
         paths.reject_mental_model_id_traversal(mental_model_id)
         return self._request(
             "GET",
-            paths.mental_model(self._tenant, bank_id, mental_model_id),
+            paths.mental_model(bank_id, mental_model_id),
             not_found=MentalModelNotFound,
             timeout=timeout,
         )
@@ -774,7 +693,7 @@ class HindsightClient:
         )
         return self._request(
             "PATCH",
-            paths.mental_model(self._tenant, bank_id, mental_model_id),
+            paths.mental_model(bank_id, mental_model_id),
             body,
             not_found=MentalModelNotFound,
         )
@@ -783,7 +702,7 @@ class HindsightClient:
         paths.reject_mental_model_id_traversal(mental_model_id)
         return self._request(
             "DELETE",
-            paths.mental_model(self._tenant, bank_id, mental_model_id),
+            paths.mental_model(bank_id, mental_model_id),
             not_found=MentalModelNotFound,
         )
 
@@ -793,59 +712,7 @@ class HindsightClient:
         paths.reject_mental_model_id_traversal(mental_model_id)
         return self._request(
             "POST",
-            paths.mental_model_refresh(self._tenant, bank_id, mental_model_id),
-            not_found=MentalModelNotFound,
-        )
-
-    def dry_run_refresh_mental_model(self, bank_id: str, mental_model_id: str) -> dict:
-        # Hindsight's own non-persisting refresh preview: same LLM cost as a
-        # real refresh, no upstream write. Deliberately not reachable from
-        # refresh_mental_model above or any ach-memory route -- SPEC §11.7's
-        # comment there is about that public-reachable call never branching
-        # into a cheap dry-run mode, not about forbidding this wholly
-        # separate, internal-only method. The only caller is the local/admin
-        # cost-quality evaluator (Task 7); no request body, and forwards the
-        # response's usage/duration/diff metadata unmodified.
-        paths.reject_mental_model_id_traversal(mental_model_id)
-        return self._request(
-            "POST",
-            paths.mental_model_dry_run_refresh(self._tenant, bank_id, mental_model_id),
-            not_found=MentalModelNotFound,
-            timeout=self._llm_timeout,
-        )
-
-    def clear_mental_model(self, bank_id: str, mental_model_id: str) -> dict:
-        paths.reject_mental_model_id_traversal(mental_model_id)
-        return self._request(
-            "POST",
-            paths.mental_model_clear(self._tenant, bank_id, mental_model_id),
-            not_found=MentalModelNotFound,
-        )
-
-    def list_mental_model_history(
-        self, bank_id: str, mental_model_id: str
-    ) -> list[dict[str, Any]]:
-        """Upstream answers with a BARE ARRAY, newest first -- not the
-        `{"items": [...]}` envelope every other list route in this service
-        returns, and not `{"history": [...]}` either. Measured live against
-        hindsight-api 0.9.1; each entry is
-        `{previous_content, previous_reflect_response, changed_at}`.
-
-        Returned unreshaped on purpose. The array IS the contract, and its
-        whole meaning is the ordering: a wrapper here would be one more place
-        for a helpful hand to introduce an off-by-one into the one structure
-        where an off-by-one renders a plausible-looking wrong version.
-
-        An empty array is a legitimate answer, not an error: it means the
-        model has never changed since it was created.
-        """
-        paths.reject_mental_model_id_traversal(mental_model_id)
-        # _request is annotated `-> dict` because every other endpoint here
-        # answers with an object; it returns `response.json()` verbatim, so a
-        # top-level array arrives intact.
-        return self._request(
-            "GET",
-            paths.mental_model_history(self._tenant, bank_id, mental_model_id),
+            paths.mental_model_refresh(bank_id, mental_model_id),
             not_found=MentalModelNotFound,
         )
 
@@ -857,7 +724,7 @@ class HindsightClient:
         """
         return self._request(
             "DELETE",
-            paths.clear_memories(self._tenant, bank_id),
+            paths.clear_memories(bank_id),
             params=_present({"type": type}),
         )
 
@@ -869,7 +736,7 @@ class HindsightClient:
         longer holds any per-bank state, and there is no config PATCH left
         for a stale entry to wrongly skip (Plan 6 Task 1).
         """
-        return self._request("DELETE", paths.bank(self._tenant, bank_id))
+        return self._request("DELETE", paths.bank(bank_id))
 
     def ensure_bank(self, bank_id: str) -> None:
         """Create the bank upstream. Idempotent, and cheap enough to repeat.
@@ -893,7 +760,7 @@ class HindsightClient:
         process: with replicaCount>1 a `delete_bank` served by pod B left pod
         A's entry live, and pod A then skipped re-materialization.
         """
-        self._request("PUT", paths.bank(self._tenant, bank_id), {})
+        self._request("PUT", paths.bank(bank_id), {})
 
 
 @lru_cache
@@ -902,5 +769,4 @@ def get_client() -> HindsightClient:
     return HindsightClient(
         base_url=settings.hindsight_url,
         api_key=settings.hindsight_api_key,
-        tenant_id=settings.tenant_id,
     )

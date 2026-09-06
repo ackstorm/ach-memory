@@ -9,8 +9,8 @@ from memory.api.memory import (
     MAX_PAGE_SIZE,
     MemoryResponse,
     ScopedRequest,
-    _resolve_bank,
     _strip_bank_id,
+    resolve_bank_and_commit,
 )
 from memory.auth.principal import Principal
 from memory.db import get_session
@@ -45,31 +45,6 @@ class OperationIdRequest(ScopedRequest):
     operation_id: str
 
 
-def _bank(
-    body: ScopedRequest,
-    db: Session,
-    principal: Principal,
-    on_behalf_of: str | None,
-    action: str,
-    *,
-    is_write: bool = False,
-) -> tuple[str, str | None, str | None]:
-    """Authorize first, always.
-
-    create=False: these are lookups over operations that already exist, not
-    first-touch creation (SPEC §11.3) -- an operation route on an unknown slug
-    must 404, not squat the slug for whoever asked first.
-
-    `is_write` forwards to `_resolve_bank`'s rate-limit gate (SPEC §20) --
-    only `cancel` passes it.
-    """
-    bank_id, resolved_from, project_slug = _resolve_bank(
-        body, db, principal, on_behalf_of, action, create=False, is_write=is_write
-    )
-    db.commit()
-    return bank_id, resolved_from, project_slug
-
-
 @router.post("/list", response_model=MemoryResponse)
 def list_operations(
     body: ListOperationsRequest,
@@ -77,7 +52,7 @@ def list_operations(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.operations.list"
     )
     result = get_client().list_operations(
@@ -101,7 +76,7 @@ def get_operation(
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
 ) -> MemoryResponse:
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.operations.get"
     )
     result = get_client().get_operation(bank_id, body.operation_id)
@@ -125,7 +100,7 @@ def cancel_operation(
     .../operations/{id}/delete (remove a terminal operation) and .../retry;
     v1 exposes neither (SPEC §11.5).
     """
-    bank_id, resolved_from, project_slug = _bank(
+    bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.operations.cancel", is_write=True
     )
     result = get_client().cancel_operation(bank_id, body.operation_id)

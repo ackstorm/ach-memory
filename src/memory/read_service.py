@@ -21,12 +21,12 @@ something that merely looks safe.
 from typing import Any, get_args
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from memory import read_context
 from memory.auth.principal import Principal
 from memory.currentness import bank_is_withheld
+from memory.db import db_now
 from memory.errors import BankCurrentnessUnavailable, MemoryNotFound
 from memory.expiry import ensure_no_expiry_backlog
 from memory.hindsight.client import get_client
@@ -144,16 +144,12 @@ def bank_ref(principal: Principal, read_bank: read_context.ReadBank) -> LogicalB
     )
 
 
-def _db_now(db: Session):
-    return db.execute(select(func.now())).scalar_one()
-
-
 def run_access_maintenance(db: Session, bank: LogicalBankRef) -> None:
     """The one bounded maintenance side effect an authorized recall/reflect
     access performs: at most one batch of overdue expiry (SPEC §6.4). Never
     run by `load_context` or by current list/get, which only honor an
     existing barrier without claiming new work."""
-    ensure_no_expiry_backlog(db, bank, client=get_client(), now=_db_now(db))
+    ensure_no_expiry_backlog(db, bank, client=get_client(), now=db_now(db))
 
 
 def _recall_hits(

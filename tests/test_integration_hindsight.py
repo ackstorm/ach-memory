@@ -15,7 +15,6 @@ def live_client() -> HindsightClient:
     return HindsightClient(
         base_url=HINDSIGHT_URL,
         api_key=os.environ.get("MEMORY_HINDSIGHT_API_KEY", ""),
-        tenant_id="default",
     )
 
 
