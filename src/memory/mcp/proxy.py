@@ -32,7 +32,7 @@ from mcp.shared.inbound import (
     mcp_param_headers,
     x_mcp_header_map,
 )
-from mcp_types.version import MODERN_PROTOCOL_VERSIONS
+from mcp_types.version import KNOWN_PROTOCOL_VERSIONS
 
 from memory.errors import ProjectInvalidSlug
 from memory.slugs import canonical_locator, slug_from_locator
@@ -204,10 +204,22 @@ def fill_project_arguments(
 
 
 class StdioHttpBridge:
-    """Forward protocol MCP requests between stdio and Streamable HTTP.
+    """Forward MCP requests between stdio and Streamable HTTP.
 
-    Both sides speak the per-request protocol introduced in 2026-07-28. There
-    is no initialization handshake or transport session to translate.
+    Whatever revision the host speaks is the revision this bridge carries.
+    The per-request protocol introduced in 2026-07-28 names it in each
+    request's `_meta`; a handshake host names it once on `initialize` and
+    never again, so the negotiated value is remembered from the remote's own
+    reply and sent as the header on every later request. Demanding the
+    per-request field unconditionally rejected every handshake host on its
+    very first message -- `initialize` cannot carry a revision that has not
+    been negotiated yet, so `requested` was always null and no MCP host
+    (Claude Code and the mcp SDK's own `ClientSession` included) could reach
+    the remote at all.
+
+    There is still no transport session to translate: the remote is
+    stateless, so the handshake is forwarded like any other request and the
+    notifications that follow it are answered by neither side.
     """
 
     def __init__(
@@ -231,6 +243,10 @@ class StdioHttpBridge:
         self._client = client or httpx.AsyncClient(timeout=300.0)
         self._owns_client = client is None
         self._tool_header_maps: dict[str, dict[tuple[str, ...], str]] = {}
+        # Set from the remote's `initialize` reply -- the only authority on
+        # what was actually negotiated -- and sent as the per-request header
+        # for hosts whose requests do not carry one themselves.
+        self._negotiated_version: str | None = None
         # Content-free: a code only, never the message/details a real
         # backend error could carry (SPEC inv. 29). Routes every
         # scope="project" tool call to a local error until a later process
@@ -275,11 +291,19 @@ class StdioHttpBridge:
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
         }
-        protocol_version = _protocol_version(outgoing)
-        if protocol_version not in MODERN_PROTOCOL_VERSIONS:
-            raise UnsupportedProtocolVersion(protocol_version)
-        headers["MCP-Protocol-Version"] = protocol_version
+        requested = _protocol_version(outgoing)
+        if requested is not None and requested not in KNOWN_PROTOCOL_VERSIONS:
+            raise UnsupportedProtocolVersion(requested)
         method = outgoing.get("method")
+        # `initialize` is what negotiates the revision, so it carries no
+        # header: naming one here would pin the exchange to a revision the
+        # caller never agreed to. The remote serves the body's own
+        # `protocolVersion` and answers with what it settled on.
+        version = None if method == "initialize" else (
+            requested or self._negotiated_version
+        )
+        if version is not None:
+            headers["MCP-Protocol-Version"] = version
         if not isinstance(method, str) or "id" not in outgoing:
             raise InvalidMCPRequest("Streamable HTTP accepts MCP requests only")
         headers["Mcp-Method"] = method
@@ -315,10 +339,33 @@ class StdioHttpBridge:
             yield reply
 
     def _process_reply(self, method: str, request_id: object, reply: dict) -> None:
-        if method == "server/discover":
+        if method == "initialize":
+            self._absorb_handshake(reply)
+        elif method == "server/discover":
             self._replace_discovery_instructions([reply], request_id)
         elif method == "tools/list":
             self._absorb_tool_listing(reply)
+
+    def _absorb_handshake(self, reply: dict) -> None:
+        """Remember the negotiated revision and carry our own instructions.
+
+        `initialize` is where a handshake host reads instructions, the same
+        way the 2026-07-28 era reads them from `server/discover`, so the
+        fetched context has to be substituted in both or it reaches only one
+        kind of host.
+        """
+        result = reply.get("result")
+        if not isinstance(result, dict):
+            return
+        version = result.get("protocolVersion")
+        if isinstance(version, str):
+            self._negotiated_version = version
+        # Empty is what a fail-open context fetch yields (a timeout, or a
+        # workspace with nothing standing), and substituting it would delete
+        # the remote's own operating guidance -- the only instructions a
+        # handshake host ever sees -- in exchange for nothing.
+        if self._instructions:
+            result["instructions"] = self._instructions
 
     def _absorb_tool_listing(self, reply: dict) -> None:
         result = reply.get("result")
@@ -387,7 +434,7 @@ class StdioHttpBridge:
                         -32022,
                         "Unsupported protocol version",
                         {
-                            "supported": list(MODERN_PROTOCOL_VERSIONS),
+                            "supported": list(KNOWN_PROTOCOL_VERSIONS),
                             "requested": exc.requested,
                         },
                     )
@@ -415,6 +462,15 @@ class StdioHttpBridge:
                     await emit(
                         [_jsonrpc_error(None, -32600, "MCP message must be an object")]
                     )
+                    continue
+                # A notification has no id and must never be answered.
+                # `notifications/initialized` follows every handshake, and
+                # replying to it with an error -- which is what falling
+                # through to `handle` did -- is a protocol violation the host
+                # sees immediately after connecting.
+                if "id" not in message and message.get("method") != (
+                    "notifications/cancelled"
+                ):
                     continue
                 if message.get("method") == "notifications/cancelled":
                     params = message.get("params")
@@ -478,13 +534,23 @@ async def _readline(source) -> bytes:
 
 
 def _protocol_version(message: dict) -> str | None:
+    """The revision this one request is being made under, if it names one.
+
+    The 2026-07-28 era carries it per request in `_meta`. On `initialize`
+    nothing can be there yet, so the request's own `params.protocolVersion`
+    -- the revision the host is asking for -- is the only value to read.
+    """
     params = message.get("params")
-    meta = params.get("_meta") if isinstance(params, dict) else None
+    if not isinstance(params, dict):
+        return None
+    meta = params.get("_meta")
     version = (
         meta.get("io.modelcontextprotocol/protocolVersion")
         if isinstance(meta, dict)
         else None
     )
+    if version is None and message.get("method") == "initialize":
+        version = params.get("protocolVersion")
     return version if isinstance(version, str) else None
 
 

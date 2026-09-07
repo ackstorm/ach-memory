@@ -438,7 +438,153 @@ async def test_stdio_serve_frames_one_modern_request_and_response_per_line():
 
 
 @pytest.mark.anyio
-async def test_stdio_bridge_rejects_initialize_without_contacting_remote():
+async def test_stdio_bridge_serves_the_handshake_and_reuses_what_was_negotiated():
+    """A handshake host must get through `initialize` and stay through it.
+
+    Demanding the per-request `_meta` revision on every message rejected
+    `initialize` by construction -- a host cannot name a revision it has not
+    negotiated -- so the bridge answered -32022 to the first message of every
+    MCP host there is, Claude Code and the mcp SDK's own `ClientSession`
+    included. Both halves of the fix are pinned here: the handshake reaches
+    the remote carrying no revision header of its own, and the revision the
+    remote settled on is what every later request is sent under.
+    """
+    seen = []
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        seen.append((message, dict(request.headers)))
+        result = (
+            {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "ach-memory", "version": "0"},
+                "instructions": "REMOTE POLICY",
+            }
+            if message["method"] == "initialize"
+            else {"tools": []}
+        )
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": message["id"], "result": result}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge(
+            "https://memory.test/mcp/",
+            "secret",
+            instructions="POLICY + BRIEF",
+            client=client,
+        )
+        handshake = await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "host", "version": "1"},
+                    "_meta": {},
+                },
+            }
+        )
+        # No `_meta` revision on this one either: a handshake host names the
+        # revision once and never again.
+        await bridge.forward(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        )
+
+    assert "mcp-protocol-version" not in seen[0][1]
+    assert seen[0][1]["mcp-method"] == "initialize"
+    assert seen[1][1]["mcp-protocol-version"] == "2025-11-25"
+    # `initialize` is where a handshake host reads instructions, so the
+    # fetched context has to be substituted there as well as in
+    # `server/discover`.
+    assert handshake[0]["result"]["instructions"] == "POLICY + BRIEF"
+
+
+@pytest.mark.anyio
+async def test_an_empty_context_fetch_leaves_the_remote_instructions_alone():
+    """Fail-open context must not cost the host the remote's own guidance.
+
+    `fetch_context` is bounded and silent, so the CLI hands the bridge `""`
+    whenever it times out or the workspace has nothing standing -- and
+    `initialize` is the only place a handshake host reads instructions.
+    """
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "instructions": "REMOTE POLICY",
+                },
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge(
+            "https://memory.test/mcp/", "secret", instructions="", client=client
+        )
+        handshake = await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {}},
+            }
+        )
+
+    assert handshake[0]["result"]["instructions"] == "REMOTE POLICY"
+
+
+@pytest.mark.anyio
+async def test_stdio_bridge_leaves_notifications_unanswered():
+    """`notifications/initialized` follows every handshake and has no id.
+
+    Answering it -- which is what treating every line as a request did --
+    puts a JSON-RPC error on stdout for a message that must produce no
+    response at all, immediately after the host connects.
+    """
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {"protocolVersion": "2025-11-25", "capabilities": {}},
+            },
+        )
+
+    lines = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}},
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+    ]
+    source = io.BytesIO(b"".join(json.dumps(m).encode() + b"\n" for m in lines))
+    destination = io.BytesIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge("https://memory.test/mcp/", "secret", client=client)
+        await bridge.serve(source, destination)
+
+    replies = [json.loads(line) for line in destination.getvalue().splitlines()]
+    assert [reply["id"] for reply in replies] == [1]
+
+
+@pytest.mark.anyio
+async def test_stdio_bridge_rejects_a_revision_the_sdk_cannot_serve():
+    """A typo or a future revision still fails loudly, without a round trip."""
     contacted = False
 
     async def remote(_request: httpx.Request) -> httpx.Response:
@@ -446,20 +592,24 @@ async def test_stdio_bridge_rejects_initialize_without_contacting_remote():
         contacted = True
         return httpx.Response(500)
 
-    source = io.BytesIO(
-        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n'
-    )
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2099-01-01"}
+        },
+    }
+    source = io.BytesIO(json.dumps(request).encode() + b"\n")
     destination = io.BytesIO()
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
         bridge = StdioHttpBridge("https://memory.test/mcp/", "secret", client=client)
         await bridge.serve(source, destination)
 
-    error = json.loads(destination.getvalue())
-    assert error["error"] == {
-        "code": -32022,
-        "message": "Unsupported protocol version",
-        "data": {"supported": ["2026-07-28"], "requested": None},
-    }
+    error = json.loads(destination.getvalue())["error"]
+    assert error["code"] == -32022
+    assert error["data"]["requested"] == "2099-01-01"
+    assert "2026-07-28" in error["data"]["supported"]
     assert contacted is False
 
 
