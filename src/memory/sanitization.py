@@ -38,6 +38,32 @@ _SECRET_PATTERNS = [
 ]
 
 
+# Scanning cost is QUADRATIC in input length: the key=value rule above ends
+# in `\w*` either side of the literal, so on a long run of word characters
+# the engine retries from every position. Measured on this codebase:
+# 4 KB 20 ms, 8 KB 79 ms, 16 KB 324 ms, 32 KB 1.3 s -- roughly 4x per
+# doubling, which puts 1 MB near twenty minutes of single-threaded CPU.
+#
+# `normalize_claim` used to normalize and scan first and check the ceiling
+# afterwards, so one authenticated retain could pin a worker for as long as
+# it liked; `TypedRetainRequest.content` carries no max_length, and the
+# write budget is 60 requests per minute per credential. The size gate has
+# to come BEFORE any scan.
+#
+# Four times _MAX_BYTES rather than _MAX_BYTES: normalization legitimately
+# shrinks input, since runs of horizontal whitespace collapse to a single
+# space, so a raw 16 KB body may still land under the 4096-byte limit and
+# must keep being accepted. The post-normalization check stays the real
+# limit; this one only bounds what the scanner is ever handed.
+_MAX_RAW_BYTES = _MAX_BYTES * 4
+
+
+def _reject_unscannable(text: str) -> None:
+    """Refuse input too large to scan affordably, before scanning it."""
+    if len(text.encode("utf-8")) > _MAX_RAW_BYTES:
+        raise ContentTooLarge(f"content exceeds {_MAX_RAW_BYTES} bytes before normalization")
+
+
 def contains_secret(text: str) -> bool:
     return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
 
@@ -67,6 +93,7 @@ class SanitizedEvidence(BaseModel):
 
 def normalize_claim(content: str) -> str:
     """Canonicalize one durable claim. Rejects rather than rewrites a secret."""
+    _reject_unscannable(content)
     normalized = unicodedata.normalize("NFC", content).replace("\r\n", "\n")
     normalized = "\n".join(
         _HORIZONTAL_WS.sub(" ", line).rstrip() for line in normalized.split("\n")
@@ -83,6 +110,11 @@ def sanitize_evidence(items: tuple[RetainEvidence, ...]) -> tuple[SanitizedEvide
     nothing; require at least one meaningful survivor."""
     kept: list[SanitizedEvidence] = []
     for item in items:
+        # RetainEvidence.raw is capped at 1024 characters by the schema, so
+        # this is defence in depth rather than a live exposure -- but the
+        # bound lives in another module and this is the function that pays
+        # the quadratic cost if it ever moves.
+        _reject_unscannable(item.raw)
         raw = redact_secrets(unicodedata.normalize("NFC", item.raw).replace("\r\n", "\n"))
         if raw.strip() and raw.strip() != "[redacted]":
             kept.append(
