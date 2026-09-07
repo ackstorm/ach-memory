@@ -444,7 +444,12 @@ class StdioHttpBridge:
             except (RemoteProtocolError, httpx.HTTPError) as exc:
                 print(f"ach-memory: remote MCP request failed: {exc}", file=sys.stderr)
                 replies = [
-                    _jsonrpc_error(request_id, -32000, "Remote MCP request failed")
+                    _jsonrpc_error(
+                        request_id,
+                        -32000,
+                        "Remote MCP request failed",
+                        _remote_failure_data(exc, self._url),
+                    )
                 ]
             if replies:
                 await emit(replies)
@@ -602,6 +607,25 @@ def _decode_json_message(body: bytes) -> dict | None:
     if "id" not in value or ("result" in value) == ("error" in value):
         return None
     return value
+
+
+def _remote_failure_data(exc: Exception, url: str) -> dict:
+    """What the caller needs to tell one remote failure from another.
+
+    -32000 covers a wrong endpoint, DNS, TLS, 401, 404 and every 5xx alike,
+    and the detail went only to stderr -- which no MCP host shows. A Codex
+    install whose `--url` carried the /mcp/ mount twice therefore reported
+    nothing but "Remote MCP request failed" on every session, and the 404
+    behind it took a packet capture's worth of digging to name (2026-09-07).
+
+    The endpoint is safe to return: the credential travels in a header, and
+    a URL the caller configured is not something it needs protecting from.
+    """
+    data: dict[str, object] = {"url": url, "reason": type(exc).__name__}
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        data["status"] = status
+    return data
 
 
 def _jsonrpc_error(

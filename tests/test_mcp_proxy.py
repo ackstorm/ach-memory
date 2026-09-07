@@ -915,3 +915,37 @@ async def test_project_scope_tool_calls_are_routed_locally_after_a_bootstrap_fai
 
 
 
+
+
+@pytest.mark.anyio
+async def test_a_remote_failure_names_the_endpoint_and_status_it_got():
+    """-32000 alone cannot be acted on, and stderr is not shown by hosts.
+
+    One code covers a wrong endpoint, DNS, TLS, 401, 404 and every 5xx, so
+    "Remote MCP request failed" was the entire diagnosis a host could offer:
+    measured against a Codex install whose `--url` carried the /mcp/ mount
+    twice, where the 404 behind it was invisible from inside the host.
+    """
+
+    async def remote(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="Not Found")
+
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}},
+    }
+    source = io.BytesIO(json.dumps(request).encode() + b"\n")
+    destination = io.BytesIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge("https://memory.test/mcp/mcp/", "secret", client=client)
+        await bridge.serve(source, destination)
+
+    error = json.loads(destination.getvalue())["error"]
+    assert error["code"] == -32000
+    assert error["data"]["status"] == 404
+    assert error["data"]["url"] == "https://memory.test/mcp/mcp/"
+    assert error["data"]["reason"] == "HTTPStatusError"
+    # The credential travels in a header and must not be echoed back.
+    assert "secret" not in json.dumps(error)
