@@ -160,3 +160,27 @@ def test_every_fact_matches_its_own_text(monkeypatch):
     quality = _load("bench_quality", monkeypatch)
     facts, _ = quality.load_corpus()
     assert [f["id"] for f in facts if not quality.is_same_fact(f, f["text"])] == []
+
+
+def test_spread_is_measured_across_repeats_not_across_questions(monkeypatch):
+    """A 0/1 metric pooled per question reports its own Bernoulli spread:
+    96% recall printed as "96.0 +/- 19.7%", where 19.7 is sqrt(.96*.04) and
+    says nothing about run-to-run stability. Two repeats that each scored
+    exactly 96% must therefore report +/- 0.0, not +/- 19.7."""
+    quality = _load("bench_quality", monkeypatch)
+    benchlib = _load("benchlib", monkeypatch)
+
+    tallies = []
+    for _ in range(2):
+        tally = quality.RepeatTally()
+        for i in range(25):
+            tally.recall.append(0.0 if i == 0 else 1.0)  # 24/25 = 96%
+        tallies.append(tally)
+
+    samples = benchlib.Samples()
+    import statistics
+    for tally in tallies:
+        samples.add(statistics.fmean(tally.recall))
+
+    assert samples.mean == pytest.approx(0.96)
+    assert samples.stdev == pytest.approx(0.0), "identical repeats must show no spread"

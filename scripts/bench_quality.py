@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import statistics
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -69,6 +70,12 @@ TOP_K = int(os.environ.get("BENCH_TOP_K", "5"))
 CORPUS = Path(__file__).resolve().parents[1] / "benchmarks" / "corpus.jsonl"
 
 RUN = uuid.uuid4().hex[:8]
+
+# Line-buffered, the same reason scripts/e2e.py does it: this run takes tens
+# of minutes against a real LLM, and under redirection a block-buffered
+# stdout shows an empty log the whole time, which is indistinguishable from
+# a hang.
+sys.stdout.reconfigure(line_buffering=True)
 
 ARMS = ("ach", "vanilla-shared", "vanilla-sharded")
 
@@ -119,12 +126,43 @@ def _present(term: str, hit: str) -> bool:
 
 
 @dataclass
+class RepeatTally:
+    """One repeat's raw per-question observations, for ONE arm."""
+
+    recall: list[float] = field(default_factory=list)
+    contamination: list[float] = field(default_factory=list)
+    answer_ok: list[float] = field(default_factory=list)
+    tokens: list[float] = field(default_factory=list)
+    latency: list[float] = field(default_factory=list)
+
+
+@dataclass
 class ArmMetrics:
+    """Per-REPEAT means. One value per repeat, never one per question.
+
+    Pooling every question observation into these instead made the reported
+    spread the Bernoulli spread of a 0/1 metric -- 96% recall printed as
+    "96.0 +/- 19.7%", where 19.7 is just sqrt(0.96*0.04) and says nothing
+    about whether a second run would agree. Run-to-run stability is the
+    only thing the +/- is there to answer.
+    """
+
     recall: Samples = field(default_factory=Samples)
     contamination: Samples = field(default_factory=Samples)
     answer_ok: Samples = field(default_factory=Samples)
     tokens: Samples = field(default_factory=Samples)
     latency: Samples = field(default_factory=Samples)
+
+
+def record(failures: list, arm: str, repeat: int, row: dict) -> None:
+    """Keep every per-question miss, so an aggregate can be explained."""
+    if not row["recall"]:
+        failures.append((arm, repeat, {**row, "metric": "recall"}))
+    if row["contamination"]:
+        failures.append((arm, repeat, {**row, "metric": "contamination",
+                                       "why": "a forbidden fact appeared in the top hits"}))
+    if not row["answer_ok"]:
+        failures.append((arm, repeat, {**row, "metric": "answer_ok"}))
 
 
 def load_corpus() -> tuple[list[dict], list[dict]]:
@@ -243,26 +281,37 @@ async def ask_vanilla(van: Http, q: dict, arm: str, run_tag: str) -> tuple[list[
 # ==========================================================================
 
 
-def score(q: dict, facts_by_id: dict, hits: list[str], answer: str, m: ArmMetrics, ms: float) -> None:
+def score(q: dict, facts_by_id: dict, hits: list[str], answer: str, m: RepeatTally, ms: float) -> dict:
     top = hits[:TOP_K]
     expected = [facts_by_id[i] for i in q["expect"] if i in facts_by_id]
     forbidden = [facts_by_id[i] for i in q.get("must_not", []) if i in facts_by_id]
 
-    m.recall.add(
-        1.0 if any(is_same_fact(e, h) for e in expected for h in top) else 0.0
-    )
-    m.contamination.add(
+    m.recall.append(1.0 if any(is_same_fact(e, h) for e in expected for h in top) else 0.0)
+    m.contamination.append(
         1.0 if any(is_same_fact(f, h) for f in forbidden for h in top) else 0.0
     )
-    m.tokens.add(float(count_tokens("\n".join(top))))
-    m.latency.add(ms)
+    m.tokens.append(float(count_tokens("\n".join(top))))
+    m.latency.append(ms)
 
-    low = answer.lower()
-    wanted = any(k.lower() in low for k in q.get("keywords", []))
+    # `_present`, not `k.lower() in answer`: raw substring matching let the
+    # keyword "one" (q23, "one approval") pass on "none", "someone" or
+    # "money", and "two" (q18) on "network". A metric that can pass on an
+    # answer it never read is worse than no metric.
+    low = normalize(answer)
+    wanted = any(_present(k, low) for k in q.get("keywords", []))
     # An answer that also states the contradicting scope's value is not a
     # pass, however many expected keywords it hit.
     contradicted = any(is_same_fact(f, answer) for f in forbidden)
-    m.answer_ok.add(1.0 if (wanted and not contradicted) else 0.0)
+    ok = wanted and not contradicted
+    m.answer_ok.append(1.0 if ok else 0.0)
+    return {
+        "id": q["id"],
+        "recall": bool(m.recall[-1]),
+        "contamination": bool(m.contamination[-1]),
+        "answer_ok": ok,
+        "why": "" if ok else ("stated the other scope's value" if contradicted
+                              else f"no expected keyword {q.get('keywords', [])} in the answer"),
+    }
 
 
 async def main() -> int:
@@ -275,6 +324,7 @@ async def main() -> int:
     print()
 
     metrics = {arm: ArmMetrics() for arm in ARMS}
+    failures: list[tuple[str, int, dict]] = []
 
     async with Http(API) as ach, Http(HINDSIGHT_URL) as van:
         for repeat in range(REPEATS):
@@ -307,12 +357,24 @@ async def main() -> int:
                 await seed_vanilla(van, facts, arm, run_tag)
 
             print("  asking ...")
+            tally = {arm: RepeatTally() for arm in ARMS}
             for q in questions:
                 hits, ms, answer = await ask_ach(ach, q, ctx)
-                score(q, facts_by_id, hits, answer, metrics["ach"], ms)
+                record(failures, "ach", repeat,
+                       score(q, facts_by_id, hits, answer, tally["ach"], ms))
                 for arm in ("vanilla-shared", "vanilla-sharded"):
                     hits, ms, answer = await ask_vanilla(van, q, arm, run_tag)
-                    score(q, facts_by_id, hits, answer, metrics[arm], ms)
+                    record(failures, arm, repeat,
+                           score(q, facts_by_id, hits, answer, tally[arm], ms))
+
+            # One value per repeat per metric, so `Samples.stdev` answers
+            # "would another run agree?" rather than "how binary is this
+            # metric?".
+            for arm in ARMS:
+                for name in ("recall", "contamination", "answer_ok", "tokens", "latency"):
+                    values = getattr(tally[arm], name)
+                    if values:
+                        getattr(metrics[arm], name).add(statistics.fmean(values))
 
     print()
     rows = []
@@ -330,6 +392,23 @@ async def main() -> int:
         ["Arm", f"recall@{TOP_K}", f"contamination@{TOP_K}", "answer ok", "tokens", "latency ms"],
         rows,
     ))
+    if failures:
+        print()
+        print("Per-question failures")
+        print("---------------------")
+        seen: dict[tuple[str, str, str], list[int]] = {}
+        for arm, repeat, row in failures:
+            key = (arm, row["id"], row["metric"])
+            seen.setdefault(key, []).append(repeat)
+        for (arm, qid, metric), repeats in sorted(seen.items()):
+            detail = next(r["why"] for a, _, r in failures if a == arm and r["id"] == qid)
+            stable = "every repeat" if len(repeats) == REPEATS else f"repeats {repeats}"
+            print(f"  {arm:<16} {qid} {metric:<14} ({stable}): {detail}")
+        print()
+        print("A failure in BOTH ach and vanilla-sharded is not an ach-memory")
+        print("gap: those arms differ only in authorization, scope resolution")
+        print("and audit, never in what is retrieved or how it is synthesized.")
+
     print()
     print("Lower contamination is better. `ach` versus `vanilla-sharded` is the")
     print("honest comparison; `vanilla-shared` shows the cost of no partition.")

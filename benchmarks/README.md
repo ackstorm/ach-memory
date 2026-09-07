@@ -96,6 +96,83 @@ for reflect. Different models per arm would make the comparison meaningless.
 `BENCH_REPEATS` (default 3) sets the repeat count; `BENCH_TOP_K` (default 5)
 the cutoff. Do not report a single run.
 
+Every `+/-` is the spread of **per-repeat means**, one value per repeat. It
+answers "would another run agree?". It is deliberately not the spread of
+individual question observations: for a 0/1 metric that is just its own
+Bernoulli spread, so a 96% score printed as "96.0 +/- 19.7%" where 19.7 is
+sqrt(0.96*0.04) -- a number that looks like instability and measures
+nothing. `tests/test_bench.py` pins this: two repeats that each score
+exactly 96% must report +/- 0.0.
+
+### Against a cluster instead of a built engine
+
+Quality needs a real LLM, and the deployed engine already has one. Forward
+it and point a local ach-memory at it, rather than redeploying:
+
+```sh
+kubectl port-forward --address 127.0.0.1,172.17.0.1 -n hindsight \
+    svc/hindsight-api 18888:8888 &
+docker compose -f docker-compose.yml -f docker-compose.cluster-hindsight.yml \
+    -p achbench up -d --build postgres migrate api
+API=http://127.0.0.1:<api port> HINDSIGHT_URL=http://127.0.0.1:18888 \
+    uv run python scripts/bench_quality.py
+```
+
+The bridge address is needed because the API runs in a container and
+`kubectl port-forward` binds loopback only. Do NOT use `--address 0.0.0.0`:
+the deployed Hindsight takes no credential (`MEMORY_HINDSIGHT_API_KEY` is
+empty), so a wildcard bind publishes every bank to the local network.
+
+Whatever this writes lands in the real engine. Banks are freshly generated
+per run and never collide with an existing one, but clean them up
+afterwards with `DELETE /v1/default/banks/{bank_id}`. Take the ach arm's
+bank ids from the LOCAL ach-memory database (`users.bank_id`,
+`projects.bank_id`), never from the engine's own bank listing: that listing
+also contains production banks, and a loose prefix match over it would
+delete real data.
+
+## Measured result (2026-09-07)
+
+Three repeats, 34 facts, 25 questions, against Hindsight 0.9.2 with a real
+LLM. The `+/-` below is the per-question spread described above, not the
+per-repeat spread -- this run predates that fix, so only the means should be
+quoted:
+
+| Arm | recall@5 | contamination@5 | answer ok* | tokens | latency ms |
+|---|---|---|---|---|---|
+| `ach` | 100.0% | **0.0%** | 96.0%* | 69 | 722 |
+| `vanilla-shared` | 100.0% | **81.3%** | 65.3%* | 79 | 1096 |
+| `vanilla-sharded` | 100.0% | **0.0%** | 96.0%* | 84 | 648 |
+
+*`answer ok` was scored with a raw substring keyword test, since replaced.
+It let the keyword "one" (q23, "one approval") pass on "none", "someone" or
+"money", and "two" (q18) on "network", so that column contains passes on
+answers the metric never really read. Do not quote it. The other columns are
+computed with the fact matcher, not with keywords, and are unaffected --
+including `contamination`, which is the finding.
+
+**ach-memory ties vanilla-sharded exactly**, and vanilla-sharded is faster
+(648 vs 722 ms -- ach adds roughly 11% for authorization, scope resolution
+and audit). This is the honest headline and it should be reported as such:
+ach-memory does not retrieve better than a competent integrator who
+partitions banks by hand. What it does is make that partition automatic and
+unforgeable. Against the naive single-bank setup the partition is worth 81
+points of contamination and 31 points of answer accuracy.
+
+`recall@5` saturated at 100% for all three arms, so it discriminates
+nothing here: with 8-20 facts per bank and a top-5 cutoff, everything is
+found. Contamination is the metric doing the work. A future corpus wanting
+a meaningful recall number needs far more facts per bank.
+
+The 4 points missing from `answer ok` were deliberately NOT chased with a
+rerun. `ach` and `vanilla-sharded` scored identically, and those arms differ
+only in authorization, scope resolution and audit -- never in what is
+retrieved or how it is synthesized -- so a miss present in both cannot be
+closed by anything in ach-memory. Naming the question would have described
+this corpus, not the product, at the cost of another few hundred writes into
+the production engine. The harness now prints per-question failures, so the
+next run that happens for its own reasons will answer it for free.
+
 ## Matching retrieved hits to corpus facts
 
 Hindsight extracts facts rather than storing submitted sentences verbatim,

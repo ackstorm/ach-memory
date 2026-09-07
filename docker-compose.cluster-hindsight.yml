@@ -1,0 +1,32 @@
+# Run ach-memory locally against the CLUSTER's Hindsight instead of building
+# one. Used with a `kubectl port-forward` of svc/hindsight-api, so a
+# quality benchmark can run against a real LLM-backed engine without going
+# through the whole release ceremony to redeploy.
+#
+#   kubectl port-forward -n hindsight svc/hindsight-api 18888:8888 &
+#   docker compose -f docker-compose.yml -f docker-compose.cluster-hindsight.yml \
+#       up -d --build postgres migrate api
+#
+# The local `hindsight` and `hindsight-db` services are NOT started: this
+# override drops the api's dependency on them and repoints the URL at the
+# forwarded port on the Docker host.
+#
+# WARNING: whatever this stack writes lands in the CLUSTER's Hindsight, which
+# is the production engine serving real banks. Benchmarks address freshly
+# generated `bench_*`/`bq-*` bank ids and never touch an existing one, but
+# the rows they create are real rows in a real database. Clean them up.
+services:
+  api:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      # host-gateway resolves to the Docker host, where the port-forward
+      # listens. The cluster's own deployment uses the `/api` suffix; the
+      # service answers on both, and the bare form matches what
+      # memory/hindsight/paths.py builds.
+      MEMORY_HINDSIGHT_URL: http://host.docker.internal:${HINDSIGHT_FORWARD_PORT:-18888}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
