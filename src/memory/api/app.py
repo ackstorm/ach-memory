@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse, Response
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp_types.version import LATEST_MODERN_VERSION
+from mcp_types.version import KNOWN_PROTOCOL_VERSIONS
 from sqlalchemy.orm import Session
 
 # Imported unconditionally (not gated on metrics_enabled) so the collectors
@@ -23,23 +23,42 @@ from memory.errors import DomainError, Forbidden
 logger = logging.getLogger("memory.api")
 
 
-class CurrentProtocolMCP:
-    """Expose only the sessionless per-request MCP protocol revision."""
+class NegotiatedProtocolMCP:
+    """Refuse only a protocol revision the SDK does not know.
+
+    On `initialize` the header is absent by construction -- a handshake client
+    cannot name a version it has not negotiated yet -- so demanding the newest
+    revision here rejected every mcp 1.x client on its very first request.
+    Measured against LiteLLM v1.99.1 (mcp SDK 1.28.1), whose `MCPSpecVersion`
+    offers 2024-11-05, 2025-03-26 and 2025-06-18 and nothing newer: its
+    `initialize` came back 400 and its tool listing failed with "Failed to
+    fetch MCP tools". No configuration on the caller's side could have fixed
+    it, because the per-request revision does not exist in mcp 1.x at all.
+
+    Statelessness is not what the gate was protecting. Under `stateless_http`
+    the handshake era negotiates and then answers with no `mcp-session-id`
+    either, so serving it pins no caller to a pod (verified for all three
+    revisions above). Authentication is unaffected: `tool_session` reads the
+    request's own headers whichever revision carried them.
+
+    Non-POST is the SDK's business, not this layer's: it answers the GET
+    stream and DELETE according to the revision the caller negotiated, and a
+    405 here pre-empted a request this wrapper cannot interpret.
+    """
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] == "http" and scope["method"] != "POST":
-            response = Response(status_code=405, headers={"Allow": "POST"})
-            await response(scope, receive, send)
-            return
         if scope["type"] == "http":
             headers = dict(scope.get("headers", ()))
             version = headers.get(b"mcp-protocol-version", b"").decode(
                 "ascii", errors="ignore"
             )
-            if version != LATEST_MODERN_VERSION:
+            # Absent stays legal; only a value the SDK cannot serve is refused,
+            # so a typo or a future revision fails loudly instead of being
+            # silently negotiated down to something the caller did not ask for.
+            if version and version not in KNOWN_PROTOCOL_VERSIONS:
                 response = JSONResponse(
                     status_code=400,
                     content={
@@ -47,8 +66,8 @@ class CurrentProtocolMCP:
                         "id": None,
                         "error": {
                             "code": -32020,
-                            "message": "MCP-Protocol-Version header is required",
-                            "data": {"supported": [LATEST_MODERN_VERSION]},
+                            "message": "unsupported MCP-Protocol-Version",
+                            "data": {"supported": list(KNOWN_PROTOCOL_VERSIONS)},
                         },
                     },
                 )
@@ -253,9 +272,9 @@ def create_app() -> FastAPI:
         # avoids opening an SSE stream for exchanges that never publish
         # progress or subscriptions, while remaining Streamable HTTP.
         json_response=True,
-        # The 2026-07-28 protocol is per-request and has no transport
-        # sessions. Keep the SDK's storage path stateless too: every tool
-        # re-authenticates from its own headers and opens its own DB unit.
+        # Stateless whichever revision the caller negotiates: every tool
+        # re-authenticates from its own headers and opens its own DB unit, so
+        # a session id would pin a caller to one pod while carrying nothing.
         stateless_http=True,
         transport_security=TransportSecuritySettings(
             allowed_hosts=allowed,
@@ -264,5 +283,5 @@ def create_app() -> FastAPI:
             # Host values are not origins, so leave this SDK default empty.
         ),
     )
-    app.mount("/mcp", CurrentProtocolMCP(mcp_app))
+    app.mount("/mcp", NegotiatedProtocolMCP(mcp_app))
     return app

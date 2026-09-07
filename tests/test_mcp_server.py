@@ -245,43 +245,104 @@ async def test_the_mcp_endpoint_answers_the_host_it_is_configured_for(
     assert refused.status_code == 421
 
 
+# The three revisions LiteLLM v1.99.1 can request: its `MCPSpecVersion` has
+# exactly these members and no newer one, so if the endpoint does not serve
+# them it cannot be reached from the gateway at all -- which is what happened,
+# and what "Failed to fetch MCP tools" meant on the caller's side.
+LITELLM_SPEC_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
+
+
 @pytest.mark.anyio
-async def test_the_mcp_endpoint_rejects_the_initialize_era(
-    monkeypatch, configured_env
+@pytest.mark.parametrize("requested", LITELLM_SPEC_VERSIONS)
+async def test_the_mcp_endpoint_serves_the_initialize_era(
+    requested, monkeypatch, configured_env
 ):
+    """A handshake client must get through `initialize` without a session.
+
+    Both halves matter. Serving the era is what unblocks every mcp 1.x
+    gateway; answering it with no `mcp-session-id` is what keeps the endpoint
+    horizontally scalable, which was the reason the newest-only gate looked
+    safe to add in the first place.
+    """
     from memory.api.app import create_app
     from memory.config import get_settings
 
     monkeypatch.setenv("MEMORY_MCP_ALLOWED_HOSTS", "memory.example.com")
     get_settings.cache_clear()
     app = create_app()
-    async with httpx.AsyncClient(
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "Host": "memory.example.com",
+    }
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://memory.example.com"
     ) as client:
-        old_stream = await client.get("/mcp/")
+        # No MCP-Protocol-Version header: a client cannot name a revision it
+        # has not negotiated yet, and requiring one here is what broke it.
+        handshake = await client.post(
+            "/mcp/",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": requested,
+                    "capabilities": {},
+                    "clientInfo": {"name": "litellm", "version": "1.99.1"},
+                },
+            },
+        )
+        negotiated = handshake.json()["result"]["protocolVersion"]
+        listing = await client.post(
+            "/mcp/",
+            headers={**headers, "MCP-Protocol-Version": negotiated},
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
+
+    assert handshake.status_code == 200
+    assert negotiated == requested
+    assert "mcp-session-id" not in {k.lower() for k in handshake.headers}
+    assert listing.status_code == 200
+    assert listing.json()["result"]["tools"], "the handshake era listed no tools"
+
+
+@pytest.mark.anyio
+async def test_the_mcp_endpoint_refuses_a_revision_the_sdk_cannot_serve(
+    monkeypatch, configured_env
+):
+    """An unknown revision fails loudly rather than being negotiated down.
+
+    The alternative is silence: the SDK would answer with whatever it does
+    support, and a client that asked for something else would never learn its
+    request was not honoured.
+    """
+    from memory.api.app import create_app
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_MCP_ALLOWED_HOSTS", "memory.example.com")
+    get_settings.cache_clear()
+    app = create_app()
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://memory.example.com"
+    ) as client:
         response = await client.post(
             "/mcp/",
             headers={
                 "Accept": "application/json, text/event-stream",
                 "Content-Type": "application/json",
                 "Host": "memory.example.com",
+                "MCP-Protocol-Version": "1999-01-01",
             },
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {},
-                    "clientInfo": {"name": "legacy", "version": "0"},
-                },
-            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         )
 
-    assert old_stream.status_code == 405
-    assert old_stream.headers["allow"] == "POST"
     assert response.status_code == 400
-    assert response.json()["error"]["code"] == -32020
+    error = response.json()["error"]
+    assert error["code"] == -32020
+    assert "2026-07-28" in error["data"]["supported"]
+    assert set(LITELLM_SPEC_VERSIONS) <= set(error["data"]["supported"])
 
 
 def test_mcp_transport_security_does_not_treat_hosts_as_origins(
