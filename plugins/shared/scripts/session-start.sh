@@ -6,7 +6,7 @@ plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cat "$plugin_root/activation.txt" 2>/dev/null || exit 0
 if [ -n "${ACH_MEMORY_API_KEY:-}" ] && command -v uvx >/dev/null 2>&1; then
   printf '\n'
-  uvx --from git+https://github.com/ackstorm/ach-memory@v0.4.4 \
+  uvx --from git+https://github.com/ackstorm/ach-memory@v0.4.5 \
     ach-memory context load 2>/dev/null || true
 fi
 exit 0
