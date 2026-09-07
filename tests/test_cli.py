@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 MCP_URL = "https://host/prefix/mcp/"
+# What a generated stdio config carries: the proxy adds the mount itself.
+SERVICE_URL = "https://host/prefix"
 
 from memory import cli
 
@@ -26,6 +28,29 @@ def _files_under(root: Path) -> dict[Path, bytes]:
 )
 def test_mcp_url(base: str, expected: str) -> None:
     assert cli._mcp_url(base) == expected
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "https://api.example.com/memory",
+        "https://api.example.com/memory/",
+        "https://api.example.com/memory/mcp",
+        "https://api.example.com/memory/mcp/",
+    ],
+)
+def test_either_url_form_resolves_to_the_same_endpoint_and_root(written: str) -> None:
+    """`--url` is written by hand, and both forms are reasonable to type.
+
+    Only one of them used to work: passing the mount appended a second one,
+    so every request went to /memory/mcp/mcp/ and came back 404 behind an
+    opaque "Remote MCP request failed". Measured against an installed Codex
+    whose config carried exactly that URL (2026-09-07), and reachable the
+    same way through opencode and pi, whose stdio configs init generates
+    from the same string.
+    """
+    assert cli._mcp_url(written) == "https://api.example.com/memory/mcp/"
+    assert cli._base_url(written) == "https://api.example.com/memory"
 
 
 @pytest.mark.parametrize(
@@ -423,7 +448,7 @@ def test_preflight_rejects_empty_key_before_opening_connection(
                     "ach-memory",
                     "mcp",
                     "--url",
-                    "https://host/next/mcp/",
+                    "https://host/next",
                 ],
                 "environment": {"ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}"},
                 "enabled": True,
@@ -446,7 +471,7 @@ def test_preflight_rejects_empty_key_before_opening_connection(
                     "ach-memory",
                     "mcp",
                     "--url",
-                    "https://host/next/mcp/",
+                    "https://host/next",
                 ],
             },
             [
@@ -1028,8 +1053,13 @@ def test_codex_install_registers_the_server_from_the_current_environment(
         "ach-memory",
         "mcp",
         "--url",
-        MCP_URL,
+        SERVICE_URL,
     ]
+    # The service root, never the /mcp/ endpoint: the proxy mounts that
+    # itself, so passing the endpoint made codex ask for /mcp/mcp/ and every
+    # session died on an opaque "Remote MCP request failed" (measured against
+    # an installed Codex, 2026-09-07).
+    #
     # The endpoint travels as the proxy's own --url argument, never as codex's
     # remote-server --url plus a bearer env var name: that is the --http shape.
     assert "--bearer-token-env-var" not in add
@@ -1283,7 +1313,9 @@ def test_config_plan_modes_pick_the_server_shape(
     _, config, _ = cli._config_plan("pi", url, "local")
     assert config["mcpServers"]["ach-memory"] == {
         "command": "/checkout/.venv/bin/ach-memory",
-        "args": ["mcp", "--url", url],
+        # The service root, not the `--http` entries' `/mcp/` endpoint: the
+        # proxy mounts that itself and would otherwise ask for /mcp/mcp/.
+        "args": ["mcp", "--url", "https://memory.example.com"],
     }
 
 

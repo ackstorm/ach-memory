@@ -42,16 +42,36 @@ def _validated_parts(base: str):
     return parts
 
 
+def _service_path(parts) -> str:
+    """The service root, with the MCP mount suffix removed if it is there.
+
+    `--url` is written by hand as often as it is generated, and both forms
+    are reasonable to type: the service root, or the endpoint a client
+    actually POSTs to. Only one of them used to work. Passing the mount --
+    `https://host/memory/mcp/` -- appended a second one, so every request
+    went to `/memory/mcp/mcp/` and came back 404 as an opaque
+    "Remote MCP request failed"; measured against a Codex install
+    2026-09-07, whose config carried exactly that URL.
+
+    A deployment whose service root genuinely ends in `/mcp` would be
+    mis-read here. That trade is deliberate: the mount is this service's
+    own, fixed, and documented, and a root that collides with it is a
+    hypothetical no install has ever had.
+    """
+    path = parts.path.rstrip("/")
+    return path.removesuffix("/mcp")
+
+
 def _mcp_url(base: str) -> str:
     parts = _validated_parts(base)
-    return urlunsplit((parts.scheme, parts.netloc, f"{parts.path.rstrip('/')}/mcp/", "", ""))
+    return urlunsplit((parts.scheme, parts.netloc, f"{_service_path(parts)}/mcp/", "", ""))
 
 
 def _base_url(base: str) -> str:
     """The endpoint without the `/mcp/` suffix `_mcp_url` adds, for routes
     like `/v1/context/load` that live outside the MCP mount."""
     parts = _validated_parts(base)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
+    return urlunsplit((parts.scheme, parts.netloc, _service_path(parts), "", ""))
 
 
 async def _preflight(url: str, api_key: str) -> None:
@@ -251,6 +271,13 @@ def _proxy_command(mode: str, url: str) -> list[str]:
     here -- argv is world-readable (`ps aux`), so hosts forward it from their
     environment by name instead of persisting its value.
 
+    The service root is what travels, not the `/mcp/` endpoint: the proxy
+    adds the mount itself, and it also talks to `/v1/bootstrap` and
+    `/v1/context/load`, which live outside it. Writing the mount here made
+    every generated stdio config -- codex, opencode and pi alike -- ask for
+    `/mcp/mcp/`; only the claude plugin escaped, because its `.mcp.json` is
+    committed with the root rather than generated.
+
     `uvx --from git+...@vX.Y.Z` is the install source: the repository is
     public, the tag pins an immutable revision, and it needs no package
     index -- so a release is installable the moment CI tags it.
@@ -269,8 +296,16 @@ def _proxy_command(mode: str, url: str) -> list[str]:
                 "--local needs the ach-memory script on PATH "
                 "(run it as `uv run ach-memory init ... --local`)"
             )
-        return [str(Path(script).resolve()), "mcp", "--url", url]
-    return ["uvx", "--from", f"{GIT_SOURCE}@v{_version()}", "ach-memory", "mcp", "--url", url]
+        return [str(Path(script).resolve()), "mcp", "--url", _base_url(url)]
+    return [
+        "uvx",
+        "--from",
+        f"{GIT_SOURCE}@v{_version()}",
+        "ach-memory",
+        "mcp",
+        "--url",
+        _base_url(url),
+    ]
 
 
 def _codex_config_path() -> Path:
