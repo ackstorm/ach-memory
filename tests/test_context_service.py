@@ -194,6 +194,77 @@ def test_context_selects_only_the_callers_user_and_authorized_project(session, t
     assert result.headings == ["User · juan", "Project Metadata", "Project · alpha"]
 
 
+class ObservingClient(RecordingClient):
+    """A backend whose refresh operation has already finished upstream."""
+
+    def __init__(self, *, status: str = "completed"):
+        super().__init__()
+        self.status = status
+        self.observed: list[tuple[str, str]] = []
+
+    def get_operation(self, bank_id: str, operation_id: str) -> dict:
+        self.observed.append((bank_id, operation_id))
+        return {"operation_id": operation_id, "status": self.status}
+
+
+def test_a_withheld_model_whose_refresh_finished_is_observed_and_delivered(
+    session, tenant
+):
+    """The hook's own path has to be able to turn a model ready.
+
+    `ach-memory context load` is all the SessionStart hook runs, and until
+    now nothing on this path observed a finished refresh -- `get_mental_model`
+    was the only caller that did. So a bank whose built-ins bootstrap had
+    just registered delivered empty standing context for ever: measured
+    2026-09-07, both built-ins sat withheld for 40 minutes after their
+    operations had completed upstream, and a single `get_mental_model` call
+    flipped each to ready at once.
+    """
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+    registration = _registration(tenant, model_key="juan", model_id="mm-juan", user_id=juan.id)
+    registration.delivery_state = "withheld"
+    registration.refresh_status = "pending"
+    registration.refresh_operation_id = str(uuid.uuid4())
+    session.add(registration)
+    session.flush()
+    client = ObservingClient()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=client
+    ).load(LoadContextRequest())
+
+    assert client.observed == [(juan.bank_id, registration.refresh_operation_id)]
+    assert "content:mm-juan" in result.text
+    assert registration.delivery_state == "ready"
+
+
+def test_a_withheld_model_whose_refresh_is_unfinished_stays_out_of_context(
+    session, tenant
+):
+    """Observing is not the same as delivering: a still-running refresh
+    leaves the model withheld and its content unread, exactly as before."""
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+    registration = _registration(tenant, model_key="juan", model_id="mm-juan", user_id=juan.id)
+    registration.delivery_state = "withheld"
+    registration.refresh_status = "pending"
+    registration.refresh_operation_id = str(uuid.uuid4())
+    session.add(registration)
+    session.flush()
+    client = ObservingClient(status="pending")
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=client
+    ).load(LoadContextRequest())
+
+    assert client.calls == []
+    assert "content:mm-juan" not in result.text
+    assert registration.delivery_state == "withheld"
+
+
 def test_context_emits_only_current_claims_from_the_selected_banks(session, tenant):
     juan = _user(tenant, "usr_juan")
     maria = _user(tenant, "usr_maria")

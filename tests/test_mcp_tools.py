@@ -1352,7 +1352,11 @@ EXPECTED_TOOLS = {
     "update_mental_model", "refresh_mental_model", "delete_mental_model",
 }
 
-TOOL_CONTRACT_SHA256 = "637dd568a63eb338fea1b14c7a0863ce32b05e5ba0d8f6c875db892d1b9bd8ad"
+# Moves whenever a tool's description, schema or annotations change. Last
+# moved when load_context stopped claiming it "performs no write of its
+# own": it now reconciles a withheld model with its finished refresh, the
+# same observation get_mental_model has always made.
+TOOL_CONTRACT_SHA256 = "7ae73e6a68b3822c6e550e281a14862bf2b1427028c7c9ba5a3f236e2903b6ff"
 
 
 def test_tool_registration_is_stable_after_module_split():

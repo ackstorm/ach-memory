@@ -8,7 +8,7 @@ from time import monotonic
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from memory import projects, working_state
+from memory import mental_model_service, projects, working_state
 from memory.auth.principal import Principal
 from memory.currentness import bank_is_withheld
 from memory.delivery import (
@@ -18,6 +18,7 @@ from memory.delivery import (
     assemble_context,
     count_tokens,
 )
+from memory.errors import DomainError
 from memory.hindsight.client import get_client
 from memory.models import MentalModelRegistration, Project, RetainedRecord
 from memory.read_context import resolve_read_bank
@@ -87,6 +88,35 @@ class ContextService:
         assert project is not None
         return LogicalBankRef(self.principal.tenant_id, "project", None, project.internal_id, project.bank_id)
 
+    def _observed_ready(self, row, bank: LogicalBankRef, remaining) -> bool:
+        """Reconcile one withheld model with its own recorded operation.
+
+        A finished upstream synthesis becomes deliverable only when
+        something observes it, and until now nothing on this path ever did:
+        `get_mental_model` was the sole caller of `observe_model_refresh`,
+        so a bank whose built-ins were still withheld delivered empty
+        standing context for ever. That is precisely what the SessionStart
+        hook does -- `ach-memory context load` and nothing else -- so on a
+        fresh bank the hook could never deliver the very models bootstrap
+        had just registered for it. Measured 2026-09-07: both built-ins sat
+        `withheld`/`pending` for 40 minutes after their refresh operations
+        had already completed upstream, and one `get_mental_model` call
+        flipped each to `ready` immediately.
+
+        Bounded and fail-open like every other phase here: skipped with no
+        time left, and an unavailable backend leaves the model withheld for
+        a later access rather than costing the caller its whole context.
+        """
+        if remaining() <= 0:
+            return False
+        try:
+            observed = mental_model_service.observe_model_refresh(
+                self.db, bank, row.model_key, client=self.client
+            )
+        except DomainError:
+            return False
+        return observed.delivery_state == "ready"
+
     def _set_statement_timeout(self, remaining_seconds: float) -> None:
         """A transaction-local backstop for a query that turns out to be
         slower than expected -- `0` means "no timeout" to PostgreSQL, the
@@ -145,8 +175,11 @@ class ContextService:
                 if (
                     bank is None
                     or row.scope in withheld_scopes
-                    or row.delivery_state != "ready"
                     or not row.upstream_model_id
+                ):
+                    continue
+                if row.delivery_state != "ready" and not self._observed_ready(
+                    row, bank, remaining
                 ):
                     continue
                 jobs.append((row, bank))
