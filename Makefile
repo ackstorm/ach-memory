@@ -94,6 +94,8 @@ PLUGIN_MANIFESTS = .claude-plugin/marketplace.json \
 # as context that quietly failed to arrive.
 TAG_PINNED = plugins/claude-code/.mcp.json \
 	plugins/shared/scripts/session-start.sh \
+	plugins/claude-code/scripts/session-start.sh \
+	plugins/codex/scripts/session-start.sh \
 	README.md
 
 .PHONY: release-bump

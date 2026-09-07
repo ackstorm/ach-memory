@@ -454,3 +454,63 @@ def test_the_skill_requires_english_at_write_time(host: str) -> None:
     """
     text = (ROOT / "plugins" / host / "skills" / "ach-memory" / "SKILL.md").read_text().lower()
     assert "write every memory in english" in text
+
+
+# Every file a host plugin ships that also lives in plugins/shared, as
+# (shared source, per-host copies). The tree used to express this with
+# symlinks, which is what broke: see the two tests below.
+SHARED_COPIES = (
+    ("activation.txt", ("claude-code", "codex", "opencode", "pi"), "activation.txt"),
+    ("activation.subagent.json", ("claude-code", "codex"), "activation.subagent.json"),
+    ("scripts/session-start.sh", ("claude-code", "codex"), "scripts/session-start.sh"),
+    ("scripts/subagent-start.sh", ("claude-code", "codex"), "scripts/subagent-start.sh"),
+    (
+        "ach-memory/SKILL.md",
+        ("claude-code", "codex", "opencode", "pi"),
+        "skills/ach-memory/SKILL.md",
+    ),
+    (
+        "ach-memory/references/curation.md",
+        ("claude-code", "codex", "opencode", "pi"),
+        "skills/ach-memory/references/curation.md",
+    ),
+)
+
+
+def test_no_plugin_ships_a_symlink() -> None:
+    """A shipped symlink survives or vanishes at the host's discretion.
+
+    Every shared file used to be a symlink into plugins/shared. Claude's
+    installer resolves those; Codex's drops them, so the whole codex plugin
+    arrived as two files -- hooks.json and plugin.json -- with no
+    activation.txt, no SKILL.md and no hook scripts. Every session started
+    with `hook exited with code 127` and the skill did not exist at all
+    (measured on an installed 0.4.5, 2026-09-07).
+
+    Content is duplicated instead, and the test below is what keeps the
+    copies honest. A duplicate a test compares is safer than a link whose
+    survival is a per-host implementation detail nobody agreed to.
+    """
+    linked = [
+        str(path.relative_to(ROOT))
+        for path in sorted((ROOT / "plugins").rglob("*"))
+        if path.is_symlink()
+    ]
+
+    assert linked == []
+
+
+@pytest.mark.parametrize("source, hosts, relative_path", SHARED_COPIES)
+def test_every_host_ships_the_same_shared_file(source, hosts, relative_path) -> None:
+    """The copies stay byte-identical to plugins/shared, or this fails.
+
+    This is the whole cost of dropping the symlinks: edit the shared file and
+    the copies have to follow. Failing here is the reminder, and it fails on
+    the first test run rather than shipping four hosts that disagree.
+    """
+    expected = (ROOT / "plugins" / "shared" / source).read_bytes()
+
+    for host in hosts:
+        copy = ROOT / "plugins" / host / relative_path
+        assert copy.is_file(), f"{host} is missing {relative_path}"
+        assert copy.read_bytes() == expected, f"{host}/{relative_path} drifted"

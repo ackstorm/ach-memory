@@ -26,7 +26,12 @@ VERSIONED_MANIFESTS = (
 # git+...@vX.Y.Z), which release-bump rewrites alongside the manifests.
 TAG_PINNED = (
     "plugins/claude-code/.mcp.json",
+    # The hook script is committed once per host, not symlinked: a shipped
+    # symlink is dropped by Codex's plugin installer, so every copy states
+    # the tag and every copy has to be rewritten.
     "plugins/shared/scripts/session-start.sh",
+    "plugins/claude-code/scripts/session-start.sh",
+    "plugins/codex/scripts/session-start.sh",
     "README.md",
 )
 
