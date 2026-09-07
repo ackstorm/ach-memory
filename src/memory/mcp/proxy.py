@@ -151,7 +151,12 @@ def resolve_workspace_context(cwd: str | None = None) -> str | None:
 # bare, load_context would otherwise resolve no project and silently return
 # user-only standing context -- no error, and nothing in `omissions`.
 _SCOPELESS_TOOLS = frozenset(
-    {"start_working_session", "set_working_state", "load_context"}
+    {
+        "start_working_session",
+        "set_working_state",
+        "clear_working_state",
+        "load_context",
+    }
 )
 # Tools that must never be sent a git_locator: recall and memory_history are
 # not bound to one repository, and load_context has no such parameter to fill.

@@ -198,6 +198,48 @@ def test_a_bare_load_context_still_resolves_this_project():
     assert arguments == {"project_slug": "acme-api", "workspace_id": "W"}
 
 
+@pytest.mark.anyio
+async def test_the_bridge_fills_a_bare_clear_working_state_call():
+    """Same scope-less shape as load_context, and the same filler. This one
+    takes a git_locator, so both halves go in together."""
+    seen = []
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        seen.append(message)
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": message["id"], "result": {}}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge(
+            "https://memory.test/mcp/",
+            "secret",
+            slug="acme-api",
+            locator="git@github.com:acme/api.git",
+            workspace_id="W",
+            client=client,
+        )
+        await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": "cws-1",
+                "method": "tools/call",
+                "params": {
+                    "name": "clear_working_state",
+                    "arguments": {"session_id": "s1"},
+                },
+            }
+        )
+
+    assert seen[0]["params"]["arguments"] == {
+        "session_id": "s1",
+        "project_slug": "acme-api",
+        "git_locator": "git@github.com:acme/api.git",
+        "workspace_id": "W",
+    }
+
+
 def test_fill_sends_the_slug_and_the_locator_together():
     """Both, because they do different jobs: the slug resolves the project and
     the locator binds it to the repository on first touch (§8.3) and refuses a
