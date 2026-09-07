@@ -146,8 +146,16 @@ def resolve_workspace_context(cwd: str | None = None) -> str | None:
     return f"ws_{digest}"
 
 
-_WORKING_STATE_TOOLS = frozenset({"start_working_session", "set_working_state"})
-_READ_TOOLS = frozenset({"recall", "memory_history"})
+# Tools that carry no `scope` argument at all, so fill_project_arguments' scope
+# gate can never fire for them and they have to be filled directly. Called
+# bare, load_context would otherwise resolve no project and silently return
+# user-only standing context -- no error, and nothing in `omissions`.
+_SCOPELESS_TOOLS = frozenset(
+    {"start_working_session", "set_working_state", "load_context"}
+)
+# Tools that must never be sent a git_locator: recall and memory_history are
+# not bound to one repository, and load_context has no such parameter to fill.
+_READ_TOOLS = frozenset({"recall", "memory_history", "load_context"})
 
 
 def fill_working_state_arguments(
@@ -158,7 +166,7 @@ def fill_working_state_arguments(
 ) -> None:
     """Inject project/locator/workspace into a bare working-state call, in
     place. Explicit values from the model always win -- same reasoning as
-    fill_project_arguments, just with no `scope` gate: these two tools carry
+    fill_project_arguments, just with no `scope` gate: these tools carry
     no `scope` argument at all.
 
     project_slug and git_locator are filled only together, from the SAME
@@ -269,16 +277,13 @@ class StdioHttpBridge:
             arguments = params.get("arguments") if isinstance(params, dict) else None
             if isinstance(arguments, dict):
                 tool_name = params.get("name") if isinstance(params, dict) else None
-                if tool_name in _WORKING_STATE_TOOLS:
+                locator = None if tool_name in _READ_TOOLS else self._locator
+                if tool_name in _SCOPELESS_TOOLS:
                     fill_working_state_arguments(
-                        arguments, self._slug, self._locator, self._workspace_id
+                        arguments, self._slug, locator, self._workspace_id
                     )
                 else:
-                    fill_project_arguments(
-                        arguments,
-                        self._slug,
-                        None if tool_name in _READ_TOOLS else self._locator,
-                    )
+                    fill_project_arguments(arguments, self._slug, locator)
 
                 if self._project_bootstrap_error and arguments.get("scope") == "project":
                     yield _project_bootstrap_error_reply(

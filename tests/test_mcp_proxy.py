@@ -188,6 +188,16 @@ def test_fill_working_state_arguments(arguments, expected):
     assert arguments == expected
 
 
+def test_a_bare_load_context_still_resolves_this_project():
+    """load_context has no `scope` argument, so the scope-gated filler never
+    fires for it. Left unfilled the server resolves no project and answers
+    with user-only context -- silently, with an empty `omissions`. It takes
+    no git_locator, so only the slug and the workspace go in."""
+    arguments = {}
+    fill_working_state_arguments(arguments, "acme-api", None, "W")
+    assert arguments == {"project_slug": "acme-api", "workspace_id": "W"}
+
+
 def test_fill_sends_the_slug_and_the_locator_together():
     """Both, because they do different jobs: the slug resolves the project and
     the locator binds it to the repository on first touch (§8.3) and refuses a
@@ -309,6 +319,46 @@ async def test_stdio_http_bridge_forwards_protocol_and_injects_project_context()
     assert seen[2][1]["authorization"] == "Bearer secret"
     assert "application/json" in seen[2][1]["accept"]
     assert "text/event-stream" in seen[2][1]["accept"]
+
+
+@pytest.mark.anyio
+async def test_the_bridge_fills_a_bare_load_context_call():
+    """The regression this guards: load_context carries no `scope`, so the
+    scope-gated filler skipped it and the call reached the server with no
+    slug. context_service builds the project section only when one is
+    present, so the agent got user-only context back with an empty
+    `omissions` -- a silent half-answer. It takes no git_locator."""
+    seen = []
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        seen.append(message)
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": message["id"], "result": {}}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
+        bridge = StdioHttpBridge(
+            "https://memory.test/mcp/",
+            "secret",
+            slug="acme-api",
+            locator="git@github.com:acme/api.git",
+            workspace_id="W",
+            client=client,
+        )
+        await bridge.forward(
+            {
+                "jsonrpc": "2.0",
+                "id": "ctx-1",
+                "method": "tools/call",
+                "params": {"name": "load_context", "arguments": {}},
+            }
+        )
+
+    assert seen[0]["params"]["arguments"] == {
+        "project_slug": "acme-api",
+        "workspace_id": "W",
+    }
 
 
 @pytest.mark.anyio
