@@ -145,6 +145,16 @@ class ContextService:
         project_bank = self._bank("project", project) if project else None
         sections: list[DeliverySection] = []
         omissions: list[DeliveryOmission] = []
+        if project_bank is None:
+            # Say so rather than just returning the user half. A caller that
+            # asked bare cannot otherwise tell "this workspace has no project"
+            # from "the project section was dropped" -- and an empty
+            # `omissions` actively asserts nothing is missing. resolve() with
+            # create=False raises for an unknown slug, so reaching here always
+            # means the request carried none.
+            omissions.append(
+                DeliveryOmission(key="project", reason="no_project_resolved")
+            )
         banks = [("user", user_bank)]
         if project_bank is not None:
             banks.append(("project", project_bank))

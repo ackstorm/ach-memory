@@ -425,6 +425,9 @@ def test_model_reads_receive_the_remaining_deadline_and_do_not_hold_startup(
     assert {(item.key, item.reason) for item in result.omissions} == {
         ("slow", "model_unavailable"),
         ("active-claims", "deadline_exceeded"),
+        # This request carries no project_slug, so the project half is
+        # genuinely absent and now says so.
+        ("project", "no_project_resolved"),
     }
 
 
@@ -506,6 +509,26 @@ def test_no_budget_left_for_the_registry_query_still_emits_a_machine_readable_om
     ).load(LoadContextRequest())
 
     assert ("always-in-context-models", "deadline_exceeded") in [
+        (item.key, item.reason) for item in result.omissions
+    ]
+
+
+def test_a_request_with_no_project_says_the_project_half_is_absent(
+    session, tenant
+):
+    """An empty `omissions` asserts nothing is missing, so a bare request that
+    resolves no project must not answer with the user half alone and say
+    nothing. The caller cannot otherwise tell an unscoped workspace from a
+    project section that was dropped."""
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest())
+
+    assert ("project", "no_project_resolved") in [
         (item.key, item.reason) for item in result.omissions
     ]
 
