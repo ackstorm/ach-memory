@@ -6,7 +6,7 @@ import pytest
 from memory import ids
 from memory.auth.principal import Principal
 from memory.bootstrap import BootstrapRequest, bootstrap
-from memory.builtin_models import USER_CONTEXT_V1
+from memory.builtin_models import USER_CONTEXT
 from memory.errors import CurationNeedsOperator, ProjectNotFound
 from memory.hindsight.client import HindsightClient
 from memory.mental_model_service import reconcile_builtin
@@ -139,14 +139,14 @@ def disabled_builtin(session, principal):
         session,
         bank,
         origin="builtin",
-        model_key=USER_CONTEXT_V1.key,
-        name=USER_CONTEXT_V1.name,
-        source_query=USER_CONTEXT_V1.source_query,
-        source_tags=list(USER_CONTEXT_V1.source_tags),
-        tags_match=USER_CONTEXT_V1.tags_match,
-        max_tokens=USER_CONTEXT_V1.max_tokens,
-        trigger=dict(USER_CONTEXT_V1.trigger),
-        builtin_key=USER_CONTEXT_V1.key,
+        model_key=USER_CONTEXT.key,
+        name=USER_CONTEXT.name,
+        source_query=USER_CONTEXT.source_query,
+        source_tags=list(USER_CONTEXT.source_tags),
+        tags_match=USER_CONTEXT.tags_match,
+        max_tokens=USER_CONTEXT.max_tokens,
+        trigger=dict(USER_CONTEXT.trigger),
+        builtin_key=USER_CONTEXT.key,
         definition_version=1,
         always_in_context=False,
         delivery_state="ready",
@@ -159,7 +159,7 @@ def disabled_builtin(session, principal):
 @pytest.fixture
 def v2_definition():
     return replace(
-        USER_CONTEXT_V1, version=2, source_query="Summarize durable user context, v2."
+        USER_CONTEXT, version=2, source_query="Summarize durable user context, v2."
     )
 
 
@@ -182,14 +182,14 @@ def test_a_lifecycle_disabled_builtin_is_never_recreated_or_reconciled(session, 
         session,
         bank,
         origin="builtin",
-        model_key=USER_CONTEXT_V1.key,
-        name=USER_CONTEXT_V1.name,
-        source_query=USER_CONTEXT_V1.source_query,
-        source_tags=list(USER_CONTEXT_V1.source_tags),
-        tags_match=USER_CONTEXT_V1.tags_match,
-        max_tokens=USER_CONTEXT_V1.max_tokens,
-        trigger=dict(USER_CONTEXT_V1.trigger),
-        builtin_key=USER_CONTEXT_V1.key,
+        model_key=USER_CONTEXT.key,
+        name=USER_CONTEXT.name,
+        source_query=USER_CONTEXT.source_query,
+        source_tags=list(USER_CONTEXT.source_tags),
+        tags_match=USER_CONTEXT.tags_match,
+        max_tokens=USER_CONTEXT.max_tokens,
+        trigger=dict(USER_CONTEXT.trigger),
+        builtin_key=USER_CONTEXT.key,
         definition_version=1,
         always_in_context=True,
         delivery_state="ready",
@@ -197,9 +197,9 @@ def test_a_lifecycle_disabled_builtin_is_never_recreated_or_reconciled(session, 
     )
     session.commit()
 
-    result = reconcile_builtin(session, bank, USER_CONTEXT_V1, client=hindsight)
+    result = reconcile_builtin(session, bank, USER_CONTEXT, client=hindsight)
 
-    assert result.model_key == USER_CONTEXT_V1.key
+    assert result.model_key == USER_CONTEXT.key
     hindsight.create_mental_model.assert_not_called()
     hindsight.update_mental_model.assert_not_called()
 
@@ -211,7 +211,7 @@ def test_reconcile_builtin_is_a_noop_when_already_current(session, principal, hi
             principal.tenant_id, "user", principal.user_id, None,
             session.get(User, principal.user_id).bank_id,
         ),
-        USER_CONTEXT_V1,
+        USER_CONTEXT,
         client=hindsight,
     )
     second = reconcile_builtin(
@@ -220,7 +220,7 @@ def test_reconcile_builtin_is_a_noop_when_already_current(session, principal, hi
             principal.tenant_id, "user", principal.user_id, None,
             session.get(User, principal.user_id).bank_id,
         ),
-        USER_CONTEXT_V1,
+        USER_CONTEXT,
         client=hindsight,
     )
 

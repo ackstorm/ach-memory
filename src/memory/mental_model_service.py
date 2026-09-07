@@ -40,8 +40,13 @@ logger = logging.getLogger("memory.mental_model_service")
 REQUIRED_SOURCE_TAGS = frozenset({"schema:ach-retain-v1", "validity:indefinite"})
 MIN_MAX_TOKENS = 256
 REPAIR_BACKOFF_SECONDS = 60
-USER_ALWAYS_IN_CONTEXT_BUDGET = 1024
-PROJECT_ALWAYS_IN_CONTEXT_BUDGET = 2048
+# Room for a built-in at its full budget plus a couple of custom models, on
+# each side, inside the 5120-token delivery ceiling in `delivery.py`. Raised
+# with the built-ins themselves: 512 tokens of user context was already too
+# small for a bank with real content, and the whole section was being dropped
+# for overrunning it.
+USER_ALWAYS_IN_CONTEXT_BUDGET = 2560
+PROJECT_ALWAYS_IN_CONTEXT_BUDGET = 2560
 
 # Defaults returned by Hindsight 0.9.2 when a create request omits the
 # trigger. ACH stores that manual policy as ``{}``; normalizing both sides

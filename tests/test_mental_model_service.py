@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from memory import ids, model_registry
-from memory.builtin_models import USER_CONTEXT_V1
+from memory.builtin_models import USER_CONTEXT
 from memory.errors import (
     BuiltinModelImmutable,
     ContextBudgetExceeded,
@@ -110,7 +110,7 @@ def five_custom_models(session, bank):
 
 @pytest.fixture
 def user_bank_with_builtin(session, bank):
-    definition = USER_CONTEXT_V1
+    definition = USER_CONTEXT
     model_registry.register_model(
         session,
         bank,
@@ -525,7 +525,7 @@ def test_update_cannot_change_a_builtin(session, user_bank_with_builtin, hindsig
         update_model(
             session,
             user_bank_with_builtin,
-            USER_CONTEXT_V1.key,
+            USER_CONTEXT.key,
             CustomModelUpdateRequest(name="renamed", operation_id=str(uuid4())),
             client=hindsight,
         )
@@ -567,7 +567,7 @@ def test_delete_reuse_of_an_operation_id_against_an_already_deleted_model_still_
 def test_delete_a_builtin_is_rejected(session, user_bank_with_builtin, hindsight):
     with pytest.raises(BuiltinModelImmutable):
         delete_model(
-            session, user_bank_with_builtin, USER_CONTEXT_V1.key,
+            session, user_bank_with_builtin, USER_CONTEXT.key,
             operation_id=str(uuid4()), client=hindsight,
         )
 

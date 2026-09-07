@@ -17,10 +17,10 @@ class BuiltinModelDefinition:
     always_in_context: bool = True
 
 
-USER_CONTEXT_V1 = BuiltinModelDefinition(
+USER_CONTEXT = BuiltinModelDefinition(
     key="user-context",
     scope="user",
-    version=1,
+    version=2,
     name="User Context",
     source_query=(
         "Summarize durable user context that an authorized agent should always know. "
@@ -33,7 +33,7 @@ USER_CONTEXT_V1 = BuiltinModelDefinition(
     ),
     source_tags=("schema:ach-retain-v1", "validity:indefinite"),
     tags_match="all",
-    max_tokens=512,
+    max_tokens=2048,
     trigger={
         "mode": "delta",
         "refresh_after_consolidation": True,
@@ -42,10 +42,10 @@ USER_CONTEXT_V1 = BuiltinModelDefinition(
     always_in_context=True,
 )
 
-PROJECT_CONTEXT_V1 = BuiltinModelDefinition(
+PROJECT_CONTEXT = BuiltinModelDefinition(
     key="project-context",
     scope="project",
-    version=1,
+    version=2,
     name="Project Context",
     source_query=(
         "Summarize durable, impersonal project context that is not cheaply rediscoverable "
@@ -58,7 +58,7 @@ PROJECT_CONTEXT_V1 = BuiltinModelDefinition(
     ),
     source_tags=("schema:ach-retain-v1", "validity:indefinite"),
     tags_match="all",
-    max_tokens=1024,
+    max_tokens=2048,
     trigger={
         "mode": "delta",
         "refresh_after_consolidation": True,

@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from memory.auth.principal import Principal
-from memory.builtin_models import PROJECT_CONTEXT_V1, USER_CONTEXT_V1
+from memory.builtin_models import PROJECT_CONTEXT, USER_CONTEXT
 from memory.context_service import ContextService
 from memory.hindsight.client import HindsightClient
 from memory.models import (
@@ -137,7 +137,7 @@ def _register_builtin(
     from memory import mental_model_service
 
     scope = "user" if user_id else "project"
-    definition = USER_CONTEXT_V1 if scope == "user" else PROJECT_CONTEXT_V1
+    definition = USER_CONTEXT if scope == "user" else PROJECT_CONTEXT
     bank = LogicalBankRef(tenant, scope, user_id, project_internal_id, bank_id)
     mental_model_service.reconcile_builtin(session, bank, definition, client=client)
     session.commit()

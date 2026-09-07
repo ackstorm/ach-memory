@@ -293,12 +293,12 @@ def test_delete_requires_operation_id(client, juan):
 
 def test_builtin_cannot_be_deleted_by_custom_route(client, juan, session, tenant):
     from memory import model_registry
-    from memory.builtin_models import USER_CONTEXT_V1
+    from memory.builtin_models import USER_CONTEXT
     from memory.retained_records import LogicalBankRef
 
     user = session.get(User, juan["user_id"])
     bank = LogicalBankRef(tenant, "user", user.id, None, user.bank_id)
-    definition = USER_CONTEXT_V1
+    definition = USER_CONTEXT
     model_registry.register_model(
         session,
         bank,

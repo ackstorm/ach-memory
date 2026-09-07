@@ -18,7 +18,7 @@ import pytest
 
 from memory.auth.principal import Principal
 from memory.bootstrap import BootstrapRequest, bootstrap
-from memory.builtin_models import USER_CONTEXT_V1
+from memory.builtin_models import USER_CONTEXT
 from memory.errors import ContextBudgetExceeded, MentalModelNotFound, MentalModelQuotaExceeded
 from memory.hindsight.client import HindsightClient
 from memory.mental_model_service import (
@@ -127,7 +127,7 @@ def test_governed_mental_model_lifecycle_against_disposable_hindsight(
     # bootstrap creates exactly one built-in and a second bootstrap is idempotent
     first = bootstrap(session, principal, BootstrapRequest(), client=live_client)
     second = bootstrap(session, principal, BootstrapRequest(), client=live_client)
-    assert first.user_model.model_key == second.user_model.model_key == USER_CONTEXT_V1.key
+    assert first.user_model.model_key == second.user_model.model_key == USER_CONTEXT.key
     assert first.user_model.delivery_state in {"ready", "withheld"}
 
     # five custom models succeed while the sixth fails before an upstream request

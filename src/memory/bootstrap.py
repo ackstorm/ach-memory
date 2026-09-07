@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from memory import audit, banks, mental_model_service, projects
 from memory.auth.principal import Principal
-from memory.builtin_models import PROJECT_CONTEXT_V1, USER_CONTEXT_V1
+from memory.builtin_models import PROJECT_CONTEXT, USER_CONTEXT
 from memory.mental_model_service import MentalModelView
 from memory.models import ProjectSlug
 from memory.retain_strategy import ensure_exact_retain_strategy
@@ -66,7 +66,7 @@ def bootstrap(
     user_model = None
     if request.builtins_enabled:
         user_model = mental_model_service.reconcile_builtin(
-            db, user_bank, USER_CONTEXT_V1, client=client
+            db, user_bank, USER_CONTEXT, client=client
         )
 
     project_model = None
@@ -106,7 +106,7 @@ def bootstrap(
         ensure_exact_retain_strategy(client, project_bank.bank_id)
         if request.builtins_enabled:
             project_model = mental_model_service.reconcile_builtin(
-                db, project_bank, PROJECT_CONTEXT_V1, client=client
+                db, project_bank, PROJECT_CONTEXT, client=client
             )
         project_status = "ready"
 
