@@ -22,6 +22,14 @@ VERSIONED_MANIFESTS = (
     "plugins/codex/.codex-plugin/plugin.json",
 )
 
+# Every file pinning an install source to a release tag (uvx --from
+# git+...@vX.Y.Z), which release-bump rewrites alongside the manifests.
+TAG_PINNED = (
+    "plugins/claude-code/.mcp.json",
+    "plugins/shared/scripts/session-start.sh",
+    "README.md",
+)
+
 
 def _release_fixture(tmp_path: Path) -> Path:
     """Create the smallest safe tree on which release-bump may operate."""
@@ -31,9 +39,7 @@ def _release_fixture(tmp_path: Path) -> Path:
         "deploy/helm/ach-memory/Chart.yaml",
         "deploy/helm/ach-memory/values.yaml",
         "uv.lock",
-        # The claude plugin pins its install source to a git tag
-        # (uvx --from git+...@vX.Y.Z), which release-bump rewrites too.
-        "plugins/claude-code/.mcp.json",
+        *TAG_PINNED,
         *VERSIONED_MANIFESTS,
     ):
         source = REPO_ROOT / relative_path
@@ -85,6 +91,10 @@ def test_release_bump_synchronizes_bare_versions_without_pinning_values_tag(tmp_
     for relative_path in VERSIONED_MANIFESTS:
         assert (
             _read_version(root / relative_path, r'"version": "([^"]+)"') == "1.2.3"
+        ), relative_path
+    for relative_path in TAG_PINNED:
+        assert (
+            "ach-memory@v1.2.3" in (root / relative_path).read_text()
         ), relative_path
 
 
@@ -243,6 +253,53 @@ def test_every_manifest_states_the_version_in_pyproject():
         assert (
             _read_version(REPO_ROOT / relative_path, r'"version": "([^"]+)"') == expected
         ), relative_path
+
+
+def test_every_tag_pin_in_the_tree_states_the_version_in_pyproject():
+    """The same drift as the manifests, in the files that name a git tag.
+
+    Scanning every tracked file rather than trusting the tuple: a pin that
+    release-bump does not know about installs the release it was written
+    against for ever. `plugins/shared/scripts/session-start.sh` was four
+    releases behind on v0.4.0 before this test existed, and because that hook
+    runs `ach-memory context load` under `2>/dev/null || true` the only
+    symptom was standing context that silently never arrived.
+    """
+    expected = _read_version(REPO_ROOT / "pyproject.toml", r'^version = "([^"]+)"')
+    pin = re.compile(r"ach-memory@v(\d+\.\d+\.\d+)")
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout.decode()
+    found = {}
+    for relative_path in tracked.split("\0"):
+        if not relative_path or relative_path == "tests/test_release_flow.py":
+            continue
+        path = REPO_ROOT / relative_path
+        # Each host plugin symlinks the shared hook, so following those would
+        # report one stale pin three times and demand three registrations for
+        # the single file release-bump has to rewrite.
+        if path.is_symlink():
+            continue
+        try:
+            content = path.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        versions = set(pin.findall(content))
+        if versions:
+            found[relative_path] = versions
+
+    assert set(found) == set(TAG_PINNED), (
+        f"unregistered: {sorted(set(found) - set(TAG_PINNED))}; "
+        f"stale: {sorted(set(TAG_PINNED) - set(found))}"
+    )
+    for relative_path, versions in found.items():
+        assert versions == {expected}, f"{relative_path} pins {sorted(versions)}"
+
+    assert "$(TAG_PINNED)" in "\n".join(_make_recipe("release-bump"))
 
 
 def test_release_bump_updates_every_versioned_manifest_the_repo_has():

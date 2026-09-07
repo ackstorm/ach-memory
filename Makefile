@@ -86,6 +86,16 @@ PLUGIN_MANIFESTS = .claude-plugin/marketplace.json \
 	plugins/claude-code/.claude-plugin/plugin.json \
 	plugins/codex/.codex-plugin/plugin.json
 
+# Every file that pins an install source to a release tag: uvx --from
+# git+...@vX.Y.Z. A pin left out of the rewrite keeps installing an old
+# release for ever, and nothing else moves it. The SessionStart hook sat on
+# v0.4.0 through four releases exactly this way -- it loads standing context
+# under `2>/dev/null || true`, so the stale version could only ever show up
+# as context that quietly failed to arrive.
+TAG_PINNED = plugins/claude-code/.mcp.json \
+	plugins/shared/scripts/session-start.sh \
+	README.md
+
 .PHONY: release-bump
 release-bump: ## Update release metadata (VERSION=X.Y.Z)
 	$(require_release_version)
@@ -93,10 +103,11 @@ release-bump: ## Update release metadata (VERSION=X.Y.Z)
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^([[:space:]]*)"version": "[^"]*"/\1"version": "$(VERSION)"/' $(PLUGIN_MANIFESTS)
-	# The claude plugin pins its install source to a tag: uvx --from
-	# git+...@vX.Y.Z. A stale tag here means every claude install of the new
-	# release keeps running the previous one's proxy.
-	sed -i -E 's|(ach-memory@v)[0-9]+\.[0-9]+\.[0-9]+|\1$(VERSION)|' plugins/claude-code/.mcp.json
+	# A stale tag in any of these means the new release keeps running the
+	# previous one's proxy -- for the claude plugin's install source, for the
+	# context load the SessionStart hook shells out to, and for the config
+	# README tells a new user to copy.
+	sed -i -E 's|(ach-memory@v)[0-9]+\.[0-9]+\.[0-9]+|\1$(VERSION)|' $(TAG_PINNED)
 	# uv.lock names the root package too. Left out, v0.2.0 was tagged with a
 	# lockfile still saying 0.1.2, and `uv run --frozen` reports that stale
 	# version through importlib.metadata -- which is what `ach-memory init`
@@ -110,8 +121,10 @@ release-bump: ## Update release metadata (VERSION=X.Y.Z)
 		grep -qE '^[[:space:]]*"version": "$(VERSION)"' "$$manifest" \
 			|| { echo "FAIL: $$manifest was not updated." >&2; exit 1; }; \
 	done
-	@grep -q 'ach-memory@v$(VERSION)' plugins/claude-code/.mcp.json \
-		|| { echo "FAIL: claude plugin git tag was not updated." >&2; exit 1; }
+	@for pinned in $(TAG_PINNED); do \
+		grep -q 'ach-memory@v$(VERSION)' "$$pinned" \
+			|| { echo "FAIL: $$pinned still pins an old release tag." >&2; exit 1; }; \
+	done
 	@grep -qx 'version = "$(VERSION)"' uv.lock \
 		|| { echo "FAIL: uv.lock was not updated." >&2; exit 1; }
 
