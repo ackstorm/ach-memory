@@ -1,6 +1,6 @@
 ---
 name: ach-memory
-description: ALWAYS ACTIVE — durable, exact user and project memory mediated by the agent.
+description: Read this before the first `recall` or `retain` of a session. Durable user and project memory: what to store, which scope and type it takes, what never to store, and when to read before you act.
 ---
 
 # ach-memory

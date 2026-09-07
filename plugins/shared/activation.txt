@@ -1,3 +1,5 @@
+Load the ach-memory skill before your first `recall` or `retain`. It is the operating manual for this memory: which scope and `memory_type` a claim takes, what must never be stored, and when to read before acting. Calling these tools without it is how memory gets written wrong.
+
 ach-memory holds durable user and project context across sessions and is the system of record for prior decisions. Anything worth remembering goes through `retain`; a host memory directory or MEMORY.md is invisible here.
 
 Standing context follows:

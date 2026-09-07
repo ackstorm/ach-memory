@@ -28,6 +28,16 @@ def _pyproject_version() -> str:
 NATIVE = ("claude-code", "codex")
 ADAPTED = ("opencode", "pi")
 ACTIVATION = (
+    # The skill is only ever loaded because the agent decides to. Nothing
+    # activates it: "ALWAYS ACTIVE" in its description named a mechanism that
+    # does not exist, and a host lists the description without acting on it.
+    # So the activation text asks, first line, before anything it says about
+    # the memory itself -- the rules for scope, type and what never to store
+    # are worth nothing if they are read after the first retain.
+    "Load the ach-memory skill before your first `recall` or `retain`. It is the operating "
+    "manual for this memory: which scope and `memory_type` a claim takes, what must never be "
+    "stored, and when to read before acting. Calling these tools without it is how memory gets "
+    "written wrong.\n\n"
     "ach-memory holds durable user and project context across sessions and is the system of record "
     "for prior decisions. Anything worth remembering goes through `retain`; a host memory directory "
     "or MEMORY.md is invisible here.\n\n"
