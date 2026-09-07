@@ -151,3 +151,15 @@ smoke: ## REST + MCP smoke against a running stack (needs MEMORY_MASTER_KEY)
 .PHONY: e2e
 e2e: ## Isolated full E2E with MockLLM (no external LLM or credentials)
 	./scripts/e2e-compose.sh
+
+.PHONY: bench
+bench: ## Capability differential vs vanilla Hindsight (MockLLM, deterministic)
+	./scripts/bench-compose.sh scripts/bench.py
+
+# Not part of `verify`, and never will be: it spends real model tokens and
+# its numbers move between runs. Quality is reported as mean +/- stdev over
+# BENCH_REPEATS runs precisely because a single run of an LLM-backed
+# retrieval benchmark is an anecdote.
+.PHONY: bench-quality
+bench-quality: ## Retrieval quality vs vanilla Hindsight (REAL LLM, costs tokens)
+	BENCH_REAL_LLM=1 ./scripts/bench-compose.sh scripts/bench_quality.py
