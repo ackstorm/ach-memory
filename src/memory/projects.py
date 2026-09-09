@@ -1,11 +1,13 @@
 from dataclasses import dataclass
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from memory import audit, ids
 from memory.auth.principal import Principal
+from memory.config import get_settings
 from memory.errors import (
     GroupNotFound,
     InvalidOwnerType,
@@ -13,10 +15,11 @@ from memory.errors import (
     ProjectLocatorMismatch,
     ProjectNotFound,
     ProjectSlugConflict,
+    RateLimited,
     UserNotFound,
 )
 from memory.identifiers import reject_control_characters
-from memory.models import Group, GroupMember, Project, ProjectSlug, User
+from memory.models import AuditEvent, Group, GroupMember, Project, ProjectSlug, User
 from memory.slugs import canonical_locator, normalize_slug
 
 
@@ -209,6 +212,39 @@ def resolve(
     return Resolution(project, current_slug, resolved_from)
 
 
+def _check_creation_rate_limit(db: Session, principal: Principal) -> None:
+    """A creation is far more expensive than an ordinary write -- a real
+    project row, a Hindsight bank, a retain strategy and a built-in model --
+    so it gets its own ceiling, counted from the audit trail rather than
+    `ratelimit.Limiter` (in-process, per-replica) or a `projects` row count
+    (bypassable: transfer a project to a group and the owner-scoped count
+    drops). `AuditEvent.action == "project.create"` is written for every
+    creation regardless of caller (see the audit fix this rate limit needs),
+    so it is the one count nothing can dodge or rewrite.
+
+    Keyed by `actor_key_id`, same identity `ratelimit.check` already uses --
+    None only for the master key, which then shares one bucket exactly like
+    its write-rate-limit counterpart.
+
+    No composite index covers (tenant_id, actor_key_id, action, created_at)
+    today; AuditEvent only indexes those columns individually. Left alone
+    here rather than adding a migration this task doesn't otherwise need.
+    """
+    settings = get_settings()
+    now = db.execute(select(func.now())).scalar_one()
+    cutoff = now - timedelta(seconds=settings.project_creation_window_seconds)
+    count = db.execute(
+        select(func.count()).select_from(AuditEvent).where(
+            AuditEvent.tenant_id == principal.tenant_id,
+            AuditEvent.actor_key_id == principal.credential_id,
+            AuditEvent.action == "project.create",
+            AuditEvent.created_at > cutoff,
+        )
+    ).scalar_one()
+    if count >= settings.project_creation_limit:
+        raise RateLimited("too many project creations for this credential")
+
+
 def create(
     db: Session,
     principal: Principal,
@@ -224,6 +260,7 @@ def create(
     and owner, so a uniqueness race is reported back as PROJECT_SLUG_CONFLICT
     rather than silently resolved by attaching to whoever won it.
     """
+    _check_creation_rate_limit(db, principal)
     slug = normalize_slug(slug)
     if git_locator:
         # Same canonicalization as resolve()'s comparison, so a locator

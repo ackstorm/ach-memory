@@ -523,13 +523,15 @@ def test_patch_rename_and_locator_together_apply_both_and_audit_both(
     # The `juan` fixture itself writes a `user.create` audit event (a master
     # key provisioning the test user) -- filtered out here since this test
     # pins the ORDER of the two project-scoped events this PATCH writes, not
-    # the fixture's own setup noise.
+    # the fixture's own setup noise. `project.create` IS pinned: every
+    # creation is audited now, not only a master key's.
     events = [
         (e.action, e.resource)
         for e in session.query(AuditEvent).all()
         if e.action.startswith("project.")
     ]
     assert events == [
+        ("project.create", "payments-api"),
         ("project.rename", "payments-api -> payments"),
         ("project.locator.update", "payments"),
     ]

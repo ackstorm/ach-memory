@@ -18,6 +18,7 @@ from memory.errors import (
     ProjectLocatorMismatch,
     ProjectNotFound,
     ProjectSlugConflict,
+    RateLimited,
     UserNotFound,
 )
 from memory.models import (
@@ -351,6 +352,24 @@ def test_every_project_creation_is_audited(session, tenant):
 
     events = session.query(AuditEvent).filter(AuditEvent.action == "project.create").all()
     assert len(events) == 1
+
+
+def test_a_user_cannot_create_more_than_the_hourly_limit(session, tenant):
+    """A hallucinated project_slug on a lazy retain creates a real project,
+    a Hindsight bank, a retain strategy and a built-in model. Banks are not
+    free, so a typo storm must not become a bank storm."""
+    _user(session, tenant, "usr_juan")
+    juan = Principal(
+        tenant_id=tenant, user_id="usr_juan", is_master=False,
+        key_id="key_juan", credential_id="key_juan",
+    )
+
+    for n in range(10):
+        projects.create(session, juan, f"acme/app-{n}", "user", "usr_juan")
+    session.flush()
+
+    with pytest.raises(RateLimited):
+        projects.create(session, juan, "acme/app-11", "user", "usr_juan")
 
 
 def test_an_unknown_owner_type_is_rejected(session, tenant):

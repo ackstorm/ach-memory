@@ -121,6 +121,12 @@ class Settings(BaseSettings):
     # bypassed with no error and no log -- a silently disabled quota.
     write_window_seconds: float = Field(default=60.0, gt=0)
 
+    # A creation is far more expensive than an ordinary write -- a real
+    # project row, a Hindsight bank, a retain strategy and a built-in model --
+    # so it gets its own, much tighter ceiling than write_limit above.
+    project_creation_limit: int = Field(default=10, ge=1)
+    project_creation_window_seconds: float = Field(default=3600.0, gt=0)
+
     # Observability. Metrics carry no identities, no project names and no
     # content -- only counts by action, scope, surface, outcome and error
     # code -- so the endpoint is unauthenticated, which is what a Prometheus
