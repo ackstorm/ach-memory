@@ -162,7 +162,17 @@ migration:
 # initialDelaySeconds/failureThreshold budget below (that pair only starts
 # counting once startupProbe has already succeeded once).
 probes:
-  path: /docs
+  # Liveness and startup answer from the process alone; readiness is the only
+  # one that touches the database. A liveness probe wired to a dependency
+  # restarts every replica during a database blip, turning a recoverable
+  # outage into a crash loop -- readiness is what pulls a pod out of the
+  # Service, and that is the correct response to an unreachable database.
+  # Replaces the former single `probes.path` (which pointed at /docs, a
+  # documentation UI that answers 200 whenever the ASGI app is alive and
+  # 404s the day someone hardens docs_url away).
+  livenessPath: /health
+  startupPath: /health
+  readinessPath: /ready
   initialDelaySeconds: 5
   periodSeconds: 10
   startupPeriodSeconds: 5

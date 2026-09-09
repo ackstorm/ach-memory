@@ -111,19 +111,19 @@ spec:
             {{- end }}
           startupProbe:
             httpGet:
-              path: {{ .Values.probes.path }}
+              path: {{ .Values.probes.startupPath }}
               port: http
             periodSeconds: {{ .Values.probes.startupPeriodSeconds }}
             failureThreshold: {{ .Values.probes.startupFailureThreshold }}
           livenessProbe:
             httpGet:
-              path: {{ .Values.probes.path }}
+              path: {{ .Values.probes.livenessPath }}
               port: http
             initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.periodSeconds }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.probes.path }}
+              path: {{ .Values.probes.readinessPath }}
               port: http
             initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.periodSeconds }}

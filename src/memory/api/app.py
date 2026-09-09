@@ -7,13 +7,14 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse, Response
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types.version import KNOWN_PROTOCOL_VERSIONS
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 # Imported unconditionally (not gated on metrics_enabled) so the collectors
 # register with the default REGISTRY and instrumentation runs regardless of
 # whether the /metrics scrape endpoint is exposed; metrics_enabled only
 # controls the endpoint below.
-from memory import activity, metrics
+from memory import activity, db, metrics
 from memory.api.observability import ObservabilityMiddleware
 from memory.auth.principal import Principal, resolve_principal
 from memory.config import get_settings
@@ -239,6 +240,38 @@ def create_app() -> FastAPI:
     app.include_router(mental_model_routes.router)
     app.include_router(working_state_routes.router)
     app.include_router(context_routes.router)
+
+    # Kubernetes probes. Unauthenticated on purpose: a kubelet carries no
+    # bearer token, and neither route discloses anything a caller who can
+    # already open the port does not know.
+    @app.get("/health", include_in_schema=False)
+    def health() -> Response:
+        """Liveness: the process is up and serving.
+
+        Deliberately touches no dependency. A liveness probe that fails on a
+        database blip restarts every replica at once, turning a recoverable
+        outage into a crash loop -- readiness is what takes a pod out of the
+        load balancer, and it is below.
+        """
+        return JSONResponse({"status": "ok"})
+
+    @app.get("/ready", include_in_schema=False)
+    def ready() -> Response:
+        """Readiness: this replica can actually serve, i.e. the database
+        answers. `get_engine` sets `pool_pre_ping`, so `connect()` validates
+        the connection rather than handing back a dead pooled one.
+
+        The body never carries the reason. This endpoint is reachable by
+        anything that can open the port, and a DSN or driver message in it is
+        a gift to whoever is scanning; the detail goes to the log instead.
+        """
+        try:
+            with db.get_engine().connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except Exception:
+            logger.warning("readiness probe failed", exc_info=True)
+            return JSONResponse({"status": "unavailable"}, status_code=503)
+        return JSONResponse({"status": "ready"})
 
     if get_settings().metrics_enabled:
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
