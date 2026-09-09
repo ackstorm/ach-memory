@@ -49,6 +49,21 @@ def link_identity(
     would add upstream latency and failure modes to ordinary auth, not just
     first-sight creation. The proxy's bootstrap pre-warm covers this bank
     before the first prompt instead.
+
+    Commits the rows it creates, and must. `db.get_session` never commits on
+    its own -- write handlers do it explicitly -- and the read routes have no
+    commit at all, so on a read-only first contact these rows were rolled
+    back at the end of the request while the response went out 200. The
+    caller then arrived with a brand-new `user_id`, and therefore a brand-new
+    `bank_id`, on EVERY subsequent request: `scope=user` resolved to a
+    different empty bank each time and their own memory was never visible to
+    them. An agent whose first call is `recall` or `load_context` -- the
+    normal case, since nobody knows whether it is their first day -- hit this
+    every time, and a `retain` first hid it by committing on its own.
+
+    Identity is not the handler's transaction to discard: it is established
+    by authentication, before the route is chosen, and it has to survive the
+    request failing.
     """
     row = db.get(ExternalIdentity, (issuer, subject))
     if row is not None:
@@ -96,4 +111,9 @@ def link_identity(
             raise
         return row.user_id, row.credential_id
 
+    # Outside the savepoint, and only on the path that actually created
+    # something: an identity seen before returned above without touching the
+    # session, and committing there would flush whatever a caller happened to
+    # have pending.
+    db.commit()
     return user_id, credential_id

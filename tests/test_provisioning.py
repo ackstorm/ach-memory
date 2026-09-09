@@ -68,3 +68,32 @@ def test_an_identity_from_another_tenant_is_refused(session, tenant):
             session, issuer="https://ach.example.com", subject="alice@example.com",
             tenant_id="other",
         )
+
+
+def test_a_read_only_first_request_keeps_the_identity_it_linked(client, session, tenant):
+    """The bug this pins: `db.get_session` never commits on its own and the
+    read routes have no commit, so a first contact that only reads used to
+    roll the User and ExternalIdentity rows back while answering 200. The
+    caller came back with a new user_id -- and so a new bank_id -- on every
+    request, and never saw their own memory.
+
+    Goes through a real read route rather than calling link_identity
+    directly: what broke was the interaction between the auth path and the
+    request transaction, which a direct call cannot reproduce.
+    """
+    import uuid
+
+    from memory.models import ExternalIdentity
+
+    from tests.conftest import IDENTITY_HEADER, RESOLVER_URL
+
+    subject = f"reader-{uuid.uuid4().hex[:8]}@test"
+    headers = {IDENTITY_HEADER: subject}
+
+    assert client.get("/v1/projects", headers=headers).status_code == 200
+    first = session.get(ExternalIdentity, (RESOLVER_URL, subject))
+    assert first is not None, "a read-only first request discarded the identity it linked"
+
+    assert client.get("/v1/projects", headers=headers).status_code == 200
+    second = session.get(ExternalIdentity, (RESOLVER_URL, subject))
+    assert second.user_id == first.user_id, "the same identity resolved to two users"
