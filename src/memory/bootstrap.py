@@ -20,12 +20,30 @@ from memory import audit, banks, mental_model_service, projects
 from memory.auth.principal import Principal
 from memory.builtin_models import PROJECT_CONTEXT, USER_CONTEXT
 from memory.mental_model_service import MentalModelView
-from memory.models import ProjectSlug
+from memory.models import Project, ProjectSlug
 from memory.retain_strategy import ensure_exact_retain_strategy
 from memory.retained_records import LogicalBankRef
 from memory.slugs import normalize_slug
 
 logger = logging.getLogger("memory.bootstrap")
+
+
+def provision_project_bank(
+    db: Session, principal: Principal, project: Project, *, client
+) -> MentalModelView:
+    """Everything a project bank needs before it can serve: the exact retain
+    strategy, and its built-in model.
+
+    Idempotent by construction -- `ensure_exact_retain_strategy` and
+    `reconcile_builtin` are both no-ops on an already-provisioned bank -- so
+    calling it again from bootstrap repairs anything a failed creation left
+    half-done.
+    """
+    bank = LogicalBankRef(
+        principal.tenant_id, "project", None, project.internal_id, project.bank_id
+    )
+    ensure_exact_retain_strategy(client, bank.bank_id)
+    return mental_model_service.reconcile_builtin(db, bank, PROJECT_CONTEXT, client=client)
 
 
 class BootstrapRequest(BaseModel):
@@ -103,11 +121,12 @@ def bootstrap(
         project_bank = LogicalBankRef(
             principal.tenant_id, "project", None, project.internal_id, project.bank_id
         )
+        # Retain strategy always applies, regardless of builtins_enabled --
+        # mirrors the user bank above and ensure_exact_retain_strategy is a
+        # no-op once already provisioned, so this is cheap either way.
         ensure_exact_retain_strategy(client, project_bank.bank_id)
         if request.builtins_enabled:
-            project_model = mental_model_service.reconcile_builtin(
-                db, project_bank, PROJECT_CONTEXT, client=client
-            )
+            project_model = provision_project_bank(db, principal, project, client=client)
         project_status = "ready"
 
     db.commit()
