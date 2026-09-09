@@ -405,7 +405,7 @@ its server registration's `extra_headers`.
 | `MEMORY_HINDSIGHT_API_KEY` | empty |
 | `MEMORY_TENANT_ID` | `default` |
 | `MEMORY_MAX_CONTENT_BYTES` | `256000` |
-| `MEMORY_MCP_ALLOWED_HOSTS` | `127.0.0.1,localhost` |
+| `MEMORY_MCP_ALLOWED_HOSTS` | `127.0.0.1,localhost,127.0.0.1:*,localhost:*` |
 | `MEMORY_HINDSIGHT_TIMEOUT_SECONDS` | `30` |
 | `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS` | `180` |
 | `MEMORY_WRITE_LIMIT` | `60` |

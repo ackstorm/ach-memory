@@ -34,6 +34,22 @@ def test_tenant_id_defaults_to_hindsight_default_segment(monkeypatch):
     assert Settings().tenant_id == "default"
 
 
+def test_the_default_allowed_hosts_cover_any_loopback_port(monkeypatch):
+    """A portless entry never matches a Host carrying a port (the SDK matches
+    the whole header), and the service listens on 8000. Without the wildcard
+    forms the shipped default answers 421 to every direct MCP call."""
+    _clear(monkeypatch)
+    for key, value in REQUIRED.items():
+        monkeypatch.setenv(key, value)
+
+    allowed = [h.strip() for h in Settings().mcp_allowed_hosts.split(",")]
+    assert "127.0.0.1:*" in allowed
+    assert "localhost:*" in allowed
+    # portless forms stay: an ingress on 80/443 sends a Host with no port
+    assert "127.0.0.1" in allowed
+    assert "localhost" in allowed
+
+
 def test_missing_required_setting_fails_loudly(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("MEMORY_DATABASE_URL", REQUIRED["MEMORY_DATABASE_URL"])

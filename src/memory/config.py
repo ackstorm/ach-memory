@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # protection by default and allows only 127.0.0.1, so a deployed service
     # behind any ingress answers 421 Misdirected Request to every MCP call
     # until its real hostname is listed here. Comma-separated.
-    mcp_allowed_hosts: str = "127.0.0.1,localhost"
+    mcp_allowed_hosts: str = "127.0.0.1,localhost,127.0.0.1:*,localhost:*"
 
     # --- External identity (SPEC §5.3) ------------------------------------
     # Both providers may be enabled at once, and the deployed configuration

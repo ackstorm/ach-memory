@@ -155,12 +155,13 @@ services:
       MEMORY_HINDSIGHT_URL: http://hindsight:8888
       MEMORY_HINDSIGHT_API_KEY: ${MEMORY_HINDSIGHT_API_KEY:-}
       MEMORY_TENANT_ID: default
-      # The SDK's DNS-rebinding guard matches Host including the port. This
-      # The default compose path publishes the api on localhost:8000, so that
-      # exact host:port must be allowed or every MCP call 421s. The isolated
-      # E2E runner publishes a Docker-assigned port and supplies a matching
+      # The SDK's DNS-rebinding guard matches Host including the port, and a
+      # portless entry never matches a Host that carries one -- so the
+      # wildcard forms below are what let the default answer both a direct
+      # loopback call and one through a portless ingress. The isolated E2E
+      # runner publishes a Docker-assigned port and supplies its own matching
       # wildcard-port allowlist for loopback only.
-      MEMORY_MCP_ALLOWED_HOSTS: ${MEMORY_MCP_ALLOWED_HOSTS:-127.0.0.1,localhost,localhost:8000}
+      MEMORY_MCP_ALLOWED_HOSTS: ${MEMORY_MCP_ALLOWED_HOSTS:-127.0.0.1,localhost,127.0.0.1:*,localhost:*}
     ports:
       # Loopback only. See the postgres/hindsight services above for why.
       - "127.0.0.1:${MEMORY_API_PORT:-8000}:8000"

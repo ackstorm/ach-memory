@@ -299,6 +299,12 @@ def create_app() -> FastAPI:
     # every MCP call. Configured rather than disabled: the check is worth
     # keeping, it just has to know the hostname it is deployed under.
     allowed = [h.strip() for h in get_settings().mcp_allowed_hosts.split(",") if h.strip()]
+    # Logged at startup, not left to the first failed call: a Host mismatch
+    # answers 421 from inside the SDK, whose body we do not control, and
+    # /health is deliberately dependency-blind so the pod still reports ready.
+    # Without this line the only symptom is an MCP call failing with no
+    # server-side trace of why.
+    logger.info("mcp transport allows hosts: %s", ", ".join(allowed))
     mcp_app = mcp.streamable_http_app(
         streamable_http_path="/",
         # ach-memory emits request/response tool results only. JSON mode
