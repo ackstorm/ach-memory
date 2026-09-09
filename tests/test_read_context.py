@@ -211,8 +211,10 @@ def test_a_delegated_master_project_read_writes_only_the_audit_row(session, tena
     owner = _principal(tenant, "usr_juan")
     master = _principal(tenant, None, master=True)
     created = projects.resolve(session, owner, "payments-api")
+    # The creation itself is now audited too (every creation is, not only a
+    # master key's) -- baseline includes that one row, not zero.
+    assert session.query(AuditEvent).count() == 1
     before = _snapshot(session)
-    assert session.query(AuditEvent).count() == 0
 
     result = read_context.resolve_read_bank(
         session,
@@ -225,9 +227,9 @@ def test_a_delegated_master_project_read_writes_only_the_audit_row(session, tena
 
     assert result.bank_id == created.project.bank_id
     assert _snapshot(session) == before
-    audit_rows = session.query(AuditEvent).all()
-    assert len(audit_rows) == 1
-    assert audit_rows[0].resource == "payments-api"
+    read_rows = session.query(AuditEvent).filter_by(action="read.recall").all()
+    assert len(read_rows) == 1
+    assert read_rows[0].resource == "payments-api"
 
 
 def test_a_master_key_with_no_user_id_is_a_typed_error_with_no_domain_writes(
