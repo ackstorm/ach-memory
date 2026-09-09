@@ -14,7 +14,6 @@ class BuiltinModelDefinition:
     tags_match: Literal["all"]
     max_tokens: int
     trigger: Mapping[str, object]
-    always_in_context: bool = True
 
 
 USER_CONTEXT = BuiltinModelDefinition(
@@ -39,7 +38,6 @@ USER_CONTEXT = BuiltinModelDefinition(
         "refresh_after_consolidation": True,
         "min_refresh_interval_seconds": 300,
     },
-    always_in_context=True,
 )
 
 PROJECT_CONTEXT = BuiltinModelDefinition(
@@ -64,5 +62,4 @@ PROJECT_CONTEXT = BuiltinModelDefinition(
         "refresh_after_consolidation": True,
         "min_refresh_interval_seconds": 300,
     },
-    always_in_context=True,
 )

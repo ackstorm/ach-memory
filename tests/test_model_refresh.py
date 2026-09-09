@@ -36,7 +36,6 @@ def _register(session, bank, *, model_key, refresh_operation_id, **overrides):
         "tags_match": "all",
         "max_tokens": 256,
         "trigger": TRIGGER,
-        "always_in_context": False,
         "delivery_state": "withheld",
         "refresh_status": "pending",
         "upstream_model_id": f"mm-upstream-{model_key}",
@@ -183,7 +182,7 @@ def test_repair_also_finds_a_required_model_with_no_operation_id(session, bank, 
     row = model_registry.register_model(
         session, bank, origin="user", model_key=f"mm_{'7' * 32}", name="m",
         source_query="q", source_tags=list(REQUIRED_TAGS), tags_match="all",
-        max_tokens=256, trigger=TRIGGER, always_in_context=False,
+        max_tokens=256, trigger=TRIGGER,
         upstream_model_id="mm-upstream-required",
     )
     model_registry.require_model_refresh(session, bank, row.model_key, repair_not_before=now)

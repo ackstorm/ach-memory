@@ -35,7 +35,6 @@ BUILTIN = {
     },
     "builtin_key": "user-context",
     "definition_version": 1,
-    "always_in_context": True,
     "delivery_state": "ready",
 }
 
@@ -45,7 +44,6 @@ CUSTOM = {
     "tags_match": "all",
     "max_tokens": 256,
     "trigger": {"mode": "manual"},
-    "always_in_context": False,
     "delivery_state": "ready",
 }
 

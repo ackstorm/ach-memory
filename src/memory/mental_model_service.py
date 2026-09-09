@@ -105,11 +105,6 @@ class CustomModelCreateRequest(BaseModel):
     tags_match: Literal["all"]
     max_tokens: int = Field(ge=MIN_MAX_TOKENS)
     trigger: dict[str, object]
-    # Defaulted, not required: Task 2 (v0.4.8 builtin-only-standing-context)
-    # dropped this from the REST/MCP create surface, so no caller can supply
-    # it any more. Left in place -- still read by _check_budget/register_model
-    # below -- until Task 4 removes the field from this class entirely.
-    always_in_context: bool = False
     operation_id: str
 
     @field_validator("source_tags")
@@ -129,7 +124,6 @@ class CustomModelUpdateRequest(BaseModel):
     source_query: str | None = None
     max_tokens: int | None = Field(default=None, ge=MIN_MAX_TOKENS)
     trigger: dict[str, object] | None = None
-    always_in_context: bool | None = None
     operation_id: str
 
     @field_validator("trigger")
@@ -152,7 +146,6 @@ class MentalModelView(BaseModel):
     tags_match: Literal["all"]
     max_tokens: int
     trigger: dict[str, object]
-    always_in_context: bool
     delivery_state: Literal["ready", "withheld"]
     refresh_status: Literal["required", "pending", "failed", "succeeded"] | None
     last_refreshed_at: datetime | None
@@ -213,7 +206,6 @@ def _payload_hash(bank: LogicalBankRef, request: CustomModelCreateRequest) -> st
         "tags_match": request.tags_match,
         "max_tokens": request.max_tokens,
         "trigger": request.trigger,
-        "always_in_context": request.always_in_context,
     }
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -241,7 +233,6 @@ def _update_payload_hash(
         "source_query": request.source_query,
         "max_tokens": request.max_tokens,
         "trigger": request.trigger,
-        "always_in_context": request.always_in_context,
     }
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -285,7 +276,6 @@ def _to_view(row: MentalModelRegistration) -> MentalModelView:
         tags_match=row.tags_match,
         max_tokens=row.max_tokens,
         trigger=row.trigger,
-        always_in_context=row.always_in_context,
         delivery_state=row.delivery_state,
         refresh_status=row.refresh_status,
         last_refreshed_at=row.last_refreshed_at,
@@ -359,7 +349,6 @@ def create_custom_model(
         lifecycle_state="creating",
         mutation_operation_id=request.operation_id,
         mutation_payload_hash=digest,
-        always_in_context=request.always_in_context,
         delivery_state="ready",
         existing=live,
     )
@@ -487,9 +476,9 @@ def update_model(
         upstream_changes["trigger"] = (
             request.trigger or dict(_MANUAL_TRIGGER_UPDATE)
         )
-    # A display-name-only or always_in_context-only update changes nothing
-    # the synthesis reads from, so it never touches delivery currentness
-    # (SPEC §6.4). Any of the three source-affecting fields does: the model
+    # A display-name-only update changes nothing the synthesis reads from,
+    # so it never touches delivery currentness (SPEC §6.4). Any of the three
+    # source-affecting fields does: the model
     # is withheld as refresh-required BEFORE the upstream definition update
     # is even sent, so a crash between here and the eventual refresh leaves
     # a repairable withheld model, never a falsely-current one.
@@ -510,8 +499,6 @@ def update_model(
         row.max_tokens = request.max_tokens
     if request.trigger is not None:
         row.trigger = request.trigger
-    if request.always_in_context is not None:
-        row.always_in_context = request.always_in_context
     _touch(db, row)
     db.flush()
 
@@ -588,9 +575,10 @@ def reconcile_builtin(
 ) -> MentalModelView:
     """Ensure `bank` has `definition` registered at its current version (SPEC
     §7.4/§7.5): create it if missing, upgrade only the prompt/source
-    definition when the compiled version increased (preserving the user's
-    `always_in_context` choice), and leave an explicitly disabled built-in
-    (`lifecycle_state="disabled"`) or an already-current one untouched.
+    definition when the compiled version increased, and leave an explicitly
+    disabled built-in (`lifecycle_state="disabled"`) or an already-current
+    one untouched. An upgrade never re-enables an operator-disabled
+    built-in -- `lifecycle_state` is the only thing that ever carried that.
     """
     existing = model_registry.get_registered_model(db, bank, definition.key)
     if existing is not None and existing.lifecycle_state == "disabled":
@@ -631,7 +619,6 @@ def _create_builtin(
         builtin_key=definition.key,
         definition_version=definition.version,
         lifecycle_state="creating",
-        always_in_context=definition.always_in_context,
         delivery_state="ready",
         existing=live,
     )
@@ -681,8 +668,8 @@ def _upgrade_builtin(
     existing.max_tokens = definition.max_tokens
     existing.trigger = dict(definition.trigger)
     existing.definition_version = definition.version
-    # always_in_context is deliberately untouched: an upgrade never re-enables
-    # a user's disabled delivery choice (SPEC §7.4).
+    # lifecycle_state is deliberately untouched: an upgrade never re-enables
+    # an operator-disabled built-in (SPEC §7.4).
     _touch(db, existing)
     db.flush()
 

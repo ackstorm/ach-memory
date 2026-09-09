@@ -14,7 +14,7 @@ genuinely read-only: neither provisions or reconciles a definition (SPEC
 import json
 import logging
 import uuid
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
@@ -45,17 +45,6 @@ logger = logging.getLogger("memory.mcp")
 Scope = Literal["user", "project"]
 MaxTokens = Annotated[int, Field(ge=256, le=8192)]
 OptionalMaxTokens = Annotated[int | None, Field(default=None, ge=256, le=8192)]
-
-
-def _delivery_exposure(scope: str, view) -> dict[str, Any]:
-    """SPEC §8.1: enabling `always_in_context` on a User model is a
-    conscious exposure to every authorized agent acting as that user, and a
-    confirming host must be told so on the mutation that sets it -- not
-    repeated on every later read."""
-    payload = view.model_dump(mode="json")
-    if scope == "user" and view.always_in_context:
-        payload["delivery_exposure"] = "all_authorized_user_consumers"
-    return payload
 
 
 def _model_run(ctx: Context, body_factory, action: str, call, *, is_write: bool) -> ToolResult:
@@ -143,7 +132,7 @@ def register(mcp: MCPServer) -> None:
             view = mental_model_service.create_custom_model(
                 db, bank, request, client=get_client()
             )
-            return _delivery_exposure(scope, view)
+            return view.model_dump(mode="json")
 
         return _model_run(ctx, body_factory, "mental_models.create", call, is_write=True)
 
@@ -245,7 +234,7 @@ def register(mcp: MCPServer) -> None:
             view = mental_model_service.update_model(
                 db, bank, model_key, request, client=get_client()
             )
-            return _delivery_exposure(scope, view)
+            return view.model_dump(mode="json")
 
         return _model_run(ctx, body_factory, "mental_models.update", call, is_write=True)
 

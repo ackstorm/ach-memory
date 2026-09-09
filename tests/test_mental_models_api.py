@@ -54,7 +54,6 @@ def _create_body(**overrides) -> dict:
         "source_tags": REQUIRED_TAGS,
         "tags_match": "all",
         "max_tokens": 256,
-        "always_in_context": False,
         "trigger": TRIGGER,
         "operation_id": str(uuid.uuid4()),
     }
@@ -312,7 +311,6 @@ def test_builtin_cannot_be_deleted_by_custom_route(client, juan, session, tenant
         trigger=dict(definition.trigger),
         builtin_key=definition.key,
         definition_version=definition.version,
-        always_in_context=definition.always_in_context,
         delivery_state="ready",
     )
     session.commit()

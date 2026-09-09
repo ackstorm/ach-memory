@@ -1,4 +1,3 @@
-from dataclasses import replace
 from unittest import mock
 
 import pytest
@@ -126,55 +125,6 @@ def test_builtin_create_refuses_a_colliding_unknown_upstream_model(session, prin
     hindsight.create_mental_model.assert_not_called()
 
 
-class _BankHolder:
-    def __init__(self, bank: LogicalBankRef) -> None:
-        self.bank = bank
-
-
-@pytest.fixture
-def disabled_builtin(session, principal):
-    user = session.get(User, principal.user_id)
-    bank = LogicalBankRef(principal.tenant_id, "user", user.id, None, user.bank_id)
-    register_model(
-        session,
-        bank,
-        origin="builtin",
-        model_key=USER_CONTEXT.key,
-        name=USER_CONTEXT.name,
-        source_query=USER_CONTEXT.source_query,
-        source_tags=list(USER_CONTEXT.source_tags),
-        tags_match=USER_CONTEXT.tags_match,
-        max_tokens=USER_CONTEXT.max_tokens,
-        trigger=dict(USER_CONTEXT.trigger),
-        builtin_key=USER_CONTEXT.key,
-        definition_version=1,
-        always_in_context=False,
-        delivery_state="ready",
-        upstream_model_id="mm-existing-1",
-    )
-    session.commit()
-    return _BankHolder(bank)
-
-
-@pytest.fixture
-def v2_definition():
-    return replace(
-        USER_CONTEXT, version=2, source_query="Summarize durable user context, v2."
-    )
-
-
-def test_builtin_upgrade_preserves_disabled_delivery(session, disabled_builtin, v2_definition, hindsight):
-    hindsight.refresh_mental_model.return_value = {"operation_id": "op-upgrade-1"}
-
-    result = reconcile_builtin(session, disabled_builtin.bank, v2_definition, client=hindsight)
-
-    assert result.definition_version == 2
-    assert result.always_in_context is False
-    assert result.source_query == v2_definition.source_query
-    hindsight.update_mental_model.assert_called_once()
-    hindsight.refresh_mental_model.assert_called_once()
-
-
 def test_a_lifecycle_disabled_builtin_is_never_recreated_or_reconciled(session, principal, hindsight):
     user = session.get(User, principal.user_id)
     bank = LogicalBankRef(principal.tenant_id, "user", user.id, None, user.bank_id)
@@ -191,7 +141,6 @@ def test_a_lifecycle_disabled_builtin_is_never_recreated_or_reconciled(session, 
         trigger=dict(USER_CONTEXT.trigger),
         builtin_key=USER_CONTEXT.key,
         definition_version=1,
-        always_in_context=True,
         delivery_state="ready",
         lifecycle_state="disabled",
     )

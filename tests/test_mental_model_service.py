@@ -17,6 +17,7 @@ from memory.hindsight.client import HindsightClient
 from memory.mental_model_service import (
     CustomModelCreateRequest,
     CustomModelUpdateRequest,
+    MentalModelView,
     _payload_hash,
     create_custom_model,
     delete_model,
@@ -56,7 +57,7 @@ def hindsight():
 
 
 def custom_request(
-    *, name="review-context", max_tokens=256, always_in_context=True, operation_id=None
+    *, name="review-context", max_tokens=256, operation_id=None
 ) -> CustomModelCreateRequest:
     return CustomModelCreateRequest(
         name=name,
@@ -65,7 +66,6 @@ def custom_request(
         tags_match="all",
         max_tokens=max_tokens,
         trigger=TRIGGER,
-        always_in_context=always_in_context,
         operation_id=operation_id or str(uuid4()),
     )
 
@@ -77,14 +77,13 @@ CUSTOM_REQUEST = CustomModelCreateRequest(
     tags_match="all",
     max_tokens=256,
     trigger=TRIGGER,
-    always_in_context=False,
     operation_id=str(uuid4()),
 )
 
 
 @pytest.fixture
 def create_request():
-    return custom_request(always_in_context=False)
+    return custom_request()
 
 
 @pytest.fixture
@@ -101,7 +100,6 @@ def five_custom_models(session, bank):
             tags_match="all",
             max_tokens=256,
             trigger=TRIGGER,
-            always_in_context=False,
             delivery_state="ready",
         )
     session.commit()
@@ -123,7 +121,6 @@ def user_bank_with_builtin(session, bank):
         trigger=dict(definition.trigger),
         builtin_key=definition.key,
         definition_version=definition.version,
-        always_in_context=definition.always_in_context,
         delivery_state="ready",
     )
     session.commit()
@@ -173,7 +170,6 @@ def pending_registration(session, bank):
         lifecycle_state="creating",
         mutation_operation_id=operation_id,
         mutation_payload_hash="unused-in-this-test",
-        always_in_context=False,
         delivery_state="ready",
     )
     session.commit()
@@ -190,6 +186,13 @@ def pending_registration(session, bank):
 # ---------------------------------------------------------------------------
 # Create: key generation, quota, budget, idempotency
 # ---------------------------------------------------------------------------
+
+
+def test_a_custom_model_registers_without_a_delivery_flag():
+    """Nothing in the custom-model path carries a delivery choice any more."""
+    assert "always_in_context" not in CustomModelCreateRequest.model_fields
+    assert "always_in_context" not in CustomModelUpdateRequest.model_fields
+    assert "always_in_context" not in MentalModelView.model_fields
 
 
 def test_custom_create_returns_ach_key_and_hides_upstream_id(session, bank, hindsight, create_request):
@@ -226,7 +229,7 @@ def test_sixth_custom_create_is_rejected_before_hindsight(session, bank, hindsig
 
 
 def test_create_retry_with_same_operation_id_and_payload_is_idempotent(session, bank, hindsight):
-    request = custom_request(always_in_context=False, operation_id=str(uuid4()))
+    request = custom_request(operation_id=str(uuid4()))
 
     first = create_custom_model(session, bank, request, client=hindsight)
     second = create_custom_model(session, bank, request, client=hindsight)
@@ -260,7 +263,7 @@ def test_create_retry_resumes_a_still_creating_row_to_active(session, bank, hind
         source_query=request.source_query, source_tags=list(request.source_tags),
         tags_match=request.tags_match, max_tokens=request.max_tokens, trigger=request.trigger,
         lifecycle_state="creating", mutation_operation_id=operation_id,
-        mutation_payload_hash=digest, always_in_context=request.always_in_context,
+        mutation_payload_hash=digest,
         delivery_state="ready",
     )
     session.commit()
@@ -296,7 +299,6 @@ def test_create_rejects_a_source_selection_missing_a_required_tag():
             tags_match="all",
             max_tokens=256,
             trigger=TRIGGER,
-            always_in_context=False,
             operation_id=str(uuid4()),
         )
 
@@ -310,7 +312,6 @@ def test_create_rejects_the_nonexistent_manual_trigger_mode():
             tags_match="all",
             max_tokens=256,
             trigger={"mode": "manual"},
-            always_in_context=False,
             operation_id=str(uuid4()),
         )
 
@@ -429,7 +430,7 @@ def test_update_to_manual_refresh_explicitly_disables_upstream_automation(
     created = create_custom_model(
         session,
         bank,
-        custom_request(always_in_context=False).model_copy(
+        custom_request().model_copy(
             update={
                 "trigger": {
                     "mode": "delta",
