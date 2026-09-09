@@ -1566,8 +1566,10 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved when the transfer tool was added (lazy-provisioning plan, Task 7).
-TOOL_CONTRACT_SHA256 = "da9b1e2e8c330885d48e8214990ea3aa0bb9f12018e733a1854181b70218187b"
+# moved by the tag-surface rename (v1c plan): recall/reflect's tags param
+# became tags_filter/tags_filter_mode, and create_mental_model's tags_match
+# became source_tags_mode.
+TOOL_CONTRACT_SHA256 = "8c5f9c5941e518126bd76447a0861997ba14cbe36f5d1a06c0c4664b6a97d8a7"
 
 
 def test_tool_registration_is_stable_after_module_split():
