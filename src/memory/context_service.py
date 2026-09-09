@@ -139,11 +139,19 @@ class ContextService:
             return max(0.0, deadline - self.clock())
 
         project = None
+        # None when no project_slug was given at all -- nothing to report.
+        # "absent" covers both a missing project and a forbidden one (SPEC
+        # decision 4): the agent stays blind either way (the delivered
+        # content is identically empty), but this field lets a facade log
+        # the distinction without ever exposing which of the two it was --
+        # ProjectAccessDenied's owner_type never reaches here.
+        project_status: str | None = None
         if request.project_slug:
             try:
                 project = projects.resolve(
                     self.db, self.principal, request.project_slug, create=False
                 ).project
+                project_status = "ready"
             except ProjectNotFound:
                 # load_context is one of the twelve read tools that map an
                 # absent project to empty rather than an error (lazy-
@@ -152,6 +160,7 @@ class ContextService:
                 # one, never retain. Treated exactly like no project_slug
                 # having been given at all -- the user half still delivers.
                 project = None
+                project_status = "absent"
         user_bank = self._bank("user")
         project_bank = self._bank("project", project) if project else None
         sections: list[DeliverySection] = []
@@ -360,6 +369,7 @@ class ContextService:
                 omissions.append(DeliveryOmission(key="working-state", reason="deadline_exceeded"))
         payload = assemble_context(sections)
         payload.omissions.extend(omissions)
+        payload.project_status = project_status
         return payload
 
 

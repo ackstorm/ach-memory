@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
 
 import tiktoken
 from pydantic import BaseModel, ConfigDict
@@ -47,6 +48,13 @@ class ContextPayload(BaseModel):
     headings: list[str] = []
     omissions: list[DeliveryOmission] = []
     overages: list[DeliveryOverage] = []
+    # None when the request named no project_slug at all -- nothing to
+    # report. "ready" when it resolved; "absent" covers both a missing
+    # project and a forbidden one, deliberately indistinguishable here the
+    # same way the delivered content already is (lazy-provisioning plan,
+    # decision 4) -- a facade may log "absent", but never which of the two
+    # it was.
+    project_status: Literal["ready", "absent"] | None = None
 
 
 def _inert(value: str) -> str:

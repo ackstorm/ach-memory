@@ -596,6 +596,62 @@ def test_a_request_for_a_foreign_project_says_the_project_half_is_absent(
     ]
 
 
+def test_project_status_is_none_without_a_project_slug(session, tenant):
+    """The agent stays blind either way (decision 4); a facade has nothing
+    to log when no project was ever asked for, so this is None, not
+    "absent"."""
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest())
+
+    assert result.project_status is None
+
+
+def test_project_status_is_ready_when_the_project_resolves(session, tenant):
+    juan = _user(tenant, "usr_juan")
+    session.add_all([juan, _project(tenant, juan.id, "payments")])
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest(project_slug="payments"))
+
+    assert result.project_status == "ready"
+
+
+def test_project_status_is_absent_for_an_unknown_project(session, tenant):
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest(project_slug="does-not-exist"))
+
+    assert result.project_status == "absent"
+
+
+def test_project_status_is_absent_for_a_forbidden_project(session, tenant):
+    """The whole reason this field is safe: a facade may see "absent" for a
+    project that actually exists and belongs to someone else, but never
+    anything that would let it (or, through it, the agent) tell the two
+    cases apart."""
+    juan = _user(tenant, "usr_juan")
+    alice = _user(tenant, "usr_alice")
+    session.add_all([juan, alice, _project(tenant, juan.id, "payments")])
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, alice.id, False, "key_alice"), client=RecordingClient(),
+    ).load(LoadContextRequest(project_slug="payments"))
+
+    assert result.project_status == "absent"
+
+
 def test_a_custom_model_is_never_delivered_even_with_the_flag_set(session, tenant):
     """Standing context is built-ins only. A custom model -- registered here
     exactly like an ordinary always-in-context row was before the flag was
