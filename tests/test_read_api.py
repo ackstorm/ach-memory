@@ -97,7 +97,7 @@ def test_read_recall_ands_caller_tags_into_the_upstream_filter(client, two_users
     key = two_users[0]["key"]
     response = client.post(
         "/v1/read/recall",
-        json={"scope": "user", "query": "database", "tags": ["Repo:Group/App"]},
+        json={"scope": "user", "query": "database", "tags_filter": ["Repo:Group/App"]},
         headers=_headers(key),
     )
 
@@ -114,7 +114,7 @@ def test_read_recall_refuses_a_reserved_tag_namespace(client, two_users):
     key = two_users[0]["key"]
     response = client.post(
         "/v1/read/recall",
-        json={"scope": "user", "query": "database", "tags": ["schema:ach-retain-v1"]},
+        json={"scope": "user", "query": "database", "tags_filter": ["schema:ach-retain-v1"]},
         headers=_headers(key),
     )
 

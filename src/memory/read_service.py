@@ -241,7 +241,7 @@ def recall(
     run_access_maintenance(db, ref)
 
     hits = _recall_hits(
-        read_bank.bank_id, request.query, request.view, request.kinds, request.tags
+        read_bank.bank_id, request.query, request.view, request.kinds, request.tags_filter
     )
     capped = hits[: request.max_results]
     response = build_recall_response(

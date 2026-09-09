@@ -10,20 +10,22 @@ ID or a tenant ID: the Phase 5 non-negotiable contracts forbid all five on
 the read surface, and `extra="forbid"` on every request model turns a caller
 who sends one into a 422, not a silently-ignored field.
 
-`RecallRequest.tags` is the one deliberate, narrow exception: a caller-
-supplied list, validated and normalised by `memory.tags.normalize_caller_tags`
--- the same gate retain applies, so a tag written and a tag searched are
-byte-identical -- then ANDed into the fixed, server-owned `all_strict` filter
-(`resolve_filters`) inside a bank the caller's own `scope`/`project_slug`
-already resolved and authorized. It can only narrow what that caller could
-already read; it is never a raw Hindsight tag expression and never lets a
-caller choose `tags_match` itself.
+`RecallRequest.tags_filter` is the one deliberate, narrow exception: a
+caller-supplied list, validated and normalised by
+`memory.tags.normalize_caller_tags` -- the same gate retain applies, so a tag
+written and a tag searched are byte-identical -- then ANDed into the fixed,
+server-owned strict filter (`resolve_filters`) inside a bank the caller's own
+`scope`/`project_slug` already resolved and authorized. It can only narrow
+what that caller could already read; it is never a raw Hindsight tag
+expression. `tags_filter_mode` chooses only from `memory.tags`'s closed,
+already-strict enum -- never raw Hindsight `tags_match` syntax.
 
 This module also owns the one piece of caller-controllable Hindsight
-behavior a read exposes: mapping `view`/`kinds`/`tags` to fixed upstream
-filters (`resolve_filters`). The caller chooses from closed enums plus its
-own normalised tags; the actual Hindsight `types`/`prefer_observations`/
-`tags_match` values are server-owned and never themselves caller input.
+behavior a read exposes: mapping `view`/`kinds`/`tags_filter`/
+`tags_filter_mode` to fixed upstream filters (`resolve_filters`). The caller
+chooses from closed enums plus its own normalised tags; the actual Hindsight
+`types`/`prefer_observations`/`tags_match` values are server-owned and never
+themselves caller input.
 """
 
 from dataclasses import dataclass
@@ -33,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from memory.identifiers import has_control_character
 from memory.memory_types import EvidenceBasis, MemoryType
-from memory.tags import normalize_caller_tags
+from memory.tags import FilterMode, default_filter_mode, normalize_caller_tags
 
 ReadScope = Literal["user", "project"]
 
@@ -105,11 +107,12 @@ class RecallRequest(_ReadRequest):
         default=DEFAULT_MAX_RESULTS, ge=MIN_MAX_RESULTS, le=MAX_RESULTS_CEILING
     )
     #: Additive caller tags (e.g. `repo:group/app`), ANDed into the fixed
-    #: `all_strict` filter -- see the module docstring for why this is safe.
-    #: `tags_match` itself stays out of this model entirely.
-    tags: tuple[str, ...] = ()
+    #: strict filter -- see the module docstring for why this is safe.
+    #: Hindsight's own `tags_match` syntax stays out of this model entirely.
+    tags_filter: tuple[str, ...] = ()
+    tags_filter_mode: FilterMode = Field(default_factory=default_filter_mode)
 
-    @field_validator("tags", mode="before")
+    @field_validator("tags_filter", mode="before")
     @classmethod
     def _normalize_tags(cls, value: list[str] | None) -> tuple[str, ...]:
         return normalize_caller_tags(value)
@@ -300,7 +303,7 @@ def resolve_filters(
 
     Every ACH-authored fact is scoped by the fixed `schema:ach-retain-v1`
     tag, optionally narrowed by the caller's closed `memory_types`, then
-    further narrowed by `caller_tags` (`RecallRequest.tags`, already
+    further narrowed by `caller_tags` (`RecallRequest.tags_filter`, already
     validated by `memory.tags.normalize_caller_tags` -- this function never
     normalises or validates them itself, only appends). `view` does not
     currently branch this mapping; the documented views select the same

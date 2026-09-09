@@ -377,7 +377,7 @@ def test_reflect_sends_caller_tags_upstream(call_tool):
     )
     key = call_tool.make_user()
 
-    call_tool("reflect", key, scope="user", query="deps?", tags=["Repo:Group/App"])
+    call_tool("reflect", key, scope="user", query="deps?", tags_filter=["Repo:Group/App"])
 
     body = json.loads(route.calls.last.request.read())
     assert body["tags"] == ["repo:group/app"]
@@ -406,7 +406,7 @@ def test_reflect_refuses_a_reserved_tag_namespace(call_tool):
     _mock_bank()
     key = call_tool.make_user()
     with pytest.raises(MCPToolError):
-        call_tool("reflect", key, scope="user", query="deps?", tags=["schema:x"])
+        call_tool("reflect", key, scope="user", query="deps?", tags_filter=["schema:x"])
 
 
 def _mock_bank() -> None:
@@ -1874,7 +1874,7 @@ def test_recall_passes_caller_tags_through_to_the_client(call_tool):
     ).mock(return_value=httpx.Response(200, json={"results": []}))
     key = call_tool.make_user()
 
-    call_tool("recall", key, scope="user", query="deps", tags=["Repo:Group/App"])
+    call_tool("recall", key, scope="user", query="deps", tags_filter=["Repo:Group/App"])
 
     sent = json.loads(route.calls.last.request.content)
     assert sent["tags"] == ["schema:ach-retain-v1", "repo:group/app"]
@@ -1886,7 +1886,7 @@ def test_recall_refuses_a_reserved_tag_namespace(call_tool):
     _mock_bank()
     key = call_tool.make_user()
     with pytest.raises(MCPToolError):
-        call_tool("recall", key, scope="user", query="deps", tags=["schema:x"])
+        call_tool("recall", key, scope="user", query="deps", tags_filter=["schema:x"])
 
 
 @respx.mock
