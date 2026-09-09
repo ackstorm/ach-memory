@@ -15,9 +15,17 @@ BEARER = "bearer "
 API_KEY_HEADER = "x-ach-memory-key"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Principal:
-    """Who is calling, derived only from the credential (SPEC §2.3)."""
+    """Who is calling, derived only from the credential (SPEC §2.3).
+
+    Keyword-only, and that is load-bearing rather than style. The field list
+    changed when authority stopped being a credential, and 22 positional
+    constructions in one test file kept building silently: `False` landed in
+    `groups` and a credential id in `subject`, so the principal was wrong in
+    a way no type checker and no constructor could see. Naming every field
+    turns that whole class of drift into an immediate TypeError.
+    """
 
     tenant_id: str
     user_id: str | None

@@ -38,11 +38,14 @@ def _user(session, tenant, user_id: str) -> User:
     return user
 
 
-def _principal(tenant: str, user_id: str | None) -> Principal:
-    return Principal(tenant_id=tenant, user_id=user_id, credential_id="ext_x")
+def _principal(tenant: str, user_id: str | None, subject: str | None = None) -> Principal:
+    return Principal(
+        tenant_id=tenant, user_id=user_id, credential_id="ext_x", subject=subject
+    )
 
 
 OPERATOR_ID = "usr_operator"
+OPERATOR_SUBJECT = "operator@example.com"
 
 
 @pytest.fixture
@@ -50,13 +53,18 @@ def operator(session, tenant, monkeypatch) -> Principal:
     """An operator is an ordinary external identity that configuration also
     names. There is no identity-less credential any more, so an operator has
     a user id, a bank and projects of their own like anybody else -- the only
-    difference is that MEMORY_MASTER_USERS names them."""
+    difference is that MEMORY_MASTER_USERS names them.
+
+    It names the SUBJECT, not the user id: `usr_operator` is minted locally
+    on first sight, so an administrator could not write it into configuration
+    before that operator had ever logged in.
+    """
     from memory.config import get_settings
 
     _user(session, tenant, OPERATOR_ID)
-    monkeypatch.setenv("MEMORY_MASTER_USERS", OPERATOR_ID)
+    monkeypatch.setenv("MEMORY_MASTER_USERS", OPERATOR_SUBJECT)
     get_settings.cache_clear()
-    yield _principal(tenant, OPERATOR_ID)
+    yield _principal(tenant, OPERATOR_ID, OPERATOR_SUBJECT)
     get_settings.cache_clear()
 
 

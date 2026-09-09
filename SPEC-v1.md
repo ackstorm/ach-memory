@@ -1549,11 +1549,8 @@ OPERATION_NOT_CANCELLABLE
 DIRECTIVE_NOT_FOUND
 MENTAL_MODEL_NOT_FOUND
 RETIRED_SLUG_NOT_FOUND
-KEY_NOT_FOUND
 USER_NOT_FOUND
 GROUP_NOT_FOUND
-GROUP_ALREADY_EXISTS
-USER_ALREADY_EXISTS
 CONTENT_TOO_LARGE
 HINDSIGHT_ERROR
 AUTH_BACKEND_UNAVAILABLE
@@ -1593,12 +1590,6 @@ the named owner is a user.
 the group REST routes and by project ownership resolution when the named
 owner is a group.
 
-`GROUP_ALREADY_EXISTS` (409): `POST` on a group id that already exists.
-
-`USER_ALREADY_EXISTS` (409): `POST /v1/users` with an explicit id that already
-exists. The ACH provisioning path (§16.3) supplies its own ids and retries, so
-this is an ordinary idempotent-retry outcome a client must be able to branch
-on -- not a server fault.
 
 `OPERATION_NOT_CANCELLABLE` (409): `cancel_operation` received Hindsight's
 conflict response because the operation is already terminal or no longer

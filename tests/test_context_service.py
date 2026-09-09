@@ -185,7 +185,7 @@ def test_context_selects_only_the_callers_user_and_authorized_project(session, t
 
     result = ContextService(
         session,
-        Principal(tenant, juan.id, False, "key_juan"),
+        Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"),
         client=client,
     ).load(LoadContextRequest(project_slug="alpha"))
 
@@ -240,7 +240,7 @@ def test_a_withheld_model_whose_refresh_finished_is_observed_and_delivered(
     client = ObservingClient()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=client
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=client
     ).load(LoadContextRequest())
 
     assert client.observed == [(juan.bank_id, registration.refresh_operation_id)]
@@ -267,7 +267,7 @@ def test_a_withheld_model_whose_refresh_is_unfinished_stays_out_of_context(
     client = ObservingClient(status="pending")
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=client
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=client
     ).load(LoadContextRequest())
 
     assert client.calls == []
@@ -295,7 +295,7 @@ def test_context_emits_only_current_claims_from_the_selected_banks(session, tena
 
     result = ContextService(
         session,
-        Principal(tenant, juan.id, False, "key_juan"),
+        Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"),
         client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="alpha"))
 
@@ -316,7 +316,7 @@ def test_context_delivers_user_time_bounded_claims_without_a_project(
 
     result = ContextService(
         session,
-        Principal(tenant, juan.id, False, "key_juan"),
+        Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"),
         client=RecordingClient(),
     ).load(LoadContextRequest())
 
@@ -358,7 +358,7 @@ def test_context_reports_a_withheld_bank_without_delivering_its_content(
 
     result = ContextService(
         session,
-        Principal(tenant, juan.id, False, "key_juan"),
+        Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"),
         client=client,
     ).load(LoadContextRequest(project_slug="alpha"))
 
@@ -391,7 +391,7 @@ def test_active_claims_are_included_whole_with_a_visible_omission_count(
 
     result = ContextService(
         session,
-        Principal(tenant, juan.id, False, "key_juan"),
+        Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"),
         client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="alpha"))
 
@@ -425,7 +425,7 @@ def test_model_reads_receive_the_remaining_deadline_and_do_not_hold_startup(
     started = time.monotonic()
     result = ContextService(
         session,
-        Principal(tenant, juan.id, False, "key_juan"),
+        Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"),
         client=client,
     ).load(LoadContextRequest())
     elapsed = time.monotonic() - started
@@ -497,7 +497,7 @@ def test_deadline_is_computed_once_and_never_resets_across_later_phases(
 
     result = ContextService(
         session,
-        Principal(tenant, juan.id, False, "key_juan"),
+        Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"),
         client=client,
         clock=clock,
     ).load(LoadContextRequest(project_slug="alpha", workspace_id=workspace_id))
@@ -526,7 +526,7 @@ def test_no_budget_left_for_the_registry_query_still_emits_a_machine_readable_om
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest())
 
     assert ("always-in-context-models", "deadline_exceeded") in [
@@ -546,7 +546,7 @@ def test_a_request_with_no_project_says_the_project_half_is_absent(
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest())
 
     assert ("project", "no_project_resolved") in [
@@ -568,7 +568,7 @@ def test_a_request_for_an_absent_project_says_the_project_half_is_absent(
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="does-not-exist"))
 
     assert ("project", "no_project_resolved") in [
@@ -588,7 +588,7 @@ def test_a_request_for_a_foreign_project_says_the_project_half_is_absent(
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, alice.id, False, "key_alice"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=alice.id, credential_id="key_alice"), client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="payments"))
 
     assert ("project", "no_project_resolved") in [
@@ -605,7 +605,7 @@ def test_project_status_is_none_without_a_project_slug(session, tenant):
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest())
 
     assert result.project_status is None
@@ -617,7 +617,7 @@ def test_project_status_is_ready_when_the_project_resolves(session, tenant):
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="payments"))
 
     assert result.project_status == "ready"
@@ -629,7 +629,7 @@ def test_project_status_is_absent_for_an_unknown_project(session, tenant):
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="does-not-exist"))
 
     assert result.project_status == "absent"
@@ -646,7 +646,7 @@ def test_project_status_is_absent_for_a_forbidden_project(session, tenant):
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, alice.id, False, "key_alice"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=alice.id, credential_id="key_alice"), client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="payments"))
 
     assert result.project_status == "absent"
@@ -676,7 +676,7 @@ def test_a_custom_model_is_never_delivered_even_with_the_flag_set(session, tenan
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest())
 
     assert "User · user-context" in result.headings
@@ -700,7 +700,7 @@ def test_a_disabled_builtin_is_not_delivered(session, tenant):
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest())
 
     assert result.headings == []
@@ -727,7 +727,7 @@ def test_scope_project_omits_the_user_section(session, tenant):
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="alpha", scope="project"))
 
     assert not any(heading.startswith("User") for heading in result.headings)
@@ -756,7 +756,7 @@ def test_scope_user_omits_the_project_section(session, tenant):
     session.flush()
 
     result = ContextService(
-        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+        session, Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"), client=RecordingClient(),
     ).load(LoadContextRequest(project_slug="alpha", scope="user"))
 
     assert "User · user-context" in result.headings
@@ -794,7 +794,7 @@ def test_active_claims_fetches_a_bounded_prefix_not_the_whole_ledger(session, te
 
     result = ContextService(
         session,
-        Principal(tenant, juan.id, False, "key_juan"),
+        Principal(tenant_id=tenant, user_id=juan.id, credential_id="key_juan"),
         client=RecordingClient(),
     ).load(LoadContextRequest())
 
