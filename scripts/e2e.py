@@ -13,7 +13,7 @@ Usage:
 
 Design
 ------
-Coverage is ~70 small, named scenarios in SCENARIOS, run in order and printed
+Coverage is ~60 small, named scenarios in SCENARIOS, run in order and printed
 as they go. Each scenario is a plain async function that raises
 AssertionError on failure -- with the request and response embedded in the
 message -- and returns None on success. One scenario's exception never stops
@@ -294,119 +294,100 @@ def scenario(name: str) -> Callable:
 # 1. Identity and access
 # ===========================================================================
 
-USERS = ["alice", "bob", "carol", "dave", "ratelimituser", "mcpuser", "victim", "renamevictim"]
+# The token IS the identity. `deploy/dev-identity/whoami.py` echoes whatever
+# bearer token it is sent back as the user id, and a `+` separates the groups
+# that identity asserts, so a user is not provisioned here -- it is simply
+# named. Two tokens are two people with two banks, there is nothing to mint,
+# nothing to add to a group, and nothing to revoke.
+USERS = ["alice", "bob", "carol", "ratelimituser", "mcpuser", "victim"]
+
+# Whose token asserts the team group. Membership is re-read from the token on
+# every single request and there is no membership table anywhere, so this set
+# IS the membership -- see identity.durable_team_membership.
+TEAM_MEMBERS = {"alice", "bob"}
 
 
 @scenario("identity.provision_users")
 async def _() -> None:
+    """Name every identity this run needs, and give each one a bank.
+
+    `POST /v1/bootstrap` provisions the CALLER's own bank and nobody else's.
+    `auth.provisioning.link_identity` deliberately does not (it would put a
+    Hindsight round trip on the authentication path of every request), so a
+    brand-new identity has a `users` row and an unusable bank until this call.
+
+    The `user_id` the service mints for an external identity is internal and
+    unguessable -- `POST /v1/projects` echoing back its `owner` is the only
+    place it crosses the boundary. The admin plane addresses a bank by that
+    id and two non-disclosure scenarios assert it never leaks, so each
+    identity claims one project here purely to be told its own id.
+    """
+    S["group.team"] = gid = f"e2e-team-{RUN}"
     for name in USERS:
-        uid = f"e2e-{name}-{RUN}"
-        status, data = await call("POST", "/v1/users", MASTER, json_body={"id": uid})
-        expect_status("POST", "/v1/users", {"id": uid}, status, data, 201)
-        assert data["user_id"] == uid, f"user id echoed back wrong: {data}"
-        S[f"user.{name}"] = uid
+        token = f"e2e-{name}-{RUN}"
+        if name in TEAM_MEMBERS:
+            token = f"{token}+{gid}"
+        status, data = await call(
+            "POST", "/v1/bootstrap", token, json_body={}, timeout=90.0
+        )
+        expect_status("POST", "/v1/bootstrap", {}, status, data, 200)
+        S[f"key.{name}"] = token
 
+        body = {"project_slug": f"e2e-whoami-{name}-{RUN}"}
+        status, data = await call("POST", "/v1/projects", token, json_body=body)
+        expect_status("POST", "/v1/projects", body, status, data, 201)
+        owner = data["owner"]
+        assert owner["type"] == "user" and owner["id"], (
+            f"an unnamed owner did not resolve to the calling identity: {data}"
+        )
+        S[f"user.{name}"] = owner["id"]
 
-@scenario("identity.mint_keys")
-async def _() -> None:
-    need(*[f"user.{n}" for n in USERS])
-    for name in USERS:
-        uid = S[f"user.{name}"]
-        status, data = await call("POST", f"/v1/users/{uid}/keys", MASTER, json_body={})
-        expect_status("POST", f"/v1/users/{uid}/keys", {}, status, data, 201)
-        assert data["key"].startswith("mem_"), f"key has no mem_ prefix: {data}"
-        S[f"key.{name}"] = data["key"]
-        S[f"key_id.{name}"] = data["key_id"]
-
-
-@scenario("identity.create_group")
-async def _() -> None:
-    gid = f"e2e-team-{RUN}"
-    status, data = await call("POST", "/v1/groups", MASTER, json_body={"id": gid})
-    expect_status("POST", "/v1/groups", {"id": gid}, status, data, 201)
-    assert data["members"] == [], f"fresh group has members: {data}"
-    S["group.team"] = gid
-
-
-@scenario("identity.add_and_remove_member")
-async def _() -> None:
-    need("group.team", "user.dave")
-    gid, uid = S["group.team"], S["user.dave"]
-    status, data = await call("PUT", f"/v1/groups/{gid}/members/{uid}", MASTER)
-    expect_status("PUT", f"/v1/groups/{gid}/members/{uid}", None, status, data, 204)
-
-    status, data = await call("GET", f"/v1/groups/{gid}", MASTER)
-    expect_status("GET", f"/v1/groups/{gid}", None, status, data, 200)
-    assert uid in data["members"], f"add_member did not add dave: {data}"
-
-    status, data = await call("DELETE", f"/v1/groups/{gid}/members/{uid}", MASTER)
-    expect_status("DELETE", f"/v1/groups/{gid}/members/{uid}", None, status, data, 204)
-
-    status, data = await call("GET", f"/v1/groups/{gid}", MASTER)
-    expect_status("GET", f"/v1/groups/{gid}", None, status, data, 200)
-    assert uid not in data["members"], f"remove_member left dave in the group: {data}"
+    minted = {n: S[f"user.{n}"] for n in USERS}
+    assert len(set(minted.values())) == len(USERS), (
+        f"two different tokens resolved to the same user: {minted}"
+    )
 
 
 @scenario("identity.durable_team_membership")
 async def _() -> None:
-    """alice and bob are the durable team members every later project/memory
-    scenario relies on (Projects and Memory sections)."""
-    need("group.team", "user.alice", "user.bob")
-    gid = S["group.team"]
-    for name in ("alice", "bob"):
-        uid = S[f"user.{name}"]
-        status, data = await call("PUT", f"/v1/groups/{gid}/members/{uid}", MASTER)
-        expect_status("PUT", f"/v1/groups/{gid}/members/{uid}", None, status, data, 204)
-    status, data = await call("GET", f"/v1/groups/{gid}", MASTER)
-    expect_status("GET", f"/v1/groups/{gid}", None, status, data, 200)
-    for name in ("alice", "bob"):
-        assert S[f"user.{name}"] in data["members"], f"{name} missing from team: {data}"
+    """The only membership rule left, and the one that matters: a caller
+    reaches a group-owned project when their token asserts that group, and
+    the SAME person does not when it does not.
 
+    Nothing is added to or removed from a group any more -- there is no
+    membership row to mutate, and therefore none to go stale -- so the
+    property is probed by dropping the `+group` suffix from alice's own
+    token. whoami splits on `+`, so that is the same subject, the same minted
+    user id, the same credential and the same bank: only the asserted
+    membership differs. An IdP that stops asserting a group revokes access on
+    the very next call, which is strictly stronger than the PUT/DELETE
+    membership routes this replaces.
 
-@scenario("identity.user_key_refused_on_group_routes")
-async def _() -> None:
-    need("key.alice", "group.team", "user.carol")
-    alice = S["key.alice"]
-    gid, other = S["group.team"], S["user.carol"]
+    alice creates the project rather than the operator: `projects.
+    _validate_owner` auto-creates the `Group` projection row only for a group
+    the CALLING principal holds, so a non-member creating into the group
+    would be refused for a group that has no row yet.
 
-    status, data = await call("GET", "/v1/groups", alice)
-    expect_status("GET", "/v1/groups", None, status, data, 403)
-    expect_code("GET", "/v1/groups", None, status, data, "FORBIDDEN")
-
-    status, data = await call("POST", "/v1/groups", alice, json_body={})
-    expect_status("POST", "/v1/groups", {}, status, data, 403)
-    expect_code("POST", "/v1/groups", {}, status, data, "FORBIDDEN")
-
-    status, data = await call("PUT", f"/v1/groups/{gid}/members/{other}", alice)
-    expect_status("PUT", f"/v1/groups/{gid}/members/{other}", None, status, data, 403)
-    expect_code("PUT", f"/v1/groups/{gid}/members/{other}", None, status, data, "FORBIDDEN")
-
-
-@scenario("keys.revocation_stops_authentication")
-async def _() -> None:
-    """Review Critical C2, SPEC §5.3: a leaked key must die on request.
-
-    Before Plan 6 the only way to kill a compromised key was
-    `UPDATE api_keys SET status='revoked'` directly in Postgres -- there was
-    no revoke route at all. Uses its own throwaway user rather than one of
-    the shared USERS so revoking it cannot break a later scenario.
+    proj.group is also the durable team fixture the Projects and Memory
+    sections below read and write as two different members.
     """
-    uid = f"e2e-keyrevoke-{RUN}"
-    status, data = await call("POST", "/v1/users", MASTER, json_body={"id": uid})
-    expect_status("POST", "/v1/users", {"id": uid}, status, data, 201)
+    need("key.alice", "group.team")
+    gid, alice = S["group.team"], S["key.alice"]
+    slug = f"e2e-proj-group-{RUN}"
+    body = {"project_slug": slug, "owner": {"type": "group", "id": gid}}
+    status, data = await call("POST", "/v1/projects", alice, json_body=body)
+    expect_status("POST", "/v1/projects", body, status, data, 201)
+    assert data["owner"] == {"type": "group", "id": gid}, data
+    S["project.group"] = slug
 
-    status, data = await call("POST", f"/v1/users/{uid}/keys", MASTER, json_body={})
-    expect_status("POST", f"/v1/users/{uid}/keys", {}, status, data, 201)
-    key, key_id = data["key"], data["key_id"]
+    status, data = await call("GET", f"/v1/projects/{slug}", alice)
+    expect_status("GET", f"/v1/projects/{slug}", None, status, data, 200)
 
-    status, data = await call("GET", "/v1/projects", key)
-    expect_status("GET", "/v1/projects", None, status, data, 200)
-
-    status, data = await call("DELETE", f"/v1/users/{uid}/keys/{key_id}", MASTER)
-    expect_status("DELETE", f"/v1/users/{uid}/keys/{key_id}", None, status, data, 204)
-
-    status, data = await call("GET", "/v1/projects", key)
-    expect_status("GET", "/v1/projects", None, status, data, 401)
+    ungrouped = alice.split("+")[0]
+    status, data = await call("GET", f"/v1/projects/{slug}", ungrouped)
+    # 404, not 403: the same non-disclosure any unauthorized project gets.
+    expect_status("GET", f"/v1/projects/{slug}", None, status, data, 404)
+    expect_code("GET", f"/v1/projects/{slug}", None, status, data, "PROJECT_NOT_FOUND")
 
 
 # ===========================================================================
@@ -426,15 +407,27 @@ async def _() -> None:
     S["project.self"] = slug
 
 
-@scenario("projects.master_create_owned_by_group")
+@scenario("projects.operator_create_owned_by_self")
 async def _() -> None:
-    need("group.team")
-    slug = f"e2e-proj-group-{RUN}"
-    body = {"project_slug": slug, "owner": {"type": "group", "id": S["group.team"]}}
+    """"A master-key create must name an owner" went with the credential that
+    needed it: that rule existed only because the master key had no identity
+    to assign the project to. An operator is now an ordinary external
+    identity that also holds authority, so an unnamed owner is the caller --
+    exactly as it is for everybody else, and the operator owns what it
+    creates.
+
+    The group-owned project this scenario used to make is now made by alice,
+    a member, in identity.durable_team_membership: `projects._validate_owner`
+    auto-creates the `Group` projection row only for a group the CALLING
+    principal holds, and an operator's token holds none.
+    """
+    slug = f"e2e-proj-operator-{RUN}"
+    body = {"project_slug": slug}
     status, data = await call("POST", "/v1/projects", MASTER, json_body=body)
     expect_status("POST", "/v1/projects", body, status, data, 201)
-    assert data["owner"] == {"type": "group", "id": S["group.team"]}, data
-    S["project.group"] = slug
+    assert data["owner"]["type"] == "user" and data["owner"]["id"], data
+    S["project.operator"] = slug
+    S["user.operator"] = data["owner"]["id"]
 
 
 @scenario("projects.get")
@@ -1228,9 +1221,12 @@ async def _() -> None:
         name=name,
         source_query="What tool manages Python dependencies here?",
         source_tags=["schema:ach-retain-v1", "validity:indefinite"],
-        tags_match="all",
+        # `source_tags_mode`, and there is no `always_in_context` on this
+        # request at all: both spellings here were older ones that
+        # `CreateMentalModelRequest`'s extra="forbid" rejects outright. The
+        # drift was invisible while this scenario could not reach the route.
+        source_tags_mode="all",
         max_tokens=512,
-        always_in_context=False,
         trigger={"mode": "delta"},
         operation_id=str(uuid.uuid4()),
     )
@@ -1345,16 +1341,24 @@ async def _() -> None:
 
 @scenario("admin.audit_shows_actions_just_performed")
 async def _() -> None:
-    need("user.alice", "key_id.alice", "project.self")
+    """`user.create` and `key.create` went with the identity system that
+    wrote them -- nothing provisions a user or mints a key any more, and an
+    external identity's first sight is not an audited action (link_identity
+    records nothing). What remains is the project plane, which still carries
+    an internal user id: `project.transfer` names the owner it moved AWAY
+    from, so alice's minted id is in this trail even though her creation
+    never was.
+    """
+    need("user.alice", "project.self")
     status, data = await call(
         "GET", "/v1/admin/audit", MASTER, params={"limit": 500}
     )
     expect_status("GET", "/v1/admin/audit", None, status, data, 200)
     blob = json.dumps(data)
-    assert S["user.alice"] in blob, "audit trail missing this run's user.create"
-    assert S["key_id.alice"] in blob, "audit trail missing this run's key.create"
+    assert S["user.alice"] in blob, "audit trail missing this run's project.transfer"
+    assert S["project.self"] in blob, "audit trail missing this run's project.rename"
     actions = {e["action"] for e in data}
-    for expected_action in ("user.create", "key.create", "project.rename", "project.transfer"):
+    for expected_action in ("project.create", "project.rename", "project.transfer"):
         assert expected_action in actions, f"audit trail never recorded {expected_action}"
 
 
@@ -1472,6 +1476,8 @@ EXPECTED_MCP_TOOLS = {
     # working state and standing context
     "start_working_session", "set_working_state", "clear_working_state",
     "load_context",
+    # projects -- the only project route advertised over MCP
+    "transfer",
 }
 
 
@@ -1497,10 +1503,14 @@ async def _() -> None:
         await session.discover()
         tools = await session.list_tools()
         names = {t.name for t in tools.tools}
-        assert names == EXPECTED_MCP_TOOLS, (
-            f"advertised tool set drifted: extra={sorted(names - EXPECTED_MCP_TOOLS)} "
-            f"missing={sorted(EXPECTED_MCP_TOOLS - names)}"
-        )
+    # Asserted OUTSIDE the session: anyio's task group turns any exception
+    # raised inside it into an ExceptionGroup, so the drift message above was
+    # replaced by "unhandled errors in a TaskGroup (1 sub-exception)" -- on
+    # the one scenario whose entire value is naming what drifted.
+    assert names == EXPECTED_MCP_TOOLS, (
+        f"advertised tool set drifted: extra={sorted(names - EXPECTED_MCP_TOOLS)} "
+        f"missing={sorted(EXPECTED_MCP_TOOLS - names)}"
+    )
 
 
 @scenario("mcp.exercise_every_memory_tool")
@@ -1646,7 +1656,7 @@ async def _() -> None:
             "create_mental_model", "list_mental_models", "get_mental_model",
             "update_mental_model", "refresh_mental_model", "delete_mental_model",
             "start_working_session", "set_working_state", "clear_working_state",
-            "load_context",
+            "load_context", "transfer",
         }
         exercised = set(called) | {"list_memories", "get_memory"}
         missing = memory_tools - exercised
