@@ -491,6 +491,10 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
     "clear_working_state": True, "load_context": False,
     "create_mental_model": True, "list_mental_models": False, "get_mental_model": False,
     "update_mental_model": True, "refresh_mental_model": True, "delete_mental_model": True,
+    # transfer mutates ownership but, like REST's own transfer_project route,
+    # never calls ratelimit.check -- it doesn't resolve a Hindsight bank at
+    # all, so there is no _resolve_bank is_write flag to set.
+    "transfer": False,
 }
 
 MCP_CREATE_TABLE: dict[str, bool] = {
@@ -508,6 +512,7 @@ MCP_CREATE_TABLE: dict[str, bool] = {
     # over an existing bank, never first-touch project creation).
     "create_mental_model": False, "list_mental_models": False, "get_mental_model": False,
     "update_mental_model": False, "refresh_mental_model": False, "delete_mental_model": False,
+    "transfer": False,
 }
 
 # The twelve read tools that map an absent project to their own empty shape
@@ -545,6 +550,11 @@ WORKING_STATE_KWARGS: dict[str, dict] = {
 CONTEXT_KWARGS = {
     "clear_working_state": {"workspace_id": "ws_" + "0" * 32, "session_id": "s1", "session_epoch": 0, "checkpoint_seq": 0},
     "load_context": {"workspace_id": None},
+}
+# transfer takes no `scope` either -- a project, unlike a memory bank, is
+# never user/project-scoped, only addressed directly by slug.
+PROJECT_KWARGS = {
+    "transfer": {"owner_type": "user", "owner_id": "usr_ghost"},
 }
 
 
@@ -585,21 +595,28 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
     for name, expect_write in MCP_IS_WRITE_TABLE.items():
         if name == "load_context":
             continue
-        if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS:
+        if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS or name in PROJECT_KWARGS:
             # project_slug need not exist: ratelimit.check() runs before any
-            # project resolution, so RATE_LIMITED fires first regardless.
-            kwargs = {"project_slug": "wst-ratelimit", **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS[name])}
+            # project resolution, so RATE_LIMITED fires first regardless --
+            # true for every tool here except transfer, which never calls
+            # ratelimit.check at all (see its own carve-out below).
+            kwargs = {
+                "project_slug": "wst-ratelimit",
+                **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS.get(name) or PROJECT_KWARGS[name]),
+            }
         else:
             kwargs = {"scope": "user", **GHOST_EXTRA_KWARGS.get(name, {})}
         if expect_write:
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == "RATE_LIMITED", name
-        elif name in ("memory_history", "get_mental_model"):
+        elif name in ("memory_history", "get_mental_model", "transfer"):
             # get_mental_model is a pure registry read with no Hindsight call
-            # to mock success from -- a ghost model_key genuinely 404s. The
-            # property under test is still "not RATE_LIMITED", same as
-            # memory_history's own carve-out above.
+            # to mock success from -- a ghost model_key genuinely 404s.
+            # transfer targets a project_slug that does not exist, so it
+            # always raises PROJECT_NOT_FOUND. The property under test is
+            # still "not RATE_LIMITED", same as memory_history's own
+            # carve-out above.
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code != "RATE_LIMITED"
@@ -628,8 +645,11 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
         if name == "load_context":
             continue
         slug = f"tbl-{uuid.uuid4().hex[:12]}"
-        if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS:
-            kwargs = {"project_slug": slug, **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS[name])}
+        if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS or name in PROJECT_KWARGS:
+            kwargs = {
+                "project_slug": slug,
+                **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS.get(name) or PROJECT_KWARGS[name]),
+            }
         else:
             kwargs = {
                 "scope": "project", "project_slug": slug,
@@ -690,6 +710,55 @@ def test_a_read_tool_never_leaks_project_access_denied(tool, call_tool):
     result = call_tool(tool, alice, **kwargs)
 
     assert result.result == READ_TOOLS_EMPTY_RESULT[tool]
+
+
+def test_transfer_moves_ownership(call_tool):
+    juan = call_tool.make_user()
+    juan_id = call_tool.last_user_id
+    call_tool.seed_project(juan, "payments")
+    alice = call_tool.make_user()
+    alice_id = call_tool.last_user_id
+
+    result = call_tool(
+        "transfer", juan, project_slug="payments",
+        owner_type="user", owner_id=alice_id,
+    )
+
+    assert result.result == {
+        "project_slug": "payments", "owner_type": "user", "owner_id": alice_id,
+    }
+    # And the new owner, not the old one, can now reach it.
+    second = call_tool(
+        "transfer", alice, project_slug="payments",
+        owner_type="user", owner_id=juan_id,
+    )
+    assert second.result["owner_id"] == juan_id
+
+
+def test_transfer_on_a_foreign_project_is_indistinguishable_from_absent(call_tool):
+    """The tool must resolve the slug first, then authorize -- exactly as
+    the REST route does. Calling projects.authorize directly would raise
+    ProjectAccessDenied, carrying owner_type, and break Task 5's invariant
+    on the one surface that most invites the shortcut."""
+    juan, alice = call_tool.make_user(), call_tool.make_user()
+    call_tool.seed_project(juan, "payments")
+
+    with pytest.raises(MCPToolError) as foreign:
+        call_tool(
+            "transfer", alice, project_slug="payments",
+            owner_type="user", owner_id=call_tool.last_user_id,
+        )
+    with pytest.raises(MCPToolError) as absent:
+        call_tool(
+            "transfer", alice, project_slug="does-not-exist",
+            owner_type="user", owner_id=call_tool.last_user_id,
+        )
+
+    assert foreign.value.code == absent.value.code == "PROJECT_NOT_FOUND"
+    # Same shape, not the same slug (the two calls deliberately target
+    # different ones) -- the invariant is that neither error leaks anything
+    # ProjectAccessDenied would carry (owner_type, most of all).
+    assert set(foreign.value.details) == set(absent.value.details) == {"project_slug"}
 
 
 @respx.mock
@@ -1493,11 +1562,12 @@ EXPECTED_TOOLS = {
     "clear_working_state", "load_context",
     "create_mental_model", "list_mental_models", "get_mental_model",
     "update_mental_model", "refresh_mental_model", "delete_mental_model",
+    "transfer",
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved when reflect gained caller tags.
-TOOL_CONTRACT_SHA256 = "5740d822d2db537a44b03424a7179d7ff24e96f82ab9f7e9e297b22d8d38d436"
+# moved when the transfer tool was added (lazy-provisioning plan, Task 7).
+TOOL_CONTRACT_SHA256 = "da9b1e2e8c330885d48e8214990ea3aa0bb9f12018e733a1854181b70218187b"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1509,7 +1579,7 @@ def test_tool_registration_is_stable_after_module_split():
     tools = mcp._tool_manager.list_tools()
     names = {tool.name for tool in tools}
 
-    assert len(tools) == 26
+    assert len(tools) == 27
     assert {
         "retain", "sync_retain", "recall", "reflect",
         "start_working_session", "set_working_state",
@@ -1543,7 +1613,7 @@ async def test_serialized_tool_contract_is_stable_after_module_split():
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
 
-    assert len(tools) == 26
+    assert len(tools) == 27
     assert hashlib.sha256(serialized).hexdigest() == TOOL_CONTRACT_SHA256
 
 
