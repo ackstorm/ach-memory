@@ -9,7 +9,7 @@ tool that parsed its own header or opened its own session would end that.
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from mcp.server.mcpserver import MCPServer
@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from memory.auth.principal import API_KEY_HEADER, Principal, resolve_principal
 from memory.config import get_settings
 from memory.db import session_scope
-from memory.errors import Forbidden
 
 
 class HasHeaders(Protocol):
@@ -66,21 +65,28 @@ def tool_session(ctx: HasHeaders) -> Iterator[ToolContext]:
         principal = resolve_principal(
             authorization, db, api_key=api_key, platform_token=platform_token
         )
-        if principal.is_master:
-            # Invariant 22: the master key never resides in an ordinary agent
-            # runtime, and an MCP client IS exactly that -- an LLM-driven
-            # coding agent, not an ACH-controlled service. Measured live: a
-            # master key over MCP reached ANY project in the tenant and
-            # returned another user's private project memory, because
-            # `_resolve_bank` bypasses ownership for `principal.is_master` by
-            # design (§7) and MCP has no header equivalent of REST's
-            # On-Behalf-Of -- `_run` hardcodes `on_behalf_of=None`, so a
-            # master call here would also audit an anonymous delegation
-            # (SPEC §20.3 unsatisfiable by construction). Refusing it here is
-            # the one-line fix for both: no MCP delegation path exists to add
-            # `on_behalf_of` to, so there is nothing left to support.
-            raise Forbidden("the master key is not accepted over MCP")
-        yield ToolContext(principal=principal, db=db)
+        # Invariant 22, enforced by withholding the authority rather than by
+        # refusing the caller. Measured live: a master key over MCP reached
+        # ANY project in the tenant and returned another user's private
+        # project memory, because `_resolve_bank` bypasses ownership for
+        # `principal.is_master` by design (§7) and MCP has no header
+        # equivalent of REST's On-Behalf-Of -- `_run` hardcodes
+        # `on_behalf_of=None`, so a privileged call here would also audit an
+        # anonymous delegation (SPEC §20.3 unsatisfiable by construction).
+        #
+        # It used to raise Forbidden, which was right while authority WAS the
+        # credential: a master key had no identity, so there was nothing left
+        # to be once you took its authority away. Now authority is
+        # configuration over an ordinary external identity, and refusing here
+        # would lock every configured operator out of their own memory over
+        # MCP -- an agent runtime is exactly where they use it. So the
+        # operator arrives as themselves, with their own banks and their own
+        # projects, and simply carries no authority on this surface. Both
+        # properties the refusal protected still hold: no ownership bypass,
+        # and no unattributable delegation.
+        yield ToolContext(
+            principal=replace(principal, authority_allowed=False), db=db
+        )
 
 
 INSTRUCTIONS = (

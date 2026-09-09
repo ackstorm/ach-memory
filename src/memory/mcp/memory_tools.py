@@ -130,12 +130,13 @@ def _run(
     scope=user slug must not ride along untouched.
 
     `on_behalf_of` is hardcoded to None here because it is moot: `tool_session`
-    refuses `principal.is_master` outright (invariant 22 — the master key
-    never resides in an ordinary agent runtime, and MCP is exactly that), so
-    every principal `_run` ever sees is a user key, for which `on_behalf_of`
-    is always None on REST too. There is no MCP equivalent of REST's
-    `current_on_behalf_of` header dependency to wire, and none is needed
-    unless a future task adds master-key delegation over MCP on purpose.
+    strips operator authority from every principal it yields (invariant 22 —
+    authority does not reside in an ordinary agent runtime, and MCP is exactly
+    that), so `principal.is_master` is False for every principal `_run` ever
+    sees, and `on_behalf_of` is always None for such a caller on REST too.
+    There is no MCP equivalent of REST's `current_on_behalf_of` header
+    dependency to wire, and none is needed unless a future task adds operator
+    delegation over MCP on purpose.
 
     `verbose` defaults to True — no reduction — because that is what the seven
     write tools want: their responses are small envelopes with nothing to
