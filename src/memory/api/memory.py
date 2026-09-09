@@ -16,6 +16,7 @@ from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.common import RenameForwarding
 from memory.auth.principal import Principal
 from memory.banks import resolve_project_bank, resolve_user_bank
+from memory.bootstrap import provision_before_retain
 from memory.config import get_settings
 from memory.db import get_session
 from memory.errors import ContentTooLarge
@@ -193,7 +194,7 @@ def _resolve_bank(
     on_behalf_of: str | None,
     action: str,
     *,
-    create: bool = True,
+    create: bool = False,
     is_write: bool = False,
 ) -> tuple[str, str | None, str | None]:
     """Resolve a request's bank and audit master-key access to it.
@@ -213,13 +214,21 @@ def _resolve_bank(
     read that spends model tokens on a server-level key with no per-user cost
     attribution (SPEC §19.4), which is the actual thing this limiter defends
     against. `recall` passes `is_write=True` for a different reason: with
-    `create=True` (the default) an unauthenticated-in-effect loop of
+    `create=True`, an unauthenticated-in-effect loop of
     `recall(project_slug=<random>)` mints a Project row per call -- each one
     permanently squatting a tenant-unique slug (invariant 8 makes slugs
     unique across live AND retired names, so none of them is ever
     recoverable) -- measured live at 80 projects in 5.1s against one key with
     no limiter on this route. It is a write by its actual effect even though
     the read it performs is free.
+
+    `create` defaults to False -- explicit at every call site that matters,
+    the same fix v0.5.0 already applied to the sibling function
+    (`4c3ac27 refactor(banks): stop defaulting project resolution to
+    create`). Before the lazy-provisioning plan this default was dead code:
+    every call site overrode it. `_typed_retain` is now the one caller that
+    passes `create=True`, guarded by `projects.create`'s own per-user hourly
+    limit rather than by this function's write-rate-limit gate above.
 
     Every caller must db.commit() after calling this — recording an audit
     row here is not itself a commit. An uncommitted row is invisible to any
@@ -246,9 +255,10 @@ def _resolve_bank(
         return bank_id, None, None
 
     bank_id, resolved_from, project_slug = resolve_project_bank(
-        # getattr: TypedRetainRequest (v0.4.0 retain) has no git_locator at
-        # all -- that concept only ever served enrichment/mismatch-checking
-        # for a lazily-CREATED project, and typed retain never creates one.
+        # getattr: TypedRetainRequest (v0.4.0 retain) has no git_locator
+        # field at all, so nothing here enriches or mismatch-checks one --
+        # even when this call is the one that lazily creates the project
+        # (`_typed_retain` passes create=True).
         db, principal, body.project_slug, getattr(body, "git_locator", None), create=create
     )
     if principal.is_master:
@@ -348,12 +358,19 @@ def _typed_retain(
     *,
     wait: bool,
 ) -> TypedRetainResponse:
-    # Existing-only (create=False): ordinary retain never mints an unknown
-    # project. Resolved here too (not just inside submit_retain) so the
-    # shared rate-limit/audit/activity choke point every other data-plane
-    # route funnels through still covers typed retain.
-    _resolve_bank(body, db, principal, on_behalf_of, "memory.retain", create=False, is_write=True)
+    # create=True: retain is the one place allowed to mint an unknown
+    # project (lazy-provisioning plan, decision 1), guarded by
+    # projects.create's own per-user hourly limit rather than by this
+    # function's write-rate-limit gate below. Resolved here, not just inside
+    # submit_retain, so the shared rate-limit/audit/activity choke point
+    # every other data-plane route funnels through still covers typed
+    # retain -- and so a project this call creates is committed before
+    # submit_retain's own existing-only resolution looks for it.
+    bank_id, _resolved_from, _project_slug = _resolve_bank(
+        body, db, principal, on_behalf_of, "memory.retain", create=True, is_write=True
+    )
     db.commit()
+    provision_before_retain(db, principal, scope=body.scope, bank_id=bank_id, client=get_client())
     return submit_retain(db, principal, body, client=get_client(), wait=wait)
 
 

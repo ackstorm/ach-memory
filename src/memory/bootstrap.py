@@ -61,6 +61,38 @@ def provision_user_bank(db: Session, user: User, *, client) -> MentalModelView:
     return mental_model_service.reconcile_builtin(db, bank, USER_CONTEXT, client=client)
 
 
+def provision_before_retain(
+    db: Session, principal: Principal, *, scope: str, bank_id: str, client
+) -> None:
+    """Ensure both banks a first retain might need are ready -- retain is the
+    one place allowed to create a project (lazy-provisioning plan, decision
+    1). Called right after the REST/MCP gate's own create=True resolution, so
+    the project row -- if this retain is what minted it -- already exists by
+    the time this runs.
+
+    Always provisions the calling user's own bank: a platform-authenticated
+    user never passes through POST /v1/users, so `link_identity` leaves it
+    unprovisioned (see its docstring) -- true regardless of this retain's
+    scope. Skipped for a master key, which has no bank of its own: it can
+    only ever reach an EXISTING project here, never a lazily created one --
+    `projects.resolve` refuses that combination unconditionally (a master key
+    has no identity to own the new project).
+
+    Additionally provisions the project bank for a project-scoped retain.
+    """
+    if principal.user_id is not None:
+        user = db.get(User, principal.user_id)
+        if user is not None:
+            provision_user_bank(db, user, client=client)
+    if scope == "project":
+        project = (
+            db.query(Project)
+            .filter_by(tenant_id=principal.tenant_id, bank_id=bank_id)
+            .one()
+        )
+        provision_project_bank(db, principal, project, client=client)
+
+
 class BootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_slug: str | None = Field(default=None, max_length=128)

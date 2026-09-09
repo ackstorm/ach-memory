@@ -495,7 +495,10 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
 }
 
 MCP_CREATE_TABLE: dict[str, bool] = {
-    "retain": False, "sync_retain": False, "recall": False, "memory_history": False, "reflect": False,
+    # retain/sync_retain are the one place allowed to lazily create a project
+    # (lazy-provisioning plan, decision 1); every other tool stays existing-
+    # only, including recall/reflect despite also being is_write=True above.
+    "retain": True, "sync_retain": True, "recall": False, "memory_history": False, "reflect": False,
     "list_memories": False, "get_memory": False, "forget": False,
     "correct": False, "restore": False, "list_documents": False,
     "get_document": False, "delete_document": False, "get_operation": False,

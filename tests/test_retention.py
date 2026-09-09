@@ -159,6 +159,13 @@ def test_mismatched_upstream_operation_identity_is_a_hindsight_error(session, pr
 
 
 def test_project_scope_never_creates_an_unknown_project(session, principal, client):
+    """Calls submit_retain directly, bypassing the REST/MCP gate that now
+    lazily creates a project for retain (create=True). What this pins is
+    that `resolve_bank_ref` -- the SHARED resolver retain, reflect, and every
+    curation/document path all call -- still refuses to create one on its
+    own. That guarantee is what keeps the other twelve callers (reflect
+    included) safe: retain may only ever create through the gate's own
+    explicit create=True, never through this shared resolution step."""
     request = TypedRetainRequest(
         scope="project",
         project_slug="does-not-exist",

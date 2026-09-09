@@ -49,6 +49,7 @@ from memory.api.memory import (
     _strip_bank_id,
 )
 from memory.api.operations import ListOperationsRequest
+from memory.bootstrap import provision_before_retain
 from memory.errors import DomainError
 from memory.hindsight.client import get_client
 from memory.mcp.compact import compact as compact_payload
@@ -861,12 +862,18 @@ def _retain(
         )
 
     def call(bank_id, db, principal, slug):
+        provision_before_retain(
+            db, principal, scope=scope, bank_id=bank_id, client=get_client()
+        )
         return submit_retain(
             db, principal, body_factory(), client=get_client(), wait=wait,
         ).model_dump(mode="json")
 
-    # create=False: existing-only, same as every other v0.4.0 retain surface.
-    return _run(ctx, body_factory, "memory.retain", call, create=False, is_write=True)
+    # create=True: retain is the one place allowed to mint an unknown
+    # project (lazy-provisioning plan, decision 1), guarded by
+    # projects.create's own per-user hourly limit. Every other v0.4.0 retain
+    # surface stays existing-only.
+    return _run(ctx, body_factory, "memory.retain", call, create=True, is_write=True)
 
 
 def _list_documents(

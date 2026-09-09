@@ -4,6 +4,11 @@ import httpx
 import pytest
 import respx
 
+from memory import mental_model_service, model_registry
+from memory.mental_model_service import reconcile_builtin
+from memory.models import Project, ProjectSlug, User
+from memory.retained_records import LogicalBankRef
+
 BASE = "http://hindsight.test"
 
 
@@ -124,21 +129,61 @@ def test_retain_always_uses_the_fixed_ach_exact_v1_shape(client, user_key, tenan
     assert "observation_scopes" not in item
 
 
-def test_rest_retain_requires_typed_fields_and_existing_project(client, user_key, tenant):
-    _, key = user_key
+@respx.mock
+def test_the_first_retain_creates_and_provisions_the_project(
+    client, user_key, tenant, session, monkeypatch
+):
+    """An agent's first write is when memory has to start existing. Before
+    this, retain against a slug nobody had bootstrapped returned
+    PROJECT_NOT_FOUND for ever, and a fail-open caller saw an empty memory
+    block with no error anywhere."""
+    # The app fixture stubs reconcile_builtin out by default for unrelated
+    # route tests -- this test is specifically about what it does.
+    monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
+    # Bank-id-agnostic: the same two mocks cover both the project bank's
+    # builtin registration and the calling user's own.
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
+        return_value=httpx.Response(
+            201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}
+        )
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    user_id, key = user_key
 
     response = client.post(
         "/v1/memory/retain",
         json=_retain_body(
-            scope="project", project_slug="missing", content="Use PostgreSQL.",
+            scope="project", project_slug="acme-app", content="Use PostgreSQL.",
             memory_type="decision", trigger="agent_proactive",
             evidence=[{"kind": "user_quote", "raw": "We will use PostgreSQL."}],
         ),
         headers=_headers(key),
     )
 
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
+    assert response.status_code == 202, response.text
+
+    mapping = session.query(ProjectSlug).filter_by(slug="acme-app").one()
+    project = session.get(Project, mapping.project_internal_id)
+    assert project is not None
+    assert project.owner_type == "user"
+    assert project.owner_id == user_id
+
+    project_bank = LogicalBankRef(
+        project.tenant_id, "project", None, project.internal_id, project.bank_id
+    )
+    assert model_registry.get_registered_model(session, project_bank, "project-context") is not None
+
+    # a platform-authenticated user never passes through POST /v1/users, so
+    # link_identity leaves their bank unprovisioned -- this project-scoped
+    # retain must provision it too, not only the project's own bank.
+    user = session.get(User, user_id)
+    user_bank = LogicalBankRef(user.tenant_id, "user", user.id, None, user.bank_id)
+    assert model_registry.get_registered_model(session, user_bank, "user-context") is not None
 
 
 @respx.mock
