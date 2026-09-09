@@ -33,8 +33,17 @@ def _recall(**overrides):
 def test_recall_drops_the_fields_no_tool_of_the_surface_can_consume():
     hit = _recall()["results"][0]
 
-    for gone in ("chunk_id", "source_fact_ids", "entities", "tags"):
+    for gone in ("chunk_id", "source_fact_ids", "entities"):
         assert gone not in hit
+
+
+def test_recall_keeps_tags_now_that_retain_writes_them():
+    """Tags became caller-visible the moment retain started writing them:
+    filtering by repo: is useless if the answer never says which repo."""
+    hit = _recall(tags=["repo:group/app"])["results"][0]
+
+    assert hit["tags"] == ["repo:group/app"]
+    assert "chunk_id" not in hit
 
 
 def test_recall_keeps_what_the_agent_acts_on():

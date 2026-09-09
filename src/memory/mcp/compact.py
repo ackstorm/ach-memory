@@ -26,7 +26,10 @@ in `hindsight_api/engine/memories/pg/curation.py`.
 
 from typing import Any, NamedTuple
 
-# Facts, as recall returns them.
+# Facts, as recall returns them. `tags` is deliberately NOT here: retain has
+# written caller tags (e.g. `repo:group/app`) since v0.4.x, and a caller
+# filtering recall/reflect by one needs to see it on the result to tell
+# scoped claims apart -- stripping it would make the filter useless.
 _RECALL_FACT = frozenset(
     {
         # No tool of §11 accepts a chunk id, so it is unusable by the caller.
@@ -34,8 +37,6 @@ _RECALL_FACT = frozenset(
         # `_strip_bank_id`), which is why compaction runs AFTER that filter and
         # never in place of it.
         "chunk_id",
-        # SPEC §13.6: v1 writes no retrieval tags, so this is [] on every read.
-        "tags",
         # Only resolvable through the `source_facts` map, which is disabled
         # upstream by default and which we never request — so these ids point
         # at nothing in the same response.
@@ -45,11 +46,11 @@ _RECALL_FACT = frozenset(
     }
 )
 
-# Memory units, as list_memories and get_memory return them.
+# Memory units, as list_memories and get_memory return them. `tags`: same
+# reasoning as _RECALL_FACT above.
 _MEMORY_UNIT = frozenset(
     {
         "chunk_id",
-        "tags",
         "entities",
         # Hindsight's own extraction-pipeline bookkeeping. Nothing on this
         # surface reacts to it. `state`, `invalidation_reason`, `invalidated_at`
