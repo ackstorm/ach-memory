@@ -156,6 +156,13 @@ class CustomModelUpdateRequest(BaseModel):
         return _validated_trigger(value)
 
 
+#: `MentalModelView.source_tags_mode` only ever echoes an already-stored
+#: value -- never caller input -- so it widens past the closed `FilterMode`
+#: a request accepts: a built-in's own definition (never caller-authored)
+#: stores Hindsight's `_strict` vocabulary directly (see `builtin_models.py`).
+StoredTagsMode = Literal["all", "any", "all_strict", "any_strict"]
+
+
 class MentalModelView(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model_key: str
@@ -167,7 +174,7 @@ class MentalModelView(BaseModel):
     definition_version: int | None = None
     source_query: str
     source_tags: tuple[str, ...]
-    source_tags_mode: FilterMode
+    source_tags_mode: StoredTagsMode
     max_tokens: int
     trigger: dict[str, object]
     delivery_state: Literal["ready", "withheld"]
@@ -725,6 +732,11 @@ def _upgrade_builtin(
     existing.source_query = definition.source_query
     existing.max_tokens = definition.max_tokens
     existing.trigger = dict(definition.trigger)
+    # Never sent upstream (Hindsight's mental-model tags_match lives in its
+    # trigger, which this codebase never sets): a definition_version bump for
+    # a mode-only change like all_strict is local bookkeeping, so it's safe
+    # to update unconditionally rather than diffing into upstream_changes.
+    existing.tags_match = definition.tags_match
     existing.definition_version = definition.version
     # lifecycle_state is deliberately untouched: an upgrade never re-enables
     # an operator-disabled built-in (SPEC §7.4).

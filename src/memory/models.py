@@ -606,7 +606,7 @@ class MentalModelRegistration(Base):
     name: Mapped[str] = mapped_column(String(256))
     source_query: Mapped[str] = mapped_column(Text)
     source_tags: Mapped[list[str]] = mapped_column(JSON)
-    tags_match: Mapped[str] = mapped_column(String(8))
+    tags_match: Mapped[str] = mapped_column(String(16))
     max_tokens: Mapped[int] = mapped_column(Integer)
     trigger: Mapped[dict[str, object]] = mapped_column(JSON)
     origin: Mapped[str] = mapped_column(String(16))

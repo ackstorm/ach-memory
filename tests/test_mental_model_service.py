@@ -23,6 +23,7 @@ from memory.mental_model_service import (
     delete_model,
     get_model,
     list_models,
+    reconcile_builtin,
     refresh_model,
     resume_model_mutation,
     update_model,
@@ -663,3 +664,31 @@ def test_update_retry_with_same_operation_id_and_different_payload_conflicts(
             CustomModelUpdateRequest(name="different", operation_id=operation_id),
             client=hindsight,
         )
+
+
+# ---------------------------------------------------------------------------
+# Built-ins: all_strict source selection
+# ---------------------------------------------------------------------------
+
+
+def test_builtin_definitions_use_all_strict():
+    assert USER_CONTEXT.tags_match == "all_strict"
+
+
+def test_reconcile_builtin_upgrades_a_stale_mode_to_all_strict(session, bank, hindsight):
+    """Without this, a bank registered before the all_strict bump would keep
+    reporting the old mode for ever, even after every later reconcile."""
+    model_registry.register_model(
+        session, bank, origin="builtin", model_key=USER_CONTEXT.key,
+        name="User context", source_query=USER_CONTEXT.source_query,
+        source_tags=list(USER_CONTEXT.source_tags), tags_match="all",
+        max_tokens=USER_CONTEXT.max_tokens, trigger=dict(USER_CONTEXT.trigger),
+        builtin_key=USER_CONTEXT.key, definition_version=USER_CONTEXT.version - 1,
+        delivery_state="ready", upstream_model_id="mm-upstream-old",
+    )
+    session.commit()
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-upgrade"}
+
+    result = reconcile_builtin(session, bank, USER_CONTEXT, client=hindsight)
+
+    assert result.source_tags_mode == "all_strict"

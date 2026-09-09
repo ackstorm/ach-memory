@@ -11,7 +11,7 @@ class BuiltinModelDefinition:
     name: str
     source_query: str
     source_tags: tuple[str, str]
-    tags_match: Literal["all"]
+    tags_match: Literal["all_strict"]
     max_tokens: int
     trigger: Mapping[str, object]
 
@@ -19,7 +19,7 @@ class BuiltinModelDefinition:
 USER_CONTEXT = BuiltinModelDefinition(
     key="user-context",
     scope="user",
-    version=2,
+    version=3,
     name="User Context",
     source_query=(
         "Summarize durable user context that an authorized agent should always know. "
@@ -31,7 +31,7 @@ USER_CONTEXT = BuiltinModelDefinition(
         "Present only current indefinite knowledge."
     ),
     source_tags=("schema:ach-retain-v1", "validity:indefinite"),
-    tags_match="all",
+    tags_match="all_strict",
     max_tokens=2048,
     trigger={
         "mode": "delta",
@@ -43,7 +43,7 @@ USER_CONTEXT = BuiltinModelDefinition(
 PROJECT_CONTEXT = BuiltinModelDefinition(
     key="project-context",
     scope="project",
-    version=2,
+    version=3,
     name="Project Context",
     source_query=(
         "Summarize durable, impersonal project context that is not cheaply rediscoverable "
@@ -55,7 +55,7 @@ PROJECT_CONTEXT = BuiltinModelDefinition(
         "indefinite knowledge."
     ),
     source_tags=("schema:ach-retain-v1", "validity:indefinite"),
-    tags_match="all",
+    tags_match="all_strict",
     max_tokens=2048,
     trigger={
         "mode": "delta",

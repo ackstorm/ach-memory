@@ -175,7 +175,7 @@ def test_released_v035_data_survives_v040_upgrade(
         ("current-name", True),
         ("previous-name", False),
     ]
-    assert head == "918c1a7a37de"
+    assert head == "73e00e0dd20c"
 
 
 def test_pre_retirement_state_survives_forward_removal(
