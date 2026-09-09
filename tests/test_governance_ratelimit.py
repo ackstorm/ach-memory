@@ -39,7 +39,7 @@ OP_ID = "44444444-4444-4444-4444-444444444444"
 MM_OP_ID = "55555555-5555-5555-5555-555555555555"
 MM_CREATE_FIELDS = {
     "source_tags": ["schema:ach-retain-v1", "validity:indefinite"],
-    "tags_match": "all", "max_tokens": 512,
+    "source_tags_mode": "all", "max_tokens": 512,
     "trigger": {"mode": "delta"},
 }
 

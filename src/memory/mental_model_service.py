@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,7 @@ from memory.errors import (
 from memory.ids import new_model_key
 from memory.models import MentalModelRegistration
 from memory.retained_records import LogicalBankRef
+from memory.tags import RESERVED_PREFIXES, FilterMode, default_filter_mode
 
 logger = logging.getLogger("memory.mental_model_service")
 
@@ -87,14 +88,32 @@ def _canonical_trigger(value: dict[str, object]) -> dict[str, object]:
     return {**_TRIGGER_DEFAULTS, **value}
 
 
-def _exact_required_tags(value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+def _validate_source_tag_superset(value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """The required pair must be present; extras are allowed so a caller can
+    narrow further (e.g. one repo, one subject), but never into a
+    server-owned namespace."""
     if value is None:
         return None
-    if frozenset(value) != REQUIRED_SOURCE_TAGS:
+    tags = frozenset(value)
+    if not REQUIRED_SOURCE_TAGS <= tags:
         raise ValueError(
-            "source_tags must select exactly schema:ach-retain-v1 and validity:indefinite"
+            "source_tags must include schema:ach-retain-v1 and validity:indefinite"
         )
+    extra = tags - REQUIRED_SOURCE_TAGS
+    if any(tag.startswith(prefix) for tag in extra for prefix in RESERVED_PREFIXES):
+        raise ValueError("that tag namespace is reserved")
     return value
+
+
+def _reject_loose_mode_with_extras(source_tags: tuple[str, ...], mode: FilterMode) -> None:
+    """`any` lets a single extra tag alone qualify a source, bypassing the
+    required schema:ach-retain-v1 + validity:indefinite pair entirely -- a
+    model that looks scoped to that tag and actually reads everything
+    carrying it, typed curation or not."""
+    if mode != "all" and frozenset(source_tags) != REQUIRED_SOURCE_TAGS:
+        raise ValueError(
+            "source_tags_mode must be 'all' when source_tags narrows beyond the required pair"
+        )
 
 
 class CustomModelCreateRequest(BaseModel):
@@ -102,7 +121,7 @@ class CustomModelCreateRequest(BaseModel):
     name: str
     source_query: str
     source_tags: tuple[str, ...]
-    tags_match: Literal["all"]
+    source_tags_mode: FilterMode = Field(default_factory=default_filter_mode)
     max_tokens: int = Field(ge=MIN_MAX_TOKENS)
     trigger: dict[str, object]
     operation_id: str
@@ -110,12 +129,17 @@ class CustomModelCreateRequest(BaseModel):
     @field_validator("source_tags")
     @classmethod
     def _validate_source_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _exact_required_tags(value)  # type: ignore[return-value]
+        return _validate_source_tag_superset(value)  # type: ignore[return-value]
 
     @field_validator("trigger")
     @classmethod
     def _validate_trigger(cls, value: dict[str, object]) -> dict[str, object]:
         return _validated_trigger(value)  # type: ignore[return-value]
+
+    @model_validator(mode="after")
+    def _validate_mode_against_extras(self) -> CustomModelCreateRequest:
+        _reject_loose_mode_with_extras(self.source_tags, self.source_tags_mode)
+        return self
 
 
 class CustomModelUpdateRequest(BaseModel):
@@ -143,7 +167,7 @@ class MentalModelView(BaseModel):
     definition_version: int | None = None
     source_query: str
     source_tags: tuple[str, ...]
-    tags_match: Literal["all"]
+    source_tags_mode: FilterMode
     max_tokens: int
     trigger: dict[str, object]
     delivery_state: Literal["ready", "withheld"]
@@ -206,7 +230,7 @@ def _payload_hash(bank: LogicalBankRef, request: CustomModelCreateRequest) -> st
         "name": request.name,
         "source_query": request.source_query,
         "source_tags": sorted(request.source_tags),
-        "tags_match": request.tags_match,
+        "source_tags_mode": request.source_tags_mode,
         "max_tokens": request.max_tokens,
         "trigger": request.trigger,
     }
@@ -276,7 +300,7 @@ def _to_view(row: MentalModelRegistration) -> MentalModelView:
         definition_version=row.definition_version,
         source_query=row.source_query,
         source_tags=tuple(row.source_tags),
-        tags_match=row.tags_match,
+        source_tags_mode=row.tags_match,
         max_tokens=row.max_tokens,
         trigger=row.trigger,
         delivery_state=row.delivery_state,
@@ -346,7 +370,7 @@ def create_custom_model(
         name=request.name,
         source_query=request.source_query,
         source_tags=list(request.source_tags),
-        tags_match=request.tags_match,
+        tags_match=request.source_tags_mode,
         max_tokens=request.max_tokens,
         trigger=request.trigger,
         lifecycle_state="creating",

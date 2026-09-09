@@ -63,7 +63,7 @@ def custom_request(
         name=name,
         source_query="Summarize review conventions.",
         source_tags=REQUIRED_TAGS,
-        tags_match="all",
+        source_tags_mode="all",
         max_tokens=max_tokens,
         trigger=TRIGGER,
         operation_id=operation_id or str(uuid4()),
@@ -74,7 +74,7 @@ CUSTOM_REQUEST = CustomModelCreateRequest(
     name="overflow",
     source_query="Summarize overflow.",
     source_tags=REQUIRED_TAGS,
-    tags_match="all",
+    source_tags_mode="all",
     max_tokens=256,
     trigger=TRIGGER,
     operation_id=str(uuid4()),
@@ -261,7 +261,7 @@ def test_create_retry_resumes_a_still_creating_row_to_active(session, bank, hind
     model_registry.register_model(
         session, bank, origin="user", model_key=model_key, name=request.name,
         source_query=request.source_query, source_tags=list(request.source_tags),
-        tags_match=request.tags_match, max_tokens=request.max_tokens, trigger=request.trigger,
+        tags_match=request.source_tags_mode, max_tokens=request.max_tokens, trigger=request.trigger,
         lifecycle_state="creating", mutation_operation_id=operation_id,
         mutation_payload_hash=digest,
         delivery_state="ready",
@@ -296,7 +296,7 @@ def test_create_rejects_a_source_selection_missing_a_required_tag():
             name="bad",
             source_query="q",
             source_tags=("schema:ach-retain-v1",),
-            tags_match="all",
+            source_tags_mode="all",
             max_tokens=256,
             trigger=TRIGGER,
             operation_id=str(uuid4()),
@@ -309,9 +309,56 @@ def test_create_rejects_the_nonexistent_manual_trigger_mode():
             name="bad-trigger",
             source_query="q",
             source_tags=REQUIRED_TAGS,
-            tags_match="all",
+            source_tags_mode="all",
             max_tokens=256,
             trigger={"mode": "manual"},
+            operation_id=str(uuid4()),
+        )
+
+
+def test_a_custom_model_may_narrow_to_a_caller_tag():
+    """Without this a custom model differs from the built-in only by
+    source_query and budget: it synthesizes over the whole scope corpus.
+    A per-agent model over one repo, or one subject, was impossible."""
+    request = CustomModelCreateRequest(
+        name="repo-scoped",
+        source_query="q",
+        source_tags=(*REQUIRED_TAGS, "repo:group/app"),
+        source_tags_mode="all",
+        max_tokens=256,
+        trigger=TRIGGER,
+        operation_id=str(uuid4()),
+    )
+    assert frozenset(request.source_tags) == frozenset((*REQUIRED_TAGS, "repo:group/app"))
+
+
+def test_a_narrowed_model_cannot_use_a_mode_that_admits_untagged():
+    """The trap this feature exists to avoid: extra source_tags under `any`
+    would let the extra tag alone qualify a source, bypassing the required
+    schema:ach-retain-v1 + validity:indefinite pair entirely -- a model that
+    looks scoped to one repo and actually reads everything tagged with it,
+    typed curation or not."""
+    with pytest.raises(ValueError):
+        CustomModelCreateRequest(
+            name="bad-mode",
+            source_query="q",
+            source_tags=(*REQUIRED_TAGS, "repo:group/app"),
+            source_tags_mode="any",
+            max_tokens=256,
+            trigger=TRIGGER,
+            operation_id=str(uuid4()),
+        )
+
+
+def test_source_tags_refuses_a_reserved_extra_tag():
+    with pytest.raises(ValueError):
+        CustomModelCreateRequest(
+            name="bad-extra",
+            source_query="q",
+            source_tags=(*REQUIRED_TAGS, "type:decision"),
+            source_tags_mode="all",
+            max_tokens=256,
+            trigger=TRIGGER,
             operation_id=str(uuid4()),
         )
 

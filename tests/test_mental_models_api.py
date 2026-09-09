@@ -52,7 +52,7 @@ def _create_body(**overrides) -> dict:
         "name": "review-context",
         "source_query": "Summarize review conventions.",
         "source_tags": REQUIRED_TAGS,
-        "tags_match": "all",
+        "source_tags_mode": "all",
         "max_tokens": 256,
         "trigger": TRIGGER,
         "operation_id": str(uuid.uuid4()),

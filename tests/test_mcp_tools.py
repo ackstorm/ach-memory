@@ -211,7 +211,7 @@ def test_mental_model_tools_never_return_a_physical_or_upstream_id(call_tool, se
 
     created = call_tool(
         "create_mental_model", key, scope="user", name="n", source_query="q",
-        source_tags=MM_REQUIRED_TAGS, tags_match="all", max_tokens=512,
+        source_tags=MM_REQUIRED_TAGS, source_tags_mode="all", max_tokens=512,
         trigger={"mode": "delta"},
     )
 
@@ -242,7 +242,7 @@ def test_mcp_refresh_and_delete_forward_the_callers_operation_id_to_the_ledger(c
 
     created = call_tool(
         "create_mental_model", key, scope="user", name="n", source_query="q",
-        source_tags=MM_REQUIRED_TAGS, tags_match="all", max_tokens=512,
+        source_tags=MM_REQUIRED_TAGS, source_tags_mode="all", max_tokens=512,
         trigger={"mode": "delta"},
     )
     model_key = created.result["model_key"]
@@ -472,7 +472,7 @@ GHOST_EXTRA_KWARGS: dict[str, dict] = {
     "cancel_operation": {"operation_id": GHOST},
     "create_mental_model": {
         "name": "n", "source_query": "q", "source_tags": MM_REQUIRED_TAGS,
-        "tags_match": "all", "max_tokens": 512,
+        "source_tags_mode": "all", "max_tokens": 512,
         "trigger": {"mode": "delta"},
     },
     "get_mental_model": {"model_key": MM_GHOST},
@@ -1625,7 +1625,7 @@ def test_create_mental_model_rejects_always_in_context(call_tool):
     with pytest.raises(TypeError):
         call_tool(
             "create_mental_model", key, scope="user", name="Ops",
-            source_query="?", source_tags=MM_REQUIRED_TAGS, tags_match="all",
+            source_query="?", source_tags=MM_REQUIRED_TAGS, source_tags_mode="all",
             max_tokens=512, trigger={}, always_in_context=True,
         )
 
