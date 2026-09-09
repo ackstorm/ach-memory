@@ -21,7 +21,7 @@ person's memory exist (SPEC §19.2) and `link_identity` keeps populating it;
 `groups` is a derived projection that `projects.owner_id` points at.
 
 Revision ID: d1e2f3a4b5c6
-Revises: 918c1a7a37de
+Revises: 73e00e0dd20c
 """
 
 from collections.abc import Sequence
