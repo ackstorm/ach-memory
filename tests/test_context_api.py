@@ -1,10 +1,8 @@
-from tests.conftest import _create_user
+from tests.conftest import create_user
 
 
-def test_context_load_is_an_authorized_non_creating_read(
-    client, master_headers, tenant
-):
-    user = _create_user(client, master_headers)
+def test_context_load_is_an_authorized_non_creating_read(client, session, tenant):
+    user = create_user(client, session)
 
     response = client.post(
         "/v1/context/load", json={}, headers=user["headers"]

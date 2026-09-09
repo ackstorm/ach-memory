@@ -196,8 +196,6 @@ def _build_context_probe(
     principal = Principal(
         tenant_id=tenant,
         user_id=user.id,
-        is_master=False,
-        key_id="key_v040context",
         credential_id="key_v040context",
     )
     request = LoadContextRequest(

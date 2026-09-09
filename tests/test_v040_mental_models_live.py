@@ -99,8 +99,7 @@ def live_bank(session, tenant, live_client):
 
 def _principal_for(bank: LogicalBankRef) -> Principal:
     return Principal(
-        tenant_id=bank.tenant_id, user_id=bank.user_id, is_master=False,
-        key_id="key_v040live", credential_id="key_v040live",
+        tenant_id=bank.tenant_id, user_id=bank.user_id, credential_id="key_v040live",
     )
 
 

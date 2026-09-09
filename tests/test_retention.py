@@ -28,8 +28,6 @@ def principal(session, tenant) -> Principal:
     return Principal(
         tenant_id=tenant,
         user_id=user.id,
-        is_master=False,
-        key_id="key_retention",
         credential_id="key_retention",
     )
 

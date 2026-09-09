@@ -12,8 +12,7 @@ def principal(session, tenant):
     session.add(user)
     session.flush()
     return Principal(
-        tenant_id=tenant, user_id=user.id, is_master=False,
-        key_id="key_banks", credential_id="key_banks",
+        tenant_id=tenant, user_id=user.id, credential_id="key_banks",
     )
 
 

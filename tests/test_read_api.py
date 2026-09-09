@@ -6,8 +6,6 @@ import respx
 BASE = "http://hindsight.test"
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
 
 
 @respx.mock
@@ -31,11 +29,11 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
         )
     )
 
-    key = two_users[0]["key"]
+    headers = two_users[0]["headers"]
     response = client.post(
         "/v1/read/recall",
         json={"scope": "user", "query": "Why is deployment disabled?"},
-        headers=_headers(key),
+        headers=headers,
     )
 
     assert response.status_code == 200
@@ -72,11 +70,11 @@ def test_read_recall_sends_v040_schema_and_type_tags(client, two_users):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
     ).mock(return_value=httpx.Response(200, json={"results": []}))
 
-    key = two_users[0]["key"]
+    headers = two_users[0]["headers"]
     response = client.post(
         "/v1/read/recall",
         json={"scope": "user", "query": "database", "kinds": ["decision"]},
-        headers=_headers(key),
+        headers=headers,
     )
 
     assert response.status_code == 200
@@ -94,11 +92,11 @@ def test_read_recall_ands_caller_tags_into_the_upstream_filter(client, two_users
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
     ).mock(return_value=httpx.Response(200, json={"results": []}))
 
-    key = two_users[0]["key"]
+    headers = two_users[0]["headers"]
     response = client.post(
         "/v1/read/recall",
         json={"scope": "user", "query": "database", "tags_filter": ["Repo:Group/App"]},
-        headers=_headers(key),
+        headers=headers,
     )
 
     assert response.status_code == 200
@@ -111,11 +109,11 @@ def test_read_recall_ands_caller_tags_into_the_upstream_filter(client, two_users
 def test_read_recall_refuses_a_reserved_tag_namespace(client, two_users):
     """The derived `schema:` tag is server-owned; a caller must not be able
     to forge one into the read filter either."""
-    key = two_users[0]["key"]
+    headers = two_users[0]["headers"]
     response = client.post(
         "/v1/read/recall",
         json={"scope": "user", "query": "database", "tags_filter": ["schema:ach-retain-v1"]},
-        headers=_headers(key),
+        headers=headers,
     )
 
     assert response.status_code == 400
@@ -132,7 +130,7 @@ def test_read_recall_withheld_bank_is_currentness_unavailable(client, two_users,
     from memory.retained_records import LogicalBankRef
 
     user_id = two_users[0]["user_id"]
-    key = two_users[0]["key"]
+    headers = two_users[0]["headers"]
     user = session.get(User, user_id)
     bank = LogicalBankRef(tenant, "user", user_id, None, user.bank_id)
     withhold_bank(session, bank, "op-unknown")
@@ -141,7 +139,7 @@ def test_read_recall_withheld_bank_is_currentness_unavailable(client, two_users,
     response = client.post(
         "/v1/read/recall",
         json={"scope": "user", "query": "database"},
-        headers=_headers(key),
+        headers=headers,
     )
 
     assert response.status_code == 503
@@ -154,11 +152,11 @@ def test_read_recall_missing_project_makes_no_upstream_call(client, two_users):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
     ).mock(return_value=httpx.Response(200, json={"results": []}))
 
-    key = two_users[0]["key"]
+    headers = two_users[0]["headers"]
     response = client.post(
         "/v1/read/recall",
         json={"scope": "project", "project_slug": "missing", "query": "q"},
-        headers=_headers(key),
+        headers=headers,
     )
 
     assert response.status_code == 404
@@ -176,11 +174,11 @@ def test_read_history_is_scoped_to_the_resolved_bank(client, two_users):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{memory_id}/history$"
     ).mock(return_value=httpx.Response(200, json=[]))
 
-    key = two_users[0]["key"]
+    headers = two_users[0]["headers"]
     response = client.post(
         "/v1/read/history",
         json={"scope": "user", "memory_id": memory_id},
-        headers=_headers(key),
+        headers=headers,
     )
 
     assert response.status_code == 200

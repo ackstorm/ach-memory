@@ -36,8 +36,6 @@ def retained_bank(session, tenant):
     principal = Principal(
         tenant_id=tenant,
         user_id=user.id,
-        is_master=False,
-        key_id="key_retained",
         credential_id="key_retained",
     )
     bank = LogicalBankRef(
@@ -213,8 +211,6 @@ def test_concurrent_exact_retry_creates_one_record(engine):
     principal = Principal(
         tenant_id=tenant_id,
         user_id=user_id,
-        is_master=False,
-        key_id="key_race",
         credential_id="key_race",
     )
     bank = LogicalBankRef(tenant_id, "user", user_id, None, bank_id)

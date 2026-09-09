@@ -38,8 +38,8 @@ def _user(tenant: str, *, user_id: str | None = None) -> User:
     )
 
 
-def _principal(tenant: str, user_id: str | None, master: bool = False) -> Principal:
-    return Principal(tenant_id=tenant, user_id=user_id, is_master=master, key_id="key_x")
+def _principal(tenant: str, user_id: str | None) -> Principal:
+    return Principal(tenant_id=tenant, user_id=user_id, credential_id="ext_x")
 
 
 def _state(*, tenant: str, user_id: str, project_internal_id: str, workspace_id: str) -> WorkingState:
