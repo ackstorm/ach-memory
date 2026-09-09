@@ -963,7 +963,7 @@ presented to the LLM as MCP tools.
 | mental model management | API only | shared, persistent, high-priority project state (§14.2) |
 | directive management | API only | directives directly steer future agent behavior (§14.1) |
 | `dry-run-refresh` | not exposed | costs exactly the same as a real refresh; the name invites the model to treat it as free |
-| `list_tags` | not exposed | v1 writes no tags (§13.6); it would always return empty |
+| `list_tags` | not exposed | tags exist from v0.4.x (§13.6) but only as a narrow, caller-known convention (e.g. `repo:<path>`); browsing a bank's tag space is not a use case this surface serves, and it would expose the server-derived namespaces (`type:`, `basis:`, `schema:`, `validity:`) too |
 
 Exclusion is enforced by our MCP not advertising these tools. Hindsight's
 per-bank `mcp_enabled_tools` allowlist could enforce the same set a second time,
@@ -1086,7 +1086,8 @@ Hindsight distinguishes two fields on `retain`:
 - **`tags`** — retrieval/filtering primitives that introduce an additional
   visibility dimension inside a bank.
 
-**v1 writes metadata and writes no retrieval tags.**
+**v1 writes metadata, four server-derived retrieval tags on every retain, and
+(from v0.4.x) an additive caller-supplied tag list (§13.6).**
 
 ### 13.1 Automatic provenance
 
@@ -1147,22 +1148,41 @@ The wrapper may populate Hindsight's short context field from runtime data:
 interactive-coding via codex on feature/auth
 ```
 
-### 13.6 Why there are no retrieval tags
+### 13.6 Retrieval tags: server-derived, plus a narrow caller convention
 
-The reason is YAGNI, not that a stored tag automatically hides a memory.
+Every retain writes four server-derived tags -- `type:<memory_type>`,
+`basis:<evidence_basis>`, `schema:ach-retain-v1`, `validity:indefinite|
+expiring` -- that classify the claim. These are never caller input and are
+never overridable (§7): a caller-supplied tag in one of these namespaces is
+refused as `INVALID_TAG` (§18) rather than merged.
 
-v1 has no justified need for a sub-scope inside a project bank. Adding
-retrieval tags would force the product to define which metadata becomes a tag,
-which tools apply filters, matching semantics for `recall` and `reflect`, tag
-behavior during mental-model refresh, and a migration for existing untagged
-memory.
+Beyond that, from v0.4.x, a caller may attach its own additive tags on
+`retain` and filter `recall`/`reflect` by them (`tags`). One shared gate
+(`memory.tags.normalize_caller_tags`) validates and normalizes every tag on
+every surface, so a tag written and a tag searched are byte-identical. The
+motivating case is an agent serving many repositories from one project bank,
+using `repo:<path>` to keep them apart without ACH resolving a project per
+event.
 
-Hindsight already provides semantic, keyword, temporal and graph retrieval
-inside the bank. The project bank is therefore the v1 retrieval boundary.
+This stays a convention, not an enforced scope: nothing rejects a retain that
+omits a tag, and nothing rejects a recall that forgets to filter by one.
+Enforcing either is explicitly out of scope -- it would require resolving an
+identity (a project, a repository) server-side for every event, which is
+exactly the per-event resolution this design avoids.
 
-If tags are introduced later the change requires an explicit backfill and
-compatibility strategy; existing memories will not gain the new model
-retroactively.
+`tags_match` is fixed at `all_strict` (AND, untagged memories excluded) on
+every surface and is never caller-settable: `all`/`any` would also return
+untagged memories and silently defeat the filter. A caller tag can only
+narrow what an already-authorized bank already returns; it is never a raw
+Hindsight tag/tag-group expression, and there is still no `list_tags` (§11.7)
+to browse a bank's tag space with.
+
+Mental models (§14) are unaffected: a built-in's fixed source filter
+(`tags_match="all"` over `{schema:ach-retain-v1, validity:indefinite}`) still
+matches a memory that also carries caller tags, since `all`/`any` match a
+superset of the required tags, not an exact set. A mental model scoped by a
+caller's own tags is not implemented today: a custom model's `source_tags`
+must equal that same fixed pair exactly.
 
 ---
 

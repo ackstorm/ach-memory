@@ -226,6 +226,12 @@ stdio proxy at all:
   master-key-only and irreversible.
 - The write limiter is in-process and per replica. It defaults to 60 writes per
   60 seconds per credential; replicas multiply the effective limit.
+- `retain`, `recall` and `reflect` accept caller `tags` (e.g. `repo:<path>` to
+  separate repositories inside one project bank). They are additive on
+  retain and AND-filtered on recall/reflect; server-derived tags (`type:`,
+  `basis:`, `schema:`, `validity:`) can never be overridden. Tagging is a
+  convention, not an enforced scope: nothing rejects a retain that omits a
+  tag, and nothing rejects a recall that forgets to filter by one.
 
 ## Seeing what is happening
 
