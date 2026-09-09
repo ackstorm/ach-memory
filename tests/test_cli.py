@@ -432,6 +432,27 @@ def test_preflight_rejects_empty_key_before_opening_connection(
         asyncio.run(cli._preflight("https://memory.example.com/mcp/", ""))
 
 
+def test_preflight_names_the_identity_provider_when_a_token_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The service mints no keys any more, so "MCP preflight failed" on a 401
+    sends a caller hunting for a key to rotate that never existed. The one
+    thing they can act on is which provider has to issue the token."""
+    import httpx
+
+    def create_client(_headers: dict[str, str]) -> object:
+        raise httpx.HTTPStatusError(
+            "Unauthorized",
+            request=httpx.Request("POST", "https://memory.example.com/mcp/"),
+            response=httpx.Response(401),
+        )
+
+    monkeypatch.setattr(cli, "create_mcp_http_client", create_client, raising=False)
+
+    with pytest.raises(cli.CLIError, match="identity provider"):
+        asyncio.run(cli._preflight("https://memory.example.com/mcp/", "stale-token"))
+
+
 @pytest.mark.parametrize(
     ("target", "config_name", "server_key", "expected_server", "owned_paths"),
     [

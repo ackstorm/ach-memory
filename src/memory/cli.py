@@ -89,10 +89,49 @@ async def _preflight(url: str, api_key: str) -> None:
             tools = await session.list_tools()
         names = {tool.name for tool in tools.tools}
     except Exception as exc:
+        # A refusal is worth separating from every other failure. ach-memory
+        # issues no credentials of its own, so there is no key here to rotate
+        # or re-mint -- "MCP preflight failed" would send a caller looking for
+        # one that never existed. The single actionable fact is which system
+        # has to issue the token.
+        if _is_unauthorized(exc):
+            raise CLIError(
+                "MCP preflight failed: the service did not accept "
+                "ACH_MEMORY_API_KEY. ach-memory issues no credentials of its "
+                "own -- the value must be a current token from the identity "
+                "provider this deployment trusts (its JWT issuer, or the "
+                "platform that issued your key)."
+            ) from exc
         raise CLIError("MCP preflight failed") from exc
 
     if {"recall", "retain"} - names:
         raise CLIError("MCP preflight failed: server is missing required public tools")
+
+
+def _is_unauthorized(exc: BaseException) -> bool:
+    """Whether a preflight failure was a 401/403 anywhere in the chain.
+
+    Walks `__cause__`/`__context__` because the MCP transport wraps the
+    httpx error, and an ExceptionGroup from the task group wraps it again --
+    the status is real either way, just never the outermost exception.
+    """
+    import httpx
+
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if (
+            isinstance(current, httpx.HTTPStatusError)
+            and current.response.status_code in (401, 403)
+        ):
+            return True
+        stack.extend([current.__cause__, current.__context__])
+        stack.extend(getattr(current, "exceptions", ()))
+    return False
 
 
 def _bundle_root(host: str) -> Path:
@@ -689,9 +728,9 @@ def _parser() -> argparse.ArgumentParser:
     mcp.add_argument(
         "--url",
         default=None,
-        help="memory service base URL (default: $ACH_MEMORY_URL). The API key "
-        "is read from $ACH_MEMORY_API_KEY and never taken as an argument, "
-        "because argv is world-readable",
+        help="memory service base URL (default: $ACH_MEMORY_URL). The token "
+        "your identity provider issued is read from $ACH_MEMORY_API_KEY and "
+        "never taken as an argument, because argv is world-readable",
     )
     context = commands.add_parser("context", help="load bounded standing context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
@@ -719,7 +758,8 @@ def _serve_mcp(url_argument: str | None = None) -> int:
     key = os.environ.get("ACH_MEMORY_API_KEY", "")
     if not key:
         print(
-            "ach-memory: ACH_MEMORY_API_KEY must be set to run the MCP proxy",
+            "ach-memory: ACH_MEMORY_API_KEY must hold the token your identity "
+            "provider issued to run the MCP proxy",
             file=sys.stderr,
         )
         return 1

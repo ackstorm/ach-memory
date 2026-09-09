@@ -12,9 +12,12 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
 
 - User-scoped and project-scoped memory with project ownership and forwarding
   after renames.
-- User keys for agents and a separate master key for provisioning and admin
-  operations.
-- REST endpoints for memory, recall/history, users, projects, groups, documents, operations,
+- Identity entirely from outside: a JWKS-verified JWT or a platform key
+  resolved over HTTP. This service mints no credential and stores none.
+- Operator authority as configuration (`MEMORY_MASTER_USERS`,
+  `MEMORY_MASTER_GROUPS`) over an already-resolved identity, rather than a
+  shared secret.
+- REST endpoints for memory, recall/history, projects, documents, operations,
   curation, directives, mental models, and audit access.
 - A streamable HTTP MCP surface backed by the same authorization and memory
   operations as REST — memory read/write, mental-model governance, Working
@@ -68,30 +71,19 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Mint one user key without placing the master key in a curl command argument:
+There is no key to mint. `ACH_MEMORY_API_KEY` holds **whatever token your
+identity provider issues** — a JWT from the issuer named in
+`MEMORY_AUTH_JWT_*`, or the platform key named in `MEMORY_AUTH_PLATFORM_*`.
+The variable keeps its name because it keeps its job; only the source of the
+value changed. See [Authentication](#authentication) below.
 
-```bash
-set -a; . ./.env; set +a
-curl_config=$(mktemp)
-chmod 600 "$curl_config"
-trap 'rm -f "$curl_config"' EXIT
-cat >"$curl_config" <<EOF
-header = "Authorization: Bearer $MEMORY_MASTER_KEY"
-header = "Content-Type: application/json"
-EOF
-user_id=$(curl --config "$curl_config" -fsS -X POST http://localhost:8000/v1/users -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_id"])')
-user_key=$(curl --config "$curl_config" -fsS -X POST "http://localhost:8000/v1/users/$user_id/keys" -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')
-export ACH_MEMORY_URL=http://localhost:8000
-export ACH_MEMORY_API_KEY="$user_key"
-```
-
-Put the endpoint and your key in your shell profile, so every agent inherits
+Put the endpoint and your token in your shell profile, so every agent inherits
 them however it is launched:
 
 ```bash
 # ~/.zshrc or ~/.bashrc
 export ACH_MEMORY_URL=https://memory.example.com
-export ACH_MEMORY_API_KEY=<user-key>
+export ACH_MEMORY_API_KEY=<token from your identity provider>
 ```
 
 All four hosts run the same server: a local stdio proxy that forwards to the
@@ -107,7 +99,7 @@ arguments, credential in `env`:
     "ach-memory", "mcp",
     "--url", "https://memory.example.com"
   ],
-  "env": { "ACH_MEMORY_API_KEY": "<user key>" }
+  "env": { "ACH_MEMORY_API_KEY": "<token from your identity provider>" }
 }
 ```
 
@@ -190,9 +182,10 @@ because the transport is stateless that redirect costs a round trip on
 every tool call, not just the first. `ach-memory init` already writes the
 correct form.
 
-`Authorization: Bearer <user key>` also works. Prefer the dedicated header when
-a gateway already uses `Authorization`; when both are sent,
-`x-ach-memory-key` wins. The master key is rejected on MCP, and v1 supports
+`Authorization: Bearer <token>` also works — both headers carry the same
+externally issued token. Prefer the dedicated header when a gateway already
+uses `Authorization`; when both are sent, `x-ach-memory-key` wins. An
+operator identity is rejected on MCP (invariant 22), and v1 supports
 native/non-browser MCP clients only.
 
 `ach-memory context load` reads the endpoint and credential from
@@ -269,7 +262,7 @@ identities, no project names, no content, no bank ids, and never a `user_id`
 or `project_slug` label — an unbounded label value kills the Prometheus that
 scrapes it, not this service. Disable with `MEMORY_METRICS_ENABLED=false`.
 
-`GET /v1/admin/activity` and `GET /v1/admin/activity/summary` — master key
+`GET /v1/admin/activity` and `GET /v1/admin/activity/summary` — operators
 only, tenant-filtered. One record per data-plane call: which credential, which
 action, which bank (as `scope` + `user_id`/`project_slug`, plus a
 non-reversible `bank_fingerprint`), how many bytes, how long it took, and
@@ -288,7 +281,8 @@ insert. A wedged agent still reads clearly: a silent fleet row plus a 401 spike.
 
 `GET /admin/ui` — a single static page over those two routes, plus a tab that
 reads a bank live. No build step, no CDN, no third-party JavaScript: it holds
-the master key for the tab only (`sessionStorage`, never `localStorage`).
+the operator's token for the tab only (`sessionStorage`, never
+`localStorage`).
 Disable with `MEMORY_ADMIN_UI_ENABLED=false`.
 
 Both `/metrics` and `/admin/ui` sit behind the same ingress as everything else.
@@ -313,25 +307,46 @@ monitor can never point at an endpoint that is switched off.
 
 ## Authentication
 
-Three ways in, tried in a fixed order and fail-closed: whichever provider the
-credential names is the only one consulted, so a rejected credential is never
-retried as something else.
+**Every credential is issued elsewhere.** This service mints none, stores none
+and verifies none of its own, so at least one provider must be configured or
+nothing can authenticate. Two ways in, tried in a fixed order and fail-closed:
+whichever provider the credential names is the only one consulted, so a
+rejected credential is never retried as something else.
 
-1. **This service's own `mem_` keys** — always on, and the only thing enabled
-   by default. Send `x-ach-memory-key: mem_...`, or `Authorization: Bearer
-   mem_...` from a host that cannot set a custom header.
-2. **A JWKS-verified JWT** on `Authorization: Bearer <token>` — off by
-   default. Use it when an identity provider you already run (ACH, Dex) mints
-   tokens for the agent, so nobody has to mint and distribute a memory key.
-3. **A platform API key** on a header you name — off by default. Use it when
-   callers arrive through a platform that forwards its own key rather than a
-   token this service could verify offline (LiteLLM). Identity comes from an
-   HTTP round trip to that platform, cached on success only.
+1. **A JWKS-verified JWT** on `Authorization: Bearer <token>`, or on
+   `x-ach-memory-key` from behind a gateway that claims `Authorization`. Use
+   it when an identity provider you already run (ACH, Dex) mints tokens for
+   the agent.
+2. **A platform API key** on a header you name. Use it when callers arrive
+   through a platform that forwards its own key rather than a token this
+   service could verify offline (LiteLLM). Identity comes from an HTTP round
+   trip to that platform, cached on success only.
 
-2 and 3 can run together: the JWT is primary, the platform header is the
+Both can run together: the JWT is primary, the platform header is the
 fallback. Both can also assert group membership, which authorizes projects
-owned by those groups with no `group_members` row — and which the provider can
-revoke just by no longer asserting it. Neither can ever grant master authority.
+owned by those groups with no row anywhere — and which the provider can revoke
+just by no longer asserting it.
+
+### Operator authority
+
+Neither provider can grant it: a token that claims to be an operator is still
+just a user. Authority is configuration read over the already-resolved
+identity, so an operator is an ordinary external user — with their own bank
+and their own projects — whom `MEMORY_MASTER_USERS` or `MEMORY_MASTER_GROUPS`
+also names.
+
+```bash
+MEMORY_MASTER_USERS=juancarlos@example.com,usr_232323
+MEMORY_MASTER_GROUPS=sre,platform
+```
+
+Both default to empty, which grants **nobody**, and the service refuses to
+start if either parses to an entry that could match a principal with no
+identity. It gates the audit log, bank clear and delete, slug release, the
+fleet view and `On-Behalf-Of` delegation — and unlike a shared secret it puts
+a person in `actor_key_id`, which is the only thing that matters when
+reviewing why somebody touched another user's bank.
+
 Full rules in [SPEC-v1.md](SPEC-v1.md) §5.3.
 
 **ACH, via JWT:**
@@ -373,8 +388,8 @@ MEMORY_AUTH_PLATFORM_GROUPS_FIELD=teams
 ```
 
 `/v2/user/info` defaults to a self-lookup when `user_id` is omitted, so the
-caller's own key identifies the caller and no master key is involved. A key not
-bound to a user answers 400 and is refused.
+caller's own key identifies the caller. A key not bound to a user answers 400
+and is refused.
 
 Point it instead at `alitellm-auth` if you run it. That reads the key from
 `x-alitellm-auth-api-key` and holds the LiteLLM master key itself, at the cost
@@ -424,8 +439,9 @@ its server registration's `extra_headers`.
 | Setting | Default |
 | --- | --- |
 | `MEMORY_DATABASE_URL` | required |
-| `MEMORY_MASTER_KEY_HASH` | required |
 | `MEMORY_HINDSIGHT_URL` | required |
+| `MEMORY_MASTER_USERS` | empty (grants nobody) |
+| `MEMORY_MASTER_GROUPS` | empty (grants nobody) |
 | `MEMORY_HINDSIGHT_API_KEY` | empty |
 | `MEMORY_TENANT_ID` | `default` |
 | `MEMORY_MAX_CONTENT_BYTES` | `256000` |
