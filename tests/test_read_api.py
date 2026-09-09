@@ -51,6 +51,10 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
                 "kind": None,
                 "origin": None,
                 "occurred_at": None,
+                # Empty, not absent: the field is the caller's own tags, and a
+                # hit retained without any still has to say so -- a missing key
+                # would read as "unknown" to a client filtering on repo.
+                "tags": [],
                 "document_id": None,
             }
         ],
