@@ -122,4 +122,5 @@ def authenticate(token: str, db: Session) -> Principal:
         user_id=user_id,
         groups=_groups(claims, settings.auth_jwt_groups_claim),
         credential_id=credential_id,
+        subject=subject,
     )

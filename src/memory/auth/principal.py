@@ -30,6 +30,17 @@ class Principal:
     #: `ext_<hash>`, from `auth.provisioning.credential_id_for`. Every
     #: authenticated caller has one, because every caller is external.
     credential_id: str | None = None
+    #: The external identity as its issuer names it -- an email, an opaque
+    #: `sub`. This, NOT `user_id`, is what `MEMORY_MASTER_USERS` matches:
+    #: `user_id` is minted locally by `link_identity` on first sight, so
+    #: naming an operator by it would mean configuring an id that does not
+    #: exist until after that operator's first login, and that nobody can
+    #: predict. An operator is named by the identity their IdP asserts.
+    subject: str | None = None
+    #: Surfaces that must not exercise operator authority set this to False.
+    #: See `mcp/server.py`: authority bypasses ownership in `_resolve_bank`,
+    #: and MCP has no On-Behalf-Of header to attribute the delegation to.
+    authority_allowed: bool = True
 
     @property
     def is_master(self) -> bool:
@@ -39,8 +50,12 @@ class Principal:
         an already-resolved external identity, so an operator is an ordinary
         user who also happens to be named in `MEMORY_MASTER_USERS` or to hold
         a group in `MEMORY_MASTER_GROUPS`.
+
+        `authority_allowed` gates it because authority is a property of the
+        surface as well as the identity: the same person is an operator over
+        REST and an ordinary user over MCP.
         """
-        return is_operator(self, get_settings())
+        return self.authority_allowed and is_operator(self, get_settings())
 
 
 def is_operator(principal: Principal, settings: Settings) -> bool:
@@ -48,9 +63,15 @@ def is_operator(principal: Principal, settings: Settings) -> bool:
 
     Takes the settings explicitly so the rule can be tested against a
     Settings object without reaching through the module-level cache.
+
+    Matches on `subject` and on IdP-asserted `groups` -- both external
+    namespaces an administrator can actually write into configuration. A
+    principal with no subject (none exists today; every caller is external)
+    can never match the user branch, rather than matching a configured empty
+    string.
     """
     return (
-        principal.user_id in settings.master_user_ids
+        (principal.subject is not None and principal.subject in settings.master_user_ids)
         or bool(principal.groups & settings.master_group_ids)
     )
 

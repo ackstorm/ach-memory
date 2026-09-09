@@ -144,4 +144,5 @@ def authenticate(token: str, db: Session) -> Principal:
         user_id=user_id,
         groups=groups,
         credential_id=credential_id,
+        subject=subject,
     )
