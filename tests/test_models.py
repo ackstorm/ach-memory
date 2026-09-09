@@ -3,8 +3,7 @@ from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 
 from memory import ids
-from memory.auth import keys
-from memory.models import ApiKey, User
+from memory.models import User
 
 
 def test_user_persists_with_its_bank_id(session, tenant):
@@ -21,44 +20,6 @@ def test_bank_id_is_unique(session, tenant):
     session.add(User(id=ids.new_user_id(), tenant_id=tenant, bank_id=bank_id))
     session.flush()
     session.add(User(id=ids.new_user_id(), tenant_id=tenant, bank_id=bank_id))
-
-    with pytest.raises(IntegrityError):
-        session.flush()
-
-
-def test_api_key_stores_only_a_hash(session, tenant):
-    user = User(id=ids.new_user_id(), tenant_id=tenant, bank_id=ids.new_user_bank_id())
-    session.add(user)
-    session.flush()
-
-    plaintext = keys.generate_key()
-    session.add(
-        ApiKey(
-            id=ids.new_key_id(),
-            tenant_id=tenant,
-            user_id=user.id,
-            secret_hash=keys.hash_key(plaintext),
-        )
-    )
-    session.flush()
-
-    stored = session.query(ApiKey).one()
-    assert stored.secret_hash != plaintext
-    assert stored.status == "active"
-
-
-def test_api_key_row_without_a_user_is_rejected(session, tenant):
-    """The master key is configuration, never a row (SPEC §5.2). A user-less
-    row must be impossible at the schema level, because principal resolution
-    would otherwise have to decide what it means."""
-    session.add(
-        ApiKey(
-            id=ids.new_key_id(),
-            tenant_id=tenant,
-            user_id=None,
-            secret_hash=keys.hash_key(keys.generate_key()),
-        )
-    )
 
     with pytest.raises(IntegrityError):
         session.flush()

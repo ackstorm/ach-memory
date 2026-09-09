@@ -7,24 +7,17 @@
 17b  release_slug was the only slug lookup in the service that did not
      normalize its path parameter -- on the one route whose whole purpose is an
      operator typing a name by hand.
-24a  A master key naming an unknown user got 403, not USER_NOT_FOUND. §20.3
-     gives it tenant-wide bypass and §18 names USER_NOT_FOUND for this case.
+24a  An operator naming an unknown user got 403, not USER_NOT_FOUND. §20.3
+     gives them tenant-wide bypass and §18 names USER_NOT_FOUND for this case.
 24b  RFC 7235 makes the auth scheme case-insensitive.
 """
 
 
-def _key(client, master_headers) -> tuple[str, dict]:
-    uid = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    secret = client.post(
-        f"/v1/users/{uid}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return uid, {"Authorization": f"Bearer {secret}"}
-
-
 def test_both_patch_routes_annotate_a_request_that_followed_a_tombstone(
-    client, master_headers, tenant
+    client, new_user
 ):
-    uid, headers = _key(client, master_headers)
+    user = new_user()
+    uid, headers = user["user_id"], user["headers"]
     client.post("/v1/projects", json={"project_slug": "old-name"}, headers=headers)
     client.patch(
         "/v1/projects/old-name", json={"project_slug": "new-name"}, headers=headers
@@ -50,9 +43,9 @@ def test_both_patch_routes_annotate_a_request_that_followed_a_tombstone(
 
 
 def test_release_slug_normalizes_the_operator_typed_name(
-    client, master_headers, tenant
+    client, master_headers, new_user
 ):
-    _uid, headers = _key(client, master_headers)
+    headers = new_user()["headers"]
     client.post("/v1/projects", json={"project_slug": "payments-api"}, headers=headers)
     client.patch(
         "/v1/projects/payments-api", json={"project_slug": "payments"}, headers=headers
@@ -77,11 +70,12 @@ def test_a_master_key_naming_an_unknown_user_gets_user_not_found(
     assert response.json()["error"]["code"] == "USER_NOT_FOUND", response.text
 
 
-def test_a_user_key_addressing_someone_else_still_gets_forbidden(
-    client, master_headers, tenant
+def test_an_ordinary_caller_addressing_someone_else_still_gets_forbidden(
+    client, new_user
 ):
-    """The 403 shape must survive for a USER key -- it withholds existence."""
-    _uid, headers = _key(client, master_headers)
+    """The 403 shape must survive for a caller with no operator authority --
+    it withholds existence."""
+    headers = new_user()["headers"]
     response = client.post(
         "/v1/memory/recall",
         json={"scope": "user", "user_id": "usr_someone_else", "query": "x"},
@@ -91,11 +85,14 @@ def test_a_user_key_addressing_someone_else_still_gets_forbidden(
     assert response.json()["error"]["code"] == "FORBIDDEN", response.text
 
 
-def test_the_bearer_scheme_is_case_insensitive(client, master_headers, tenant):
-    uid, _ = _key(client, master_headers)
-    secret = client.post(
-        f"/v1/users/{uid}/keys", json={}, headers=master_headers
-    ).json()["key"]
+def test_the_bearer_scheme_is_case_insensitive():
+    """Pinned on the parser rather than end to end: there is no locally minted
+    key left to send, and the credential an `Authorization` header carries now
+    is an externally issued JWT, whose own provider has its own tests. What 24b
+    is about lives here -- `bearer <token>` used to return None, which
+    `resolve_principal` reports as "missing or malformed credential",
+    indistinguishable from sending nothing at all."""
+    from memory.auth.principal import _bearer_token
+
     for scheme in ("Bearer", "bearer", "BEARER", "BeArEr"):
-        r = client.get("/v1/projects", headers={"Authorization": f"{scheme} {secret}"})
-        assert r.status_code == 200, f"{scheme}: {r.text}"
+        assert _bearer_token(f"{scheme} tok-123") == "tok-123", scheme

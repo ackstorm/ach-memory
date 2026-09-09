@@ -1,4 +1,7 @@
+import pytest
+
 from memory.api.app import create_app
+from tests.conftest import IDENTITY_HEADER, OPERATOR_SUBJECT
 
 # SPEC §11.6/§11.7's exclusions are enforced today solely by nobody having
 # written the routes: get_bank, update_bank, get_bank_stats, list_banks,
@@ -14,19 +17,14 @@ from memory.api.app import create_app
 # HTTP verbs on a path-param id rather than the all-POST data-plane shape,
 # and -- like clear_memories/delete_bank -- absent from
 # tests/test_mcp_tools.py's EXPECTED_TOOLS on purpose.
+#
+# /v1/users and /v1/groups are absent, and their absence is load-bearing: this
+# service mints no identities any more. A user exists because an external
+# provider asserted them, so there is no route to create one and no key to
+# hand back -- re-adding either would restore a second, local source of
+# identity beside the IdP.
 EXPECTED_ROUTES = {
     ("POST", "/v1/bootstrap"),
-    ("POST", "/v1/users"),
-    ("GET", "/v1/users"),
-    ("GET", "/v1/users/{user_id}"),
-    ("POST", "/v1/users/{user_id}/keys"),
-    ("GET", "/v1/users/{user_id}/keys"),
-    ("DELETE", "/v1/users/{user_id}/keys/{key_id}"),
-    ("POST", "/v1/groups"),
-    ("GET", "/v1/groups"),
-    ("GET", "/v1/groups/{group_id}"),
-    ("PUT", "/v1/groups/{group_id}/members/{user_id}"),
-    ("DELETE", "/v1/groups/{group_id}/members/{user_id}"),
     ("POST", "/v1/projects"),
     ("GET", "/v1/projects"),
     ("GET", "/v1/projects/{project_slug}"),
@@ -148,10 +146,42 @@ def test_a_bearer_prefixed_platform_token_is_stripped(client, monkeypatch):
 
 def test_the_platform_header_is_ignored_when_the_provider_is_off(client, monkeypatch):
     """A stray header on a deployment that never enabled the provider is not a
-    credential -- it must not reach the resolver at all."""
+    credential -- it must not reach the resolver at all.
+
+    The suite now enables the platform provider for every test (it is how the
+    whole suite authenticates), so the header this sends is the one that WOULD
+    be a credential -- turning the provider off is what has to make it inert.
+    `_platform_token` reads the settings per request, so clearing the cache
+    here is enough; the app need not be rebuilt."""
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_ENABLED", "false")
+    get_settings.cache_clear()
     seen = _capture_platform_calls(monkeypatch)
 
-    response = client.get("/v1/projects", headers={"x-litellm-api-key": "sk-abc"})
+    response = client.get("/v1/projects", headers={IDENTITY_HEADER: OPERATOR_SUBJECT})
 
     assert seen == {}
     assert response.status_code == 401
+
+
+def test_create_app_refuses_a_master_config_that_could_over_grant(
+    configured_env, monkeypatch
+):
+    """Over-granting is the one misconfiguration that announces itself
+    nowhere: an empty entry in the granted set matches a principal with no
+    identity, and every request after that looks perfectly ordinary.
+
+    `config._id_set` discards empty entries, so the assertion in `create_app`
+    is unreachable through configuration alone -- which is exactly why it
+    needs a test that reaches it. Loosening that parsing must stop the
+    container from booting, not quietly hand every bank to everyone.
+    """
+    from memory import config
+
+    monkeypatch.setattr(config, "_id_set", lambda raw: frozenset(raw.split(",")))
+    monkeypatch.setenv("MEMORY_MASTER_USERS", "")
+    config.get_settings.cache_clear()
+
+    with pytest.raises(RuntimeError, match="Refusing to start"):
+        create_app()

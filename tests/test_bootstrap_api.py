@@ -8,15 +8,17 @@ from memory.mental_model_service import reconcile_builtin
 BASE = "http://hindsight.test"
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
-
-
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    key = client.post(f"/v1/users/{user_id}/keys", json={}, headers=master_headers).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
+def juan(new_user) -> dict:
+    """One ordinary external user, provisioned the way a real first-time caller
+    is -- nobody mints a user any more, so there is no route to call and no key
+    to hand back.
+
+    `new_user` pre-warms the bank through `POST /v1/bootstrap` while the `app`
+    fixture's `reconcile_builtin` stub is still in place, so it registers no
+    model and makes no upstream call the counters below could see.
+    """
+    return new_user()
 
 
 def _mock_create(counter: list[int]):
@@ -72,10 +74,21 @@ def test_bootstrap_is_idempotent(client, juan, monkeypatch):
 
 
 @respx.mock
-def test_bootstrap_with_a_project_slug_creates_it_owned_by_the_caller(
+def test_bootstrap_pre_warms_a_project_the_caller_already_owns(
     client, juan, session, monkeypatch
 ):
+    """Bootstrap creates nothing now: `retain` is the one place allowed to mint
+    an unknown slug, and it is the place carrying the audited per-caller hourly
+    ceiling. What is left is the pre-warm -- an EXISTING project gets its
+    retain strategy and its `project-context` built-in."""
     from memory.models import Project, ProjectSlug
+
+    # Created while `reconcile_builtin` is still the app fixture's stub, so
+    # the counter below sees only what bootstrap itself does.
+    created = client.post(
+        "/v1/projects", json={"project_slug": "Acme"}, headers=juan["headers"]
+    )
+    assert created.status_code == 201, created.text
 
     monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
     counter = [0]
@@ -93,6 +106,8 @@ def test_bootstrap_with_a_project_slug_creates_it_owned_by_the_caller(
     assert body["project_slug"] == "acme"
     assert body["project_owner"] == {"type": "user", "id": juan["user_id"]}
     assert body["project_model"]["model_key"] == "project-context"
+    assert body["project_status"] == "ready"
+    # user-context + project-context, one upstream create each.
     assert counter[0] == 2
 
     slug_row = session.get(ProjectSlug, (session.query(Project).first().tenant_id, "acme"))

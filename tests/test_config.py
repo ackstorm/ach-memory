@@ -5,13 +5,19 @@ from memory.config import Settings
 
 REQUIRED = {
     "MEMORY_DATABASE_URL": "postgresql+psycopg://memory:memory@localhost:5432/memory",
-    "MEMORY_MASTER_KEY_HASH": "0" * 64,
     "MEMORY_HINDSIGHT_URL": "http://localhost:8888",
 }
 
 
 def _clear(monkeypatch):
-    for key in list(REQUIRED) + ["MEMORY_TENANT_ID", "MEMORY_MAX_CONTENT_BYTES"]:
+    for key in list(REQUIRED) + [
+        "MEMORY_TENANT_ID",
+        "MEMORY_MAX_CONTENT_BYTES",
+        # Operator authority replaced the master key hash, and it is the one
+        # setting whose ambient value would silently change what a test means.
+        "MEMORY_MASTER_USERS",
+        "MEMORY_MASTER_GROUPS",
+    ]:
         monkeypatch.delenv(key, raising=False)
 
 
@@ -67,19 +73,67 @@ def test_a_zero_write_limit_is_refused(monkeypatch):
         Settings()
 
 
-def test_a_master_hash_with_stray_whitespace_still_authenticates(monkeypatch):
-    """`echo -n k | sha256sum` appends "  -"; a hash read from a mounted Secret
-    carries "\\n"; PowerShell's Get-FileHash is uppercase. Each silently
-    produced a master key that authenticates nothing, indistinguishable from a
-    wrong key -- on the one credential whose failure blocks all provisioning."""
-    from memory.auth import keys
+def _operator_env(monkeypatch, users: str | None = None, groups: str | None = None):
+    _clear(monkeypatch)
+    for key, value in REQUIRED.items():
+        monkeypatch.setenv(key, value)
+    if users is not None:
+        monkeypatch.setenv("MEMORY_MASTER_USERS", users)
+    if groups is not None:
+        monkeypatch.setenv("MEMORY_MASTER_GROUPS", groups)
+    return Settings()
 
-    real = keys.hash_key("some-master-key")
-    monkeypatch.setenv("MEMORY_MASTER_KEY_HASH", f"  {real.upper()}\n")
-    monkeypatch.setenv("MEMORY_DATABASE_URL", REQUIRED["MEMORY_DATABASE_URL"])
-    monkeypatch.setenv("MEMORY_HINDSIGHT_URL", REQUIRED["MEMORY_HINDSIGHT_URL"])
 
-    assert keys.verify_key("some-master-key", Settings().master_key_hash)
+def test_operator_authority_defaults_to_nobody(monkeypatch):
+    """Unset must grant nobody, and it is the raw string that has to stay
+    empty as well: `"".split(",")` is `[""]`, so a naive parse would put the
+    empty string in the granted set on every deployment that never set the
+    variable -- and there it would match a principal with an empty subject,
+    silently."""
+    settings = _operator_env(monkeypatch)
+
+    assert settings.master_users == ""
+    assert settings.master_groups == ""
+    assert settings.master_user_ids == frozenset()
+    assert settings.master_group_ids == frozenset()
+
+
+@pytest.mark.parametrize("raw", ["", " ", ",", " , ,, ", "\n"])
+def test_an_empty_ish_master_list_grants_nobody(monkeypatch, raw):
+    """A variable set to nothing in particular -- a blank Helm value, a
+    trailing comma, a newline from a mounted file -- is the same "nobody" as
+    unset. Anything else grants authority to whoever happens to resolve to a
+    blank id."""
+    settings = _operator_env(monkeypatch, users=raw, groups=raw)
+
+    assert settings.master_user_ids == frozenset()
+    assert settings.master_group_ids == frozenset()
+
+
+def test_an_empty_configured_entry_never_matches_a_blank_principal(monkeypatch):
+    """The failure this parsing exists to prevent, asserted at the place it
+    would actually be felt: `is_operator`."""
+    from memory.auth.principal import Principal, is_operator
+
+    settings = _operator_env(monkeypatch, users="", groups="")
+    blank = Principal(
+        tenant_id="default", user_id="usr_x", subject="", groups=frozenset({""})
+    )
+
+    assert not is_operator(blank, settings)
+
+
+def test_master_lists_are_comma_separated_and_whitespace_stripped(monkeypatch):
+    """The documented shape: a comma-separated list an administrator writes by
+    hand, so spaces around the separators are ordinary, not an error."""
+    settings = _operator_env(
+        monkeypatch,
+        users=" operator@test , ops@test ,",
+        groups="platform-admins , sre",
+    )
+
+    assert settings.master_user_ids == frozenset({"operator@test", "ops@test"})
+    assert settings.master_group_ids == frozenset({"platform-admins", "sre"})
 
 
 def test_a_zero_or_negative_write_window_is_refused(monkeypatch):
@@ -135,7 +189,6 @@ def test_the_readme_documents_every_setting():
 
 def _base_env(monkeypatch):
     monkeypatch.setenv("MEMORY_DATABASE_URL", "postgresql+psycopg://x/y")
-    monkeypatch.setenv("MEMORY_MASTER_KEY_HASH", "abc")
     monkeypatch.setenv("MEMORY_HINDSIGHT_URL", "http://localhost:8888")
 
 

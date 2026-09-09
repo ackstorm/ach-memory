@@ -12,17 +12,11 @@ from memory.errors import CurationNeedsOperator
 from memory.hindsight.client import HindsightClient
 from memory.mental_model_service import reconcile_builtin
 from memory.model_registry import register_model
-from memory.models import Project, ProjectSlug, User
+from memory.models import ExternalIdentity, Project, ProjectSlug, User
 from memory.retained_records import LogicalBankRef
+from tests.conftest import IDENTITY_HEADER, RESOLVER_URL, identity_token
 
 BASE = "http://hindsight.test"
-
-
-def _make_user_key(client, master_headers) -> str:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    return client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
 
 
 def _project_by_slug(session, slug: str) -> Project:
@@ -268,7 +262,7 @@ def test_reconcile_builtin_is_a_noop_when_already_current(session, principal, hi
 
 @respx.mock
 def test_a_project_created_through_the_control_plane_is_fully_provisioned(
-    client, session, master_headers, monkeypatch
+    client, session, new_user, monkeypatch
 ):
     """A project is usable when created, not when someone remembers to
     bootstrap it. Before this, POST /v1/projects minted a bank id and
@@ -278,9 +272,8 @@ def test_a_project_created_through_the_control_plane_is_fully_provisioned(
     # route tests -- this test is specifically about what it does, so restore
     # the real function.
     monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
-    # Registered before _make_user_key: creating that setup user now provisions
-    # its bank too (Task 1), and these mocks are bank-id-agnostic, so they cover
-    # both the user bank's builtin registration and the project's below.
+    # Bank-id-agnostic on purpose: the only real upstream call here is the
+    # project bank's builtin registration below.
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
         return_value=httpx.Response(
             201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}
@@ -289,12 +282,10 @@ def test_a_project_created_through_the_control_plane_is_fully_provisioned(
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
-    key = _make_user_key(client, master_headers)
+    headers = new_user()["headers"]
 
     response = client.post(
-        "/v1/projects",
-        json={"project_slug": "acme-app"},
-        headers={"Authorization": f"Bearer {key}"},
+        "/v1/projects", json={"project_slug": "acme-app"}, headers=headers
     )
     assert response.status_code == 201, response.text
 
@@ -309,13 +300,12 @@ def test_a_project_created_through_the_control_plane_is_fully_provisioned(
 
 @respx.mock
 def test_a_failed_provisioning_fails_the_create(
-    client, session, master_headers, monkeypatch
+    client, session, new_user, monkeypatch
 ):
     """A 201 means the bank is usable. Provisioning is what makes it usable,
     so a caller must never be told a project is ready when its bank has no
     retain strategy and no built-in model -- they would write into a bank
     that delivers nothing and never learn why."""
-    # Creating the setup user now provisions its bank too (Task 1).
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
         return_value=httpx.Response(
             201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}
@@ -324,7 +314,7 @@ def test_a_failed_provisioning_fails_the_create(
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
-    key = _make_user_key(client, master_headers)
+    headers = new_user()["headers"]
 
     def fail(db, principal, project, *, client):
         raise RuntimeError("hindsight is down")
@@ -333,9 +323,7 @@ def test_a_failed_provisioning_fails_the_create(
     monkeypatch.setattr("memory.api.projects.provision_project_bank", fail)
 
     response = client.post(
-        "/v1/projects",
-        json={"project_slug": "acme-app"},
-        headers={"Authorization": f"Bearer {key}"},
+        "/v1/projects", json={"project_slug": "acme-app"}, headers=headers
     )
 
     assert response.status_code >= 500
@@ -345,10 +333,19 @@ def test_a_failed_provisioning_fails_the_create(
 
 
 @respx.mock
-def test_a_new_user_gets_user_context_without_a_bootstrap_call(
-    client, session, master_headers, monkeypatch
+def test_a_new_user_is_linked_but_not_provisioned_until_bootstrap(
+    client, session, monkeypatch
 ):
-    """Same rule as projects: a bank is provisioned when it is created."""
+    """The opposite rule to projects above, and deliberately so.
+
+    `link_identity` runs on the authentication path of EVERY externally
+    authenticated request, so it creates the `User` row on first sight but
+    never provisions its bank -- a Hindsight round trip there would put
+    upstream latency and failure modes on ordinary auth. `POST /v1/bootstrap`
+    is the only thing that provisions a caller's own bank, which is why the
+    pre-warm survived the removal of the internal identity system: without it
+    a brand-new user's first `load_context` finds no `user-context` at all.
+    """
     monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
         return_value=httpx.Response(
@@ -358,10 +355,22 @@ def test_a_new_user_gets_user_context_without_a_bootstrap_call(
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
+    subject = "newcomer@test"
+    headers = {IDENTITY_HEADER: identity_token(subject)}
 
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-
-    registration = model_registry.get_registered_model(
-        session, _user_bank_ref(session, user_id), "user-context"
+    # A first authenticated write that is NOT bootstrap: enough to link the
+    # identity and commit it, never enough to provision the user's own bank.
+    created = client.post(
+        "/v1/projects", json={"project_slug": "acme-app"}, headers=headers
     )
-    assert registration is not None
+    assert created.status_code == 201, created.text
+
+    identity = session.get(ExternalIdentity, (RESOLVER_URL, subject))
+    assert identity is not None, "first sight must create the User row"
+    bank = _user_bank_ref(session, identity.user_id)
+    assert model_registry.get_registered_model(session, bank, "user-context") is None
+
+    warmed = client.post("/v1/bootstrap", json={}, headers=headers)
+
+    assert warmed.status_code == 200, warmed.text
+    assert model_registry.get_registered_model(session, bank, "user-context") is not None

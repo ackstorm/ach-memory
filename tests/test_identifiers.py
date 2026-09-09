@@ -2,10 +2,16 @@
 
 psycopg raises DataError ("PostgreSQL text fields cannot contain NUL (0x00)
 bytes") at parameter adaptation. SQLAlchemy wraps it as sqlalchemy.exc.
-DataError, which is NOT an IntegrityError -- so users.py's and groups.py's
-`except IntegrityError` never see it and it reaches api/app.py's catch-all as
-a 500. Eight routes were verified live in the 2026-08-23 review; this table
-pins all of them plus the two admin audit filters.
+DataError, which is NOT an IntegrityError -- so a route's `except
+IntegrityError` never sees it and it reaches api/app.py's catch-all as a 500.
+Eight routes were verified live in the 2026-08-23 review; this table pins the
+ones that still exist, plus the two admin audit filters.
+
+The rows for `/v1/users/{user_id}`, `/v1/users/{user_id}/keys` and
+`/v1/groups/{group_id}` are gone with the routes: this service mints no
+identities, so there is no caller-supplied user or group id reaching an
+INSERT through a control plane any more. Every remaining screening site is
+still pinned below.
 """
 
 import pytest
@@ -26,9 +32,6 @@ NUL_PATH = "a%00b"
 @pytest.mark.parametrize(
     "method,path,params,body,expected_code",
     [
-        ("GET", f"/v1/users/{NUL_PATH}", None, None, "USER_NOT_FOUND"),
-        ("GET", f"/v1/users/{NUL_PATH}/keys", None, None, "USER_NOT_FOUND"),
-        ("GET", f"/v1/groups/{NUL_PATH}", None, None, "GROUP_NOT_FOUND"),
         (
             "POST",
             f"/v1/admin/slugs/{NUL_PATH}/release",
@@ -103,10 +106,10 @@ def test_c1_a_control_character_owner_id_is_not_a_500(
 
 
 def test_c1_a_control_character_owner_id_on_transfer_is_not_a_500(
-    client, master_headers, tenant
+    client, master_headers, new_user
 ):
     """The other caller of _validate_owner (PATCH .../owner)."""
-    owner = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+    owner = new_user()["user_id"]
     client.post(
         "/v1/projects",
         json={"project_slug": "p", "owner": {"type": "user", "id": owner}},
@@ -132,57 +135,28 @@ def test_c2_a_control_character_in_on_behalf_of_is_a_422(
     (unlike a URL path, where the same byte makes httpx itself raise
     InvalidURL before the request is sent), so no percent-encoding is needed
     here.
+
+    Pinned on POST /v1/projects: the header is declared by
+    `current_on_behalf_of`, a shared dependency, so any route that depends on
+    it exercises the same bound.
     """
     headers = {**master_headers, "On-Behalf-Of": NUL}
-    response = client.post("/v1/users", json={}, headers=headers)
+    response = client.post("/v1/projects", json={"project_slug": "p"}, headers=headers)
     assert response.status_code == 422, response.text
-
-
-def test_i1_a_control_character_user_id_is_a_422_not_a_409(
-    client, master_headers, tenant
-):
-    """Same field already answers 422 for an oversize id (Field max_length);
-    a control-character id is the other kind of unstorable value and must
-    get the same treatment, not USER_ALREADY_EXISTS -- which would tell a
-    client that retrying with a different id fixes the problem, when it
-    doesn't."""
-    response = client.post("/v1/users", json={"id": NUL}, headers=master_headers)
-    assert response.status_code == 422, response.text
-    # FastAPI's own validation-error shape ({"detail": [...]}), never the
-    # domain-error envelope with a code that would contradict this status.
-    assert "error" not in response.json(), response.text
-
-
-def test_i2_a_control_character_group_id_is_a_422_not_a_409(
-    client, master_headers, tenant
-):
-    response = client.post("/v1/groups", json={"id": NUL}, headers=master_headers)
-    assert response.status_code == 422, response.text
-    assert "error" not in response.json(), response.text
 
 
 # --- 2026-08-23 whole-branch review, finding 1: control-character screening
 # closed on 8 sites, left open on 4 (git_locator on ScopedRequest/
-# CreateProjectRequest/UpdateProjectRequest, CreateGroupRequest.name, and
-# every scoped_query_params route). All six reproduced live as 500
-# INTERNAL_ERROR before the fix. ------------------------------------------
+# CreateProjectRequest/UpdateProjectRequest and every scoped_query_params
+# route). All reproduced live as 500 INTERNAL_ERROR before the fix.
+# CreateGroupRequest.name was the fifth and is no longer reachable: POST
+# /v1/groups went with the internal identity system. ----------------------
 
 
-def _create_user_key(client, master_headers) -> str:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    return client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-
-
-def test_r1_a_control_character_git_locator_on_retain_is_a_422(
-    client, master_headers, tenant
-):
+def test_r1_a_control_character_git_locator_on_retain_is_a_422(client, new_user):
     """ScopedRequest.git_locator reaches the projects INSERT via
     _resolve_bank -- same DataError -> 500 as ScopedRequest.user_id."""
-    key = _create_user_key(client, master_headers)
+    headers = new_user()["headers"]
     response = client.post(
         "/v1/memory/retain",
         json={
@@ -191,46 +165,34 @@ def test_r1_a_control_character_git_locator_on_retain_is_a_422(
             "content": "x",
             "git_locator": f"github.com/a/b{NUL}c",
         },
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    assert response.status_code != 500, response.text
-    assert response.status_code == 422, response.text
-
-
-def test_r1_a_control_character_git_locator_on_create_project_is_a_422(
-    client, master_headers, tenant
-):
-    key = _create_user_key(client, master_headers)
-    response = client.post(
-        "/v1/projects",
-        json={"project_slug": "p", "git_locator": f"github.com/a/b{NUL}c"},
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    assert response.status_code != 500, response.text
-    assert response.status_code == 422, response.text
-
-
-def test_r1_a_control_character_git_locator_on_patch_project_is_a_422(
-    client, master_headers, tenant
-):
-    key = _create_user_key(client, master_headers)
-    headers = {"Authorization": f"Bearer {key}"}
-    client.post("/v1/projects", json={"project_slug": "pp"}, headers=headers)
-
-    response = client.patch(
-        "/v1/projects/pp",
-        json={"git_locator": f"github.com/a/b{NUL}c"},
         headers=headers,
     )
     assert response.status_code != 500, response.text
     assert response.status_code == 422, response.text
 
 
-def test_r1_a_control_character_group_name_is_a_422_not_a_500(
-    client, master_headers, tenant
+def test_r1_a_control_character_git_locator_on_create_project_is_a_422(
+    client, new_user
 ):
     response = client.post(
-        "/v1/groups", json={"name": f"team{NUL}x"}, headers=master_headers
+        "/v1/projects",
+        json={"project_slug": "p", "git_locator": f"github.com/a/b{NUL}c"},
+        headers=new_user()["headers"],
+    )
+    assert response.status_code != 500, response.text
+    assert response.status_code == 422, response.text
+
+
+def test_r1_a_control_character_git_locator_on_patch_project_is_a_422(
+    client, new_user
+):
+    headers = new_user()["headers"]
+    client.post("/v1/projects", json={"project_slug": "pp"}, headers=headers)
+
+    response = client.patch(
+        "/v1/projects/pp",
+        json={"git_locator": f"github.com/a/b{NUL}c"},
+        headers=headers,
     )
     assert response.status_code != 500, response.text
     assert response.status_code == 422, response.text

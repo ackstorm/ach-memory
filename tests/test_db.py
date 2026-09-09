@@ -34,8 +34,10 @@ def test_bound_parameters_never_reach_an_exception_string(configured_env):
     `get_engine()` reads settings directly and isn't otherwise exercised by
     this suite (every other test bypasses it via a patched
     `_session_factory`), so it needs the `configured_env` fixture -- the same
-    minimum MEMORY_DATABASE_URL/MASTER_KEY_HASH/HINDSIGHT_URL config the
-    `app` fixture supplies -- to build at all.
+    minimum MEMORY_DATABASE_URL/MEMORY_HINDSIGHT_URL config the `app` fixture
+    supplies -- to build at all. There is no master key hash among them any
+    more: authority is `MEMORY_MASTER_USERS`/`MEMORY_MASTER_GROUPS`, both
+    optional, and `Settings` has no `master_key_hash` field at all.
     """
     from sqlalchemy import text
 

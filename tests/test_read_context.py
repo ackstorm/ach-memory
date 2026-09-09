@@ -17,23 +17,21 @@ from memory import ids, projects, read_context
 from memory.auth.principal import Principal
 from memory.errors import (
     Forbidden,
-    InvalidScope,
     ProjectContextUnavailable,
     ProjectNotFound,
     UserNotFound,
 )
 from memory.models import (
-    ApiKey,
     AuditEvent,
     ExternalIdentity,
     Group,
-    GroupMember,
     Project,
     ProjectSlug,
     User,
     WorkingSession,
     WorkingState,
 )
+from tests.conftest import OPERATOR_SUBJECT
 
 # Every domain table EXCEPT the two tolerated writes around a read: audit
 # events (mandatory delegated-master audit, SPEC §20 MUST) and activity
@@ -42,15 +40,26 @@ from memory.models import (
 # runs only at a REST/MCP edge this test never reaches).
 _DOMAIN_MODELS = [
     User,
-    ApiKey,
     ExternalIdentity,
     Group,
-    GroupMember,
     Project,
     ProjectSlug,
     WorkingSession,
     WorkingState,
 ]
+
+
+@pytest.fixture(autouse=True)
+def _operator_config(monkeypatch):
+    """Operator authority is configuration, and `Principal.is_master` reads it
+    through the module-level settings cache. These tests call the resolver
+    directly, with no `app` fixture to name the operator for them."""
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_MASTER_USERS", OPERATOR_SUBJECT)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _row_tuple(row) -> tuple:
@@ -75,8 +84,17 @@ def _user(session, tenant, user_id: str) -> User:
     return user
 
 
-def _principal(tenant: str, user_id: str | None, master: bool = False) -> Principal:
-    return Principal(tenant_id=tenant, user_id=user_id, is_master=master, key_id="key_x")
+def _principal(tenant: str, user_id: str, master: bool = False) -> Principal:
+    """`master` is no longer carried by the credential: it is the subject the
+    `_operator_config` fixture named in MEMORY_MASTER_USERS. An operator is an
+    ordinary user who happens to be named there, so they still have a user_id
+    of their own."""
+    return Principal(
+        tenant_id=tenant,
+        user_id=user_id,
+        credential_id="ext_x",
+        subject=OPERATOR_SUBJECT if master else f"{user_id}@test",
+    )
 
 
 def test_the_resolver_never_imports_hindsight():
@@ -190,7 +208,8 @@ def test_a_delegated_master_read_writes_only_the_audit_row(session, tenant):
     """The one tolerated write: everything else, including the target
     user's own row, must be untouched."""
     juan = _user(session, tenant, "usr_juan")
-    master = _principal(tenant, None, master=True)
+    _user(session, tenant, "usr_operator")
+    master = _principal(tenant, "usr_operator", master=True)
     before = _snapshot(session)
     assert session.query(AuditEvent).count() == 0
 
@@ -208,8 +227,9 @@ def test_a_delegated_master_read_writes_only_the_audit_row(session, tenant):
 
 def test_a_delegated_master_project_read_writes_only_the_audit_row(session, tenant):
     _user(session, tenant, "usr_juan")
+    _user(session, tenant, "usr_operator")
     owner = _principal(tenant, "usr_juan")
-    master = _principal(tenant, None, master=True)
+    master = _principal(tenant, "usr_operator", master=True)
     created = projects.resolve(session, owner, "payments-api")
     # The creation itself is now audited too (every creation is, not only a
     # master key's) -- baseline includes that one row, not zero.
@@ -232,18 +252,6 @@ def test_a_delegated_master_project_read_writes_only_the_audit_row(session, tena
     assert read_rows[0].resource == "payments-api"
 
 
-def test_a_master_key_with_no_user_id_is_a_typed_error_with_no_domain_writes(
-    session, tenant
-):
-    master = _principal(tenant, None, master=True)
-    before = _snapshot(session)
-
-    with pytest.raises(InvalidScope):
-        read_context.resolve_read_bank(session, master, None, "read.recall", "user")
-
-    assert _snapshot(session) == before
-
-
 def test_a_user_key_naming_another_user_is_forbidden_with_no_domain_writes(
     session, tenant
 ):
@@ -261,7 +269,8 @@ def test_a_user_key_naming_another_user_is_forbidden_with_no_domain_writes(
 
 
 def test_a_master_key_naming_a_missing_user_is_user_not_found(session, tenant):
-    master = _principal(tenant, None, master=True)
+    _user(session, tenant, "usr_operator")
+    master = _principal(tenant, "usr_operator", master=True)
     before = _snapshot(session)
 
     with pytest.raises(UserNotFound):
