@@ -36,10 +36,12 @@ onward.
 
 ## What works today
 
-`scope=user` and `scope=project` end to end. A master key provisions users and
-mints user keys; a user key retains and recalls against its own Hindsight bank
-(`scope=user`) or against a project's bank (`scope=project`); both materialize
-lazily and `bank_id` never leaves the service.
+`scope=user` and `scope=project` end to end. This service mints no
+credentials: a caller arrives with an externally issued identity (a forwarded
+platform token or a verifiable JWT), which `link_identity` turns into a local
+`User` on first sight. That caller retains and recalls against its own
+Hindsight bank (`scope=user`) or against a project's bank (`scope=project`);
+both materialize lazily and `bank_id` never leaves the service.
 
 Projects are created lazily — the first authenticated user to touch an unseen
 slug owns it — or explicitly via `POST /v1/projects`, with ownership `user` or
@@ -74,9 +76,9 @@ through, and this service does not otherwise persist or log them — and a
 reserved key (`tenant_id`, `user_id`, `project_slug`, `memory_key`,
 `on_behalf_of`, `agent`, `client_name`) in caller-supplied metadata is
 `INVALID_METADATA` with nothing written, not a silent override. Every
-master-key access to a bank that is not its own is now audited under a
-distinct action name per route, and an optional `On-Behalf-Of` header lets a
-master key record who it is acting for — provenance, never authorization
+operator access to a bank that is not its own is now audited under a
+distinct action name per route, and an optional `On-Behalf-Of` header lets an
+operator record who it is acting for — provenance, never authorization
 evidence, since it is never verified.
 
 This was proven end to end against a live Hindsight (`./scripts/smoke.sh`
@@ -109,9 +111,11 @@ local users through `external_identities`, because `User.bank_id` is what makes
 memory exist and no IdP subject is usable as a user id directly. Groups may be
 asserted by the provider and are checked independently of `group_members`, so
 an IdP that stops asserting a group revokes access on the next request with no
-row changing — while `is_master` stays a constant on every external path, so no
-claim can mint tenant-wide authority. Rate limiting and audit account against a
-`credential_id` (`key_...`, `ext_<hash>`, or NULL for the master key).
+row changing — and no claim can mint tenant-wide authority: `is_master` is
+derived from `MEMORY_MASTER_USERS`/`MEMORY_MASTER_GROUPS` over an
+already-resolved identity, never carried by a credential. Rate limiting and
+audit account against a `credential_id` (`ext_<hash>`; every authenticated
+caller has one, operators included).
 
 ## Observability (2026-08-26)
 
@@ -587,10 +591,10 @@ ship the service, not a database.** The chart is Deployment + Service +
 optional Ingress + a `pre-install,pre-upgrade` hook Job running `python -m
 alembic upgrade head` — Postgres and Hindsight stay external, so `helm
 install` can never seed a cluster with test data the way an in-chart database
-would. `MEMORY_MASTER_KEY_HASH` only ever comes from a `Secret`
-(`masterKeySecret.name` for an existing one, `.value` to have the chart
-create one); rendering `fail`s if neither is set — verified with `helm
-template` against no master-key config at all. `MEMORY_MCP_ALLOWED_HOSTS`
+would. There is no credential for the chart to carry: operator authority is
+`master.users`/`master.groups`, naming identities the IdP already asserts.
+Both default to empty, rendering succeeds with neither set, and `make chart`
+verifies the rendered manifest grants nobody. `MEMORY_MCP_ALLOWED_HOSTS`
 defaults from `ingress.host` for the same reason the compose file hardcodes
 `localhost:8000`: the SDK's DNS-rebinding guard matches `Host` including
 port, and getting this wrong makes every MCP call 421 while REST keeps
