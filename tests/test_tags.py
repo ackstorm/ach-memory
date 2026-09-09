@@ -1,7 +1,26 @@
 import pytest
 
 from memory.errors import InvalidTag
-from memory.tags import RESERVED_PREFIXES, normalize_caller_tags
+from memory.tags import (
+    FILTER_MODES,
+    RESERVED_PREFIXES,
+    default_filter_mode,
+    normalize_caller_tags,
+    to_upstream,
+)
+
+
+def test_the_default_mode_narrows():
+    """A caller who does not think about the mode must get the safe one.
+    `all` admits untagged memories, so a lazy call with the loose default
+    would return the whole corpus while looking filtered."""
+    assert default_filter_mode() == "all"
+    assert to_upstream("all") == "all_strict"
+
+
+def test_no_caller_mode_ever_admits_untagged():
+    for mode in FILTER_MODES:
+        assert to_upstream(mode).endswith("_strict")
 
 
 def test_tags_are_lowercased_stripped_deduped_and_sorted():

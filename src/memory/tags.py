@@ -8,6 +8,7 @@ than merely unlikely.
 """
 
 import re
+from typing import Literal
 
 from memory.errors import InvalidTag
 
@@ -18,6 +19,27 @@ RESERVED_PREFIXES = frozenset({"type:", "basis:", "schema:", "validity:"})
 
 MAX_TAGS = 8
 MAX_TAG_LENGTH = 64
+
+# Caller-facing tag filter modes. Both are strict: a mode that admits
+# untagged memories is not a filter, so the non-strict Hindsight vocabulary
+# (`all`/`any` without `_strict`) is never exposed here -- see `to_upstream`.
+FilterMode = Literal["all", "any"]
+FILTER_MODES: tuple[FilterMode, ...] = ("all", "any")
+
+_UPSTREAM_MODE: dict[FilterMode, str] = {"all": "all_strict", "any": "any_strict"}
+
+
+def default_filter_mode() -> FilterMode:
+    """The safe default: a caller who never thinks about the mode narrows,
+    rather than silently getting back the whole corpus."""
+    return "all"
+
+
+def to_upstream(mode: FilterMode) -> str:
+    """Map a caller-facing mode to Hindsight's own `tags_match` vocabulary.
+    Always the `_strict` variant: the non-strict forms also return untagged
+    memories, which would defeat a filter without saying so."""
+    return _UPSTREAM_MODE[mode]
 
 # One optional `namespace:` then a value. Slashes are allowed because the
 # motivating tag is a forge path (`repo:group/sub/app`).
