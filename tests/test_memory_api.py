@@ -12,27 +12,17 @@ from memory.retained_records import LogicalBankRef
 BASE = "http://hindsight.test"
 
 
-from tests.conftest import _create_user
+from tests.conftest import create_user
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, object]:
-    return _create_user(client, master_headers)
+def juan(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 @pytest.fixture
-def alice(client, master_headers, tenant) -> dict[str, object]:
-    return _create_user(client, master_headers)
-
-
-@pytest.fixture
-def user_key(client, master_headers, tenant) -> tuple[str, str]:
-    user = _create_user(client, master_headers)
-    return user["user_id"], user["key"]
-
-
-def _headers(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
+def alice(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 def _mock_hindsight() -> None:
@@ -75,23 +65,20 @@ def _retain_body(**overrides) -> dict:
     return body
 
 
-def _create_project(client, key: str, slug: str) -> None:
-    response = client.post(
-        "/v1/projects", json={"project_slug": slug}, headers=_headers(key)
-    )
+def _create_project(client, headers: dict[str, str], slug: str) -> None:
+    response = client.post("/v1/projects", json={"project_slug": slug}, headers=headers)
     assert response.status_code == 201, response.text
 
 
 @respx.mock
-def test_retain_reaches_the_callers_own_bank(client, user_key, tenant):
+def test_retain_reaches_the_callers_own_bank(client, juan, tenant):
     _mock_hindsight()
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    _, key = user_key
 
     response = client.post(
-        "/v1/memory/retain", json=_retain_body(), headers=_headers(key)
+        "/v1/memory/retain", json=_retain_body(), headers=juan["headers"]
     )
 
     assert response.status_code == 202, response.text
@@ -100,7 +87,7 @@ def test_retain_reaches_the_callers_own_bank(client, user_key, tenant):
 
 @pytest.mark.parametrize("path", ["/v1/memory/retain", "/v1/memory/sync_retain"])
 @respx.mock
-def test_retain_always_uses_the_fixed_ach_exact_v1_shape(client, user_key, tenant, path):
+def test_retain_always_uses_the_fixed_ach_exact_v1_shape(client, juan, tenant, path):
     """v0.4.0: exact typed retain always selects the frozen `ach-exact-v1`
     strategy and server-derived tags, never overridable by caller input, and
     evidence never reaches the wire payload."""
@@ -111,12 +98,11 @@ def test_retain_always_uses_the_fixed_ach_exact_v1_shape(client, user_key, tenan
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
         return_value=httpx.Response(200, json={"status": "completed"})
     )
-    _, key = user_key
 
     response = client.post(
         "/v1/memory/retain",
         json=_retain_body(memory_type="decision", basis="agent_verified"),
-        headers=_headers(key),
+        headers=juan["headers"],
     )
 
     assert response.status_code == 202, response.text
@@ -131,7 +117,7 @@ def test_retain_always_uses_the_fixed_ach_exact_v1_shape(client, user_key, tenan
 
 @respx.mock
 def test_the_first_retain_creates_and_provisions_the_project(
-    client, user_key, tenant, session, monkeypatch
+    client, juan, tenant, session, monkeypatch
 ):
     """An agent's first write is when memory has to start existing. Before
     this, retain against a slug nobody had bootstrapped returned
@@ -153,7 +139,6 @@ def test_the_first_retain_creates_and_provisions_the_project(
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    user_id, key = user_key
 
     response = client.post(
         "/v1/memory/retain",
@@ -162,7 +147,7 @@ def test_the_first_retain_creates_and_provisions_the_project(
             memory_type="decision", trigger="agent_proactive",
             evidence=[{"kind": "user_quote", "raw": "We will use PostgreSQL."}],
         ),
-        headers=_headers(key),
+        headers=juan["headers"],
     )
 
     assert response.status_code == 202, response.text
@@ -171,68 +156,60 @@ def test_the_first_retain_creates_and_provisions_the_project(
     project = session.get(Project, mapping.project_internal_id)
     assert project is not None
     assert project.owner_type == "user"
-    assert project.owner_id == user_id
+    assert project.owner_id == juan["user_id"]
 
     project_bank = LogicalBankRef(
         project.tenant_id, "project", None, project.internal_id, project.bank_id
     )
     assert model_registry.get_registered_model(session, project_bank, "project-context") is not None
 
-    # a platform-authenticated user never passes through POST /v1/users, so
-    # link_identity leaves their bank unprovisioned -- this project-scoped
-    # retain must provision it too, not only the project's own bank.
-    user = session.get(User, user_id)
+    # `link_identity` deliberately leaves the caller's own bank unprovisioned
+    # (a Hindsight round trip on the auth path), and the `juan` fixture's
+    # bootstrap ran while the `app` fixture still stubbed reconcile_builtin
+    # out -- so this project-scoped retain is what has to provision the user
+    # bank too, not only the project's own.
+    user = session.get(User, juan["user_id"])
     user_bank = LogicalBankRef(user.tenant_id, "user", user.id, None, user.bank_id)
     assert model_registry.get_registered_model(session, user_bank, "user-context") is not None
 
 
 @respx.mock
-def test_retain_response_never_contains_the_bank_id(client, user_key, tenant):
+def test_retain_response_never_contains_the_bank_id(client, juan, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    _, key = user_key
 
     body = client.post(
-        "/v1/memory/retain", json=_retain_body(), headers=_headers(key)
+        "/v1/memory/retain", json=_retain_body(), headers=juan["headers"]
     ).json()
 
     assert "bank_id" not in str(body)
 
 
 @respx.mock
-def test_two_users_reach_two_different_banks(client, master_headers, tenant):
+def test_two_users_reach_two_different_banks(client, two_users, tenant):
     _mock_hindsight()
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
     banks = []
-    for _ in range(2):
-        user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-            "user_id"
-        ]
-        key = client.post(
-            f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-        ).json()["key"]
-        client.post(
-            "/v1/memory/retain", json=_retain_body(), headers=_headers(key)
-        )
+    for user in two_users:
+        client.post("/v1/memory/retain", json=_retain_body(), headers=user["headers"])
         banks.append(str(route.calls.last.request.url))
 
     assert banks[0] != banks[1]
 
 
 @respx.mock
-def test_user_key_cannot_target_another_user(client, master_headers, user_key, tenant):
+def test_an_ordinary_caller_cannot_target_another_user(client, juan, new_user, tenant):
     _mock_hindsight()
-    other = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    _, key = user_key
+    other = new_user()["user_id"]
 
     response = client.post(
         "/v1/memory/retain",
         json=_retain_body(user_id=other),
-        headers=_headers(key),
+        headers=juan["headers"],
     )
 
     assert response.status_code == 403
@@ -240,28 +217,39 @@ def test_user_key_cannot_target_another_user(client, master_headers, user_key, t
 
 
 @respx.mock
-def test_master_key_must_name_the_target_user(client, master_headers, tenant):
+def test_an_operator_with_no_named_target_writes_to_its_own_bank(
+    client, master_headers, tenant
+):
+    """The old refusal -- a master key had to name a target -- existed only
+    because that credential had no identity of its own. Authority is
+    configuration now, so an operator is an ordinary user with a bank who
+    also holds authority, and an unnamed target is simply themselves.
+    Naming somebody ELSE is the authority part, pinned by
+    `test_an_operator_reaches_a_named_user_bank` below.
+    """
     _mock_hindsight()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
 
     response = client.post(
         "/v1/memory/retain", json=_retain_body(), headers=master_headers
     )
 
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "INVALID_SCOPE"
+    assert response.status_code == 202, response.text
+    assert "banks/user_" in str(route.calls.last.request.url)
 
 
 @respx.mock
-def test_master_key_reaches_a_named_user_bank(client, master_headers, user_key, tenant):
+def test_an_operator_reaches_a_named_user_bank(client, master_headers, juan, tenant):
     _mock_hindsight()
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    user_id, _ = user_key
 
     response = client.post(
         "/v1/memory/retain",
-        json=_retain_body(user_id=user_id),
+        json=_retain_body(user_id=juan["user_id"]),
         headers=master_headers,
     )
 
@@ -276,12 +264,12 @@ def test_project_scope_reaches_a_project_bank(client, two_users, tenant):
         return_value=httpx.Response(200, json={"status": "pending"})
     )
     juan = two_users[0]
-    _create_project(client, juan["key"], "payments-api")
+    _create_project(client, juan["headers"], "payments-api")
 
     response = client.post(
         "/v1/memory/retain",
         json=_retain_body(scope="project", project_slug="payments-api"),
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
 
     assert response.status_code == 202, response.text
@@ -295,16 +283,16 @@ def test_user_and_project_scope_use_different_banks(client, two_users, tenant):
         return_value=httpx.Response(200, json={"status": "pending"})
     )
     juan = two_users[0]
-    _create_project(client, juan["key"], "payments-api")
+    _create_project(client, juan["headers"], "payments-api")
 
     client.post(
-        "/v1/memory/retain", json=_retain_body(), headers=_headers(juan["key"])
+        "/v1/memory/retain", json=_retain_body(), headers=juan["headers"]
     )
     user_url = str(route.calls.last.request.url)
     client.post(
         "/v1/memory/retain",
         json=_retain_body(scope="project", project_slug="payments-api"),
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
 
     assert user_url != str(route.calls.last.request.url)
@@ -317,17 +305,17 @@ def test_a_stranger_cannot_reach_someone_elses_project(client, two_users, tenant
         return_value=httpx.Response(200, json={"status": "pending"})
     )
     juan, alice = two_users
-    _create_project(client, juan["key"], "payments-api")
+    _create_project(client, juan["headers"], "payments-api")
     client.post(
         "/v1/memory/retain",
         json=_retain_body(scope="project", project_slug="payments-api"),
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
 
     response = client.post(
         "/v1/memory/recall",
         json={"scope": "project", "project_slug": "payments-api", "query": "x"},
-        headers=_headers(alice["key"]),
+        headers=alice["headers"],
     )
 
     assert response.status_code == 404
@@ -338,7 +326,7 @@ def test_project_scope_without_a_slug_is_unavailable(client, two_users, tenant):
     response = client.post(
         "/v1/memory/recall",
         json={"scope": "project", "query": "x"},
-        headers=_headers(two_users[0]["key"]),
+        headers=two_users[0]["headers"],
     )
 
     assert response.status_code == 400
@@ -367,25 +355,25 @@ def test_retain_against_a_retired_slug_still_reaches_the_project_bank(client, tw
         return_value=httpx.Response(200, json={"status": "pending"})
     )
     juan = two_users[0]
-    _create_project(client, juan["key"], "payments-api")
+    _create_project(client, juan["headers"], "payments-api")
 
     client.post(
         "/v1/memory/retain",
         json=_retain_body(scope="project", project_slug="payments-api"),
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
     original_bank_url = str(route.calls.last.request.url)
 
     client.patch(
         "/v1/projects/payments-api",
         json={"project_slug": "payments-service"},
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
 
     client.post(
         "/v1/memory/retain",
         json=_retain_body(scope="project", project_slug="payments-api", content="y"),
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
 
     # call_count, not just the last URL: if the second retain never reached
@@ -396,15 +384,14 @@ def test_retain_against_a_retired_slug_still_reaches_the_project_bank(client, tw
     assert str(route.calls.last.request.url) == original_bank_url
 
 
-def test_oversize_content_is_rejected(client, user_key, tenant):
+def test_oversize_content_is_rejected(client, juan, tenant):
     """v0.4.0's canonical-claim ceiling (normalize_claim, 4096 bytes) is
     fixed by spec, not MEMORY_MAX_CONTENT_BYTES-configurable."""
-    _, key = user_key
 
     response = client.post(
         "/v1/memory/retain",
         json=_retain_body(content="x" * 5000),
-        headers=_headers(key),
+        headers=juan["headers"],
     )
 
     assert response.status_code == 413
@@ -412,7 +399,7 @@ def test_oversize_content_is_rejected(client, user_key, tenant):
 
 
 @respx.mock
-def test_recall_returns_the_upstream_payload(client, user_key, tenant):
+def test_recall_returns_the_upstream_payload(client, juan, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
         return_value=httpx.Response(
@@ -420,19 +407,18 @@ def test_recall_returns_the_upstream_payload(client, user_key, tenant):
             json={"results": [{"id": "mem-1", "text": "we use uv", "type": "world"}]},
         )
     )
-    _, key = user_key
 
     body = client.post(
         "/v1/memory/recall",
         json={"scope": "user", "query": "deps"},
-        headers=_headers(key),
+        headers=juan["headers"],
     ).json()
 
     assert body["result"]["hits"][0]["text"] == "we use uv"
 
 
 @respx.mock
-def test_nested_bank_id_is_stripped_from_recall(client, user_key, tenant):
+def test_nested_bank_id_is_stripped_from_recall(client, juan, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
         return_value=httpx.Response(
@@ -450,12 +436,11 @@ def test_nested_bank_id_is_stripped_from_recall(client, user_key, tenant):
             },
         )
     )
-    _, key = user_key
 
     body = client.post(
         "/v1/memory/recall",
         json={"scope": "user", "query": "deps"},
-        headers=_headers(key),
+        headers=juan["headers"],
     ).json()
 
     assert "bank_id" not in str(body)
@@ -476,11 +461,11 @@ def test_retained_record_survives_a_failed_hindsight_call(client, two_users, ten
         return_value=httpx.Response(500, json={"error": "boom"})
     )
     juan = two_users[0]
-    _create_project(client, juan["key"], "first-touch-retain")
+    _create_project(client, juan["headers"], "first-touch-retain")
     body = _retain_body(scope="project", project_slug="first-touch-retain")
 
     response = client.post(
-        "/v1/memory/retain", json=body, headers=_headers(juan["key"]),
+        "/v1/memory/retain", json=body, headers=juan["headers"],
     )
 
     assert response.status_code == 502
@@ -513,7 +498,7 @@ def test_recall_does_not_create_a_project_on_a_missing_slug(
             "project_slug": "first-touch-recall",
             "query": "x",
         },
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
 
     assert response.status_code == 404
@@ -533,14 +518,14 @@ def test_user_id_is_ignored_under_project_scope(client, two_users, tenant):
         return_value=httpx.Response(200, json={"status": "pending"})
     )
     juan, alice = two_users
-    _create_project(client, juan["key"], "payments-api")
+    _create_project(client, juan["headers"], "payments-api")
 
     response = client.post(
         "/v1/memory/retain",
         json=_retain_body(
             scope="project", project_slug="payments-api", user_id=alice["user_id"]
         ),
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
 
     assert response.status_code == 202, response.text
@@ -607,7 +592,7 @@ def test_reflect_is_denied_on_someone_elses_project(client, juan, alice, tenant)
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
         return_value=httpx.Response(200, json={"text": "leaked", "usage": {}})
     )
-    _create_project(client, juan["key"], "payments-api")
+    _create_project(client, juan["headers"], "payments-api")
 
     response = client.post(
         "/v1/memory/reflect",
@@ -661,7 +646,7 @@ def test_reflect_project_row_survives_a_failed_hindsight_call(
             "project_slug": "first-touch-reflect",
             "query": "x",
         },
-        headers=_headers(juan["key"]),
+        headers=juan["headers"],
     )
 
     assert response.status_code == 404
@@ -681,7 +666,7 @@ def test_reflect_against_a_retired_slug_forwards_and_pins_resolved_from(
         return_value=httpx.Response(200, json={"text": "use uv", "usage": {}})
     )
 
-    _create_project(client, juan["key"], "payments-api")
+    _create_project(client, juan["headers"], "payments-api")
     client.patch(
         "/v1/projects/payments-api",
         json={"project_slug": "payments-service"},
@@ -699,17 +684,17 @@ def test_reflect_against_a_retired_slug_forwards_and_pins_resolved_from(
     assert body["notice"] == "PROJECT_RENAMED"
 
 
-def test_a_master_key_cannot_reach_another_tenants_user_bank(
+def test_an_operator_cannot_reach_another_tenants_user_bank(
     client, master_headers, tenant, session
 ):
     """Mutating banks.py's `user.tenant_id != principal.tenant_id` away
-    survived the whole suite: a master key in tenant A could then address a
-    user in tenant B's private bank via scope=user&user_id=... . The control
-    -plane equivalent of this test exists (tests/test_users_api.py:499-536);
-    the data-plane one never did (2026-08-23 review, R4-I4).
+    survived the whole suite: an operator in tenant A could then address a
+    user in tenant B's private bank via scope=user&user_id=... . The
+    control-plane sibling of this test went with POST /v1/users, so this is
+    now the only place that clause is pinned at all.
 
     `tenant` is required (the brief's draft omitted it): resolve_user_bank's
-    master-key branch audit-logs cross-tenant bank access with
+    operator branch audit-logs cross-tenant bank access with
     tenant_id=principal.tenant_id ("default") before this test's own
     assertions run, so without a "default" Tenant row the mutated code path
     fails on a FOREIGN KEY violation instead of the 200 this test means to

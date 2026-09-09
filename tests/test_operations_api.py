@@ -2,33 +2,19 @@ import httpx
 import pytest
 import respx
 
+from tests.conftest import create_user
+
 BASE = "http://hindsight.test"
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
+@pytest.fixture
+def juan(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
-
-
-@pytest.fixture
-def alice(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
+def alice(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 def _mock_bank() -> None:

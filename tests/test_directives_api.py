@@ -4,33 +4,19 @@ import httpx
 import pytest
 import respx
 
+from tests.conftest import create_user
+
 BASE = "http://hindsight.test"
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
+@pytest.fixture
+def juan(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
-
-
-@pytest.fixture
-def alice(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
+def alice(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 def _mock_bank() -> None:
@@ -449,7 +435,7 @@ def test_idor_get_directive_cannot_reach_an_unauthorized_bank(
 
 
 # --- SPEC §14's authorization table has three rows -- owner, group member,
-# master key -- and every test above only ever exercised owner (juan) vs
+# operator -- and every test above only ever exercised owner (juan) vs
 # stranger (alice). The group-member row is exactly what a well-meaning
 # "tighten this to the owner" refactor would break without a test noticing;
 # both were verified live before writing these (see plan5-final-report.md).
@@ -457,14 +443,16 @@ def test_idor_get_directive_cannot_reach_an_unauthorized_bank(
 
 @respx.mock
 def test_a_group_member_who_is_not_the_owner_can_manage_directives(
-    client, juan, master_headers, tenant
+    client, juan, new_user, tenant, session
 ):
-    bob = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    bob_key = client.post(
-        f"/v1/users/{bob}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
-    client.put(f"/v1/groups/grp_payments/members/{bob}", headers=master_headers)
+    """Bob is a member because his token asserts `grp_payments` -- that is
+    the whole of membership now. The `Group` projection is seeded because
+    juan, who performs the transfer, is not in the group himself."""
+    from memory.models import Group
+
+    bob = new_user(groups=("grp_payments",))
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
     _mock_bank()
     _create_project(client, juan["headers"], "payments-api")
     client.patch(
@@ -484,7 +472,7 @@ def test_a_group_member_who_is_not_the_owner_can_manage_directives(
             "name": "n",
             "content": "c",
         },
-        headers={"Authorization": f"Bearer {bob_key}"},
+        headers=bob["headers"],
     )
 
     assert response.status_code == 201
@@ -492,7 +480,9 @@ def test_a_group_member_who_is_not_the_owner_can_manage_directives(
 
 
 @respx.mock
-def test_a_master_key_can_manage_directives_on_any_bank(client, juan, master_headers, tenant):
+def test_an_operator_can_manage_directives_on_any_bank(
+    client, juan, master_headers, tenant
+):
     _mock_bank()
     _create_project(client, juan["headers"], "payments-api")
     create = respx.post(

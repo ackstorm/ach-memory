@@ -1,15 +1,14 @@
 import pytest
 
+from tests.conftest import create_user
+
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": {"Authorization": f"Bearer {key}"}}
+def juan(client, session, tenant) -> dict:
+    """One ordinary external user. Nobody mints a user any more: it exists
+    because an identity provider asserted it, so this is `create_user` and
+    not the old POST /v1/users + POST /v1/users/{id}/keys pair."""
+    return create_user(client, session)
 
 
 def test_a_user_creates_a_project_owned_by_itself(client, juan, tenant):
@@ -48,9 +47,9 @@ def test_the_project_response_never_exposes_internals(client, juan, tenant):
 
 
 def test_a_user_cannot_create_a_project_owned_by_someone_else(
-    client, juan, master_headers, tenant
+    client, juan, new_user, tenant
 ):
-    other = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+    other = new_user()["user_id"]
 
     response = client.post(
         "/v1/projects",
@@ -61,8 +60,20 @@ def test_a_user_cannot_create_a_project_owned_by_someone_else(
     assert response.status_code == 403
 
 
-def test_master_creates_a_project_owned_by_a_group(client, master_headers, tenant):
-    client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
+def test_master_creates_a_project_owned_by_a_group(
+    client, master_headers, tenant, session
+):
+    """Authority is exactly what lets an operator name a group it is not
+    itself in -- an ordinary caller may only name a group its IdP asserts.
+
+    The `Group` row is seeded directly because POST /v1/groups is gone:
+    membership arrives in a token, and `projects._validate_owner` only
+    creates the projection row for a group the CALLER holds.
+    """
+    from memory.models import Group
+
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
 
     response = client.post(
         "/v1/projects",
@@ -431,7 +442,7 @@ def test_patch_canonicalizes_a_non_canonical_locator(client, juan, tenant, sessi
     assert response.json()["git_locator"] == "github.com/acme/payments-api"
 
     principal = Principal(
-        tenant_id=tenant, user_id=juan["user_id"], is_master=False, key_id="key_test"
+        tenant_id=tenant, user_id=juan["user_id"], subject=juan["subject"]
     )
     try:
         result = domain.resolve(
@@ -520,11 +531,10 @@ def test_patch_rename_and_locator_together_apply_both_and_audit_both(
     assert response.json()["project_slug"] == "payments"
     assert response.json()["git_locator"] == "github.com/acme/payments-api"
 
-    # The `juan` fixture itself writes a `user.create` audit event (a master
-    # key provisioning the test user) -- filtered out here since this test
-    # pins the ORDER of the two project-scoped events this PATCH writes, not
-    # the fixture's own setup noise. `project.create` IS pinned: every
-    # creation is audited now, not only a master key's.
+    # Filtered to project-scoped events: this test pins the ORDER of the two
+    # events this PATCH writes, not whatever the `juan` fixture's first-sight
+    # provisioning happens to record. `project.create` IS pinned: every
+    # creation is audited, not only an operator's.
     events = [
         (e.action, e.resource)
         for e in session.query(AuditEvent).all()
@@ -537,11 +547,8 @@ def test_patch_rename_and_locator_together_apply_both_and_audit_both(
     ]
 
 
-def test_an_outsider_cannot_rename_a_project(client, juan, master_headers, tenant):
-    bob = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    bob_key = client.post(
-        f"/v1/users/{bob}/keys", json={}, headers=master_headers
-    ).json()["key"]
+def test_an_outsider_cannot_rename_a_project(client, juan, new_user, tenant):
+    bob = new_user()
     client.post(
         "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
@@ -549,7 +556,7 @@ def test_an_outsider_cannot_rename_a_project(client, juan, master_headers, tenan
     response = client.patch(
         "/v1/projects/payments-api",
         json={"project_slug": "renamed"},
-        headers={"Authorization": f"Bearer {bob_key}"},
+        headers=bob["headers"],
     )
 
     assert response.status_code == 404
@@ -558,7 +565,7 @@ def test_an_outsider_cannot_rename_a_project(client, juan, master_headers, tenan
 
 
 def test_an_outsider_cannot_patch_the_locator_before_any_write(
-    client, juan, master_headers, tenant, session
+    client, juan, new_user, tenant, session
 ):
     """A locator-only PATCH (no rename) from a non-owner must be hidden, and
     must not mutate the column or write an audit event first --
@@ -571,10 +578,7 @@ def test_an_outsider_cannot_patch_the_locator_before_any_write(
     """
     from memory.models import AuditEvent
 
-    bob = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    bob_key = client.post(
-        f"/v1/users/{bob}/keys", json={}, headers=master_headers
-    ).json()["key"]
+    bob = new_user()
     client.post(
         "/v1/projects",
         json={"project_slug": "payments-api", "git_locator": "github.com/acme/payments-api"},
@@ -584,7 +588,7 @@ def test_an_outsider_cannot_patch_the_locator_before_any_write(
     response = client.patch(
         "/v1/projects/payments-api",
         json={"git_locator": "github.com/acme/hijacked"},
-        headers={"Authorization": f"Bearer {bob_key}"},
+        headers=bob["headers"],
     )
 
     assert response.status_code == 404
@@ -596,19 +600,16 @@ def test_an_outsider_cannot_patch_the_locator_before_any_write(
     assert "project.locator.update" not in actions
 
 
-def test_an_outsider_cannot_transfer_a_project(client, juan, master_headers, tenant):
-    bob = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    bob_key = client.post(
-        f"/v1/users/{bob}/keys", json={}, headers=master_headers
-    ).json()["key"]
+def test_an_outsider_cannot_transfer_a_project(client, juan, new_user, tenant):
+    bob = new_user()
     client.post(
         "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
 
     response = client.patch(
         "/v1/projects/payments-api/owner",
-        json={"type": "user", "id": bob},
-        headers={"Authorization": f"Bearer {bob_key}"},
+        json={"type": "user", "id": bob["user_id"]},
+        headers=bob["headers"],
     )
 
     assert response.status_code == 404
@@ -616,13 +617,16 @@ def test_an_outsider_cannot_transfer_a_project(client, juan, master_headers, ten
     assert "owner_type" not in str(response.json())
 
 
-def test_transfer_to_a_group_lets_a_member_in(client, juan, master_headers, tenant):
-    alice = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    alice_key = client.post(
-        f"/v1/users/{alice}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
-    client.put(f"/v1/groups/grp_payments/members/{alice}", headers=master_headers)
+def test_transfer_to_a_group_lets_a_member_in(client, juan, new_user, tenant, session):
+    """Alice holds the group because her IdP asserts it, not because a
+    `group_members` row says so. The `Group` projection is seeded here
+    because juan -- who performs the transfer -- is not in the group, and
+    `_validate_owner` only creates the row for a group the caller holds."""
+    from memory.models import Group
+
+    alice = new_user(groups=("grp_payments",))
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
     client.post(
         "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
@@ -632,30 +636,25 @@ def test_transfer_to_a_group_lets_a_member_in(client, juan, master_headers, tena
         json={"type": "group", "id": "grp_payments"},
         headers=juan["headers"],
     )
-    for_alice = client.get(
-        "/v1/projects/payments-api", headers={"Authorization": f"Bearer {alice_key}"}
-    )
+    for_alice = client.get("/v1/projects/payments-api", headers=alice["headers"])
 
     assert transferred.status_code == 200
     assert for_alice.status_code == 200
 
 
 def test_an_outsider_sees_the_same_error_as_an_unknown_project(
-    client, juan, master_headers, tenant
+    client, juan, new_user, tenant
 ):
-    bob = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    bob_key = client.post(
-        f"/v1/users/{bob}/keys", json={}, headers=master_headers
-    ).json()["key"]
+    bob = new_user()
     client.post(
         "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
 
     response = client.get(
-        "/v1/projects/payments-api", headers={"Authorization": f"Bearer {bob_key}"}
+        "/v1/projects/payments-api", headers=bob["headers"]
     )
     unknown = client.get(
-        "/v1/projects/no-such-project", headers={"Authorization": f"Bearer {bob_key}"}
+        "/v1/projects/no-such-project", headers=bob["headers"]
     )
 
     assert response.status_code == unknown.status_code == 404
@@ -666,38 +665,39 @@ def test_an_outsider_sees_the_same_error_as_an_unknown_project(
 
 
 def test_listing_shows_only_projects_the_caller_can_reach(
-    client, juan, master_headers, tenant
+    client, juan, new_user, master_headers, tenant
 ):
-    bob = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    bob_key = client.post(
-        f"/v1/users/{bob}/keys", json={}, headers=master_headers
-    ).json()["key"]
+    bob = new_user()
     client.post("/v1/projects", json={"project_slug": "mine"}, headers=juan["headers"])
     client.post(
         "/v1/projects",
         json={"project_slug": "theirs"},
-        headers={"Authorization": f"Bearer {bob_key}"},
+        headers=bob["headers"],
     )
 
     listed = client.get("/v1/projects", headers=juan["headers"]).json()
     for_master = client.get("/v1/projects", headers=master_headers).json()
 
     assert [p["project_slug"] for p in listed] == ["mine"]
-    # The master key sees the whole tenant. Asserted here because the listing
+    # An operator sees the whole tenant. Asserted here because the listing
     # gets its answer from authorize(), so every principal kind it handles
     # needs a test or the delegation is only as good as a reading.
     assert [p["project_slug"] for p in for_master] == ["mine", "theirs"]
 
 
 def test_listing_includes_a_project_owned_by_the_callers_group(
-    client, juan, master_headers, tenant
+    client, new_user, master_headers, tenant, session
 ):
     """The group branch of the listing. Deleting it from authorize() used to
-    leave the whole suite green: no test listed as a member."""
-    client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
-    client.put(
-        f"/v1/groups/grp_payments/members/{juan['user_id']}", headers=master_headers
-    )
+    leave the whole suite green: no test listed as a member.
+
+    The member holds `grp_payments` because the IdP asserts it in her token
+    -- there is no membership row to insert any more."""
+    from memory.models import Group
+
+    member = new_user(groups=("grp_payments",))
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
     client.post(
         "/v1/projects",
         json={
@@ -707,7 +707,7 @@ def test_listing_includes_a_project_owned_by_the_callers_group(
         headers=master_headers,
     )
 
-    listed = client.get("/v1/projects", headers=juan["headers"]).json()
+    listed = client.get("/v1/projects", headers=member["headers"]).json()
 
     assert [p["project_slug"] for p in listed] == ["shared"]
 
@@ -750,10 +750,11 @@ def test_listing_is_scoped_to_the_callers_tenant(client, juan, tenant, session):
     assert listed == []
 
 
-def test_transfer_writes_an_audit_event(client, juan, master_headers, tenant, session):
-    from memory.models import AuditEvent
+def test_transfer_writes_an_audit_event(client, juan, tenant, session):
+    from memory.models import AuditEvent, Group
 
-    client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
     client.post(
         "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
     )
@@ -794,13 +795,16 @@ def test_patch_locator_writes_an_audit_event(client, juan, tenant, session):
     assert ("project.locator.update", "payments-api") in events
 
 
-def test_master_key_create_writes_an_audit_event(
+def test_an_operator_create_writes_an_audit_event(
     client, master_headers, tenant, session
 ):
-    """R4 / SPEC §20 MUST: record master-key actions, same as rename/transfer."""
-    from memory.models import AuditEvent
+    """R4 / SPEC §20 MUST: record an operator's actions, same as
+    rename/transfer -- the create here is one only authority allows, since
+    the operator names a group it does not itself hold."""
+    from memory.models import AuditEvent, Group
 
-    client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
     client.post(
         "/v1/projects",
         json={
@@ -817,9 +821,9 @@ def test_master_key_create_writes_an_audit_event(
 def test_an_external_caller_may_create_a_project_owned_by_an_asserted_group(
     app, client, session, tenant
 ):
-    """A user key may only create a project it owns itself. An external caller
-    that the IdP places in a group owns that group's projects too -- otherwise
-    a JWT user could reach a group project by transfer but never create one."""
+    """An ordinary caller may only create a project it owns itself. A caller
+    the IdP places in a group owns that group's projects too -- otherwise it
+    could reach a group project by transfer but never make one."""
     from memory import ids
     from memory.api.app import current_principal
     from memory.auth.principal import Principal
@@ -832,8 +836,7 @@ def test_an_external_caller_may_create_a_project_owned_by_an_asserted_group(
     app.dependency_overrides[current_principal] = lambda: Principal(
         tenant_id=tenant,
         user_id=user.id,
-        is_master=False,
-        key_id=None,
+        subject="external@test",
         groups=frozenset({"grp_platform"}),
         credential_id="ext_test",
     )

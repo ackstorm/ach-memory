@@ -1,18 +1,14 @@
 import pytest
 
 from memory import ids
-from memory.auth import keys
+from tests.conftest import create_user
 
 WS = "ws_" + "a" * 32
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": {"Authorization": f"Bearer {key}"}}
+def juan(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 def _project(client, headers, slug: str = "acme-api") -> None:
@@ -152,7 +148,12 @@ def test_invalid_write_fields_are_a_422(client, juan, tenant, overrides):
     assert response.status_code == 422
 
 
-def test_a_master_key_cannot_start_a_session(client, master_headers, tenant):
+def test_an_operator_cannot_start_a_session(client, master_headers, tenant):
+    """Still refused, but for a different reason than it used to be: an
+    operator has an identity and a session of its own now, so this is
+    `api/working_state._reject_master` -- Working State has no On-Behalf-Of
+    path, so there is no way to attribute an operator's write to the person
+    it was made for."""
     response = client.post(
         "/v1/working-state/sessions",
         json={"project_slug": "acme-api", "workspace_id": WS, "session_id": "sess-1"},
@@ -162,34 +163,37 @@ def test_a_master_key_cannot_start_a_session(client, master_headers, tenant):
     assert response.status_code == 403
 
 
-def test_a_master_key_cannot_write_state(client, master_headers, tenant):
+def test_an_operator_cannot_write_state(client, master_headers, tenant):
     response = client.put("/v1/working-state", json=_write(), headers=master_headers)
 
     assert response.status_code == 403
 
 
-def test_another_user_cannot_write_to_this_project(client, juan, master_headers, tenant):
+def test_another_user_cannot_write_to_this_project(client, juan, new_user, tenant):
     _project(client, juan["headers"])
     epoch = _start(client, juan["headers"], "sess-1").json()["session_epoch"]
-    other_user = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    other_key = client.post(
-        f"/v1/users/{other_user}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    other_headers = {"Authorization": f"Bearer {other_key}"}
+    other = new_user()
 
     response = client.put(
         "/v1/working-state",
         json=_write(session_epoch=epoch),
-        headers=other_headers,
+        headers=other["headers"],
     )
 
     assert response.status_code == 404
 
 
 def test_a_user_without_group_membership_cannot_write_a_group_project(
-    client, juan, master_headers, tenant
+    client, juan, master_headers, tenant, session
 ):
-    client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
+    """`juan`'s token asserts no groups, which is now the whole of "not a
+    member" -- there is no `group_members` row to leave out. The `Group`
+    projection is seeded directly because the operator creating the project
+    is not in the group either."""
+    from memory.models import Group
+
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
     client.post(
         "/v1/projects",
         json={
@@ -208,9 +212,18 @@ def test_a_user_without_group_membership_cannot_write_a_group_project(
     assert response.status_code == 404
 
 
-def test_another_tenant_cannot_write(client, juan, session, tenant):
-    """Same project_slug, a genuinely different tenant's own key."""
-    from memory.models import ApiKey, Tenant, User
+def test_another_tenant_cannot_write(app, client, juan, session, tenant):
+    """Same project_slug, a genuinely different tenant's own caller.
+
+    The principal is injected rather than authenticated: every credential is
+    external now and `platform.authenticate` puts every caller in
+    `settings.tenant_id`, so no header this suite can send produces a
+    principal in another tenant. What is under test is working_state's own
+    tenant scoping, not how such a principal comes to exist -- so it is
+    handed in directly."""
+    from memory.api.app import current_principal
+    from memory.auth.principal import Principal
+    from memory.models import Tenant, User
 
     _project(client, juan["headers"])
     epoch = _start(client, juan["headers"], "sess-1").json()["session_epoch"]
@@ -222,22 +235,18 @@ def test_another_tenant_cannot_write(client, juan, session, tenant):
     )
     session.add(other_user)
     session.flush()
-    plaintext = keys.generate_key()
-    session.add(
-        ApiKey(
-            id=ids.new_key_id(),
-            tenant_id=other_tenant,
-            user_id=other_user.id,
-            secret_hash=keys.hash_key(plaintext),
-        )
+
+    app.dependency_overrides[current_principal] = lambda: Principal(
+        tenant_id=other_tenant,
+        user_id=other_user.id,
+        subject="elsewhere@test",
+        credential_id="ext_elsewhere",
     )
-    session.commit()
-    other_headers = {"Authorization": f"Bearer {plaintext}"}
 
     response = client.put(
         "/v1/working-state",
         json=_write(session_epoch=epoch),
-        headers=other_headers,
+        headers={},
     )
 
     assert response.status_code in (403, 404)

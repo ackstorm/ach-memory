@@ -2,33 +2,19 @@ import httpx
 import pytest
 import respx
 
+from tests.conftest import create_user
+
 BASE = "http://hindsight.test"
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
+@pytest.fixture
+def juan(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
-
-
-@pytest.fixture
-def alice(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
+def alice(client, session, tenant) -> dict:
+    return create_user(client, session)
 
 
 def _mock_bank() -> None:
@@ -82,16 +68,21 @@ def test_a_document_id_is_not_namespaced_by_the_caller(client, juan, tenant):
 
 @respx.mock
 def test_delete_document_is_reachable_by_any_authorized_caller(
-    client, juan, master_headers, tenant
+    client, new_user, master_headers, tenant, session
 ):
+    """"Authorized" is now purely what the IdP asserts: the caller reaches
+    the group's project because their token carries `grp_pay`, with no
+    membership row anywhere. The `Group` projection is seeded directly
+    because the operator creating the project is not itself in the group."""
+    from memory.models import Group
+
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"success": True})
     )
-    client.post("/v1/groups", json={"id": "grp_pay"}, headers=master_headers)
-    client.put(
-        f"/v1/groups/grp_pay/members/{juan['user_id']}", headers=master_headers
-    )
+    member = new_user(groups=("grp_pay",))
+    session.add(Group(id="grp_pay", tenant_id=tenant))
+    session.flush()
     client.post(
         "/v1/projects",
         json={"project_slug": "shared", "owner": {"type": "group", "id": "grp_pay"}},
@@ -109,7 +100,7 @@ def test_delete_document_is_reachable_by_any_authorized_caller(
     response = client.post(
         "/v1/memory/documents/delete",
         json={"scope": "project", "project_slug": "shared", "document_id": "doc_1"},
-        headers=juan["headers"],
+        headers=member["headers"],
     )
 
     assert response.status_code == 200
