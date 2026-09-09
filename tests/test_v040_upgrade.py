@@ -175,7 +175,7 @@ def test_released_v035_data_survives_v040_upgrade(
         ("current-name", True),
         ("previous-name", False),
     ]
-    assert head == "918c1a7a37de"
+    assert head == "d1e2f3a4b5c6"
 
 
 def test_pre_retirement_state_survives_forward_removal(
@@ -330,3 +330,20 @@ def test_pre_retirement_state_survives_forward_removal(
     assert tuple(session_row) == ("s1", workspace_id)
     assert tuple(state_row) == ("pre-retirement objective", "s1", 0, 0)
     assert new_table_counts == {table: 0 for table in new_table_counts}
+
+
+def test_the_local_credential_and_membership_tables_are_dropped(
+    upgrade_database_url, monkeypatch
+):
+    """Forward from the released schema, not from a clean install: the whole
+    point is that a database which HAS `api_keys` rows loses them. `users`
+    and `groups` must survive -- one is the bank anchor, the other is what
+    `projects.owner_id` points at."""
+    _upgrade(upgrade_database_url, monkeypatch, _V035_HEAD)
+    assert {"api_keys", "group_members"} <= _tables(upgrade_database_url)
+
+    _upgrade(upgrade_database_url, monkeypatch, "head")
+
+    tables = _tables(upgrade_database_url)
+    assert {"api_keys", "group_members"}.isdisjoint(tables)
+    assert {"users", "groups", "projects"} <= tables
