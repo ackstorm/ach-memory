@@ -142,7 +142,6 @@ def authenticate(token: str, db: Session) -> Principal:
     return Principal(
         tenant_id=settings.tenant_id,
         user_id=user_id,
-        key_id=None,
         groups=groups,
         credential_id=credential_id,
     )

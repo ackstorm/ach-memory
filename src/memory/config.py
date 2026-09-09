@@ -1,7 +1,7 @@
 import logging
 from functools import lru_cache
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger("memory.config")
@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MEMORY_", extra="ignore")
 
     database_url: str
-    master_key_hash: str
     hindsight_url: str
     hindsight_api_key: str = ""
 
@@ -161,20 +160,6 @@ class Settings(BaseSettings):
     # Activity rows are operational telemetry, not the audit trail: they age
     # out. 0 disables pruning entirely.
     activity_retention_days: int = Field(default=30, ge=0)
-
-    @field_validator("master_key_hash")
-    @classmethod
-    def _normalize_hash(cls, value: str) -> str:
-        """A hex digest compared verbatim was a whole class of silent outage.
-
-        `echo -n k | sha256sum` appends "  -"; a value read from a mounted
-        Secret carries a trailing newline; PowerShell's Get-FileHash is
-        uppercase. Each produced a master key that never authenticates,
-        indistinguishable from a wrong key -- on the one credential whose
-        failure blocks all provisioning. Normalizing once here removes the
-        class; `keys.verify_key` still does the constant-time compare.
-        """
-        return value.strip().split()[0].lower() if value.strip() else value
 
     @model_validator(mode="after")
     def _validate_auth_providers(self) -> "Settings":

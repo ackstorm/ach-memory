@@ -1,19 +1,18 @@
 import pytest
 
-from memory import ids
-from memory.auth import keys
-from memory.auth.principal import Principal, is_operator, resolve_principal
+from memory.auth.principal import (
+    API_KEY_HEADER,
+    Principal,
+    is_operator,
+    resolve_principal,
+)
 from memory.config import Settings
 from memory.errors import Unauthorized
-from memory.models import ApiKey, User
-
-MASTER_PLAINTEXT = "mem_master_secret_for_tests"
 
 
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch):
     monkeypatch.setenv("MEMORY_DATABASE_URL", "postgresql+psycopg://x/y")
-    monkeypatch.setenv("MEMORY_MASTER_KEY_HASH", keys.hash_key(MASTER_PLAINTEXT))
     monkeypatch.setenv("MEMORY_HINDSIGHT_URL", "http://localhost:8888")
     from memory.config import get_settings
 
@@ -22,33 +21,35 @@ def _settings(monkeypatch):
     get_settings.cache_clear()
 
 
-def _make_user_key(session, tenant) -> tuple[User, str]:
-    # Do not simplify `secret_hash=keys.hash_key(plaintext)` below to storing
-    # `plaintext` directly. This exact call is the only thing that kills a
-    # self-consistent cleartext-storage mutant (storage writes plaintext AND
-    # resolve_principal compares plaintext -- functionally invisible to every
-    # assertion in this file: test_user_key_resolves_to_its_user only checks
-    # that resolution succeeds, never that storage is hashed). Routing this
-    # fixture's row through the real keys.hash_key is what makes that mutant
-    # fail here instead of passing silently.
-    user = User(id=ids.new_user_id(), tenant_id=tenant, bank_id=ids.new_user_bank_id())
-    session.add(user)
-    session.flush()
-    plaintext = keys.generate_key()
-    session.add(
-        ApiKey(
-            id=ids.new_key_id(),
-            tenant_id=tenant,
-            user_id=user.id,
-            secret_hash=keys.hash_key(plaintext),
-        )
-    )
-    session.flush()
-    return user, plaintext
+@pytest.fixture
+def jwt_enabled(monkeypatch):
+    """The dispatcher's only job is choosing a provider, so the provider
+    itself is a spy here. `tests/test_auth_jwt.py` owns the real signature
+    verification; duplicating its key harness would test PyJWT twice and the
+    dispatch not at all."""
+    from memory.auth.providers import jwt_provider
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://idp.example.com")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_AUDIENCE", "mcp:ach-memory")
+    get_settings.cache_clear()
+
+    seen: list[str] = []
+
+    def _authenticate(token, db):
+        seen.append(token)
+        return Principal(tenant_id="default", user_id="usr_jwt", credential_id="ext_1")
+
+    monkeypatch.setattr(jwt_provider, "authenticate", _authenticate)
+    return seen
 
 
 def _principal(user_id=None, groups=frozenset()) -> Principal:
-    return Principal(tenant_id="default", user_id=user_id, key_id=None, groups=groups)
+    return Principal(tenant_id="default", user_id=user_id, groups=groups)
+
+
+# --- Operator authority is configuration, not a credential -----------------
 
 
 def test_an_unset_master_config_grants_nobody():
@@ -78,141 +79,12 @@ def test_a_configured_user_grants_operator():
 def test_a_configured_group_grants_operator():
     settings = Settings(master_users="", master_groups="sre,platform")
 
-    assert is_operator(_principal(user_id="usr_2", groups=frozenset({"platform"})), settings)
-    assert not is_operator(_principal(user_id="usr_2", groups=frozenset({"devs"})), settings)
-
-
-def test_the_master_credential_no_longer_carries_authority(session, tenant):
-    """Authority is configuration over a resolved identity now, so a
-    credential cannot assert it. The master key still authenticates until its
-    provider is deleted, but it is an operator of nothing."""
-    for principal in (
-        resolve_principal(f"Bearer {MASTER_PLAINTEXT}", session),
-        resolve_principal(None, session, api_key=MASTER_PLAINTEXT),
-    ):
-        assert principal.is_master is False
-        assert principal.user_id is None
-        assert principal.credential_id is None
-        assert principal.tenant_id == tenant
-
-
-def test_user_key_resolves_to_its_user(session, tenant):
-    user, plaintext = _make_user_key(session, tenant)
-
-    principal = resolve_principal(f"Bearer {plaintext}", session)
-
-    assert principal.is_master is False
-    assert principal.user_id == user.id
-
-
-def test_unknown_key_is_unauthorized(session, tenant):
-    with pytest.raises(Unauthorized):
-        resolve_principal(f"Bearer {keys.generate_key()}", session)
-
-
-def test_revoked_key_is_unauthorized(session, tenant):
-    _, plaintext = _make_user_key(session, tenant)
-    session.query(ApiKey).update({"status": "revoked"})
-    session.flush()
-
-    with pytest.raises(Unauthorized):
-        resolve_principal(f"Bearer {plaintext}", session)
-
-
-def test_missing_header_is_unauthorized(session, tenant):
-    with pytest.raises(Unauthorized):
-        resolve_principal(None, session)
-
-
-def test_non_bearer_header_is_unauthorized(session, tenant):
-    with pytest.raises(Unauthorized):
-        resolve_principal(f"Basic {MASTER_PLAINTEXT}", session)
-
-
-def test_api_key_header_resolves_without_authorization(session, tenant):
-    user, plaintext = _make_user_key(session, tenant)
-
-    principal = resolve_principal(None, session, api_key=plaintext)
-
-    assert principal.is_master is False
-    assert principal.user_id == user.id
-
-
-def test_api_key_header_tolerates_a_bearer_prefix(session, tenant):
-    user, plaintext = _make_user_key(session, tenant)
-
-    principal = resolve_principal(None, session, api_key=f"Bearer {plaintext}")
-
-    assert principal.user_id == user.id
-
-
-def test_api_key_header_wins_over_authorization(session, tenant):
-    """Precedence is the whole point: whatever a proxy leaves in Authorization
-    must not override the credential the caller explicitly nominated."""
-    user, plaintext = _make_user_key(session, tenant)
-
-    principal = resolve_principal(
-        f"Bearer {MASTER_PLAINTEXT}", session, api_key=plaintext
+    assert is_operator(
+        _principal(user_id="usr_2", groups=frozenset({"platform"})), settings
     )
-
-    # The master key sat in Authorization and was ignored.
-    assert principal.is_master is False
-    assert principal.user_id == user.id
-
-
-def test_blank_api_key_header_does_not_fall_back_to_authorization(session, tenant):
-    """A present-but-empty dedicated header is a caller error, not an absent
-    one. Falling through here would authenticate as whoever Authorization
-    names -- the confused deputy this precedence exists to prevent."""
-    with pytest.raises(Unauthorized):
-        resolve_principal(f"Bearer {MASTER_PLAINTEXT}", session, api_key="   ")
-
-
-def test_unknown_api_key_header_is_unauthorized(session, tenant):
-    with pytest.raises(Unauthorized):
-        resolve_principal(None, session, api_key=keys.generate_key())
-
-
-def test_revoked_key_is_unauthorized_via_api_key_header(session, tenant):
-    _, plaintext = _make_user_key(session, tenant)
-    session.query(ApiKey).update({"status": "revoked"})
-    session.flush()
-
-    with pytest.raises(Unauthorized):
-        resolve_principal(None, session, api_key=plaintext)
-
-
-def test_principal_defaults_to_no_groups(session, tenant):
-    _, plaintext = _make_user_key(session, tenant)
-    principal = resolve_principal(f"Bearer {plaintext}", session)
-    assert principal.groups == frozenset()
-
-
-def test_local_key_credential_id_is_its_key_id(session, tenant):
-    _, plaintext = _make_user_key(session, tenant)
-    principal = resolve_principal(f"Bearer {plaintext}", session)
-    assert principal.credential_id == principal.key_id
-    assert principal.credential_id is not None
-
-
-def test_a_non_mem_bearer_is_not_tried_as_a_local_key(session, tenant):
-    """With no external provider configured, a JWT-shaped token is a 401 that
-    says so -- never a database lookup that reports 'unknown API key'."""
-    with pytest.raises(Unauthorized, match="no identity provider"):
-        resolve_principal("Bearer eyJhbGciOiJFZERTQSJ9.e30.sig", session)
-
-
-def test_mem_prefixed_bearer_still_resolves(session, tenant):
-    user, plaintext = _make_user_key(session, tenant)
-    assert plaintext.startswith("mem_")
-    principal = resolve_principal(f"Bearer {plaintext}", session)
-    assert principal.user_id == user.id
-
-
-def test_dedicated_header_still_wins_over_authorization(session, tenant):
-    user, plaintext = _make_user_key(session, tenant)
-    principal = resolve_principal("Bearer mem_wrong", session, api_key=plaintext)
-    assert principal.user_id == user.id
+    assert not is_operator(
+        _principal(user_id="usr_2", groups=frozenset({"devs"})), settings
+    )
 
 
 def test_the_service_refuses_to_start_when_master_config_could_over_grant(monkeypatch):
@@ -231,3 +103,66 @@ def test_the_service_refuses_to_start_when_master_config_could_over_grant(monkey
 
     with pytest.raises(RuntimeError, match="MEMORY_MASTER_GROUPS"):
         create_app()
+
+
+# --- Dispatch: every credential is externally issued -----------------------
+
+
+def test_a_bearer_token_goes_to_the_jwt_provider(session, jwt_enabled):
+    principal = resolve_principal("Bearer some.jwt.token", session)
+
+    assert jwt_enabled == ["some.jwt.token"]
+    assert principal.user_id == "usr_jwt"
+
+
+def test_a_mem_prefixed_token_is_no_longer_special(session, jwt_enabled):
+    """The `mem_` prefix existed to discriminate a local key from a JWT on
+    Authorization. With no local keys there is nothing to discriminate, so a
+    token that happens to start with it is simply a token."""
+    resolve_principal("Bearer mem_looks_like_the_old_thing", session)
+
+    assert jwt_enabled == ["mem_looks_like_the_old_thing"]
+
+
+def test_the_dedicated_header_wins_over_authorization(session, jwt_enabled):
+    """Precedence is the whole point: whatever a proxy leaves in
+    Authorization must not override the credential the caller explicitly
+    nominated for this service."""
+    resolve_principal("Bearer from_a_proxy", session, api_key="mine")
+
+    assert jwt_enabled == ["mine"]
+
+
+def test_the_dedicated_header_tolerates_a_bearer_prefix(session, jwt_enabled):
+    resolve_principal(None, session, api_key="Bearer mine")
+
+    assert jwt_enabled == ["mine"]
+
+
+def test_a_blank_dedicated_header_does_not_fall_back_to_authorization(
+    session, jwt_enabled
+):
+    """A present-but-empty dedicated header is a caller error, not an absent
+    one. Falling through would authenticate as whoever Authorization names --
+    the confused deputy this precedence exists to prevent."""
+    with pytest.raises(Unauthorized, match=API_KEY_HEADER):
+        resolve_principal("Bearer from_a_proxy", session, api_key="   ")
+
+    assert jwt_enabled == []
+
+
+def test_missing_credential_is_unauthorized(session):
+    with pytest.raises(Unauthorized, match="missing or malformed"):
+        resolve_principal(None, session)
+
+
+def test_non_bearer_authorization_is_unauthorized(session):
+    with pytest.raises(Unauthorized, match="missing or malformed"):
+        resolve_principal("Basic abc", session)
+
+
+def test_a_token_with_no_provider_enabled_says_this_service_mints_none(session):
+    """The only refusal left, so it has to be the one that explains the new
+    model: there is no key to be missing, only a provider to configure."""
+    with pytest.raises(Unauthorized, match="mints no credentials of its own"):
+        resolve_principal("Bearer eyJhbGciOiJFZERTQSJ9.e30.sig", session)

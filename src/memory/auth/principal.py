@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from memory.auth import keys
 from memory.config import Settings, get_settings
 from memory.errors import Unauthorized
 
@@ -22,22 +21,14 @@ class Principal:
 
     tenant_id: str
     user_id: str | None
-    key_id: str | None
-    #: Group ids asserted by an external identity provider (SPEC §5.3).
-    #: Empty for a local key, whose membership lives in `group_members` and is
-    #: read from the database instead. Never merged with the database set:
-    #: `projects.authorize` consults both independently, so an IdP that stops
-    #: asserting a group revokes it immediately without touching a row.
+    #: Group ids asserted by an external identity provider (SPEC §5.3). The
+    #: IdP is now the only source: membership is re-read from the credential
+    #: on every request, so an IdP that stops asserting a group revokes
+    #: access immediately, with no row anywhere to go stale.
     groups: frozenset[str] = frozenset()
-    #: Stable identity of the *credential*, for rate limiting and audit.
-    #: `key_id` for a local key, `ext_<hash>` for an external identity (see
-    #: `auth.provisioning.credential_id_for`). None only for the master key,
-    #: which `ratelimit.check` buckets by On-Behalf-Of instead.
-    #:
-    #: This exists because `key_id` is None for every external caller, which
-    #: silently dropped them all into the master's shared rate-limit bucket
-    #: and wrote `actor_key_id=NULL` into every audit row -- both SPEC §20
-    #: MUSTs, failing with no error.
+    #: Stable identity of the *credential*, for rate limiting and audit:
+    #: `ext_<hash>`, from `auth.provisioning.credential_id_for`. Every
+    #: authenticated caller has one, because every caller is external.
     credential_id: str | None = None
 
     @property
@@ -73,52 +64,51 @@ def resolve_principal(
 ) -> Principal:
     """Authenticate the caller against every configured provider, in order.
 
-    Fail-closed at each step: once a credential names a provider, that provider
-    is the ONLY one consulted. A `mem_` key that does not verify is never
-    retried as a JWT, and a JWT whose signature is bad is never downgraded to a
-    key lookup or to the platform resolver. Falling through would mean a bad
-    credential silently authenticates as whoever the *next* header names, which
-    is a confused deputy that stays invisible until it matters.
+    Every credential is issued elsewhere. This service mints none, stores
+    none and verifies none of its own, so there is nothing left to
+    discriminate between on `Authorization` -- the `mem_` prefix went with
+    the local keys it existed to tell apart.
+
+    Fail-closed at each step: once a credential names a provider, that
+    provider is the ONLY one consulted, and a JWT whose signature is bad is
+    never downgraded to the platform resolver. Falling through would mean a
+    bad credential silently authenticates as whoever the *next* header names,
+    which is a confused deputy that stays invisible until it matters.
     """
-    from memory.auth.providers import local_key
-
-    # 1. The dedicated header names the local credential unambiguously and is
-    #    the only source considered once present (SPEC §5.1).
-    if api_key is not None:
-        return local_key.authenticate(_strip_bearer(api_key, API_KEY_HEADER), db)
-
-    token = _bearer_token(authorization)
-
-    # 2. A `mem_` prefix is a total discriminator: keys.generate_key()
-    #    guarantees it, and a JWT -- three dot-separated base64url segments --
-    #    can never produce it. So `Authorization` still carries local keys,
-    #    which is not a convenience: codex and pi cannot send a custom header
-    #    at all, and codex ignores a `headers` block silently rather than
-    #    erroring (TODO.md, "What each host actually supports"). Reserving
-    #    this header for JWTs would leave those two hosts unauthenticated with
-    #    no error anywhere.
-    if token is not None and token.startswith(keys.KEY_PREFIX):
-        return local_key.authenticate(token, db)
-
     settings = get_settings()
 
-    # 3. Anything else on Authorization is an externally-issued token.
+    # 1. The dedicated header names the credential meant for THIS service and
+    #    is the only source considered once present (SPEC §5.1). It carries a
+    #    token, exactly like `Authorization`; the point is only that no proxy
+    #    in front of us has a claim on this header's name.
+    token = (
+        _strip_bearer(api_key, API_KEY_HEADER)
+        if api_key is not None
+        else _bearer_token(authorization)
+    )
+
+    # 2. A token is an externally-issued JWT.
     if token is not None and settings.auth_jwt_enabled:
         from memory.auth.providers import jwt_provider
 
         return jwt_provider.authenticate(token, db)
 
-    # 4. The platform header is the documented fallback, reached only when
-    #    Authorization carried nothing we could use.
+    # 3. The platform header is the documented fallback, reached only when
+    #    neither token header carried anything we could use.
     if platform_token and settings.auth_platform_enabled:
         from memory.auth.providers import platform
 
         return platform.authenticate(platform_token, db)
 
     if token is not None:
+        # The only refusal left, so it carries the whole model: there is no
+        # key here to be wrong, revoked or misspelled -- only an identity
+        # provider that is not configured, or a token this deployment's
+        # issuer did not mint.
         raise Unauthorized(
-            "no identity provider accepts this credential: it is not a "
-            f"{keys.KEY_PREFIX} key and no external provider is enabled"
+            "no identity provider accepts this credential. ach-memory mints "
+            "no credentials of its own: the token must come from the "
+            "configured JWT issuer or the platform that issued your key"
         )
     raise Unauthorized(
         f"missing or malformed credential: send {API_KEY_HEADER} "

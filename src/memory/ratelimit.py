@@ -14,12 +14,6 @@ from memory.auth.principal import Principal
 from memory.config import get_settings
 from memory.errors import RateLimited
 
-# The master key has no `key_id` (SPEC §5.2 -- it is configuration, never a
-# database row). Its traffic is ACH's own, not a human's, so every master-key
-# call shares this one bucket rather than being unlimited by accident because
-# `None` was never a value `Limiter.check` saw before.
-MASTER_KEY_ID = "__master__"
-
 
 class Limiter:
     """In-process, per-credential sliding window.
@@ -79,27 +73,25 @@ def get_limiter() -> Limiter:
 def check(principal: Principal, on_behalf_of: str | None = None) -> None:
     """Rate-limit one write attributed to `principal`.
 
-    A user key is its own bucket. The master key is NOT one operator's
-    credential: SPEC §16.5 has ACH calling with the master key plus
-    On-Behalf-Of when acting for a human, so one shared bucket meant N
-    developers behind ACH split a single per-credential ceiling while each
-    direct user key got a whole one -- the delegated path Nx stricter than
-    the direct one, and one runaway agent 429ing every ACH user.
+    Every caller is external, so every caller has a `credential_id` -- the
+    `ext_` id `auth.provisioning.credential_id_for` derives from (issuer,
+    subject) -- and gets its own bucket, which is SPEC §20's per-credential
+    MUST.
+
+    An operator acting through On-Behalf-Of is split further, per subject.
+    SPEC §16.5 has ACH calling with operator authority plus On-Behalf-Of when
+    acting for a human, so one shared bucket would mean N developers behind
+    ACH splitting a single ceiling while each direct caller got a whole one:
+    the delegated path N times stricter than the direct one, and one runaway
+    agent 429ing every ACH user.
 
     `on_behalf_of` is unverified provenance and never authorization evidence
-    -- but the master key is trusted wholesale by §20.3 anyway, so using it
-    for FAIRNESS costs nothing: the worst a forged value can do is give the
-    forger their own bucket, which is what an honest value does too.
-
-    An external identity gets its own bucket too, keyed by the `ext_` id that
-    `auth.provisioning.credential_id_for` derives from (issuer, subject).
-    Without it every JWT and platform caller fell through to the master bucket
-    below and the whole fleet shared one ceiling -- SPEC §20's per-credential
-    MUST, failing with no error and no log.
+    -- but it is only ever set for a caller §20.3 already trusts wholesale,
+    so using it for FAIRNESS costs nothing: the worst a forged value can do
+    is give the forger their own bucket, which is what an honest value does
+    too.
     """
-    if principal.credential_id:
-        get_limiter().check(principal.credential_id)
-    elif on_behalf_of:
-        get_limiter().check(f"{MASTER_KEY_ID}:{on_behalf_of}")
+    if on_behalf_of:
+        get_limiter().check(f"{principal.credential_id}:{on_behalf_of}")
     else:
-        get_limiter().check(MASTER_KEY_ID)
+        get_limiter().check(principal.credential_id)

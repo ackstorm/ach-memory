@@ -120,7 +120,6 @@ def authenticate(token: str, db: Session) -> Principal:
     return Principal(
         tenant_id=settings.tenant_id,
         user_id=user_id,
-        key_id=None,
         groups=_groups(claims, settings.auth_jwt_groups_claim),
         credential_id=credential_id,
     )
