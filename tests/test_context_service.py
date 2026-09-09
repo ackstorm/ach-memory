@@ -608,6 +608,69 @@ def test_a_disabled_builtin_is_not_delivered(session, tenant):
     assert result.headings == []
 
 
+def test_scope_project_omits_the_user_section(session, tenant):
+    juan = _user(tenant, "usr_juan")
+    alpha = _project(tenant, juan.id, "alpha")
+    alpha.name = "Alpha"
+    session.add_all([juan, alpha])
+    session.flush()
+    session.add_all(
+        [
+            _registration(
+                tenant, model_key="user-context", model_id="mm-user",
+                user_id=juan.id, origin="builtin",
+            ),
+            _registration(
+                tenant, model_key="project-context", model_id="mm-project",
+                project_internal_id=alpha.internal_id, origin="builtin",
+            ),
+        ]
+    )
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest(project_slug="alpha", scope="project"))
+
+    assert not any(heading.startswith("User") for heading in result.headings)
+    assert "Project Metadata" in result.headings
+    assert "Project · project-context" in result.headings
+
+
+def test_scope_user_omits_the_project_section(session, tenant):
+    juan = _user(tenant, "usr_juan")
+    alpha = _project(tenant, juan.id, "alpha")
+    alpha.name = "Alpha"
+    session.add_all([juan, alpha])
+    session.flush()
+    session.add_all(
+        [
+            _registration(
+                tenant, model_key="user-context", model_id="mm-user",
+                user_id=juan.id, origin="builtin",
+            ),
+            _registration(
+                tenant, model_key="project-context", model_id="mm-project",
+                project_internal_id=alpha.internal_id, origin="builtin",
+            ),
+        ]
+    )
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest(project_slug="alpha", scope="user"))
+
+    assert "User · user-context" in result.headings
+    assert "Project Metadata" not in result.headings
+    assert not any(heading.startswith("Project") for heading in result.headings)
+
+
+def test_scope_defaults_to_both():
+    """The default must not change what an existing caller receives."""
+    assert LoadContextRequest().scope == "both"
+
+
 def test_active_claims_fetches_a_bounded_prefix_not_the_whole_ledger(session, tenant):
     """1,000 active expiring claims must never be materialized whole: the
     repository query stays within the named bounded prefix, the response

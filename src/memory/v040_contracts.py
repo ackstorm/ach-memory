@@ -56,6 +56,7 @@ class LoadContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_slug: str | None = Field(default=None, min_length=1, max_length=128)
     workspace_id: WorkspaceId | None = None
+    scope: Literal["user", "project", "both"] = "both"
 
     @model_validator(mode="after")
     def workspace_requires_project(self):

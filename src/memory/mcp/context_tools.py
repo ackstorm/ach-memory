@@ -1,3 +1,5 @@
+from typing import Literal
+
 from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
 
@@ -18,9 +20,14 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         project_slug: str | None = None,
         workspace_id: str | None = None,
+        scope: Literal["user", "project", "both"] = "both",
     ):
         with tool_session(ctx) as tc:
-            result = load_context_service(tc.db, tc.principal, LoadContextRequest(project_slug=project_slug, workspace_id=workspace_id))
+            result = load_context_service(
+                tc.db,
+                tc.principal,
+                LoadContextRequest(project_slug=project_slug, workspace_id=workspace_id, scope=scope),
+            )
             tc.db.commit()
             return result.model_dump()
 

@@ -1353,10 +1353,9 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved when always_in_context left the create/update surface: the parameter,
-# its schema entries, and every description sentence mentioning it are gone
-# from create_mental_model and update_mental_model.
-TOOL_CONTRACT_SHA256 = "469604727a5994d664a536f0c02cd49836eb158bc1e5c7c612db5bb25701b5e9"
+# moved when load_context gained an optional scope: Literal["user", "project",
+# "both"] = "both" parameter to filter standing delivery to one half.
+TOOL_CONTRACT_SHA256 = "ac051862202931bd635e025640fddfe012f32b2391832f09d741557f761e5a9d"
 
 
 def test_tool_registration_is_stable_after_module_split():

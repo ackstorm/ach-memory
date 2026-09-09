@@ -145,19 +145,24 @@ class ContextService:
         project_bank = self._bank("project", project) if project else None
         sections: list[DeliverySection] = []
         omissions: list[DeliveryOmission] = []
-        if project_bank is None:
+        if project_bank is None and request.scope != "user":
             # Say so rather than just returning the user half. A caller that
             # asked bare cannot otherwise tell "this workspace has no project"
             # from "the project section was dropped" -- and an empty
             # `omissions` actively asserts nothing is missing. resolve() with
             # create=False raises for an unknown slug, so reaching here always
-            # means the request carried none.
+            # means the request carried none. Suppressed under scope="user":
+            # that caller deliberately excluded the project half, so its
+            # absence is not a gap to report.
             omissions.append(
                 DeliveryOmission(key="project", reason="no_project_resolved")
             )
-        banks = [("user", user_bank)]
-        if project_bank is not None:
+        banks = []
+        if request.scope in ("user", "both"):
+            banks.append(("user", user_bank))
+        if project_bank is not None and request.scope in ("project", "both"):
             banks.append(("project", project_bank))
+        bank_by_scope = dict(banks)
         withheld_scopes = {
             scope for scope, bank in banks if bank_is_withheld(self.db, bank)
         }
@@ -185,7 +190,7 @@ class ContextService:
                 MentalModelRegistration.lifecycle_state == "active",
             )))
             for row in rows:
-                bank = user_bank if row.scope == "user" else project_bank
+                bank = bank_by_scope.get(row.scope)
                 if (
                     bank is None
                     or row.scope in withheld_scopes
@@ -258,7 +263,7 @@ class ContextService:
                 omissions.append(
                     DeliveryOmission(key=row.model_key, reason="model_unavailable")
                 )
-        if project is not None:
+        if project is not None and request.scope != "user":
             metadata = "\n".join(filter(None, [f"name: {project.name}" if project.name else None, f"purpose: {project.purpose}" if project.purpose else None, f"spec: {project.canonical_spec}" if project.canonical_spec else None]))
             if metadata:
                 sections.append(DeliverySection("1:project-metadata", "Project Metadata", metadata, 256))
