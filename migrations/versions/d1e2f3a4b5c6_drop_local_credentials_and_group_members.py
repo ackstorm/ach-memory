@@ -16,8 +16,25 @@ platform resolver before this is applied.
 no longer consults, so restoring them would restore nothing. Membership has
 to exist in the IdP.
 
-`users` and `groups` deliberately survive. `User.bank_id` is what makes a
-person's memory exist (SPEC §19.2) and `link_identity` keeps populating it;
+`users` and `groups` deliberately survive, but READ THE NEXT PARAGRAPH before
+treating that as reassurance that memory survives the upgrade.
+
+**Existing users are orphaned unless they are relinked first.** `User.bank_id`
+is what makes a person's memory exist (SPEC §19.2), and `link_identity` reuses
+a `User` only when an `external_identities` row already exists for
+`(issuer, subject)`. A user who authenticated with a minted `mem_` key has no
+such row, so their first request after this deploy mints a NEW user id and a
+NEW bank: `scope=user` recall returns empty, and every project they own stays
+unreachable, because `projects.authorize` compares `owner_id` against the new
+id. Nothing here backfills that mapping and nothing can infer it -- a key hash
+does not name an external subject.
+
+Installs that already ran with the JWT or platform provider are unaffected:
+those rows exist. Installs that used minted keys must insert an
+`external_identities` row per user, mapping their IdP's `(issuer, subject)` to
+the EXISTING `users.id`, before or with this migration. Do that and the bank
+and every project ownership carry over untouched.
+
 `groups` is a derived projection that `projects.owner_id` points at.
 
 Revision ID: d1e2f3a4b5c6
