@@ -20,7 +20,7 @@ from memory import audit, banks, mental_model_service, projects
 from memory.auth.principal import Principal
 from memory.builtin_models import PROJECT_CONTEXT, USER_CONTEXT
 from memory.mental_model_service import MentalModelView
-from memory.models import Project, ProjectSlug
+from memory.models import Project, ProjectSlug, User
 from memory.retain_strategy import ensure_exact_retain_strategy
 from memory.retained_records import LogicalBankRef
 from memory.slugs import normalize_slug
@@ -44,6 +44,15 @@ def provision_project_bank(
     )
     ensure_exact_retain_strategy(client, bank.bank_id)
     return mental_model_service.reconcile_builtin(db, bank, PROJECT_CONTEXT, client=client)
+
+
+def provision_user_bank(db: Session, user: User, *, client) -> MentalModelView:
+    """Everything a user bank needs before it can serve: the exact retain
+    strategy, and its built-in model. Sibling of `provision_project_bank`,
+    idempotent the same way."""
+    bank = LogicalBankRef(user.tenant_id, "user", user.id, None, user.bank_id)
+    ensure_exact_retain_strategy(client, bank.bank_id)
+    return mental_model_service.reconcile_builtin(db, bank, USER_CONTEXT, client=client)
 
 
 class BootstrapRequest(BaseModel):

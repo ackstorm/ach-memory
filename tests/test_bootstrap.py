@@ -35,6 +35,11 @@ def _project_bank_ref(session, project: Project) -> LogicalBankRef:
         project.tenant_id, "project", None, project.internal_id, project.bank_id
     )
 
+
+def _user_bank_ref(session, user_id: str) -> LogicalBankRef:
+    user = session.get(User, user_id)
+    return LogicalBankRef(user.tenant_id, "user", user.id, None, user.bank_id)
+
 EXACT_STRATEGY = {
     "retain_extraction_mode": "chunks",
     "retain_chunk_size": 4096,
@@ -233,3 +238,23 @@ def test_a_project_created_through_the_control_plane_is_fully_provisioned(
     assert registration is not None, "project-context must exist at creation"
     assert registration.origin == "builtin"
     assert registration.lifecycle_state in {"creating", "active"}
+
+
+@respx.mock
+def test_a_new_user_gets_user_context_without_a_bootstrap_call(client, session, master_headers):
+    """Same rule as projects: a bank is provisioned when it is created."""
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
+        return_value=httpx.Response(
+            201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}
+        )
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+
+    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+
+    registration = model_registry.get_registered_model(
+        session, _user_bank_ref(session, user_id), "user-context"
+    )
+    assert registration is not None
