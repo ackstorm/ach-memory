@@ -361,6 +361,15 @@ def test_caller_tags_extend_the_filter_after_the_schema_and_type_tags():
     assert filters.tags_match == "all_strict"
 
 
+def test_caller_mode_any_maps_to_any_strict():
+    filters = resolve_filters("current", None, mode="any")
+    assert filters.tags_match == "any_strict"
+
+
+def test_no_mode_means_the_default_narrowing_mode():
+    assert resolve_filters("current", None) == resolve_filters("current", None, mode="all")
+
+
 def test_caller_tags_come_after_memory_type_tags():
     filters = resolve_filters("current", ("decision",), caller_tags=("repo:group/app",))
     assert filters.tags == ("schema:ach-retain-v1", "type:decision", "repo:group/app")
@@ -374,19 +383,20 @@ def test_recall_request_normalizes_caller_tags_the_same_way_retain_does():
     """The symmetry that makes the convention work at all: normalisation
     happens once, on the request model, so `resolve_filters` never needs to
     (and never re-validates) what it is handed."""
-    request = RecallRequest(scope="user", query="q", tags=[" Repo:Group/App "])
-    assert request.tags == ("repo:group/app",)
+    request = RecallRequest(scope="user", query="q", tags_filter=[" Repo:Group/App "])
+    assert request.tags_filter == ("repo:group/app",)
 
 
 def test_resolve_filters_never_lets_a_caller_choose_tag_syntax_directly():
     """There is no parameter here through which a `RecallRequest` value ever
     reaches Hindsight's own tag/filter DSL: `resolve_filters` only accepts a
-    closed `view`, a closed `memory_types`, and already-normalised
-    `caller_tags` (`RecallRequest.tags`, validated by
-    `memory.tags.normalize_caller_tags` before it ever reaches here) -- never
-    `tags_match` itself, and only ever emits the fixed
+    closed `view`, a closed `memory_types`, already-normalised `caller_tags`
+    (`RecallRequest.tags_filter`, validated by `memory.tags.normalize_caller_tags`
+    before it ever reaches here), and a closed `mode` (`RecallRequest.tags_filter_mode`,
+    from `memory.tags`'s own already-strict enum) -- never raw `tags_match`
+    syntax, and only ever emits the fixed
     `schema:ach-retain-v1`/`type:<memory_type>`/caller-tag shapes."""
     import inspect
 
     signature = inspect.signature(resolve_filters)
-    assert set(signature.parameters) == {"view", "memory_types", "caller_tags"}
+    assert set(signature.parameters) == {"view", "memory_types", "caller_tags", "mode"}

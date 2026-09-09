@@ -405,7 +405,8 @@ def register(mcp: MCPServer) -> None:
             read_service.ensure_current_read_allowed(db, recall_bank_ref)
             read_service.run_access_maintenance(db, recall_bank_ref)
             hits = read_service._recall_hits(
-                resolved.bank_id, body.query, body.view, body.kinds, body.tags_filter
+                resolved.bank_id, body.query, body.view, body.kinds,
+                body.tags_filter, body.tags_filter_mode,
             )
             return read_models.build_recall_response(
                 project_slug=resolved.current_slug,

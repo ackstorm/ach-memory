@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from memory.identifiers import has_control_character
 from memory.memory_types import EvidenceBasis, MemoryType
-from memory.tags import FilterMode, default_filter_mode, normalize_caller_tags
+from memory.tags import FilterMode, default_filter_mode, normalize_caller_tags, to_upstream
 
 ReadScope = Literal["user", "project"]
 
@@ -297,9 +297,11 @@ def resolve_filters(
     view: View,
     memory_types: tuple[MemoryType, ...] | None,
     caller_tags: tuple[str, ...] = (),
+    mode: FilterMode = default_filter_mode(),
 ) -> RecallFilters:
     """Map a caller's closed `view`/`memory_types` choice, plus its own
-    already-normalised tags, to Hindsight's actual filter vocabulary.
+    already-normalised tags and mode, to Hindsight's actual filter
+    vocabulary.
 
     Every ACH-authored fact is scoped by the fixed `schema:ach-retain-v1`
     tag, optionally narrowed by the caller's closed `memory_types`, then
@@ -311,13 +313,17 @@ def resolve_filters(
     meaning.
     `ach-exact-v1` never produces an "experience" fact (SPEC §5.7), so only
     `world` (the retained claim) and `observation` (Hindsight's own later
-    consolidation) are ever relevant types. `tags_match` stays fixed at
-    `all_strict` -- AND-with-extras-allowed -- never caller-settable:
-    `all`/`any` would also return untagged memories and silently defeat the
-    filter.
+    consolidation) are ever relevant types. `tags_match` now reflects the
+    caller's own `mode` (`RecallRequest.tags_filter_mode`), mapped through
+    `memory.tags.to_upstream` -- caller-settable, but only from that closed,
+    already-strict enum: the loose Hindsight forms (`all`/`any` without
+    `_strict`) that would also return untagged memories and silently defeat
+    the filter are never reachable this way, whatever the caller picks.
     """
     tags = ["schema:ach-retain-v1"]
     if memory_types:
         tags.extend(f"type:{value}" for value in memory_types)
     tags.extend(caller_tags)
-    return RecallFilters(types=("world", "observation"), tags=tuple(tags), tags_match="all_strict")
+    return RecallFilters(
+        types=("world", "observation"), tags=tuple(tags), tags_match=to_upstream(mode)
+    )

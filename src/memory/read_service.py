@@ -48,7 +48,7 @@ from memory.read_models import (
     resolve_filters,
 )
 from memory.retained_records import LogicalBankRef
-from memory.tags import RESERVED_PREFIXES
+from memory.tags import RESERVED_PREFIXES, FilterMode, default_filter_mode
 
 _MEMORY_TYPES = set(get_args(MemoryType))
 _BASES = set(get_args(EvidenceBasis))
@@ -182,6 +182,7 @@ def _recall_hits(
     view: View,
     memory_types: tuple[MemoryType, ...] | None,
     caller_tags: tuple[str, ...] = (),
+    mode: FilterMode = default_filter_mode(),
 ) -> list[RecallHit]:
     """Everything AFTER a bank is already resolved, authorized and proven
     current: build the server-owned filter set, call Hindsight, normalize
@@ -200,7 +201,7 @@ def _recall_hits(
     `max_results` -- the caller decides how much of this to keep and whether
     that makes the response truncated.
     """
-    filters = resolve_filters(view, memory_types, caller_tags)
+    filters = resolve_filters(view, memory_types, caller_tags, mode)
     raw = get_client().recall(
         bank_id,
         query,
@@ -241,7 +242,8 @@ def recall(
     run_access_maintenance(db, ref)
 
     hits = _recall_hits(
-        read_bank.bank_id, request.query, request.view, request.kinds, request.tags_filter
+        read_bank.bank_id, request.query, request.view, request.kinds,
+        request.tags_filter, request.tags_filter_mode,
     )
     capped = hits[: request.max_results]
     response = build_recall_response(
