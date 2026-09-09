@@ -45,8 +45,10 @@ def jwt_enabled(monkeypatch):
     return seen
 
 
-def _principal(user_id=None, groups=frozenset()) -> Principal:
-    return Principal(tenant_id="default", user_id=user_id, groups=groups)
+def _principal(user_id=None, groups=frozenset(), subject=None) -> Principal:
+    return Principal(
+        tenant_id="default", user_id=user_id, groups=groups, subject=subject
+    )
 
 
 # --- Operator authority is configuration, not a credential -----------------
@@ -59,31 +61,71 @@ def test_an_unset_master_config_grants_nobody():
     principal whose user id or group id is the empty string."""
     settings = Settings(master_users="", master_groups="")
 
-    assert not is_operator(_principal(user_id="", groups=frozenset({""})), settings)
-    assert not is_operator(_principal(user_id="usr_1"), settings)
+    assert not is_operator(
+        _principal(user_id="", groups=frozenset({""}), subject=""), settings
+    )
+    assert not is_operator(_principal(user_id="usr_1", subject="a@b.test"), settings)
 
 
 def test_a_separator_only_master_config_grants_nobody():
     settings = Settings(master_users=" , ", master_groups=",,")
 
-    assert not is_operator(_principal(user_id="", groups=frozenset({""})), settings)
+    assert not is_operator(
+        _principal(user_id="", groups=frozenset({""}), subject=""), settings
+    )
 
 
 def test_a_configured_user_grants_operator():
-    settings = Settings(master_users="usr_1,juancarlos@example.com", master_groups="")
+    settings = Settings(master_users="juancarlos@example.com", master_groups="")
 
-    assert is_operator(_principal(user_id="juancarlos@example.com"), settings)
-    assert not is_operator(_principal(user_id="usr_2"), settings)
+    assert is_operator(_principal(subject="juancarlos@example.com"), settings)
+    assert not is_operator(_principal(subject="someone@example.com"), settings)
+
+
+def test_the_configured_user_is_the_subject_not_the_local_user_id():
+    """`user_id` is minted by `link_identity` the first time an identity is
+    seen, so naming an operator by it would mean configuring a value that
+    does not exist until after that operator's first login, and that nobody
+    can predict. Configuration names the identity the IdP asserts."""
+    settings = Settings(master_users="usr_1", master_groups="")
+
+    assert not is_operator(_principal(user_id="usr_1", subject="a@b.test"), settings)
+
+
+def test_a_principal_without_a_subject_never_matches_the_user_branch():
+    settings = Settings(master_users="", master_groups="")
+
+    assert not is_operator(_principal(user_id="usr_1", subject=None), settings)
+
+
+def test_a_surface_can_withhold_authority_from_an_operator(monkeypatch):
+    """MCP yields every principal with `authority_allowed=False`, so the same
+    person is an operator over REST and an ordinary user over MCP. The gate is
+    on `is_master`, not on `is_operator`: configuration still says this person
+    holds authority, and the surface says it is not exercisable here."""
+    import dataclasses
+
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_MASTER_USERS", "juancarlos@example.com")
+    get_settings.cache_clear()
+
+    operator = Principal(
+        tenant_id="default", user_id="usr_1", subject="juancarlos@example.com"
+    )
+    assert operator.is_master
+
+    assert not dataclasses.replace(operator, authority_allowed=False).is_master
 
 
 def test_a_configured_group_grants_operator():
     settings = Settings(master_users="", master_groups="sre,platform")
 
     assert is_operator(
-        _principal(user_id="usr_2", groups=frozenset({"platform"})), settings
+        _principal(subject="a@b.test", groups=frozenset({"platform"})), settings
     )
     assert not is_operator(
-        _principal(user_id="usr_2", groups=frozenset({"devs"})), settings
+        _principal(subject="a@b.test", groups=frozenset({"devs"})), settings
     )
 
 
