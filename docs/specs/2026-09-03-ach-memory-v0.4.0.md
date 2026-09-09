@@ -865,6 +865,13 @@ Bootstrap is an explicit, idempotent, auditable control-plane write operation:
 4. Request built-in synthesis asynchronously and expose its operation status.
 5. Do nothing when bootstrap or the relevant built-in is disabled.
 
+`POST /v1/projects` and `POST /v1/users` perform the same retain-strategy and built-in
+provisioning at creation time, so a project or user created through the control plane is fully
+usable immediately and does not depend on a bootstrap call ever happening. Bootstrap is therefore
+a pre-warm, not a provisioning prerequisite: calling it is what makes an MCP session's first prompt
+warm rather than cold, and calling it again after a partial failure repairs whatever was left
+half-done, since every step here is idempotent.
+
 The bootstrap authorization covers these subordinate built-in creates and upgrades; an installed
 MCP does not ask for a second host confirmation for each model. User-defined model mutations retain
 the normal confirmation policy.

@@ -6,6 +6,12 @@ that project (owner=user), ensures its Project bank and its enabled
 `project-context` built-in. It never waits for a built-in's synthesis to
 finish: `reconcile_builtin` records the upstream operation and returns
 immediately.
+
+`provision_project_bank`/`provision_user_bank` below are also called
+directly from project/user creation (`api/projects.py`, `api/users.py`), so
+a bank created through the control plane is usable immediately. Bootstrap
+is a pre-warm on top of that -- it is what makes an MCP session's first
+prompt warm rather than cold -- not the only path to a provisioned bank.
 """
 
 from __future__ import annotations
