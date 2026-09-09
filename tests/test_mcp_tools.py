@@ -221,7 +221,7 @@ def test_mental_model_tools_never_return_a_physical_or_upstream_id(call_tool, se
 
     created = call_tool(
         "create_mental_model", key, scope="user", name="n", source_query="q",
-        source_tags=MM_REQUIRED_TAGS, tags_match="all", max_tokens=512,
+        source_tags=MM_REQUIRED_TAGS, source_tags_mode="all", max_tokens=512,
         trigger={"mode": "delta"},
     )
 
@@ -252,7 +252,7 @@ def test_mcp_refresh_and_delete_forward_the_callers_operation_id_to_the_ledger(c
 
     created = call_tool(
         "create_mental_model", key, scope="user", name="n", source_query="q",
-        source_tags=MM_REQUIRED_TAGS, tags_match="all", max_tokens=512,
+        source_tags=MM_REQUIRED_TAGS, source_tags_mode="all", max_tokens=512,
         trigger={"mode": "delta"},
     )
     model_key = created.result["model_key"]
@@ -482,7 +482,7 @@ GHOST_EXTRA_KWARGS: dict[str, dict] = {
     "cancel_operation": {"operation_id": GHOST},
     "create_mental_model": {
         "name": "n", "source_query": "q", "source_tags": MM_REQUIRED_TAGS,
-        "tags_match": "all", "max_tokens": 512,
+        "source_tags_mode": "all", "max_tokens": 512,
         "trigger": {"mode": "delta"},
     },
     "get_mental_model": {"model_key": MM_GHOST},
@@ -1592,8 +1592,10 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved when the transfer tool was added (lazy-provisioning plan, Task 7).
-TOOL_CONTRACT_SHA256 = "da9b1e2e8c330885d48e8214990ea3aa0bb9f12018e733a1854181b70218187b"
+# moved by the tag-surface rename (v1c plan): recall/reflect's tags param
+# became tags_filter/tags_filter_mode, and create_mental_model's tags_match
+# became source_tags_mode.
+TOOL_CONTRACT_SHA256 = "8c5f9c5941e518126bd76447a0861997ba14cbe36f5d1a06c0c4664b6a97d8a7"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1651,7 +1653,7 @@ def test_create_mental_model_rejects_always_in_context(call_tool):
     with pytest.raises(TypeError):
         call_tool(
             "create_mental_model", key, scope="user", name="Ops",
-            source_query="?", source_tags=MM_REQUIRED_TAGS, tags_match="all",
+            source_query="?", source_tags=MM_REQUIRED_TAGS, source_tags_mode="all",
             max_tokens=512, trigger={}, always_in_context=True,
         )
 

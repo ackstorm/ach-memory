@@ -39,6 +39,7 @@ from memory.mcp.tools import (
     _invalid_request,
 )
 from memory.mental_model_service import CustomModelCreateRequest, CustomModelUpdateRequest
+from memory.tags import FilterMode, default_filter_mode
 
 logger = logging.getLogger("memory.mcp")
 
@@ -115,13 +116,13 @@ def register(mcp: MCPServer) -> None:
         name: str,
         source_query: str,
         source_tags: list[str],
-        tags_match: Literal["all"],
         max_tokens: MaxTokens,
         trigger: dict[str, object],
         ctx: Context,
         project_slug: str | None = None,
         git_locator: str | None = None,
         operation_id: str | None = None,
+        source_tags_mode: FilterMode = default_filter_mode(),
     ) -> ToolResult:
         def body_factory() -> CreateMentalModelRequest:
             _check_content_size(source_query)
@@ -132,7 +133,7 @@ def register(mcp: MCPServer) -> None:
                 name=name,
                 source_query=source_query,
                 source_tags=tuple(source_tags),
-                tags_match=tags_match,
+                source_tags_mode=source_tags_mode,
                 max_tokens=max_tokens,
                 trigger=trigger,
                 operation_id=operation_id or str(uuid.uuid4()),
@@ -145,7 +146,7 @@ def register(mcp: MCPServer) -> None:
                 name=body.name,
                 source_query=body.source_query,
                 source_tags=body.source_tags,
-                tags_match=body.tags_match,
+                source_tags_mode=body.source_tags_mode,
                 max_tokens=body.max_tokens,
                 trigger=body.trigger.model_dump(exclude_none=True),
                 operation_id=body.operation_id,

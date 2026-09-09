@@ -29,7 +29,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "d1e2f3a4b5c6"
-down_revision: str | Sequence[str] | None = "918c1a7a37de"
+down_revision: str | Sequence[str] | None = "73e00e0dd20c"
 branch_labels = None
 depends_on = None
 

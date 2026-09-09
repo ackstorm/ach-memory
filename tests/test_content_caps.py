@@ -12,7 +12,7 @@ OVERSIZE = "x" * 300_000  # MEMORY_MAX_CONTENT_BYTES defaults to 256_000
 
 MM_REQUIRED_FIELDS = {
     "source_tags": ["schema:ach-retain-v1", "validity:indefinite"],
-    "tags_match": "all",
+    "source_tags_mode": "all",
     "max_tokens": 512,
     "operation_id": "44444444-4444-4444-4444-444444444444",
 }

@@ -23,13 +23,15 @@ def test_a_builtin_definition_fits_its_scope_delivery_budget(definition, limit):
 
 def test_user_builtin_is_frozen_and_out_of_custom_namespace():
     assert USER_CONTEXT.key == "user-context"
-    assert USER_CONTEXT.version == 2
+    assert USER_CONTEXT.version == 3
     assert USER_CONTEXT.max_tokens == 2048
     assert USER_CONTEXT.source_tags == ("schema:ach-retain-v1", "validity:indefinite")
+    assert USER_CONTEXT.tags_match == "all_strict"
 
 
 def test_project_builtin_is_frozen():
     assert PROJECT_CONTEXT.key == "project-context"
-    assert PROJECT_CONTEXT.version == 2
+    assert PROJECT_CONTEXT.version == 3
     assert PROJECT_CONTEXT.max_tokens == 2048
     assert "cheaply rediscoverable" in PROJECT_CONTEXT.source_query
+    assert PROJECT_CONTEXT.tags_match == "all_strict"

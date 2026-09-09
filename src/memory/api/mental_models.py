@@ -13,7 +13,7 @@ import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,6 +38,7 @@ from memory.mental_model_service import (
 )
 from memory.models import Project
 from memory.retained_records import LogicalBankRef
+from memory.tags import RESERVED_PREFIXES, FilterMode, default_filter_mode
 
 router = APIRouter(prefix="/v1/mental-models", tags=["mental-models"])
 
@@ -56,7 +57,7 @@ class CreateMentalModelRequest(ScopedRequest):
     name: str = Field(max_length=256)
     source_query: str
     source_tags: tuple[str, ...]
-    tags_match: Literal["all"]
+    source_tags_mode: FilterMode = Field(default_factory=default_filter_mode)
     max_tokens: int = Field(ge=256, le=8192)
     trigger: MentalModelTrigger
     operation_id: UUID4Str
@@ -64,11 +65,26 @@ class CreateMentalModelRequest(ScopedRequest):
     @field_validator("source_tags")
     @classmethod
     def _validate_source_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if frozenset(value) != REQUIRED_SOURCE_TAGS:
+        tags = frozenset(value)
+        if not REQUIRED_SOURCE_TAGS <= tags:
             raise ValueError(
-                "source_tags must select exactly schema:ach-retain-v1 and validity:indefinite"
+                "source_tags must include schema:ach-retain-v1 and validity:indefinite"
             )
+        extra = tags - REQUIRED_SOURCE_TAGS
+        if any(tag.startswith(prefix) for tag in extra for prefix in RESERVED_PREFIXES):
+            raise ValueError("that tag namespace is reserved")
         return value
+
+    @model_validator(mode="after")
+    def _validate_mode_against_extras(self) -> "CreateMentalModelRequest":
+        # `any` lets a single extra tag alone qualify a source, bypassing the
+        # required pair entirely -- a model that looks scoped to that tag and
+        # actually reads everything carrying it, typed curation or not.
+        if self.source_tags_mode != "all" and frozenset(self.source_tags) != REQUIRED_SOURCE_TAGS:
+            raise ValueError(
+                "source_tags_mode must be 'all' when source_tags narrows beyond the required pair"
+            )
+        return self
 
 
 class UpdateMentalModelRequest(ScopedRequest):
@@ -157,7 +173,7 @@ def create_mental_model(
         name=body.name,
         source_query=body.source_query,
         source_tags=body.source_tags,
-        tags_match=body.tags_match,
+        source_tags_mode=body.source_tags_mode,
         max_tokens=body.max_tokens,
         trigger=body.trigger.model_dump(exclude_none=True),
         operation_id=body.operation_id,
