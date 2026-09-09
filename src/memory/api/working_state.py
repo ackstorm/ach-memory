@@ -70,10 +70,27 @@ class ClearWorkingStateRequest(BaseModel):
 
 
 def _reject_master(principal: Principal) -> None:
+    """Operator authority is not exercisable on these routes.
+
+    The second half of the old reason -- "a master key has no session of its
+    own" -- stopped being true when authority became configuration over an
+    ordinary identity: an operator has a user_id and a session like anyone
+    else. What survives is the first half. Working State has no On-Behalf-Of
+    path, so a write made under authority could not be attributed to the
+    person it was made for, and §5.2 wants exactly that recorded.
+
+    Kept as a refusal rather than softened to authority-withholding (the way
+    `mcp/server.py` handles the same tension) because nothing here reads
+    is_master to widen a scope: these routes are keyed on principal.user_id
+    already, so withholding authority would change nothing and this guard
+    would become dead code that still reads like a rule. Note it is
+    unreachable over MCP, where every principal already arrives without
+    authority -- it bites only a REST caller who is a configured operator.
+    """
     if principal.is_master:
         raise Forbidden(
-            "Working State has no On-Behalf-Of path; a master key has no "
-            "session of its own to hand off"
+            "Working State has no On-Behalf-Of path, so a write made under "
+            "operator authority could not be attributed"
         )
 
 

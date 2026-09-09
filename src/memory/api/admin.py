@@ -114,11 +114,13 @@ class AdminScopeBody(BaseModel):
     """Optional JSON body for the two admin scope routes.
 
     Every data-plane route takes its scope in a JSON body, and these two took
-    it only in the query string. A caller who followed the house style got
-    `INVALID_SCOPE: master-key requests with scope=user must set user_id` --
-    naming the exact field they had just set, in the body that was silently
-    ignored. Accepting both spellings removes the trap; the query string stays
-    supported, so nothing that worked before stops working.
+    it only in the query string. A caller who followed the house style got an
+    INVALID_SCOPE refusal naming the exact field they had just set, in the
+    body that was silently ignored. (That particular message is gone with the
+    master key -- an operator addresses their own bank by default now -- but
+    the trap it named was the ignored body, which is what this fixes.)
+    Accepting both spellings removes it; the query string stays supported, so
+    nothing that worked before stops working.
 
     `scope` is deliberately absent: it comes from the path and there is no
     second place to say it.

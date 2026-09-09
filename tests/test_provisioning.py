@@ -84,7 +84,6 @@ def test_a_read_only_first_request_keeps_the_identity_it_linked(client, session,
     import uuid
 
     from memory.models import ExternalIdentity
-
     from tests.conftest import IDENTITY_HEADER, RESOLVER_URL
 
     subject = f"reader-{uuid.uuid4().hex[:8]}@test"
