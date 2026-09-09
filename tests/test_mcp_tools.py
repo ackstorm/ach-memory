@@ -182,7 +182,7 @@ def test_mental_model_tools_never_return_a_physical_or_upstream_id(call_tool, se
     created = call_tool(
         "create_mental_model", key, scope="user", name="n", source_query="q",
         source_tags=MM_REQUIRED_TAGS, tags_match="all", max_tokens=512,
-        always_in_context=False, trigger={"mode": "delta"},
+        trigger={"mode": "delta"},
     )
 
     assert created.result["model_key"].startswith("mm_")
@@ -213,7 +213,7 @@ def test_mcp_refresh_and_delete_forward_the_callers_operation_id_to_the_ledger(c
     created = call_tool(
         "create_mental_model", key, scope="user", name="n", source_query="q",
         source_tags=MM_REQUIRED_TAGS, tags_match="all", max_tokens=512,
-        always_in_context=False, trigger={"mode": "delta"},
+        trigger={"mode": "delta"},
     )
     model_key = created.result["model_key"]
 
@@ -403,7 +403,7 @@ GHOST_EXTRA_KWARGS: dict[str, dict] = {
     "cancel_operation": {"operation_id": GHOST},
     "create_mental_model": {
         "name": "n", "source_query": "q", "source_tags": MM_REQUIRED_TAGS,
-        "tags_match": "all", "max_tokens": 512, "always_in_context": False,
+        "tags_match": "all", "max_tokens": 512,
         "trigger": {"mode": "delta"},
     },
     "get_mental_model": {"model_key": MM_GHOST},
@@ -1353,10 +1353,10 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved when load_context stopped claiming it "performs no write of its
-# own": it now reconciles a withheld model with its finished refresh, the
-# same observation get_mental_model has always made.
-TOOL_CONTRACT_SHA256 = "7ae73e6a68b3822c6e550e281a14862bf2b1427028c7c9ba5a3f236e2903b6ff"
+# moved when always_in_context left the create/update surface: the parameter,
+# its schema entries, and every description sentence mentioning it are gone
+# from create_mental_model and update_mental_model.
+TOOL_CONTRACT_SHA256 = "469604727a5994d664a536f0c02cd49836eb158bc1e5c7c612db5bb25701b5e9"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1404,6 +1404,31 @@ async def test_serialized_tool_contract_is_stable_after_module_split():
 
     assert len(tools) == 26
     assert hashlib.sha256(serialized).hexdigest() == TOOL_CONTRACT_SHA256
+
+
+@respx.mock
+def test_create_mental_model_rejects_always_in_context(call_tool):
+    """Standing delivery is not a caller's choice: the argument is gone,
+    and passing it is an unknown-field error, not a silent no-op."""
+    key = call_tool.make_user()
+    with pytest.raises(TypeError):
+        call_tool(
+            "create_mental_model", key, scope="user", name="Ops",
+            source_query="?", source_tags=MM_REQUIRED_TAGS, tags_match="all",
+            max_tokens=512, trigger={}, always_in_context=True,
+        )
+
+
+@pytest.mark.anyio
+async def test_no_model_tool_advertises_always_in_context():
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    for tool in await mcp.list_tools():
+        assert "always_in_context" not in json.dumps(tool.input_schema), tool.name
+        assert "always_in_context" not in (tool.description or ""), tool.name
 
 
 @pytest.mark.anyio

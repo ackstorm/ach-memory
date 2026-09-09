@@ -58,7 +58,6 @@ class CreateMentalModelRequest(ScopedRequest):
     source_tags: tuple[str, ...]
     tags_match: Literal["all"]
     max_tokens: int = Field(ge=256, le=8192)
-    always_in_context: bool
     trigger: MentalModelTrigger
     operation_id: UUID4Str
 
@@ -77,7 +76,6 @@ class UpdateMentalModelRequest(ScopedRequest):
     source_query: str | None = None
     max_tokens: int | None = Field(default=None, ge=256, le=8192)
     trigger: MentalModelTrigger | None = None
-    always_in_context: bool | None = None
     operation_id: UUID4Str
 
 
@@ -162,7 +160,6 @@ def create_mental_model(
         tags_match=body.tags_match,
         max_tokens=body.max_tokens,
         trigger=body.trigger.model_dump(exclude_none=True),
-        always_in_context=body.always_in_context,
         operation_id=body.operation_id,
     )
     return mental_model_service.create_custom_model(db, bank, request, client=get_client())
@@ -224,7 +221,6 @@ def update_mental_model(
         source_query=body.source_query,
         max_tokens=body.max_tokens,
         trigger=body.trigger.model_dump(exclude_none=True) if body.trigger else None,
-        always_in_context=body.always_in_context,
         operation_id=body.operation_id,
     )
     return mental_model_service.update_model(db, bank, model_key, request, client=get_client())

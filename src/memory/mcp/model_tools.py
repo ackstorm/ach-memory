@@ -96,10 +96,7 @@ def register(mcp: MCPServer) -> None:
         description=(
             "Create a new custom governed mental model. This changes durable "
             "shared model configuration for every authorized consumer of this "
-            "bank and requires host confirmation -- it is not a private note. "
-            "always_in_context is a conscious delivery choice, never inferred "
-            "from name or prompt: setting it true on a User model exposes this "
-            "model's output to every authorized agent acting as this user."
+            "bank and requires host confirmation -- it is not a private note."
         ),
         annotations=ToolAnnotations(destructiveHint=False),
     )
@@ -110,7 +107,6 @@ def register(mcp: MCPServer) -> None:
         source_tags: list[str],
         tags_match: Literal["all"],
         max_tokens: MaxTokens,
-        always_in_context: bool,
         trigger: dict[str, object],
         ctx: Context,
         project_slug: str | None = None,
@@ -128,7 +124,6 @@ def register(mcp: MCPServer) -> None:
                 source_tags=tuple(source_tags),
                 tags_match=tags_match,
                 max_tokens=max_tokens,
-                always_in_context=always_in_context,
                 trigger=trigger,
                 operation_id=operation_id or str(uuid.uuid4()),
             )
@@ -143,7 +138,6 @@ def register(mcp: MCPServer) -> None:
                 tags_match=body.tags_match,
                 max_tokens=body.max_tokens,
                 trigger=body.trigger.model_dump(exclude_none=True),
-                always_in_context=body.always_in_context,
                 operation_id=body.operation_id,
             )
             view = mental_model_service.create_custom_model(
@@ -204,12 +198,10 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool(
         description=(
             "Change a custom mental model's display name, prompt, trigger, "
-            "budget or always_in_context delivery choice. This changes durable "
-            "shared model configuration for every authorized consumer of this "
-            "bank and requires host confirmation. A built-in model's "
-            "definition cannot be changed this way. Enabling always_in_context "
-            "on a User model exposes its output to every authorized agent "
-            "acting as this user."
+            "or budget. This changes durable shared model configuration for "
+            "every authorized consumer of this bank and requires host "
+            "confirmation. A built-in model's definition cannot be changed "
+            "this way."
         ),
         annotations=ToolAnnotations(destructiveHint=False),
     )
@@ -221,7 +213,6 @@ def register(mcp: MCPServer) -> None:
         source_query: str | None = None,
         max_tokens: OptionalMaxTokens = None,
         trigger: dict[str, object] | None = None,
-        always_in_context: bool | None = None,
         project_slug: str | None = None,
         git_locator: str | None = None,
         operation_id: str | None = None,
@@ -237,7 +228,6 @@ def register(mcp: MCPServer) -> None:
                 source_query=source_query,
                 max_tokens=max_tokens,
                 trigger=trigger,
-                always_in_context=always_in_context,
                 operation_id=operation_id or str(uuid.uuid4()),
             )
             if body.trigger is not None:
@@ -250,7 +240,6 @@ def register(mcp: MCPServer) -> None:
                 source_query=body.source_query,
                 max_tokens=body.max_tokens,
                 trigger=body.trigger.model_dump(exclude_none=True) if body.trigger else None,
-                always_in_context=body.always_in_context,
                 operation_id=body.operation_id,
             )
             view = mental_model_service.update_model(

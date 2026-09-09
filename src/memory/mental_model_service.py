@@ -105,7 +105,11 @@ class CustomModelCreateRequest(BaseModel):
     tags_match: Literal["all"]
     max_tokens: int = Field(ge=MIN_MAX_TOKENS)
     trigger: dict[str, object]
-    always_in_context: bool
+    # Defaulted, not required: Task 2 (v0.4.8 builtin-only-standing-context)
+    # dropped this from the REST/MCP create surface, so no caller can supply
+    # it any more. Left in place -- still read by _check_budget/register_model
+    # below -- until Task 4 removes the field from this class entirely.
+    always_in_context: bool = False
     operation_id: str
 
     @field_validator("source_tags")
