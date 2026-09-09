@@ -62,12 +62,11 @@ cleanup — those require separate approval (see
 
 ## Agent setup
 
-Copy the example, set `MEMORY_MASTER_KEY` and its SHA-256 value in `.env`, then
-start the local stack. The shipped mock settings make no real LLM calls.
+Copy the example and start the local stack. The shipped mock settings make no
+real LLM calls.
 
 ```bash
 cp .env.example .env
-# Edit .env: MEMORY_MASTER_KEY=... and MEMORY_MASTER_KEY_HASH=<sha256 of that key>
 docker compose up -d --build
 ```
 
@@ -76,6 +75,26 @@ identity provider issues** — a JWT from the issuer named in
 `MEMORY_AUTH_JWT_*`, or the platform key named in `MEMORY_AUTH_PLATFORM_*`.
 The variable keeps its name because it keeps its job; only the source of the
 value changed. See [Authentication](#authentication) below.
+
+Locally there is no such provider, so the Compose stack ships one: a
+`dev-identity` sidecar ([deploy/dev-identity/whoami.py](deploy/dev-identity/whoami.py))
+answering the same whoami shape LiteLLM does. It is a deployment artifact and
+not a third way in — the service is configured for the ordinary platform
+resolver and cannot tell the difference. **The token is the identity**, so any
+value names a person and `+` adds groups:
+
+```bash
+export ACH_MEMORY_URL=http://localhost:8000
+export ACH_MEMORY_API_KEY=alice          # alice, no groups
+# export ACH_MEMORY_API_KEY=alice+sre    # ... and in the group `sre`
+```
+
+To hold operator authority on the local stack, name yourself before bringing
+it up — `MEMORY_MASTER_USERS=alice` in `.env`.
+
+That sidecar authenticates **everybody**, by construction. It exists so the
+stack is drivable without an `if dev:` branch in the auth code; never run it
+anywhere else.
 
 Put the endpoint and your token in your shell profile, so every agent inherits
 them however it is launched:

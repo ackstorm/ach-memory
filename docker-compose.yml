@@ -10,9 +10,9 @@ services:
       POSTGRES_DB: memory
     ports:
       # Loopback only. This stack is for local development: the credentials
-      # below are `memory`/`memory` and the master key the README generates
-      # is a dev-only secret, so binding 0.0.0.0 hands anyone routable to
-      # this host the whole tenant.
+      # below are `memory`/`memory` and the identity sidecar authenticates
+      # anybody, so binding 0.0.0.0 hands anyone routable to this host the
+      # whole tenant.
       - "127.0.0.1:${MEMORY_POSTGRES_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U memory"]
@@ -140,6 +140,27 @@ services:
       MEMORY_DATABASE_URL: postgresql+psycopg://memory:memory@postgres:5432/memory
     command: ["python", "-m", "alembic", "upgrade", "head"]
 
+  # The stack's identity source. ach-memory mints no credentials, so without
+  # something answering the whoami shape nothing here can authenticate at all.
+  # This is a deployment artifact, not a third auth provider: it speaks the
+  # existing platform-resolver contract and the service does not know it is
+  # any different from LiteLLM. Read deploy/dev-identity/whoami.py before
+  # using it -- it authenticates everybody, on purpose, and must never be
+  # deployed.
+  dev-identity:
+    # The same digest the Dockerfile already pins, so this pulls nothing new.
+    image: python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+    command: ["python", "/app/whoami.py"]
+    volumes:
+      - ./deploy/dev-identity/whoami.py:/app/whoami.py:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; r=urllib.request.Request('http://localhost:8080', headers={'authorization':'probe'}); sys.exit(0 if urllib.request.urlopen(r).status==200 else 1)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   api:
     build: .
     depends_on:
@@ -149,9 +170,10 @@ services:
         condition: service_healthy
       hindsight:
         condition: service_healthy
+      dev-identity:
+        condition: service_healthy
     environment:
       MEMORY_DATABASE_URL: postgresql+psycopg://memory:memory@postgres:5432/memory
-      MEMORY_MASTER_KEY_HASH: ${MEMORY_MASTER_KEY_HASH:?set MEMORY_MASTER_KEY_HASH}
       MEMORY_HINDSIGHT_URL: http://hindsight:8888
       MEMORY_HINDSIGHT_API_KEY: ${MEMORY_HINDSIGHT_API_KEY:-}
       MEMORY_TENANT_ID: default
@@ -162,6 +184,24 @@ services:
       # runner publishes a Docker-assigned port and supplies its own matching
       # wildcard-port allowlist for loopback only.
       MEMORY_MCP_ALLOWED_HOSTS: ${MEMORY_MCP_ALLOWED_HOSTS:-127.0.0.1,localhost,127.0.0.1:*,localhost:*}
+      # The sidecar, wired through the ordinary platform provider. The
+      # incoming header is `Authorization` so an unmodified client -- the CLI,
+      # the stdio proxy, curl -- drives this stack with `Bearer <name>` and
+      # nothing has a dev-only code path. The JWT provider stays off here, so
+      # a bearer token falls through to this resolver.
+      MEMORY_AUTH_PLATFORM_ENABLED: "true"
+      MEMORY_AUTH_PLATFORM_INCOMING_HEADER: authorization
+      MEMORY_AUTH_PLATFORM_RESOLVER_HEADER: authorization
+      MEMORY_AUTH_PLATFORM_RESOLVER_URL: http://dev-identity:8080/whoami
+      MEMORY_AUTH_PLATFORM_USER_FIELD: user_id
+      MEMORY_AUTH_PLATFORM_GROUPS_FIELD: groups
+      # 0: the sidecar derives identity from the token itself, so a cache
+      # only hides that during development.
+      MEMORY_AUTH_PLATFORM_CACHE_TTL: "0"
+      # Empty grants nobody, which is the shipped default everywhere. Name
+      # yourself to reach the operator plane on the local stack.
+      MEMORY_MASTER_USERS: ${MEMORY_MASTER_USERS:-}
+      MEMORY_MASTER_GROUPS: ${MEMORY_MASTER_GROUPS:-}
     ports:
       # Loopback only. See the postgres/hindsight services above for why.
       - "127.0.0.1:${MEMORY_API_PORT:-8000}:8000"
