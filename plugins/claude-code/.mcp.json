@@ -5,7 +5,7 @@
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/ackstorm/ach-memory@v0.4.7",
+        "git+https://github.com/ackstorm/ach-memory@v0.5.0",
         "ach-memory",
         "mcp",
         "--url",

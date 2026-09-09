@@ -2,7 +2,7 @@ apiVersion: v2
 name: ach-memory
 description: Multi-tenant memory service for coding agents, over Hindsight
 type: application
-version: 0.4.7
-appVersion: "0.4.7"
+version: 0.5.0
+appVersion: "0.5.0"
 annotations:
   artifacthub.io/license: "MIT"
