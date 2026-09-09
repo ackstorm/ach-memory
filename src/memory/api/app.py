@@ -147,7 +147,34 @@ def current_on_behalf_of(
     return on_behalf_of if principal.is_master else None
 
 
+def _assert_master_config_cannot_over_grant() -> None:
+    """Refuse to start rather than hand every bank to everyone.
+
+    An empty default is not enough on its own. `config._id_set` discards
+    empty entries, so an unset MEMORY_MASTER_USERS grants nobody today -- but
+    if that parsing ever loosens, `""` lands in the granted set and matches a
+    principal with no id, and nothing anywhere reports it. Every other
+    misconfiguration in this service announces itself; over-granting is
+    silent, so it gets the one signal loud enough to be noticed: a container
+    that will not start.
+    """
+    settings = get_settings()
+    if "" in settings.master_user_ids or "" in settings.master_group_ids:
+        raise RuntimeError(
+            "MEMORY_MASTER_USERS/MEMORY_MASTER_GROUPS parsed to an empty "
+            "entry, which would grant operator authority to a principal with "
+            "no identity. Refusing to start."
+        )
+    logger.info(
+        "operator authority: %d user(s), %d group(s)",
+        len(settings.master_user_ids),
+        len(settings.master_group_ids),
+    )
+
+
 def create_app() -> FastAPI:
+    _assert_master_config_cannot_over_grant()
+
     from memory.api import activity as activity_routes
     from memory.api import admin as admin_routes
     from memory.api import bootstrap as bootstrap_routes

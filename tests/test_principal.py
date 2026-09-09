@@ -213,3 +213,21 @@ def test_dedicated_header_still_wins_over_authorization(session, tenant):
     user, plaintext = _make_user_key(session, tenant)
     principal = resolve_principal("Bearer mem_wrong", session, api_key=plaintext)
     assert principal.user_id == user.id
+
+
+def test_the_service_refuses_to_start_when_master_config_could_over_grant(monkeypatch):
+    """`config._id_set` cannot produce an empty entry today, so the only way
+    to reach this is that parsing loosening later. The assertion is here
+    because that failure is otherwise entirely silent -- an unset variable
+    handing every bank to everyone, reported nowhere -- so forcing the state
+    is the only way to pin that the refusal is real and loud."""
+    from memory.api.app import create_app
+    from memory.config import Settings, get_settings
+
+    monkeypatch.setattr(
+        Settings, "master_group_ids", property(lambda self: frozenset({""}))
+    )
+    get_settings.cache_clear()
+
+    with pytest.raises(RuntimeError, match="MEMORY_MASTER_GROUPS"):
+        create_app()
