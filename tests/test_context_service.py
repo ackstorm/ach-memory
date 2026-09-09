@@ -112,7 +112,6 @@ def _registration(
         builtin_key=model_key if origin == "builtin" else None,
         definition_version=1 if origin == "builtin" else None,
         lifecycle_state="active",
-        always_in_context=True,
         delivery_state="ready",
     )
 
@@ -556,9 +555,9 @@ def test_a_request_with_no_project_says_the_project_half_is_absent(
 
 
 def test_a_custom_model_is_never_delivered_even_with_the_flag_set(session, tenant):
-    """Standing context is built-ins only. A custom model with
-    always_in_context=True (still settable at this point in the refactor)
-    must not appear in a context load."""
+    """Standing context is built-ins only. A custom model -- registered here
+    exactly like an ordinary always-in-context row was before the flag was
+    removed -- must not appear in a context load."""
     juan = _user(tenant, "usr_juan")
     session.add(juan)
     session.flush()

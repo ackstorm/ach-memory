@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -620,7 +619,6 @@ class MentalModelRegistration(Base):
     mutation_payload_hash: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
-    always_in_context: Mapped[bool] = mapped_column(Boolean)
     delivery_state: Mapped[str] = mapped_column(String(16))
     refresh_operation_id: Mapped[str | None] = mapped_column(
         String(128), nullable=True

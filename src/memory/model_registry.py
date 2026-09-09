@@ -113,10 +113,6 @@ def register_model(
         lifecycle_state=lifecycle_state,
         mutation_operation_id=mutation_operation_id,
         mutation_payload_hash=mutation_payload_hash,
-        # No caller can set this any more (v0.4.8 builtin-only-standing-context
-        # Task 4); the column itself is NOT NULL with no server default until
-        # Task 5 drops it, so the ORM insert still needs a value here.
-        always_in_context=False,
         delivery_state=delivery_state,
         refresh_operation_id=refresh_operation_id,
         refresh_status=refresh_status,

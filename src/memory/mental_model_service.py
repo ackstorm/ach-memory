@@ -175,11 +175,14 @@ def _check_budget(
     definition: BuiltinModelDefinition,
     excluding_model_key: str | None = None,
 ) -> None:
+    # Standing delivery is origin="builtin" and lifecycle_state="active"
+    # (context_service.load's own predicate) -- nothing else can ever
+    # contribute to this scope's spend any more.
     total = added_tokens + sum(
         row.max_tokens
         for row in live_rows
-        if row.always_in_context
-        and row.lifecycle_state != "deleted"
+        if row.origin == "builtin"
+        and row.lifecycle_state == "active"
         and row.model_key != excluding_model_key
     )
     limit = _budget_for(bank.scope)
