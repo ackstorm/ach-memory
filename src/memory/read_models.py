@@ -152,6 +152,14 @@ class RecallHit(BaseModel):
     origin: EvidenceBasis | None = None
     occurred_at: str | None = None
     document_id: str | None = None
+    #: The caller's OWN tags on this fact (e.g. `repo:group/app`), so a caller
+    #: that filtered by one can see which value a hit carries. Server-derived
+    #: tags are excluded: `type:`/`basis:` are already surfaced as `kind` and
+    #: `origin`, and `schema:`/`validity:` are internal bookkeeping. Filtering
+    #: by a tag you can never read back is what made this field necessary --
+    #: unstripping tags in mcp/compact.py does nothing here, because this
+    #: model is `extra="forbid"` and drops anything with no field to land in.
+    tags: tuple[str, ...] = ()
 
 
 class RecallResponse(BaseModel):

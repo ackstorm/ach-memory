@@ -48,6 +48,7 @@ from memory.read_models import (
     resolve_filters,
 )
 from memory.retained_records import LogicalBankRef
+from memory.tags import RESERVED_PREFIXES
 
 _MEMORY_TYPES = set(get_args(MemoryType))
 _BASES = set(get_args(EvidenceBasis))
@@ -86,6 +87,28 @@ def _str_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _caller_tags_of(tags: Any) -> tuple[str, ...]:
+    """The caller-authored tags on a hit, in the order `normalize_caller_tags`
+    would have produced.
+
+    Server-derived tags are dropped rather than forwarded: `type:`/`basis:`
+    already reach the caller as `kind`/`origin`, and `schema:`/`validity:` are
+    internal bookkeeping that the read surface has never exposed. So this
+    returns what the caller itself wrote and nothing of Hindsight's own
+    vocabulary.
+    """
+    if not isinstance(tags, list):
+        return ()
+    return tuple(
+        sorted(
+            tag
+            for tag in tags
+            if isinstance(tag, str)
+            and not any(tag.startswith(prefix) for prefix in RESERVED_PREFIXES)
+        )
+    )
+
+
 def _normalize_hit(raw: Any) -> RecallHit | None:
     """One raw `RecallResult` (hindsight-api 0.9.2) -> one `RecallHit`, or
     None to drop it."""
@@ -114,6 +137,7 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
                 or _str_or_none(raw.get("mentioned_at"))
             ),
             document_id=_str_or_none(raw.get("document_id")),
+            tags=_caller_tags_of(tags),
         )
     except ValidationError:
         return None
