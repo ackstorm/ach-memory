@@ -174,11 +174,15 @@ class ContextService:
         jobs = []
         if remaining() > 0:
             self._set_statement_timeout(remaining())
+            # Standing context is built-ins and nothing else: being a built-in
+            # IS the delivery decision, so there is no flag to read. `active`
+            # rather than `!= "deleted"` because an operator-disabled built-in
+            # must stay out, and disabling is now the only way to opt one out.
             rows = list(self.db.scalars(select(MentalModelRegistration).where(
                 MentalModelRegistration.tenant_id == self.principal.tenant_id,
                 registration_scope,
-                MentalModelRegistration.lifecycle_state != "deleted",
-                MentalModelRegistration.always_in_context.is_(True),
+                MentalModelRegistration.origin == "builtin",
+                MentalModelRegistration.lifecycle_state == "active",
             )))
             for row in rows:
                 bank = user_bank if row.scope == "user" else project_bank

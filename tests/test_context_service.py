@@ -92,6 +92,7 @@ def _registration(
     model_id: str,
     user_id: str | None = None,
     project_internal_id: str | None = None,
+    origin: str = "user",
 ) -> MentalModelRegistration:
     scope = "user" if user_id is not None else "project"
     return MentalModelRegistration(
@@ -107,9 +108,9 @@ def _registration(
         tags_match="all",
         max_tokens=256,
         trigger={},
-        origin="user",
-        builtin_key=None,
-        definition_version=None,
+        origin=origin,
+        builtin_key=model_key if origin == "builtin" else None,
+        definition_version=1 if origin == "builtin" else None,
         lifecycle_state="active",
         always_in_context=True,
         delivery_state="ready",
@@ -158,19 +159,25 @@ def test_context_selects_only_the_callers_user_and_authorized_project(session, t
     session.flush()
     session.add_all(
         [
-            _registration(tenant, model_key="juan", model_id="mm-juan", user_id=juan.id),
-            _registration(tenant, model_key="maria", model_id="mm-maria", user_id=maria.id),
+            _registration(
+                tenant, model_key="juan", model_id="mm-juan", user_id=juan.id, origin="builtin"
+            ),
+            _registration(
+                tenant, model_key="maria", model_id="mm-maria", user_id=maria.id, origin="builtin"
+            ),
             _registration(
                 tenant,
                 model_key="alpha",
                 model_id="mm-alpha",
                 project_internal_id=alpha.internal_id,
+                origin="builtin",
             ),
             _registration(
                 tenant,
                 model_key="beta",
                 model_id="mm-beta",
                 project_internal_id=beta.internal_id,
+                origin="builtin",
             ),
         ]
     )
@@ -223,7 +230,9 @@ def test_a_withheld_model_whose_refresh_finished_is_observed_and_delivered(
     juan = _user(tenant, "usr_juan")
     session.add(juan)
     session.flush()
-    registration = _registration(tenant, model_key="juan", model_id="mm-juan", user_id=juan.id)
+    registration = _registration(
+        tenant, model_key="juan", model_id="mm-juan", user_id=juan.id, origin="builtin"
+    )
     registration.delivery_state = "withheld"
     registration.refresh_status = "pending"
     registration.refresh_operation_id = str(uuid.uuid4())
@@ -248,7 +257,9 @@ def test_a_withheld_model_whose_refresh_is_unfinished_stays_out_of_context(
     juan = _user(tenant, "usr_juan")
     session.add(juan)
     session.flush()
-    registration = _registration(tenant, model_key="juan", model_id="mm-juan", user_id=juan.id)
+    registration = _registration(
+        tenant, model_key="juan", model_id="mm-juan", user_id=juan.id, origin="builtin"
+    )
     registration.delivery_state = "withheld"
     registration.refresh_status = "pending"
     registration.refresh_operation_id = str(uuid.uuid4())
@@ -322,12 +333,15 @@ def test_context_reports_a_withheld_bank_without_delivering_its_content(
     session.flush()
     session.add_all(
         [
-            _registration(tenant, model_key="user", model_id="mm-user", user_id=juan.id),
+            _registration(
+                tenant, model_key="user", model_id="mm-user", user_id=juan.id, origin="builtin"
+            ),
             _registration(
                 tenant,
                 model_key="project",
                 model_id="mm-project",
                 project_internal_id=alpha.internal_id,
+                origin="builtin",
             ),
             _claim(tenant, content="PROJECT_CURRENT", project_internal_id=alpha.internal_id),
             BankCurrentness(
@@ -402,7 +416,9 @@ def test_model_reads_receive_the_remaining_deadline_and_do_not_hold_startup(
     session.add(juan)
     session.flush()
     session.add(
-        _registration(tenant, model_key="slow", model_id="mm-slow", user_id=juan.id)
+        _registration(
+            tenant, model_key="slow", model_id="mm-slow", user_id=juan.id, origin="builtin"
+        )
     )
     session.flush()
     client = RecordingClient(delay=0.2)
@@ -446,9 +462,15 @@ def test_deadline_is_computed_once_and_never_resets_across_later_phases(
     session.flush()
     session.add_all(
         [
-            _registration(tenant, model_key="fast", model_id="mm-fast", user_id=juan.id),
             _registration(
-                tenant, model_key="slow", model_id="mm-slow", project_internal_id=alpha.internal_id
+                tenant, model_key="fast", model_id="mm-fast", user_id=juan.id, origin="builtin"
+            ),
+            _registration(
+                tenant,
+                model_key="slow",
+                model_id="mm-slow",
+                project_internal_id=alpha.internal_id,
+                origin="builtin",
             ),
         ]
     )
@@ -531,6 +553,60 @@ def test_a_request_with_no_project_says_the_project_half_is_absent(
     assert ("project", "no_project_resolved") in [
         (item.key, item.reason) for item in result.omissions
     ]
+
+
+def test_a_custom_model_is_never_delivered_even_with_the_flag_set(session, tenant):
+    """Standing context is built-ins only. A custom model with
+    always_in_context=True (still settable at this point in the refactor)
+    must not appear in a context load."""
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+    session.add_all(
+        [
+            _registration(
+                tenant,
+                model_key="user-context",
+                model_id="mm-builtin",
+                user_id=juan.id,
+                origin="builtin",
+            ),
+            _registration(
+                tenant, model_key="custom", model_id="mm-custom", user_id=juan.id
+            ),
+        ]
+    )
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest())
+
+    assert "User · user-context" in result.headings
+    assert "User · custom" not in result.headings
+
+
+def test_a_disabled_builtin_is_not_delivered(session, tenant):
+    """`disabled` is the only opt-out left once the flag is gone."""
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+    registration = _registration(
+        tenant,
+        model_key="user-context",
+        model_id="mm-builtin",
+        user_id=juan.id,
+        origin="builtin",
+    )
+    registration.lifecycle_state = "disabled"
+    session.add(registration)
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest())
+
+    assert result.headings == []
 
 
 def test_active_claims_fetches_a_bounded_prefix_not_the_whole_ledger(session, tenant):
