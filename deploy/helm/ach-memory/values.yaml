@@ -40,8 +40,9 @@ config:
 
   # MEMORY_ADMIN_UI_ENABLED. The operator console at /admin/ui. It rides the
   # SAME ingress as the API: if ingress.enabled is true and the host is public,
-  # so is the console. It is inert without the master key, but decide that
-  # deliberately rather than by default.
+  # so is the console. It authorizes against `master` below, so it is inert
+  # while nobody holds operator authority -- but decide that deliberately
+  # rather than by default.
   adminUiEnabled: true
   # Activity rows are telemetry and age out; 0 keeps them forever. They hold no
   # memory content, so this is a volume knob, not a retention-of-content one.
@@ -135,15 +136,22 @@ config:
       userField: ""
       groupsField: ""
 
-# MEMORY_MASTER_KEY_HASH. Never set this as a plain values.yaml string -- it
-# is the credential that reaches every bank in the tenant. Set exactly one of:
-#   - name:  an existing Secret's name, already containing the hash (recommended)
-#   - value: a plaintext hash the chart will create a Secret from
-# Rendering fails if neither is set (see templates/secret-master-key.yaml).
-masterKeySecret:
-  name: ""
-  key: "master-key-hash"
-  value: ""
+# MEMORY_MASTER_USERS / MEMORY_MASTER_GROUPS. Who holds operator authority:
+# the admin plane, the fleet view, and On-Behalf-Of delegation.
+#
+# These are NOT credentials and hold no secret -- they name identities your
+# identity provider already asserts, so they belong in values.yaml rather than
+# in a Secret. `users` matches the subject the IdP names (an email, an opaque
+# sub), NOT any id ach-memory mints internally. `groups` matches a group the
+# IdP asserts on the token.
+#
+# Both comma-separated, both empty by default: an unset value grants nobody.
+# The service asserts this at startup and refuses to boot rather than trust an
+# empty default, so a typo that produces an empty entry is a failure to start,
+# never a silent grant to everyone.
+master:
+  users: ""
+  groups: ""
 
 migration:
   # Runs `python -m alembic upgrade head` as a pre-install/pre-upgrade Helm

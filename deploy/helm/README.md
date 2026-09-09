@@ -9,10 +9,12 @@ service's source repository is not.
   organisation's registry -- no override needed to install from ackstorm.
   Anyone reusing this chart elsewhere must set
   `--set image.repository=<their registry>/ach-memory`.
-- `masterKeySecret.name` (an existing Secret) is the **recommended** way to
-  supply `MEMORY_MASTER_KEY_HASH`. `masterKeySecret.value` puts the hash in
-  your values file -- fine for a local trial, wrong for anything shared. That
-  credential reaches every bank in the tenant.
+- The service issues no credentials and stores none. Every caller
+  authenticates against an external identity provider you configure
+  (`config.auth.*`), so there is no key to mint, rotate or leak here.
+- `master.users` / `master.groups` name who holds operator authority. They are
+  identities your IdP already asserts, not secrets, so they belong in your
+  values file. Both default to empty and an empty value grants **nobody**.
 - The chart runs the service only. Postgres and Hindsight are dependencies you
   point it at; an in-chart database is how test data ends up in production.
 - Licence: `MIT`.
@@ -31,8 +33,7 @@ accident of `helm install`.
 ```bash
 helm install ach-memory deploy/helm/ach-memory \
   --set config.databaseUrl=postgresql+psycopg://memory:memory@postgres:5432/memory \
-  --set config.hindsight.url=http://hindsight:8888 \
-  --set masterKeySecret.name=mem-master-key
+  --set config.hindsight.url=http://hindsight:8888
 ```
 
 `image.repository` defaults to `ghcr.io/ackstorm/ach-memory`, this
@@ -40,21 +41,33 @@ organisation's registry, so the install above works with no override.
 Anyone reusing this chart outside ackstorm must set `--set
 image.repository=<their registry>/ach-memory`.
 
-`masterKeySecret.name` must reference an existing `Secret` in the target
-namespace containing the key `master-key-hash` (configurable via
-`masterKeySecret.key`) — e.g.:
+That install grants nobody operator authority, which is the safe default and
+a perfectly usable one: ordinary callers reach their own memory without it.
+
+## Operators
+
+The admin plane (`/v1/admin/*`), the fleet view (`/v1/activity`) and
+`On-Behalf-Of` delegation are gated on operator authority. That authority is
+**configuration over an external identity**, not a credential:
 
 ```bash
-MASTER_HASH=$(python3 -c \
-  "import hashlib,os; print(hashlib.sha256(os.environ['MEMORY_MASTER_KEY'].encode()).hexdigest())")
-kubectl create secret generic mem-master-key --from-literal=master-key-hash="$MASTER_HASH"
+helm upgrade ach-memory deploy/helm/ach-memory --reuse-values \
+  --set master.users=juancarlos@example.com \
+  --set master.groups=platform-admins
 ```
 
-Alternatively, set `masterKeySecret.value` to have the chart create the
-`Secret` for you from a value passed on the command line — still never
-committed to `values.yaml`. **Rendering fails if you set neither**:
-`MEMORY_MASTER_KEY_HASH` is the credential that reaches every bank in the
-tenant, so there is no default for it, silent or otherwise.
+`master.users` matches the subject your identity provider asserts — the `sub`
+or email on the token — **not** any id ach-memory mints internally. An
+internal id is created on that person's first request and nobody can predict
+it, so it would be useless here. `master.groups` matches a group the IdP
+asserts on the token, which is usually what you want: membership is re-read
+from the credential on every request, so removing someone from the group in
+the IdP revokes their authority immediately, with no row anywhere to go stale.
+
+Both are comma-separated and both default to empty. An unset value grants
+nobody, and the service asserts this at startup rather than trusting the
+default: a value that could over-grant — an empty entry from a stray comma,
+say — is a refusal to boot, never a silent grant to everyone.
 
 ## MEMORY_MCP_ALLOWED_HOSTS — read this before enabling Ingress
 
@@ -109,20 +122,21 @@ inspect.
 helm lint deploy/helm/ach-memory \
   --set config.databaseUrl=postgresql+psycopg://memory:memory@postgres:5432/memory \
   --set config.hindsight.url=http://hindsight:8888 \
-  --set masterKeySecret.name=mem-secret
 helm template ach-memory deploy/helm/ach-memory \
   --set config.databaseUrl=postgresql+psycopg://memory:memory@postgres:5432/memory \
   --set config.hindsight.url=http://hindsight:8888 \
-  --set masterKeySecret.name=mem-secret
 helm template ach-memory deploy/helm/ach-memory \
   --set config.databaseUrl=postgresql+psycopg://memory:memory@postgres:5432/memory \
   --set config.hindsight.url=http://hindsight:8888 \
-  --set masterKeySecret.name=mem-secret --set replicaCount=3
+  --set replicaCount=3
 ```
 
-Rendering with neither `masterKeySecret.name` nor `masterKeySecret.value` set
-must fail, not silently produce a Deployment referencing a Secret that does
-not exist.
+Rendering must succeed with no operator configured, and the manifest it
+produces must grant nobody. The chart used to be required to *fail* without a
+master key, because that key was a credential and a missing one meant a
+Deployment referencing a Secret that did not exist. There is no such Secret
+any more, so the fail-closed property moved into the value itself: the default
+is empty, and the service re-asserts that at startup.
 
 ## MEMORY_AUTH_JWT_ISSUER — read this before pointing JWKS in-cluster
 

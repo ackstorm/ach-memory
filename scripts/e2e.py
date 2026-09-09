@@ -1653,19 +1653,70 @@ async def _() -> None:
         assert not missing, f"did not exercise every memory tool: missing {missing}"
 
 
-@scenario("mcp.master_key_refused")
+@scenario("mcp.operator_carries_no_authority")
 async def _() -> None:
-    authed = httpx2.AsyncClient(headers={"Authorization": f"Bearer {MASTER}"}, timeout=30.0)
+    """MCP used to refuse an operator outright. That was right while authority
+    WAS the credential: a master key had no identity, so taking its authority
+    away left nothing to be. Authority is now configuration over an ordinary
+    external identity, so refusing would lock a configured operator out of
+    their own memory on the surface they actually use it from. They arrive as
+    themselves instead, carrying no authority here."""
+    need("key.mcpuser")
+    slug = f"operator-probe-{uuid.uuid4().hex[:8]}"
+    SENTINEL = "buttermilk-parapet"
+    content = f"The operator authority probe sentinel is {SENTINEL}."
+
+    def as_client(token: str) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=30.0)
+
+    # The owner writes a project-scoped memory. `retain` mints the project on
+    # first write, so nothing has to pre-create it.
     async with (
-        streamable_http_client(MCP_URL, http_client=authed) as (read, write),
+        streamable_http_client(MCP_URL, http_client=as_client(S["key.mcpuser"])) as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.discover()
+        mcp_unwrap("mcp:operator_probe_seed", await session.call_tool("sync_retain", {
+            "scope": "project",
+            "project_slug": slug,
+            "content": content,
+            "memory_type": "fact",
+            "basis": "human_explicit",
+            "trigger": "user_requested",
+            "evidence": [{"kind": "user_quote", "raw": content}],
+            "operation_id": str(uuid.uuid4()),
+        }))
+        res = await session.call_tool(
+            "recall",
+            {"scope": "project", "project_slug": slug, "query": "operator probe sentinel"},
+        )
+        owner_text = res.content[0].text if res.content else ""
+        assert SENTINEL in owner_text, (
+            f"the owner could not read back their own project memory: {owner_text}"
+        )
+
+    async with (
+        streamable_http_client(MCP_URL, http_client=as_client(MASTER)) as (read, write),
+        ClientSession(read, write) as session,
+    ):
+        await session.discover()
+        # 1. Not refused any more.
         res = await session.call_tool("recall", {"scope": "user", "query": "anything"})
         text = res.content[0].text if res.content else ""
-        scan("mcp:master_key_refused", text)
-        assert res.is_error, f"master key was accepted over MCP: {text}"
-        assert "FORBIDDEN" in text, f"wrong refusal reason for a master key over MCP: {text}"
+        scan("mcp:operator_own_scope", text)
+        assert not res.is_error, f"an operator was refused their own memory over MCP: {text}"
+        # 2. What the blanket refusal protected, still holding: another user's
+        #    project yields nothing, and looks exactly like one that never
+        #    existed.
+        res = await session.call_tool(
+            "recall",
+            {"scope": "project", "project_slug": slug, "query": "operator probe sentinel"},
+        )
+        text = res.content[0].text if res.content else ""
+        scan("mcp:operator_no_bypass", text)
+        assert SENTINEL not in text, (
+            f"an operator read another user's project memory over MCP: {text}"
+        )
 
 
 # ===========================================================================

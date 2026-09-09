@@ -57,13 +57,12 @@ jobs:
             exit 1
           fi
           echo "correctly refused"
-      - name: helm template with a master key must render hardened manifests
+      - name: helm template must render hardened manifests
         run: |
           helm template ach-memory deploy/helm/ach-memory \
             --set image.repository=ghcr.io/ackstorm/ach-memory \
             --set config.databaseUrl=postgresql+psycopg://u:p@h:5432/m \
-            --set config.hindsight.url=http://hindsight:8888 \
-            --set masterKeySecret.value=deadbeef > /tmp/rendered.yaml
+            --set config.hindsight.url=http://hindsight:8888 > /tmp/rendered.yaml
 
           fail=0
           count=$(grep -c 'securityContext:' /tmp/rendered.yaml || true)
@@ -170,7 +169,6 @@ jobs:
         run: |
           docker run -d --name ach-memory-ci --network host \
             -e MEMORY_DATABASE_URL="postgresql+psycopg://memory:memory@localhost:5432/memory" \
-            -e MEMORY_MASTER_KEY_HASH="edc1d6f618e2c53cbcb9f859d548c9ad19f60663eb2a738d5f0a57a9fdca451c" \
             -e MEMORY_HINDSIGHT_URL="http://localhost:1" \
             ach-memory:ci
 

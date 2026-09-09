@@ -63,11 +63,16 @@ else
     echo "bench: MockLLM stack (deterministic, no external model calls)"
 fi
 
-MEMORY_MASTER_KEY="mem_bench_$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+# Nothing is minted any more: ach-memory issues no credentials, so the stack
+# has an operator IDENTITY rather than an operator key. The dev-identity
+# sidecar echoes whatever token it is sent back as the user id, and naming
+# that same id in MEMORY_MASTER_USERS is what grants it authority -- so the
+# value below is simultaneously the token the scripts send and the operator
+# the API recognises. It is not a secret and there is nothing to hash.
+MEMORY_MASTER_KEY="bench-operator"
 export MEMORY_MASTER_KEY
-MEMORY_MASTER_KEY_HASH="$(python3 -c \
-    'import hashlib, os; print(hashlib.sha256(os.environ["MEMORY_MASTER_KEY"].encode()).hexdigest())')"
-export MEMORY_MASTER_KEY_HASH
+MEMORY_MASTER_USERS="$MEMORY_MASTER_KEY"
+export MEMORY_MASTER_USERS
 
 stack_started=1
 "${compose[@]}" up -d --build --wait

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
-MASTER="${MEMORY_MASTER_KEY:?set MEMORY_MASTER_KEY to the plaintext master key}"
+MASTER="${MEMORY_MASTER_KEY:?set MEMORY_MASTER_KEY to an identity named in the stack's MEMORY_MASTER_USERS}"
 
 # Bounded wait with an explicit failure path. Never `until ...; do sleep; done`:
 # if the target never appears, that loop hangs forever with no signal.

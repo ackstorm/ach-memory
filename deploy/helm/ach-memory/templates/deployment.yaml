@@ -44,11 +44,14 @@ spec:
             - name: MEMORY_HINDSIGHT_API_KEY
               value: {{ .Values.config.hindsight.apiKey | quote }}
             {{- end }}
-            - name: MEMORY_MASTER_KEY_HASH
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "ach-memory.masterKeySecretName" . }}
-                  key: {{ .Values.masterKeySecret.key }}
+            # Operator authority is configuration over an external identity,
+            # not a credential: there is no secret here to mount. Both are
+            # comma-separated and both default to empty, and the service
+            # refuses to start if either could over-grant.
+            - name: MEMORY_MASTER_USERS
+              value: {{ .Values.master.users | quote }}
+            - name: MEMORY_MASTER_GROUPS
+              value: {{ .Values.master.groups | quote }}
             - name: MEMORY_TENANT_ID
               value: {{ .Values.config.tenantId | quote }}
             - name: MEMORY_HINDSIGHT_TIMEOUT_SECONDS

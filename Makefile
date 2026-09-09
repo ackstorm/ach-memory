@@ -58,16 +58,23 @@ secrets: ## gitleaks over the git history and the working tree
 		detect --source=/repo --redact --no-banner --config=/repo/.gitleaks.toml
 
 .PHONY: chart
-chart: ## helm lint + render, including the must-refuse-without-a-master-key case
+chart: ## helm lint + render, including the grants-nobody-by-default case
 	helm lint deploy/helm/ach-memory
 	helm template t deploy/helm/ach-memory \
 		--set config.databaseUrl=postgresql+psycopg://u:p@h:5432/m \
-		--set config.hindsight.url=http://hindsight:8888 \
-		--set masterKeySecret.value=deadbeef >/dev/null
+		--set config.hindsight.url=http://hindsight:8888 >/dev/null
+# The chart used to be REQUIRED to fail without a master key, because the key
+# was a credential that had to come from a Secret. Operator authority is now
+# configuration naming identities an IdP already asserts, so there is nothing
+# secret to demand and rendering must succeed. What has to hold instead is
+# that the default grants nobody -- the same fail-closed property, moved from
+# render time to the value itself, and asserted again at startup.
 	@helm template t deploy/helm/ach-memory --set config.databaseUrl=x \
-		--set config.hindsight.url=y >/dev/null 2>&1 \
-		&& { echo "FAIL: chart rendered with no master key" >&2; exit 1; } \
-		|| echo "chart correctly refuses without a master key"
+		--set config.hindsight.url=y \
+		| grep -A1 -e 'name: MEMORY_MASTER_USERS' -e 'name: MEMORY_MASTER_GROUPS' \
+		| grep -q 'value: "[^"]' \
+		&& { echo "FAIL: chart grants an operator by default" >&2; exit 1; } \
+		|| echo "chart grants no operator by default"
 
 .PHONY: verify
 verify: lint test secrets chart ## The full local gate -- run this before pushing
