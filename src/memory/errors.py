@@ -117,6 +117,11 @@ class InvalidMetadata(DomainError):
     status = 400
 
 
+class InvalidTag(DomainError):
+    code = "INVALID_TAG"
+    status = 400
+
+
 class MemoryNotFound(DomainError):
     code = "MEMORY_NOT_FOUND"
     status = 404

@@ -1519,6 +1519,7 @@ PROJECT_ACCESS_DENIED
 PROJECT_LOCATOR_MISMATCH
 INVALID_SCOPE
 INVALID_METADATA
+INVALID_TAG
 INVALID_OWNER_TYPE
 MEMORY_NOT_FOUND
 MEMORY_NOT_CURATABLE
@@ -1554,6 +1555,12 @@ CURATION_NEEDS_OPERATOR
 INVALID_REQUEST
 INTERNAL_ERROR
 ```
+
+`INVALID_TAG` (400): a caller-supplied tag on retain, recall or reflect is
+malformed, over-long, over-numerous, or in a server-owned namespace (`type:`,
+`basis:`, `schema:`, `validity:`) -- rejected rather than merged, since those
+namespaces are derived server-side and a caller value there would corrupt
+typed curation or the mental-model source filter.
 
 `INVALID_OWNER_TYPE` (400): `projects.py` rejects an owner type that is
 neither `user` nor `group` before any lookup happens.
