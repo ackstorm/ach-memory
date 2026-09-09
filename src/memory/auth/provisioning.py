@@ -42,6 +42,13 @@ def link_identity(
     Creates the user and the link on first sight. Idempotent, and safe under
     concurrent first requests for the same identity: the loser of the race
     reloads the winner's row rather than surfacing an IntegrityError as a 500.
+
+    Deliberately does not provision the bank (unlike `POST /v1/users`, see
+    `provision_user_bank`): this runs on the request-authentication path for
+    every externally authenticated caller, so a Hindsight round trip here
+    would add upstream latency and failure modes to ordinary auth, not just
+    first-sight creation. The proxy's bootstrap pre-warm covers this bank
+    before the first prompt instead.
     """
     row = db.get(ExternalIdentity, (issuer, subject))
     if row is not None:

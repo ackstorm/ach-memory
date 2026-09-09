@@ -52,7 +52,7 @@ def resolve_project_bank(
     slug: str | None,
     git_locator: str | None = None,
     *,
-    create: bool = True,
+    create: bool = False,
 ) -> tuple[str, str | None, str]:
     """Map scope=project to a bank ID.
 
@@ -60,11 +60,11 @@ def resolve_project_bank(
     project's current, live slug, so a caller who followed a rename tombstone
     (resolved_from set) learns what to switch to without a second round trip.
 
-    create=False for the curation routes (list/get/forget/correct/restore):
-    a memory cannot exist in a bank the lookup just created, and lazy
-    creation there would let any authenticated caller squat an arbitrary
-    slug (SPEC §11.3 vs. the first-touch creation SPEC §16.2 blesses for
-    retain/recall/reflect, which keep the default).
+    create=False by default: every read, write and curation path in this
+    service resolves existing-only, and lazy creation there would let any
+    authenticated caller squat an arbitrary slug (SPEC §11.3). Creation is
+    explicit and belongs to bootstrap (SPEC §16.2), the only caller that
+    passes create=True.
     """
     if not slug:
         # git_locator is deliberately absent from this message. It is metadata

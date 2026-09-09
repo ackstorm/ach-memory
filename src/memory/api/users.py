@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -9,12 +10,15 @@ from memory import audit, ids
 from memory.api.app import current_on_behalf_of, require_master
 from memory.auth import keys
 from memory.auth.principal import Principal
+from memory.bootstrap import provision_user_bank
 from memory.db import ensure_tenant, get_session
 from memory.errors import KeyNotFound, UserAlreadyExists, UserNotFound
+from memory.hindsight.client import get_client
 from memory.identifiers import reject_control_characters
 from memory.models import ApiKey, User
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
+logger = logging.getLogger("memory.api.users")
 
 
 class CreateUserRequest(BaseModel):
@@ -97,6 +101,14 @@ def create_user(
         # handler is small today, but the same shape guards the project-creation
         # race (SPEC §9) where earlier writes must survive the conflict.
         raise UserAlreadyExists("a user with that id already exists") from exc
+    try:
+        provision_user_bank(db, user, client=get_client())
+    except Exception:  # noqa: BLE001 -- provisioning is best-effort, see below
+        # The user row is real and the caller gets its 201: provisioning is
+        # idempotent, so a later bootstrap or the next creation attempt repairs
+        # it. Failing the request here would leave a committed user the
+        # caller was told did not exist.
+        logger.warning("user created but not provisioned", extra={"user_id": user.id})
     audit.record(db, principal, "user.create", user.id, on_behalf_of=on_behalf_of)
     db.commit()
     return CreateUserResponse(user_id=user.id, created_at=user.created_at.isoformat())

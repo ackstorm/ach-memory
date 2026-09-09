@@ -1,8 +1,10 @@
 from unittest import mock
 
+import httpx
 import pytest
+import respx
 
-from memory import ids
+from memory import ids, model_registry
 from memory.auth.principal import Principal
 from memory.bootstrap import BootstrapRequest, bootstrap
 from memory.builtin_models import USER_CONTEXT
@@ -10,8 +12,33 @@ from memory.errors import CurationNeedsOperator, ProjectNotFound
 from memory.hindsight.client import HindsightClient
 from memory.mental_model_service import reconcile_builtin
 from memory.model_registry import register_model
-from memory.models import User
+from memory.models import Project, ProjectSlug, User
 from memory.retained_records import LogicalBankRef
+
+BASE = "http://hindsight.test"
+
+
+def _make_user_key(client, master_headers) -> str:
+    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+    return client.post(
+        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
+    ).json()["key"]
+
+
+def _project_by_slug(session, slug: str) -> Project:
+    mapping = session.query(ProjectSlug).filter(ProjectSlug.slug == slug).one()
+    return session.get(Project, mapping.project_internal_id)
+
+
+def _project_bank_ref(session, project: Project) -> LogicalBankRef:
+    return LogicalBankRef(
+        project.tenant_id, "project", None, project.internal_id, project.bank_id
+    )
+
+
+def _user_bank_ref(session, user_id: str) -> LogicalBankRef:
+    user = session.get(User, user_id)
+    return LogicalBankRef(user.tenant_id, "user", user.id, None, user.bank_id)
 
 EXACT_STRATEGY = {
     "retain_extraction_mode": "chunks",
@@ -177,3 +204,57 @@ def test_reconcile_builtin_is_a_noop_when_already_current(session, principal, hi
     hindsight.create_mental_model.assert_called_once()
     hindsight.update_mental_model.assert_not_called()
     hindsight.refresh_mental_model.assert_not_called()
+
+
+@respx.mock
+def test_a_project_created_through_the_control_plane_is_fully_provisioned(
+    client, session, master_headers
+):
+    """A project is usable when created, not when someone remembers to
+    bootstrap it. Before this, POST /v1/projects minted a bank id and
+    nothing else: no retain strategy, no project-context model, so
+    load_context delivered empty standing context for that project for ever."""
+    key = _make_user_key(client, master_headers)
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
+        return_value=httpx.Response(
+            201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}
+        )
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+
+    response = client.post(
+        "/v1/projects",
+        json={"project_slug": "acme-app"},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert response.status_code == 201, response.text
+
+    project = _project_by_slug(session, "acme-app")
+    registration = model_registry.get_registered_model(
+        session, _project_bank_ref(session, project), "project-context"
+    )
+    assert registration is not None, "project-context must exist at creation"
+    assert registration.origin == "builtin"
+    assert registration.lifecycle_state in {"creating", "active"}
+
+
+@respx.mock
+def test_a_new_user_gets_user_context_without_a_bootstrap_call(client, session, master_headers):
+    """Same rule as projects: a bank is provisioned when it is created."""
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
+        return_value=httpx.Response(
+            201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}
+        )
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+
+    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
+
+    registration = model_registry.get_registered_model(
+        session, _user_bank_ref(session, user_id), "user-context"
+    )
+    assert registration is not None

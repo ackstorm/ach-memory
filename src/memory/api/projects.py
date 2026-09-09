@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -10,12 +11,15 @@ from memory import projects as domain
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.common import RenameForwarding
 from memory.auth.principal import Principal
+from memory.bootstrap import provision_project_bank
 from memory.db import get_session
 from memory.errors import Forbidden, ProjectAccessDenied
+from memory.hindsight.client import get_client
 from memory.identifiers import has_control_character
 from memory.models import Project, ProjectSlug
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
+logger = logging.getLogger("memory.api.projects")
 
 
 class Owner(BaseModel):
@@ -161,6 +165,16 @@ def create_project(
         body.git_locator,
         on_behalf_of=on_behalf_of,
     )
+    try:
+        provision_project_bank(db, principal, project, client=get_client())
+    except Exception:  # noqa: BLE001 -- provisioning is best-effort, see below
+        # The project row is real and the caller gets its 201: provisioning is
+        # idempotent, so a later bootstrap or the next creation attempt repairs
+        # it. Failing the request here would leave a committed project the
+        # caller was told did not exist.
+        logger.warning(
+            "project created but not provisioned", extra={"project_slug": body.project_slug}
+        )
     db.commit()
     return _response(project, domain.canonical_slug(db, project))
 
