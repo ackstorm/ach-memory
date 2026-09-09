@@ -185,6 +185,11 @@ POST http://<host>:8000/mcp/
 x-ach-memory-key: <user key>
 ```
 
+The trailing slash is not optional: `/mcp` answers `307` to `/mcp/`, and
+because the transport is stateless that redirect costs a round trip on
+every tool call, not just the first. `ach-memory init` already writes the
+correct form.
+
 `Authorization: Bearer <user key>` also works. Prefer the dedicated header when
 a gateway already uses `Authorization`; when both are sent,
 `x-ach-memory-key` wins. The master key is rejected on MCP, and v1 supports
