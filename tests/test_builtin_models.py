@@ -1,4 +1,24 @@
+import pytest
+
 from memory.builtin_models import PROJECT_CONTEXT, USER_CONTEXT
+from memory.mental_model_service import (
+    PROJECT_ALWAYS_IN_CONTEXT_BUDGET,
+    USER_ALWAYS_IN_CONTEXT_BUDGET,
+)
+
+
+@pytest.mark.parametrize(
+    ("definition", "limit"),
+    [
+        (USER_CONTEXT, USER_ALWAYS_IN_CONTEXT_BUDGET),
+        (PROJECT_CONTEXT, PROJECT_ALWAYS_IN_CONTEXT_BUDGET),
+    ],
+)
+def test_a_builtin_definition_fits_its_scope_delivery_budget(definition, limit):
+    """Every built-in is standing by definition, so its max_tokens is spent
+    on every context load. This is the only place the budget can now be
+    exceeded -- by us, raising a definition's max_tokens, not by a caller."""
+    assert definition.max_tokens <= limit
 
 
 def test_user_builtin_is_frozen_and_out_of_custom_namespace():

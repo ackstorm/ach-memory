@@ -179,6 +179,7 @@ def _check_budget(
     live_rows: list[MentalModelRegistration],
     *,
     added_tokens: int,
+    definition: BuiltinModelDefinition,
     excluding_model_key: str | None = None,
 ) -> None:
     total = added_tokens + sum(
@@ -191,7 +192,7 @@ def _check_budget(
     limit = _budget_for(bank.scope)
     if total > limit:
         raise ContextBudgetExceeded(
-            f"enabling always_in_context would exceed the {bank.scope} delivery budget",
+            f"built-in {definition.key!r} would exceed the {bank.scope} delivery budget",
             limit=limit,
             total=total,
         )
@@ -342,9 +343,6 @@ def create_custom_model(
             return resume_model_mutation(db, bank, request.operation_id, client=client)
         return _to_view(duplicate)
 
-    if request.always_in_context:
-        _check_budget(bank, live, added_tokens=request.max_tokens)
-
     model_key = new_model_key()
     digest = _payload_hash(bank, request)
     model_registry.register_model(
@@ -475,11 +473,6 @@ def update_model(
     if not created and mutation.state == "completed":
         db.commit()
         return _to_view(row)
-
-    new_always = row.always_in_context if request.always_in_context is None else request.always_in_context
-    new_tokens = row.max_tokens if request.max_tokens is None else request.max_tokens
-    if new_always:
-        _check_budget(bank, live, added_tokens=new_tokens, excluding_model_key=model_key)
 
     upstream_changes: dict[str, object] = {}
     if request.source_query is not None and request.source_query != row.source_query:
@@ -623,6 +616,7 @@ def _create_builtin(
         )
 
     live = model_registry.locked_bank_models(db, bank)
+    _check_budget(bank, live, added_tokens=definition.max_tokens, definition=definition)
     model_registry.register_model(
         db,
         bank,
@@ -667,6 +661,12 @@ def _upgrade_builtin(
     *,
     client,
 ) -> MentalModelView:
+    live = model_registry.locked_bank_models(db, bank)
+    _check_budget(
+        bank, live, added_tokens=definition.max_tokens,
+        definition=definition, excluding_model_key=definition.key,
+    )
+
     upstream_changes: dict[str, object] = {}
     if definition.source_query != existing.source_query:
         upstream_changes["source_query"] = definition.source_query

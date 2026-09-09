@@ -255,6 +255,12 @@ class BuiltinModelImmutable(DomainError):
 
 
 class ContextBudgetExceeded(DomainError):
+    """No longer a caller-triggerable error: standing delivery is built-ins
+    only, so this can now only fire from `_create_builtin`/`_upgrade_builtin`
+    when a `BuiltinModelDefinition`'s own `max_tokens` would exceed its
+    scope's delivery budget -- an internal invariant over our two built-in
+    definitions, not a mistake a REST or MCP caller can make."""
+
     code = "CONTEXT_BUDGET_EXCEEDED"
     status = 409
 

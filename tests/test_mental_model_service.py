@@ -8,7 +8,6 @@ from memory import ids, model_registry
 from memory.builtin_models import USER_CONTEXT
 from memory.errors import (
     BuiltinModelImmutable,
-    ContextBudgetExceeded,
     CurationNeedsOperator,
     IdempotencyConflict,
     MentalModelNotFound,
@@ -224,26 +223,6 @@ def test_sixth_custom_create_is_rejected_before_hindsight(session, bank, hindsig
     with pytest.raises(MentalModelQuotaExceeded):
         create_custom_model(session, bank, CUSTOM_REQUEST, client=hindsight)
     hindsight.create_mental_model.assert_not_called()
-
-
-def test_always_in_context_budget_is_enforced_separately_from_quota(
-    session, user_bank_with_builtin, hindsight
-):
-    for index in range(2):
-        create_custom_model(
-            session,
-            user_bank_with_builtin,
-            custom_request(name=f"selected-{index}", max_tokens=256),
-            client=hindsight,
-        )
-
-    with pytest.raises(ContextBudgetExceeded):
-        create_custom_model(
-            session,
-            user_bank_with_builtin,
-            custom_request(name="over-budget", max_tokens=256),
-            client=hindsight,
-        )
 
 
 def test_create_retry_with_same_operation_id_and_payload_is_idempotent(session, bank, hindsight):
