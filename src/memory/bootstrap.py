@@ -1,37 +1,45 @@
-"""SPEC §7.5: idempotent, explicit, auditable MCP/user/project bootstrap.
+"""SPEC §7.5: an idempotent pre-warm, and nothing more.
 
 Bootstrap ensures the authenticated User bank and its enabled `user-context`
-built-in, and -- when a project slug is configured -- resolves or creates
-that project (owner=user), ensures its Project bank and its enabled
-`project-context` built-in. It never waits for a built-in's synthesis to
-finish: `reconcile_builtin` records the upstream operation and returns
-immediately.
+built-in, and -- when a project slug is configured and that project already
+exists -- its Project bank and `project-context` built-in. It never waits for
+a built-in's synthesis to finish: `reconcile_builtin` records the upstream
+operation and returns immediately.
 
-`provision_project_bank`/`provision_user_bank` below are also called
-directly from project/user creation (`api/projects.py`, `api/users.py`), so
-a bank created through the control plane is usable immediately. Bootstrap
-is a pre-warm on top of that -- it is what makes an MCP session's first
-prompt warm rather than cold -- not the only path to a provisioned bank.
+**It creates nothing.** `retain` is the one place allowed to mint an unknown
+slug, and it is the place carrying the audited per-caller hourly ceiling;
+creating here spent one of those on every MCP session start, for a configured
+slug the agent might never write to. An absent project and a foreign one are
+reported identically -- as nothing at all -- because raising on the foreign
+one would make this an existence oracle AND poison every project-scoped tool
+call at startup, including the `retain` meant to create the absent one.
+
+What still makes this worth calling: `link_identity` deliberately does not
+provision the user's bank (a Hindsight round trip on the authentication path),
+and no read path provisions anything. An agent's first call is almost always
+`load_context`, so without this pre-warm a brand-new user's first session
+finds an unprovisioned bank and no `user-context` at all.
+
+`provision_project_bank`/`provision_user_bank` below are also called directly
+from `api/projects.py` at creation time, so a bank created through the control
+plane is usable immediately.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from memory import audit, banks, mental_model_service, projects
+from memory import banks, mental_model_service, projects
 from memory.auth.principal import Principal
 from memory.builtin_models import PROJECT_CONTEXT, USER_CONTEXT
+from memory.errors import ProjectNotFound
 from memory.mental_model_service import MentalModelView
-from memory.models import Project, ProjectSlug, User
+from memory.models import Project, User
 from memory.retain_strategy import ensure_exact_retain_strategy
 from memory.retained_records import LogicalBankRef
-from memory.slugs import normalize_slug
-
-logger = logging.getLogger("memory.bootstrap")
 
 
 def provision_project_bank(
@@ -73,10 +81,9 @@ def provision_before_retain(
     Always provisions the calling user's own bank: a platform-authenticated
     user never passes through POST /v1/users, so `link_identity` leaves it
     unprovisioned (see its docstring) -- true regardless of this retain's
-    scope. Skipped for a master key, which has no bank of its own: it can
-    only ever reach an EXISTING project here, never a lazily created one --
-    `projects.resolve` refuses that combination unconditionally (a master key
-    has no identity to own the new project).
+    scope. An operator is no exception: authority and identity are separate
+    now, so they have a bank of their own and it is provisioned like anyone
+    else's.
 
     Additionally provisions the project bank for a project-scoped retain.
     """
@@ -115,15 +122,9 @@ class BootstrapResult(BaseModel):
     warnings: tuple[str, ...]
 
 
-def _project_slug_exists(db: Session, tenant_id: str, slug: str) -> bool:
-    return db.get(ProjectSlug, (tenant_id, normalize_slug(slug))) is not None
-
-
 def bootstrap(
     db: Session, principal: Principal, request: BootstrapRequest, *, client
 ) -> BootstrapResult:
-    warnings: list[str] = []
-
     user_bank_id = banks.resolve_user_bank(db, principal, None)
     user_bank = LogicalBankRef(principal.tenant_id, "user", principal.user_id, None, user_bank_id)
     ensure_exact_retain_strategy(client, user_bank.bank_id)
@@ -140,41 +141,30 @@ def bootstrap(
     project_status = None
 
     if request.project_slug:
-        existed_before = _project_slug_exists(db, principal.tenant_id, request.project_slug)
-
-        # create=True: an MCP-configured project slug is trusted product
-        # input (SPEC §4.3) -- a typo here is repaired through rename/alias,
-        # not blocked at bootstrap. An existing but unauthorized slug still
-        # resolves to the same indistinguishable ProjectNotFound as any
-        # other unauthorized/unknown project.
-        resolution = projects.resolve(db, principal, request.project_slug, create=True)
-        project = resolution.project
-        project_slug = resolution.current_slug
-        project_owner = ProjectOwnerView(type="user", id=project.owner_id)
-
-        if not existed_before:
-            message = (
-                f"created project '{project_slug}' tenant={principal.tenant_id} "
-                f"actor={principal.credential_id} slug={project_slug} "
-                "creation_source=mcp_bootstrap"
+        # create=False, and the miss is swallowed. Both halves matter: an
+        # unknown slug is `retain`'s to mint, and a foreign one has to be
+        # indistinguishable from an unknown one -- see the module docstring.
+        try:
+            resolution = projects.resolve(
+                db, principal, request.project_slug, create=False
             )
-            logger.warning(message)
-            warnings.append(message)
-            audit.record(
-                db, principal, "project.create", f"{project_slug} creation_source=mcp_bootstrap"
-            )
-        db.commit()
+        except ProjectNotFound:
+            resolution = None
 
-        project_bank = LogicalBankRef(
-            principal.tenant_id, "project", None, project.internal_id, project.bank_id
-        )
-        # Retain strategy always applies, regardless of builtins_enabled --
-        # mirrors the user bank above and ensure_exact_retain_strategy is a
-        # no-op once already provisioned, so this is cheap either way.
-        ensure_exact_retain_strategy(client, project_bank.bank_id)
-        if request.builtins_enabled:
-            project_model = provision_project_bank(db, principal, project, client=client)
-        project_status = "ready"
+        if resolution is not None:
+            project = resolution.project
+            project_slug = resolution.current_slug
+            project_owner = ProjectOwnerView(type="user", id=project.owner_id)
+            project_bank = LogicalBankRef(
+                principal.tenant_id, "project", None, project.internal_id, project.bank_id
+            )
+            # Retain strategy always applies, regardless of builtins_enabled --
+            # mirrors the user bank above and ensure_exact_retain_strategy is a
+            # no-op once already provisioned, so this is cheap either way.
+            ensure_exact_retain_strategy(client, project_bank.bank_id)
+            if request.builtins_enabled:
+                project_model = provision_project_bank(db, principal, project, client=client)
+            project_status = "ready"
 
     db.commit()
     return BootstrapResult(
@@ -183,5 +173,7 @@ def bootstrap(
         project_slug=project_slug,
         project_owner=project_owner,
         project_status=project_status,
-        warnings=tuple(warnings),
+        # Nothing warns any more: the only producer was the project
+        # creation this no longer does. The field stays because callers parse it.
+        warnings=(),
     )

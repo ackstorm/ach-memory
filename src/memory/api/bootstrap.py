@@ -1,12 +1,16 @@
-"""SPEC §7.5: `POST /v1/bootstrap` -- idempotent MCP/user/project
-provisioning, kept structurally separate from ordinary reads (`/v1/mental-
-models`, `/v1/context/load`), which never create or reconcile a definition.
+"""SPEC §7.5: `POST /v1/bootstrap` -- an idempotent pre-warm, kept
+structurally separate from ordinary reads (`/v1/mental-models`,
+`/v1/context/load`), which never reconcile a definition.
 
-A project or user created through the control plane (`POST /v1/projects`,
-`POST /v1/users`) is provisioned the same way at creation time, so this
-route is a pre-warm rather than a prerequisite -- it is what makes an MCP
-session's first prompt warm rather than cold, and repairs anything a failed
-creation left half-done.
+It survives the removal of the internal identity system because it is the
+only thing that provisions a caller's own bank before their first prompt:
+`link_identity` deliberately does not (a Hindsight round trip on the
+authentication path), and no read path does either. It creates nothing --
+see `memory.bootstrap` for why that is now `retain`'s job alone.
+
+Authenticated as the caller, never for somebody else: it bootstraps whoever
+holds the token and has no target parameter, so it never needed operator
+authority and does not have one now.
 """
 
 from typing import Annotated

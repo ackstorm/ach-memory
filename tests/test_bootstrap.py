@@ -4,11 +4,11 @@ import httpx
 import pytest
 import respx
 
-from memory import ids, mental_model_service, model_registry
+from memory import ids, mental_model_service, model_registry, projects
 from memory.auth.principal import Principal
 from memory.bootstrap import BootstrapRequest, bootstrap
 from memory.builtin_models import USER_CONTEXT
-from memory.errors import CurationNeedsOperator, ProjectNotFound
+from memory.errors import CurationNeedsOperator
 from memory.hindsight.client import HindsightClient
 from memory.mental_model_service import reconcile_builtin
 from memory.model_registry import register_model
@@ -52,10 +52,7 @@ def principal(session, tenant):
     user = User(id="usr_boot", tenant_id=tenant, bank_id=ids.new_user_bank_id())
     session.add(user)
     session.flush()
-    return Principal(
-        tenant_id=tenant, user_id=user.id, is_master=False,
-        key_id="key_boot", credential_id="key_boot",
-    )
+    return Principal(tenant_id=tenant, user_id=user.id, credential_id="ext_boot")
 
 
 @pytest.fixture
@@ -101,18 +98,36 @@ def test_user_bootstrap_creates_one_builtin_idempotently(session, principal, hin
     assert hindsight.create_mental_model.call_count == 1
 
 
-def test_project_bootstrap_creates_user_owned_project_and_warns(session, principal, hindsight, caplog):
+def test_project_bootstrap_pre_warms_an_existing_project(session, principal, hindsight):
+    projects.create(session, principal, "Pepe", "user", principal.user_id)
+
     result = bootstrap(session, principal, BootstrapRequest(project_slug="Pepe"), client=hindsight)
 
     assert result.project_slug == "pepe"
     assert result.project_owner.model_dump() == {"type": "user", "id": principal.user_id}
-    assert "creation_source=mcp_bootstrap" in caplog.text
     assert not hasattr(result, "project_bank_id")
     assert result.project_status == "ready"
     assert result.project_model.model_key == "project-context"
 
 
+def test_project_bootstrap_never_creates_a_project(session, principal, hindsight, caplog):
+    """A pre-warm warms what exists. `retain` is the one place allowed to mint
+    an unknown slug, and it is the place with the audited hourly ceiling --
+    creating here spent one of those every time an MCP session started, for a
+    configured slug the agent might never write to."""
+    result = bootstrap(session, principal, BootstrapRequest(project_slug="never-seen"), client=hindsight)
+
+    assert session.query(ProjectSlug).filter_by(slug="never-seen").first() is None
+    assert result.project_slug is None
+    assert result.project_status is None
+    assert "creation_source=mcp_bootstrap" not in caplog.text
+    # The user bank is still warmed: that is what this call is for.
+    assert result.user_model.model_key == "user-context"
+
+
 def test_project_bootstrap_is_idempotent_and_reuses_the_project(session, principal, hindsight):
+    projects.create(session, principal, "acme", "user", principal.user_id)
+
     first = bootstrap(session, principal, BootstrapRequest(project_slug="acme"), client=hindsight)
     second = bootstrap(session, principal, BootstrapRequest(project_slug="acme"), client=hindsight)
 
@@ -121,18 +136,24 @@ def test_project_bootstrap_is_idempotent_and_reuses_the_project(session, princip
     assert hindsight.create_mental_model.call_count == 2
 
 
-def test_project_bootstrap_on_an_unauthorized_existing_slug_is_a_404(session, principal, hindsight, tenant):
+def test_project_bootstrap_on_an_unauthorized_slug_reports_nothing(session, principal, hindsight, tenant):
+    """A foreign project and an absent one must look identical here. Raising
+    on the foreign one would make bootstrap an existence oracle; it would also
+    make the proxy poison every project-scoped tool call at startup, including
+    the `retain` that is supposed to create the absent one."""
     other = User(id="usr_other", tenant_id=tenant, bank_id=ids.new_user_bank_id())
     session.add(other)
     session.flush()
     other_principal = Principal(
-        tenant_id=tenant, user_id=other.id, is_master=False,
-        key_id="key_other", credential_id="key_other",
+        tenant_id=tenant, user_id=other.id, credential_id="ext_other"
     )
-    bootstrap(session, other_principal, BootstrapRequest(project_slug="private-proj"), client=hindsight)
+    projects.create(session, other_principal, "private-proj", "user", other.id)
 
-    with pytest.raises(ProjectNotFound):
-        bootstrap(session, principal, BootstrapRequest(project_slug="private-proj"), client=hindsight)
+    foreign = bootstrap(session, principal, BootstrapRequest(project_slug="private-proj"), client=hindsight)
+    absent = bootstrap(session, principal, BootstrapRequest(project_slug="no-such-proj"), client=hindsight)
+
+    assert foreign.model_dump() == absent.model_dump()
+    assert foreign.project_status is None
 
 
 def test_builtins_disabled_creates_no_models(session, principal, hindsight):
