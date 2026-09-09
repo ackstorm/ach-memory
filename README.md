@@ -220,6 +220,25 @@ stdio proxy at all:
 }
 ```
 
+### A minimal tool set for a harness facade
+
+A harness that fronts ach-memory with its own facade, exposing only a
+subset of the MCP tools, needs at least these four to get a working
+retain/recall loop:
+
+- `retain` — store a claim. Returns immediately with an operation, not the
+  stored result.
+- `sync_retain` — same write, but waits until the claim is searchable
+  before returning.
+- `get_operation` — check whether an async `retain` has finished.
+- `recall` — search memory and return grounded matching facts.
+
+Omitting `sync_retain` and `get_operation` leaves a caller with no way to
+know when a `retain` is searchable, other than guessing with a fixed delay
+and retrying blind — `retain`'s own description says as much. Expose both,
+or expose `sync_retain` alone and drop `retain`, rather than reimplementing
+either as a client-side poll loop.
+
 ## Important limits
 
 - `bank_id` never appears in responses or errors.
