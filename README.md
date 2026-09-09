@@ -31,15 +31,16 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
   its Hindsight outcome before ACH's own record changes. `correct` uses a
   caller-visible operation ID so exact retries deduplicate without collapsing
   separate corrections that happen to return to an earlier value.
-- Governed mental models: one built-in plus five custom models per bank,
-  an explicit `always_in_context` delivery choice, and a model withheld
-  from delivery — never served as falsely current — until its refresh
-  operation is proven complete.
+- Governed mental models: one built-in plus five custom models per bank.
+  Standing delivery is a property of being built-in, not a caller-settable
+  flag, and a model withheld from delivery — never served as falsely
+  current — until its refresh operation is proven complete.
 - Bounded standing-context loading (`ach-memory context load` / `load_context`):
-  always-in-context models, Project Metadata, active time-bounded claims and
+  the bank's built-in model, Project Metadata, active time-bounded claims and
   explicit Working State, each under its own token budget, assembled inside
   one two-second deadline that fails a slow model open rather than stalling
-  the whole response.
+  the whole response. An optional `scope` filter narrows delivery to just
+  the user or project half.
 - `recall`/`reflect` may also expire a bounded batch of claims already past
   their stated expiry as a side effect of the access; both are honestly
   advertised over MCP as non-read-only for exactly that reason.

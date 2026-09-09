@@ -115,12 +115,6 @@ def test_model_tools_are_registered_with_honest_annotations():
         assert not (ann and ann.read_only_hint), name
 
 
-def test_create_model_schema_requires_always_in_context():
-    mgr = _manager()
-    schema = mgr.get_tool("create_mental_model").parameters
-    assert "always_in_context" in schema["required"]
-
-
 def test_the_advertised_schema_carries_the_vocabulary_the_models_enforce():
     mgr = _manager()
     schemas = {n: mgr.get_tool(n).parameters for n in READONLY}

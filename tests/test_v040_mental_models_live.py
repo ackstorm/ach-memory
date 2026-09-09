@@ -19,7 +19,7 @@ import pytest
 from memory.auth.principal import Principal
 from memory.bootstrap import BootstrapRequest, bootstrap
 from memory.builtin_models import USER_CONTEXT
-from memory.errors import ContextBudgetExceeded, MentalModelNotFound, MentalModelQuotaExceeded
+from memory.errors import MentalModelNotFound, MentalModelQuotaExceeded
 from memory.hindsight.client import HindsightClient
 from memory.mental_model_service import (
     CustomModelCreateRequest,
@@ -112,7 +112,6 @@ def _custom_request(**overrides) -> CustomModelCreateRequest:
         "tags_match": "all",
         "max_tokens": 256,
         "trigger": TRIGGER,
-        "always_in_context": False,
         "operation_id": str(uuid.uuid4()),
     }
     body.update(overrides)
@@ -139,15 +138,12 @@ def test_governed_mental_model_lifecycle_against_disposable_hindsight(
     with pytest.raises(MentalModelQuotaExceeded):
         create_custom_model(session, live_bank, _custom_request(name="live-overflow"), client=live_client)
 
-    # always_in_context false survives update and built-in version reconciliation
     target = created[0]
-    assert target.always_in_context is False
     updated = update_model(
         session, live_bank, target.model_key,
         CustomModelUpdateRequest(source_query="Updated live source query.", operation_id=str(uuid.uuid4())),
         client=live_client,
     )
-    assert updated.always_in_context is False
     assert updated.source_query == "Updated live source query."
 
     update_model(
@@ -177,14 +173,6 @@ def test_governed_mental_model_lifecycle_against_disposable_hindsight(
     assert upstream_target["trigger"]["mode"] == "full"
     assert upstream_target["trigger"]["refresh_after_consolidation"] is False
     assert not upstream_target["trigger"].get("refresh_cron")
-
-    # enabling always_in_context beyond the User budget is refused before any upstream call
-    with pytest.raises(ContextBudgetExceeded):
-        update_model(
-            session, live_bank, created[1].model_key,
-            CustomModelUpdateRequest(always_in_context=True, max_tokens=2000, operation_id=str(uuid.uuid4())),
-            client=live_client,
-        )
 
     # refresh output is withheld until the exact operation completes
     refreshed = refresh_model(

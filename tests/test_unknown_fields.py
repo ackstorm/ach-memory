@@ -29,7 +29,7 @@ MM_REQUIRED_TAGS = ["schema:ach-retain-v1", "validity:indefinite"]
             {
                 "scope": "user", "name": "n", "source_query": "q",
                 "source_tags": MM_REQUIRED_TAGS, "tags_match": "all",
-                "max_tokens": 512, "always_in_context": False,
+                "max_tokens": 512,
                 "trigger": {"mode": "delta"}, "operation_id": MM_OPERATION_ID,
                 "max_token": 999,
             },
@@ -77,7 +77,6 @@ def test_mental_model_trigger_still_passes_unknown_keys_through(client):
         source_tags=MM_REQUIRED_TAGS,
         tags_match="all",
         max_tokens=512,
-        always_in_context=False,
         trigger={"mode": "full", "refresh_cron": "0 3 * * *"},
         operation_id=MM_OPERATION_ID,
     )

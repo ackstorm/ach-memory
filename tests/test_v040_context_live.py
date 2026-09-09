@@ -7,6 +7,7 @@ import os
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from urllib.parse import urlsplit
 
 import pytest
@@ -69,40 +70,6 @@ def _wait_for_synthesis(
     raise AssertionError(f"model synthesis operation {operation_id} did not complete in {timeout}s")
 
 
-def _registration(
-    tenant: str,
-    *,
-    key: str,
-    upstream_id: str,
-    marker: str,
-    user_id: str | None = None,
-    project_internal_id: str | None = None,
-) -> MentalModelRegistration:
-    return MentalModelRegistration(
-        tenant_id=tenant,
-        scope="user" if user_id else "project",
-        user_id=user_id,
-        project_internal_id=project_internal_id,
-        model_key=key,
-        upstream_model_id=upstream_id,
-        name=key,
-        # A unique harmless marker per model, embedded in its own source
-        # query -- lets a live assertion tie a specific delivered section
-        # back to the exact registration that produced it.
-        source_query=f"Summarize current disposable test facts. Marker: {marker}.",
-        source_tags=["schema:ach-retain-v1", "validity:indefinite"],
-        tags_match="all",
-        max_tokens=256,
-        trigger={},
-        origin="user",
-        builtin_key=None,
-        definition_version=None,
-        lifecycle_state="active",
-        always_in_context=True,
-        delivery_state="ready",
-    )
-
-
 def _expiring_claim(
     tenant: str, project_internal_id: str, now: datetime
 ) -> RetainedRecord:
@@ -163,18 +130,17 @@ def _build_context_probe(
     client: HindsightClient,
     *,
     suffix: str,
-    user_custom_count: int,
-    project_custom_count: int,
-    include_builtins: bool,
-) -> tuple[Principal, LoadContextRequest, list[str], dict[str, str]]:
-    """Seed one disposable user+project bank with the requested model mix.
+    scope: Literal["user", "project", "both"] = "both",
+) -> tuple[Principal, LoadContextRequest, list[str], dict[str, str], str]:
+    """Seed one disposable user+project bank with both built-ins registered.
 
-    Returns (principal, request, created_bank_ids, heading_by_model_key) --
-    a model's `source_query` is a synthesis PROMPT over the bank's actual
-    retained content, never text echoed verbatim into its output, so the
-    delivered proof per model is that its OWN section heading is present
-    (proving its content actually reached the response), not that some
-    caller-chosen marker string survived LLM synthesis.
+    Standing delivery is built-ins only (v0.4.8): at most one model per
+    scope can ever be delivered now, so this always registers both --
+    `scope` only narrows what `load_context` is ASKED for (proving Task 6's
+    filter live), it never changes how many models exist to be filtered.
+
+    Returns (principal, request, created_bank_ids, heading_by_model_key,
+    project_internal_id).
     """
     user_bank = f"v040-context-user-{suffix}"
     project_bank = f"v040-context-project-{suffix}"
@@ -197,47 +163,15 @@ def _build_context_probe(
     session.flush()
 
     headings: dict[str, str] = {}
-    registrations = []
-    if include_builtins:
-        for scope, bank_id, user_id, project_internal_id in (
-            ("user", user_bank, user.id, None),
-            ("project", project_bank, None, project.internal_id),
-        ):
-            row = _register_builtin(
-                session, tenant, client, bank_id=bank_id, user_id=user_id, project_internal_id=project_internal_id
-            )
-            headings[row.model_key] = f"{scope.title()} · {row.model_key}"
-
-    for scope, bank_id, count in (
-        ("user", user_bank, user_custom_count),
-        ("project", project_bank, project_custom_count),
+    for scope_name, bank_id, user_id, project_internal_id in (
+        ("user", user_bank, user.id, None),
+        ("project", project_bank, None, project.internal_id),
     ):
-        for index in range(count):
-            key = f"{scope}-{index}-{suffix}"
-            created = client.create_mental_model(
-                bank_id,
-                name=f"ach:context-{scope}-{index}-{suffix}",
-                source_query="Summarize current disposable test facts.",
-                max_tokens=256,
-                tags=["schema:ach-retain-v1", "validity:indefinite"],
-            )
-            upstream_id = created.get("mental_model_id") or created.get("id")
-            operation_id = created.get("operation_id")
-            assert isinstance(upstream_id, str)
-            assert isinstance(operation_id, str)
-            _wait_for_synthesis(client, bank_id, operation_id)
-            registrations.append(
-                _registration(
-                    tenant,
-                    key=key,
-                    upstream_id=upstream_id,
-                    marker=key,
-                    user_id=user.id if scope == "user" else None,
-                    project_internal_id=project.internal_id if scope == "project" else None,
-                )
-            )
-            headings[key] = f"{scope.title()} · {key}"
-    session.add_all(registrations)
+        row = _register_builtin(
+            session, tenant, client, bank_id=bank_id, user_id=user_id, project_internal_id=project_internal_id
+        )
+        headings[row.model_key] = f"{scope_name.title()} · {row.model_key}"
+
     session.add(_expiring_claim(tenant, project.internal_id, now))
     workspace_id = "ws_" + suffix[:8].ljust(32, "0")
     session.add(
@@ -266,8 +200,10 @@ def _build_context_probe(
         key_id="key_v040context",
         credential_id="key_v040context",
     )
-    request = LoadContextRequest(project_slug=f"context-{suffix}", workspace_id=workspace_id)
-    return principal, request, [user_bank, project_bank], headings
+    request = LoadContextRequest(
+        project_slug=f"context-{suffix}", workspace_id=workspace_id, scope=scope
+    )
+    return principal, request, [user_bank, project_bank], headings, project.internal_id
 
 
 def _delete_banks(client: HindsightClient, banks: list[str]) -> None:
@@ -287,7 +223,16 @@ def _delete_banks(client: HindsightClient, banks: list[str]) -> None:
             ) from last_error
 
 
-def _assert_bounded_and_delivered(session, principal, request, client, headings: dict[str, str]) -> None:
+def _assert_bounded_and_delivered(
+    session,
+    principal,
+    request,
+    client,
+    headings: dict[str, str],
+    *,
+    expect_user: bool,
+    expect_project: bool,
+) -> None:
     service = ContextService(session, principal, client=client)
 
     service.load(request)
@@ -303,39 +248,45 @@ def _assert_bounded_and_delivered(session, principal, request, client, headings:
     assert p95 <= 2.0
     assert last is not None
     assert last.total_tokens <= 4608
-    assert "Project Metadata" in last.headings
-    assert "Active Time-Bounded Claims" in last.headings
-    assert "Working State" in last.headings
     assert not [item for item in last.omissions if item.reason == "model_unavailable"]
-    for heading in headings.values():
-        assert heading in last.headings
+    assert (headings[USER_CONTEXT.key] in last.headings) == expect_user
+    assert (headings[PROJECT_CONTEXT.key] in last.headings) == expect_project
+    assert ("Project Metadata" in last.headings) == expect_project
+    # Active Claims is seeded project-scoped only; Working State is not
+    # scope-gated at all (it renders whenever a project and workspace_id
+    # resolve, regardless of which half load_context was asked for).
+    assert ("Active Time-Bounded Claims" in last.headings) == expect_project
+    assert "Working State" in last.headings
 
 
-def test_maximum_context_selection_is_live_parallel_and_bounded(session, tenant):
-    """Nine live model GETs plus deterministic sections stay inside two seconds."""
+def test_both_builtins_are_live_parallel_and_bounded(session, tenant):
+    """Both built-ins -- the most standing context can ever deliver now --
+    plus deterministic sections stay inside two seconds."""
     client = _client()
     suffix = uuid.uuid4().hex[:16]
-    principal, request, banks, headings = _build_context_probe(
-        session, tenant, client, suffix=suffix,
-        user_custom_count=4, project_custom_count=5, include_builtins=False,
+    principal, request, banks, headings, _project_internal_id = _build_context_probe(
+        session, tenant, client, suffix=suffix, scope="both",
     )
     try:
-        _assert_bounded_and_delivered(session, principal, request, client, headings)
+        _assert_bounded_and_delivered(
+            session, principal, request, client, headings, expect_user=True, expect_project=True,
+        )
     finally:
         _delete_banks(client, banks)
 
 
-def test_default_like_context_selection_is_live_parallel_and_bounded(session, tenant):
-    """The realistic mix -- both built-ins plus a couple of custom models
-    per bank, not the maxed-out quota -- stays inside two seconds too."""
+def test_project_scope_omits_the_user_builtin_and_stays_bounded(session, tenant):
+    """Task 6's scope filter, live: asking for scope="project" must still
+    resolve promptly and must never deliver the user builtin."""
     client = _client()
     suffix = uuid.uuid4().hex[:16]
-    principal, request, banks, headings = _build_context_probe(
-        session, tenant, client, suffix=suffix,
-        user_custom_count=2, project_custom_count=4, include_builtins=True,
+    principal, request, banks, headings, _project_internal_id = _build_context_probe(
+        session, tenant, client, suffix=suffix, scope="project",
     )
     try:
-        _assert_bounded_and_delivered(session, principal, request, client, headings)
+        _assert_bounded_and_delivered(
+            session, principal, request, client, headings, expect_user=False, expect_project=True,
+        )
     finally:
         _delete_banks(client, banks)
 
@@ -360,28 +311,26 @@ class _OneSlowModelClient:
 
 
 def test_a_controlled_slow_model_fails_open_without_hiding_peers(session, tenant):
-    """One model's GET is wrapped to sleep past the deadline. Peers and
-    Project Metadata (no I/O of its own) must still return; a single peer
-    genuinely exceeding the shared two-second budget correctly consumes it
-    entirely (SPEC's one shared deadline, not one per phase) -- Active
-    Claims and Working State are only ever entitled to whatever the model
-    wait phase leaves behind, so this proves they are cleanly OMITTED with
-    a `deadline_exceeded` reason rather than silently missing or the whole
-    request blowing past its bound."""
+    """The project built-in's GET is wrapped to sleep past the deadline.
+    The user built-in (its only peer now) and Project Metadata (no I/O of
+    its own) must still return; a single peer genuinely exceeding the
+    shared two-second budget correctly consumes it entirely (SPEC's one
+    shared deadline, not one per phase) -- Active Claims and Working State
+    are only ever entitled to whatever the model wait phase leaves behind,
+    so this proves they are cleanly OMITTED with a `deadline_exceeded`
+    reason rather than silently missing or the whole request blowing past
+    its bound."""
     real_client = _client()
     suffix = uuid.uuid4().hex[:16]
-    principal, request, banks, headings = _build_context_probe(
-        session, tenant, real_client, suffix=suffix,
-        user_custom_count=2, project_custom_count=2, include_builtins=False,
+    principal, request, banks, headings, project_internal_id = _build_context_probe(
+        session, tenant, real_client, suffix=suffix, scope="both",
     )
     try:
         from memory import model_registry
-        from memory.retained_records import LogicalBankRef
 
-        user_bank_id = banks[0]
-        slow_key = f"user-0-{suffix}"
-        slow_bank = LogicalBankRef(tenant, "user", principal.user_id, None, user_bank_id)
-        slow_row = model_registry.get_registered_model(session, slow_bank, slow_key)
+        project_bank_id = banks[1]
+        slow_bank = LogicalBankRef(tenant, "project", None, project_internal_id, project_bank_id)
+        slow_row = model_registry.get_registered_model(session, slow_bank, PROJECT_CONTEXT.key)
         assert slow_row is not None and slow_row.upstream_model_id is not None
         slow_client = _OneSlowModelClient(real_client, slow_upstream_id=slow_row.upstream_model_id)
 
@@ -390,13 +339,11 @@ def test_a_controlled_slow_model_fails_open_without_hiding_peers(session, tenant
         elapsed = time.monotonic() - started
 
         assert elapsed <= 2.5
+        assert headings[USER_CONTEXT.key] in result.headings
+        assert headings[PROJECT_CONTEXT.key] not in result.headings
         assert "Project Metadata" in result.headings
-        for key, heading in headings.items():
-            if key != slow_key:
-                assert heading in result.headings
-        assert headings[slow_key] not in result.headings
         omissions_by_key = {item.key: item.reason for item in result.omissions}
-        assert omissions_by_key["user-0-" + suffix] == "model_unavailable"
+        assert omissions_by_key[PROJECT_CONTEXT.key] == "model_unavailable"
         assert sum(reason == "model_unavailable" for reason in omissions_by_key.values()) == 1
         # Whatever budget the slow peer left behind is 0 by construction (it
         # blocked for the shared deadline's full duration) -- both later
