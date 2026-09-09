@@ -181,6 +181,45 @@ def test_a_lifecycle_disabled_builtin_is_never_recreated_or_reconciled(session, 
     hindsight.update_mental_model.assert_not_called()
 
 
+def test_a_builtin_stuck_in_creating_is_repaired_by_the_next_reconcile(
+    session, principal, hindsight
+):
+    """_create_builtin commits the row before calling Hindsight, so a failed
+    or lost create leaves it in `creating` with no upstream id. Nothing used
+    to move it: the definition version already matched, so reconcile returned
+    the stuck row unchanged for ever -- and standing delivery requires
+    `active`, so that bank served no standing context at all."""
+    user = session.get(User, principal.user_id)
+    bank = LogicalBankRef(principal.tenant_id, "user", user.id, None, user.bank_id)
+    register_model(
+        session,
+        bank,
+        origin="builtin",
+        model_key=USER_CONTEXT.key,
+        name=USER_CONTEXT.name,
+        source_query=USER_CONTEXT.source_query,
+        source_tags=list(USER_CONTEXT.source_tags),
+        tags_match=USER_CONTEXT.tags_match,
+        max_tokens=USER_CONTEXT.max_tokens,
+        trigger=dict(USER_CONTEXT.trigger),
+        builtin_key=USER_CONTEXT.key,
+        definition_version=USER_CONTEXT.version,
+        delivery_state="ready",
+        lifecycle_state="creating",
+    )
+    session.commit()
+
+    result = reconcile_builtin(session, bank, USER_CONTEXT, client=hindsight)
+
+    assert result.model_key == USER_CONTEXT.key
+    row = model_registry.get_registered_model(session, bank, USER_CONTEXT.key)
+    assert row.lifecycle_state == "active"
+    # The fixture lists no upstream models, so the name is free and the
+    # repair recreates rather than adopting.
+    assert row.upstream_model_id
+    hindsight.create_mental_model.assert_called_once()
+
+
 def test_reconcile_builtin_is_a_noop_when_already_current(session, principal, hindsight):
     first = reconcile_builtin(
         session,

@@ -385,7 +385,21 @@ def resume_model_mutation(
         raise MentalModelNotFound("no pending mutation with that operation id")
     if row.lifecycle_state != "creating":
         return _to_view(row)
+    return _to_view(_resume_row(db, bank, row, client=client))
 
+
+def _resume_row(
+    db: Session, bank: LogicalBankRef, row: MentalModelRegistration, *, client
+) -> MentalModelRegistration:
+    """Finish a `creating` registration whose upstream half is unknown.
+
+    Origin-agnostic on purpose. A built-in and a custom model get stuck the
+    same way and for the same good reason -- the row is committed before the
+    Hindsight create, so a lost response can never orphan an upstream model
+    nobody recorded -- so both are recovered the same way: adopt our own
+    model if it is already up there, create it if the name is free, and
+    refuse to guess when something else answers to that name.
+    """
     listed = client.list_mental_models(bank.bank_id, detail="full")
     upstream_name = _upstream_name(row.model_key)
     candidates = [item for item in _upstream_items(listed) if item.get("name") == upstream_name]
@@ -394,7 +408,7 @@ def resume_model_mutation(
     if len(exact) == 1:
         activated = model_registry.activate_model(db, bank, row.model_key, exact[0]["id"])
         db.commit()
-        return _to_view(activated)
+        return activated
 
     if not candidates:
         upstream = client.create_mental_model(
@@ -410,7 +424,7 @@ def resume_model_mutation(
             db, bank, row.model_key, upstream_id, refresh_operation_id
         )
         db.commit()
-        return _to_view(activated)
+        return activated
 
     raise CurationNeedsOperator(
         "multiple or mismatched upstream models share this model's internal name"
@@ -582,12 +596,29 @@ def reconcile_builtin(
     disabled built-in (`lifecycle_state="disabled"`) or an already-current
     one untouched. An upgrade never re-enables an operator-disabled
     built-in -- `lifecycle_state` is the only thing that ever carried that.
+
+    Also repairs a built-in left in `creating` by a create whose Hindsight
+    call failed after the row was committed, which is otherwise permanent.
     """
     existing = model_registry.get_registered_model(db, bank, definition.key)
-    if existing is not None and existing.lifecycle_state == "disabled":
-        return _to_view(existing)
     if existing is None:
         return _create_builtin(db, bank, definition, client=client)
+    if existing.lifecycle_state == "disabled":
+        return _to_view(existing)
+    if existing.lifecycle_state == "creating":
+        # A create whose Hindsight half was lost commits the row and never
+        # activates it, and nothing else repaired that: the definition
+        # version already matches, so every later reconcile returned the
+        # stuck row unchanged. Standing delivery requires "active", so the
+        # bank served empty standing context for ever -- and since built-ins
+        # are the only standing context, that meant none at all.
+        #
+        # Repaired here rather than at delivery because load_context is
+        # read-only and deadline-bound; this runs on the paths that already
+        # talk to Hindsight (bootstrap, and creating a project or user).
+        # Falls through rather than returning, so a definition bump still
+        # applies in the same pass.
+        existing = _resume_row(db, bank, existing, client=client)
     if existing.definition_version < definition.version:
         return _upgrade_builtin(db, bank, existing, definition, client=client)
     return _to_view(existing)
