@@ -23,22 +23,17 @@ REQUIRED_TAGS = ["schema:ach-retain-v1", "validity:indefinite"]
 TRIGGER = {"mode": "delta", "refresh_after_consolidation": True, "min_refresh_interval_seconds": 300}
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
+@pytest.fixture
+def juan(new_user) -> dict:
+    """An ordinary external user. Nothing mints a user any more -- `new_user()`
+    provisions one the way a real first-time caller arrives."""
+    return new_user()
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    key = client.post(f"/v1/users/{user_id}/keys", json={}, headers=master_headers).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
-
-
-@pytest.fixture
-def alice(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    key = client.post(f"/v1/users/{user_id}/keys", json={}, headers=master_headers).json()["key"]
-    return {"user_id": user_id, "headers": _headers(key)}
+def alice(new_user) -> dict:
+    """A second, unrelated ordinary user -- the IDOR tests' attacker."""
+    return new_user()
 
 
 def _make_project(client, headers, slug: str) -> None:
@@ -430,28 +425,32 @@ def test_idor_delete_cannot_reach_an_unauthorized_project_bank(client, juan, ali
 
 
 # ---------------------------------------------------------------------------
-# SPEC §14's authorization table: owner, group member, master key
+# SPEC §14's authorization table: owner, IdP-asserted group member, operator
 # ---------------------------------------------------------------------------
 
 
 @respx.mock
-def test_a_group_member_who_is_not_the_owner_can_manage_mental_models(client, juan, master_headers):
-    bob = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    bob_key = client.post(f"/v1/users/{bob}/keys", json={}, headers=master_headers).json()["key"]
-    client.post("/v1/groups", json={"id": "grp_payments"}, headers=master_headers)
-    client.put(f"/v1/groups/grp_payments/members/{bob}", headers=master_headers)
-    _make_project(client, juan["headers"], "payments-api")
-    client.patch(
+def test_a_group_member_who_is_not_the_owner_can_manage_mental_models(client, new_user):
+    """Membership is whatever the caller's IdP asserts on THIS request -- there
+    is no `group_members` row and no POST /v1/groups any more. Both callers
+    here hold `grp_payments` because their identity token says so: the owner
+    to be allowed to transfer the project to that group, bob to reach it.
+    """
+    owner = new_user(groups=("grp_payments",))
+    bob = new_user(groups=("grp_payments",))
+    _make_project(client, owner["headers"], "payments-api")
+    transferred = client.patch(
         "/v1/projects/payments-api/owner",
         json={"type": "group", "id": "grp_payments"},
-        headers=juan["headers"],
+        headers=owner["headers"],
     )
+    assert transferred.status_code == 200, transferred.text
     create = _mock_create()
 
     response = client.post(
         "/v1/mental-models",
         json=_create_body(scope="project", project_slug="payments-api"),
-        headers={"Authorization": f"Bearer {bob_key}"},
+        headers=bob["headers"],
     )
 
     assert response.status_code == 201, response.text
@@ -459,7 +458,34 @@ def test_a_group_member_who_is_not_the_owner_can_manage_mental_models(client, ju
 
 
 @respx.mock
-def test_a_master_key_can_manage_mental_models_on_any_bank(client, juan, master_headers):
+def test_a_non_member_cannot_manage_a_groups_mental_models(client, new_user):
+    """The other half of the IdP-group rule: a caller whose token does NOT
+    assert `grp_payments` gets the same not-found the discovery boundary gives
+    any unauthorized caller, and never reaches Hindsight. Without this, the
+    test above would pass just as well if group membership were ignored
+    entirely."""
+    owner = new_user(groups=("grp_payments",))
+    outsider = new_user()
+    _make_project(client, owner["headers"], "payments-api")
+    client.patch(
+        "/v1/projects/payments-api/owner",
+        json={"type": "group", "id": "grp_payments"},
+        headers=owner["headers"],
+    )
+    create = _mock_create()
+
+    response = client.post(
+        "/v1/mental-models",
+        json=_create_body(scope="project", project_slug="payments-api"),
+        headers=outsider["headers"],
+    )
+
+    assert response.status_code == 404, response.text
+    assert create.call_count == 0
+
+
+@respx.mock
+def test_an_operator_can_manage_mental_models_on_any_bank(client, juan, master_headers):
     _make_project(client, juan["headers"], "payments-api")
     create = _mock_create()
 

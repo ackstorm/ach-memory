@@ -8,6 +8,7 @@ import respx
 
 from memory.errors import RateLimited
 from memory.ratelimit import Limiter
+from tests.conftest import OPERATOR_SUBJECT
 
 
 def test_it_allows_up_to_the_limit_then_refuses():
@@ -127,11 +128,23 @@ def _mock_bank() -> None:
     )
 
 
-def _make_user_key(client, master_headers) -> str:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    return client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
+def _operator(credential_id: str = "ext_operator"):
+    """A principal with operator authority, built directly.
+
+    `ratelimit.check` reads only `credential_id`, so authority is irrelevant to
+    the bucket key -- but these two tests are ABOUT the operator/delegation
+    path, so the principal is spelled the way the operator plane produces one:
+    an ordinary external identity (`subject`, `credential_id`) that
+    configuration would name in MEMORY_MASTER_USERS.
+    """
+    from memory.auth.principal import Principal
+
+    return Principal(
+        tenant_id="default",
+        user_id="usr_operator",
+        credential_id=credential_id,
+        subject=OPERATOR_SUBJECT,
+    )
 
 
 def _retain_body(**overrides) -> dict:
@@ -162,15 +175,14 @@ def _lower_the_limit(monkeypatch) -> None:
 
 @respx.mock
 def test_a_write_over_the_limit_gets_429_rate_limited(
-    client, master_headers, tenant, monkeypatch
+    client, new_user, tenant, monkeypatch
 ):
     _lower_the_limit(monkeypatch)
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    key = _make_user_key(client, master_headers)
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = new_user()["headers"]
 
     ok = client.post(
         "/v1/memory/retain", json=_retain_body(), headers=headers
@@ -185,7 +197,7 @@ def test_a_write_over_the_limit_gets_429_rate_limited(
 
 
 @respx.mock
-def test_a_read_route_is_not_rate_limited(client, master_headers, tenant, monkeypatch):
+def test_a_read_route_is_not_rate_limited(client, new_user, tenant, monkeypatch):
     """A genuinely non-creating read (`create=False`, `is_write=False`) must
     never be touched by the write limiter. `recall` used to be the subject
     here, but it defaults `create=True` -- it can mint a Project row per call
@@ -200,8 +212,7 @@ def test_a_read_route_is_not_rate_limited(client, master_headers, tenant, monkey
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
-    key = _make_user_key(client, master_headers)
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = new_user()["headers"]
 
     warmup = client.post(
         "/v1/memory/retain", json=_retain_body(), headers=headers
@@ -217,14 +228,13 @@ def test_a_read_route_is_not_rate_limited(client, master_headers, tenant, monkey
 
 @respx.mock
 def test_recall_missing_projects_are_not_created_or_rate_limited(
-    client, master_headers, tenant, monkeypatch
+    client, new_user, tenant, monkeypatch
 ):
     """Recall is a read and refuses unknown projects before Hindsight."""
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
         return_value=httpx.Response(200, json={"results": []})
     )
-    key = _make_user_key(client, master_headers)
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = new_user()["headers"]
 
     ok = client.post(
         "/v1/memory/recall",
@@ -244,7 +254,7 @@ def test_recall_missing_projects_are_not_created_or_rate_limited(
 
 @respx.mock
 def test_the_limit_is_shared_across_rest_and_mcp_for_the_same_credential(
-    client, master_headers, tenant, monkeypatch
+    client, new_user, tenant, monkeypatch
 ):
     """A caller must not evade the limit by switching surfaces: exhaust it
     over REST, then the MCP twin for the SAME credential must also refuse."""
@@ -255,16 +265,22 @@ def test_the_limit_is_shared_across_rest_and_mcp_for_the_same_credential(
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    key = _make_user_key(client, master_headers)
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = new_user()["headers"]
 
     ok = client.post(
         "/v1/memory/retain", json=_retain_body(), headers=headers
     )
     assert ok.status_code == 202, ok.text
 
+    # Bound outside the class body on purpose: `headers` is also the
+    # attribute name below, and a class body's LOAD_NAME would then skip the
+    # enclosing function scope entirely.
+    mcp_headers = dict(headers)
+
     class _Ctx:
-        headers: ClassVar = {"authorization": f"Bearer {key}"}
+        # The SAME identity the REST call above sent, so the two surfaces
+        # really do resolve to one credential_id -- which is the whole claim.
+        headers: ClassVar = mcp_headers
 
     with pytest.raises(MCPToolError) as exc_info:
         REGISTRY["retain"](
@@ -277,36 +293,39 @@ def test_the_limit_is_shared_across_rest_and_mcp_for_the_same_credential(
 
 
 def test_delegated_master_traffic_is_bucketed_per_subject(monkeypatch):
-    """SPEC §16.5: ACH calls with the master key plus On-Behalf-Of when acting
-    for a human, so the master key is the SHARED credential for every
-    ACH-mediated user -- not one operator's key. One bucket for all of it means
-    20 developers share a 60/min ceiling while each direct user key gets its
-    own, making the delegated path 20x stricter than the direct one and letting
-    one runaway agent 429 everybody (2026-08-23 review, R1-#3)."""
+    """SPEC §16.5: ACH calls with operator authority plus On-Behalf-Of when
+    acting for a human, so ONE operator credential fronts every ACH-mediated
+    user. One bucket for all of it means 20 developers share a 60/min ceiling
+    while each direct caller gets its own, making the delegated path 20x
+    stricter than the direct one and letting one runaway agent 429 everybody
+    (2026-08-23 review, R1-#3).
+
+    Still true under external identity: the shared credential is no longer a
+    minted master key but the one `ext_` credential ACH authenticates with,
+    and the fairness split it needs is unchanged."""
     from memory import ratelimit
-    from memory.auth.principal import Principal
 
     limiter = ratelimit.Limiter(limit=1, window_seconds=60)
     monkeypatch.setattr(ratelimit, "get_limiter", lambda: limiter)
 
-    master = Principal(tenant_id="default", user_id=None, is_master=True, key_id=None)
+    operator = _operator()
 
-    ratelimit.check(master, on_behalf_of="alice")
+    ratelimit.check(operator, on_behalf_of="alice")
     with pytest.raises(RateLimited):
-        ratelimit.check(master, on_behalf_of="alice")
+        ratelimit.check(operator, on_behalf_of="alice")
 
-    # Bob is a different human behind the same master key.
-    ratelimit.check(master, on_behalf_of="bob")
+    # Bob is a different human behind the same operator credential.
+    ratelimit.check(operator, on_behalf_of="bob")
 
 
 def test_the_limiter_is_keyed_per_credential_through_a_route(
-    client, master_headers, tenant, monkeypatch
+    client, new_user, tenant, monkeypatch
 ):
     """tests above exercise Limiter directly and never touch check()'s key
-    derivation. Mutating `principal.key_id or MASTER_KEY_ID` to a constant
-    survived the whole suite: every credential in the tenant would then share
-    one bucket -- a trivial tenant-wide DoS contradicting §20's "per
-    credential" MUST (2026-08-23 review, R4-I3)."""
+    derivation. Mutating `principal.credential_id` to a constant survived the
+    whole suite: every credential in the tenant would then share one bucket --
+    a trivial tenant-wide DoS contradicting §20's "per credential" MUST
+    (2026-08-23 review, R4-I3)."""
     from memory import ratelimit
     from memory.config import get_settings
 
@@ -314,14 +333,7 @@ def test_the_limiter_is_keyed_per_credential_through_a_route(
     get_settings.cache_clear()
     ratelimit.get_limiter.cache_clear()
 
-    def _key() -> dict[str, str]:
-        uid = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-        secret = client.post(
-            f"/v1/users/{uid}/keys", json={}, headers=master_headers
-        ).json()["key"]
-        return {"Authorization": f"Bearer {secret}"}
-
-    alice, bob = _key(), _key()
+    alice, bob = new_user()["headers"], new_user()["headers"]
 
     with respx.mock:
         respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
@@ -348,12 +360,12 @@ def test_two_external_identities_do_not_share_a_bucket(monkeypatch):
     monkeypatch.setattr(ratelimit, "get_limiter", lambda: limiter)
 
     alice = Principal(
-        tenant_id="default", user_id="usr_a", is_master=False, key_id=None,
-        credential_id="ext_alice",
+        tenant_id="default", user_id="usr_a", credential_id="ext_alice",
+        subject="alice@test",
     )
     bob = Principal(
-        tenant_id="default", user_id="usr_b", is_master=False, key_id=None,
-        credential_id="ext_bob",
+        tenant_id="default", user_id="usr_b", credential_id="ext_bob",
+        subject="bob@test",
     )
 
     ratelimit.check(alice)

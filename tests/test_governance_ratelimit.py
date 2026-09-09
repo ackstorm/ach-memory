@@ -22,14 +22,13 @@ BASE = "http://hindsight.test"
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": {"Authorization": f"Bearer {key}"}}
+def juan(new_user) -> dict:
+    """An ordinary (non-operator) external user, with their bank pre-warmed.
+
+    Nothing mints a user any more: `new_user()` provisions one the way a real
+    first-time caller arrives, and returns ready-to-send identity headers.
+    """
+    return new_user()
 
 
 DIR_ID = "11111111-1111-1111-1111-111111111111"

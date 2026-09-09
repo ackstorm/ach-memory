@@ -2,18 +2,36 @@ import httpx
 import pytest
 import respx
 
+from tests.conftest import OPERATOR_SUBJECT, RESOLVER_URL
+
 BASE = "http://hindsight.test"
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": {"Authorization": f"Bearer {key}"}}
+def juan(new_user) -> dict:
+    """An ordinary external user: authenticated, owns a bank, and NOT named in
+    MEMORY_MASTER_USERS. Every "refuses a non-operator" assertion below is
+    about this caller -- who now differs from `master_headers` only in what
+    configuration says about their subject."""
+    return new_user()
+
+
+def _operator_user_id(session) -> str:
+    """The `usr_` id `link_identity` minted for the operator on first sight.
+
+    Not knowable in advance -- which is exactly why MEMORY_MASTER_USERS names
+    the SUBJECT instead.
+    """
+    from memory.models import ExternalIdentity
+
+    return session.get(ExternalIdentity, (RESOLVER_URL, OPERATOR_SUBJECT)).user_id
+
+
+def _credential_id(subject: str) -> str:
+    """The `ext_` credential id an audit row records for a subject."""
+    from memory.auth.provisioning import credential_id_for
+
+    return credential_id_for(RESOLVER_URL, subject)
 
 
 # ---------------------------------------------------------------------------
@@ -21,21 +39,44 @@ def juan(client, master_headers, tenant) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def test_the_audit_read_requires_the_master_key(client, juan, tenant):
-    response = client.get("/v1/admin/audit", headers=juan["headers"])
+def test_the_audit_read_requires_operator_authority(client, juan, master_headers, tenant):
+    """Authority is configuration over a resolved external identity now, not a
+    credential anybody mints. `juan` authenticates perfectly well and is still
+    refused; the operator subject MEMORY_MASTER_USERS names is let through."""
+    assert client.get("/v1/admin/audit", headers=juan["headers"]).status_code == 403
+    assert client.get("/v1/admin/audit", headers=master_headers).status_code == 200
 
-    assert response.status_code == 403
+
+def test_a_group_named_in_master_groups_grants_the_audit_read(
+    client, new_user, tenant, monkeypatch
+):
+    """The MEMORY_MASTER_GROUPS half: authority can arrive through a group the
+    identity provider asserts, with nothing about the user configured.
+    Membership is re-read from the token every request, so an IdP that stops
+    asserting `sre` closes this on the very next call."""
+    from memory.config import get_settings
+
+    sre = new_user(groups=("sre",))
+    assert client.get("/v1/admin/audit", headers=sre["headers"]).status_code == 403
+
+    monkeypatch.setenv("MEMORY_MASTER_GROUPS", "sre")
+    get_settings.cache_clear()
+
+    assert client.get("/v1/admin/audit", headers=sre["headers"]).status_code == 200
 
 
 def test_it_returns_events_newest_first(client, master_headers, tenant):
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    client.post(f"/v1/users/{user_id}/keys", json={}, headers=master_headers)
+    # project.create + project.rename, not the old user.create + key.create:
+    # neither of those routes exists any more. Any two audited actions in one
+    # transaction reproduce the tie this test is about.
+    client.post("/v1/projects", json={"project_slug": "a"}, headers=master_headers)
+    client.patch(
+        "/v1/projects/a", json={"project_slug": "b"}, headers=master_headers
+    )
 
     events = client.get("/v1/admin/audit", headers=master_headers).json()
 
-    # Not actions[:2] == ["key.create", "user.create"]: created_at is now
+    # Not actions[:2] == ["project.rename", "project.create"]: created_at is now
     # `func.now()`, the DB's ONE clock (2026-08-23 review, finding 2) --
     # Postgres's `now()` is transaction-scoped, constant for every statement
     # in one transaction, and this fixture's savepoint architecture runs
@@ -46,7 +87,7 @@ def test_it_returns_events_newest_first(client, master_headers, tenant):
     # test_the_id_desc_tiebreak_is_deterministic_not_recency. This still
     # pins that both events land in the top 2, just not their relative order.
     actions = [e["action"] for e in events]
-    assert set(actions[:2]) == {"key.create", "user.create"}
+    assert set(actions[:2]) == {"project.create", "project.rename"}
 
 
 def test_the_id_desc_tiebreak_is_deterministic_not_recency(
@@ -95,33 +136,52 @@ def test_the_id_desc_tiebreak_is_deterministic_not_recency(
     assert [e["id"] for e in events] == ["aud_zzz_high", "aud_low"]
 
 
-def test_it_filters_by_action_and_by_actor(client, master_headers, tenant):
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    client.post("/v1/groups", json={"id": "grp_a"}, headers=master_headers)
+def test_it_filters_by_action_and_by_actor(client, juan, master_headers, tenant):
+    """Both filters, on two DIFFERENT actors. `actor_key_id` used to be NULL
+    for every operator action, so an actor filter could not tell an operator
+    apart from anyone else; an operator is an ordinary external identity now,
+    so their rows carry a real `ext_` credential and this filter means
+    something."""
+    client.post("/v1/projects", json={"project_slug": "juans"}, headers=juan["headers"])
+    client.post("/v1/projects", json={"project_slug": "ops"}, headers=master_headers)
 
     only = client.get(
-        "/v1/admin/audit?action=user.create", headers=master_headers
+        "/v1/admin/audit?action=project.create", headers=master_headers
     ).json()
+    assert [e["action"] for e in only] == ["project.create"] * 2
+    assert {e["resource"] for e in only} == {"juans", "ops"}
 
-    assert [e["action"] for e in only] == ["user.create"]
-    assert only[0]["resource"] == user_id
+    by_actor = client.get(
+        f"/v1/admin/audit?actor_key_id={_credential_id(juan['subject'])}",
+        headers=master_headers,
+    ).json()
+    assert [e["resource"] for e in by_actor] == ["juans"]
+
+    by_operator = client.get(
+        f"/v1/admin/audit?actor_key_id={_credential_id(OPERATOR_SUBJECT)}",
+        headers=master_headers,
+    ).json()
+    assert [e["resource"] for e in by_operator] == ["ops"]
 
 
-def test_an_audit_row_never_carries_a_bank_id(client, master_headers, tenant, session):
+def test_an_audit_row_never_carries_a_bank_id(
+    client, juan, master_headers, tenant, session
+):
     """The table is a disclosure surface the moment it is readable."""
     from memory.models import AuditEvent
 
-    client.post("/v1/users", json={}, headers=master_headers)
+    client.post("/v1/projects", json={"project_slug": "a"}, headers=juan["headers"])
 
     body = client.get("/v1/admin/audit", headers=master_headers).text
     assert "bank_id" not in body
     assert "prj_" not in body
+    # `user_<uuid>` / `prj_<uuid>` are the two bank-id shapes (memory/ids.py);
+    # neither may ever appear as an audited resource.
     assert not [
         e
         for e in session.query(AuditEvent).all()
-        if "user_" in (e.resource or "") and "-" in (e.resource or "")
+        if ("user_" in (e.resource or "") or "prj_" in (e.resource or ""))
+        and "-" in (e.resource or "")
     ]
 
 
@@ -158,12 +218,12 @@ def test_the_page_size_is_bounded(client, master_headers, tenant):
 # ---------------------------------------------------------------------------
 
 
-def test_clear_memories_refuses_a_user_key_even_the_banks_own_owner(
+def test_clear_memories_refuses_an_ordinary_user_even_the_banks_own_owner(
     client, juan, tenant
 ):
-    """SPEC §11.7's whole point: a user key that OWNS this very bank must
-    still be refused. require_master gates on the credential alone, before
-    scope/ownership is ever resolved."""
+    """SPEC §11.7's whole point: a caller who OWNS this very bank must still be
+    refused. `require_master` gates on authority alone, before scope or
+    ownership is ever resolved."""
     response = client.post(
         "/v1/admin/memory/user/clear",
         params={"user_id": juan["user_id"]},
@@ -173,7 +233,7 @@ def test_clear_memories_refuses_a_user_key_even_the_banks_own_owner(
     assert response.status_code == 403
 
 
-def test_delete_bank_refuses_a_user_key_even_the_banks_own_owner(client, juan, tenant):
+def test_delete_bank_refuses_an_ordinary_user_even_the_banks_own_owner(client, juan, tenant):
     response = client.delete(
         "/v1/admin/memory/user",
         params={"user_id": juan["user_id"]},
@@ -199,7 +259,7 @@ def test_delete_bank_refuses_a_user_key_even_the_banks_own_owner(client, juan, t
     ],
 )
 @respx.mock
-def test_master_destructive_routes_are_rate_limited_before_hindsight(
+def test_operator_destructive_routes_are_rate_limited_before_hindsight(
     client,
     juan,
     master_headers,
@@ -255,7 +315,7 @@ def test_master_destructive_routes_are_rate_limited_before_hindsight(
     assert not destructive.called
 
 
-def test_release_slug_requires_the_master_key(client, juan, tenant):
+def test_release_slug_requires_operator_authority(client, juan, tenant):
     response = client.post("/v1/admin/slugs/whatever/release", headers=juan["headers"])
 
     assert response.status_code == 403
@@ -374,12 +434,10 @@ def test_clear_on_an_unknown_project_slug_404s_without_creating_it(
     """No respx route is registered on purpose: if this ever reached
     Hindsight, respx's own AllMockedAssertionError would fire (a 500), not
     the 404 asserted below. Pins the admin route to `_resolve_bank(...,
-    create=False)`'s outcome for a master key -- note that `resolve()`
-    itself already refuses lazy creation for ANY master-key caller
-    regardless of `create`, since a master key has no identity to own the
-    new project; `create=False` here is the same defensive convention
-    curation.py/documents.py use, kept for consistency even though today it
-    is not this specific flag doing the refusing for scope=project."""
+    create=False)`'s outcome: an unknown slug is a 404 and no Project row is
+    minted by an erase attempt. `create=False` is now the only thing refusing
+    it -- an operator has an identity of their own and could otherwise own a
+    lazily created project, so the flag stopped being redundant here."""
     response = client.post(
         "/v1/admin/memory/project/clear",
         params={"project_slug": "ghost"},
@@ -502,7 +560,7 @@ def test_deleting_a_users_bank_leaves_the_user_row_and_its_bank_id_intact(
 ):
     """Decision: delete_bank never mutates `users`. `User.bank_id` is NOT
     NULL -- there is no schema-safe way to clear it -- and deleting the row
-    would cascade into that user's API keys / group memberships / project
+    would cascade into that user's external identity link and project
     ownership, far outside "erase this bank's content." A bank_id whose
     Hindsight bank was torn down is no different from one never materialized
     (SPEC §17): the next retain against it just auto-creates an empty bank
@@ -540,6 +598,58 @@ def test_deleting_a_users_bank_leaves_the_user_row_and_its_bank_id_intact(
 
 
 
+
+
+@respx.mock
+def test_clear_without_a_target_clears_the_operators_own_bank(
+    client, master_headers, tenant, session
+):
+    """The rule that REPLACED "master-key requests with scope=user must set
+    user_id". Authority and identity are separate now, so an operator is an
+    ordinary user who also has authority: with no `user_id` they address
+    THEMSELVES, exactly like anybody else, and naming somebody else is the
+    part authority buys.
+
+    Also pins that this self-directed call writes no audit row: `_resolve_bank`
+    records only `principal.is_master and body.user_id`, i.e. reaching into
+    SOMEBODY ELSE's bank. Auditing an operator touching their own memory would
+    drown the log the delegation records live in.
+    """
+    from memory.models import AuditEvent, User
+
+    route = respx.delete(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories(\?|$)"
+    ).mock(return_value=httpx.Response(200, json={"success": True}))
+    before = session.query(AuditEvent).count()
+
+    response = client.post("/v1/admin/memory/user/clear", headers=master_headers)
+
+    assert response.status_code == 200, response.text
+    operator = (
+        session.query(User)
+        .filter(User.id == _operator_user_id(session))
+        .one()
+    )
+    assert f"banks/{operator.bank_id}/" in str(route.calls.last.request.url)
+    assert session.query(AuditEvent).count() == before
+
+
+def test_clear_still_refuses_an_ordinary_user_addressing_someone_else(
+    client, juan, new_user, tenant
+):
+    """The other side of the same rule, and the one that must never soften:
+    only authority lets a caller name somebody else. Without operator
+    authority this is a 403 on the admin gate before ownership is even
+    resolved."""
+    victim = new_user()
+
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        params={"user_id": victim["user_id"]},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 403
 
 
 def test_release_slug_frees_the_name_and_leaves_the_project_alone(
@@ -634,8 +744,10 @@ def test_release_slug_is_scoped_to_the_callers_tenant(client, master_headers, te
 # --- scope in the body, not only the query string -----------------------------
 # These two routes took user_id/project_slug ONLY as query parameters while every
 # data-plane route takes them in a JSON body. A caller who followed the house
-# style got `INVALID_SCOPE: master-key requests with scope=user must set
-# user_id` -- naming the field they had just set, in the body that was ignored.
+# style got `INVALID_SCOPE: ... must set user_id` -- naming the field they had
+# just set, in the body that was ignored. That particular refusal is gone (an
+# operator with no user_id now addresses their own bank), but the
+# body-or-query symmetry it forced is what these tests pin.
 
 
 @respx.mock

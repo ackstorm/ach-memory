@@ -4,11 +4,6 @@ import respx
 from sqlalchemy import text
 
 from memory.models import ActivityEvent
-from tests.test_mcp_tools import (  # noqa: F401 -- reused as fixtures/helpers
-    _mock_bank,
-    _retain_kwargs,
-    call_tool,
-)
 
 BASE = "http://hindsight.test"
 
@@ -30,16 +25,36 @@ def _retain_body(**overrides) -> dict:
 
 
 @pytest.fixture
-def user_key(client, master_headers, tenant) -> tuple[str, str]:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return user_id, key
+def juan(new_user) -> dict:
+    """An ordinary (non-operator) external user, bank pre-warmed. Nothing mints
+    a user any more, so there is no key here and no route that would hand one
+    back -- only the identity headers an IdP-authenticated caller sends."""
+    return new_user()
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
+def _retain_kwargs(**overrides) -> dict:
+    """The minimum typed-retain shape an MCP retain call needs."""
+    kwargs = {
+        "memory_type": "fact",
+        "basis": "human_explicit",
+        "trigger": "agent_proactive",
+        "evidence": [{"kind": "user_quote", "raw": "hello"}],
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _call_tool(tool_name: str, headers: dict[str, str], **kwargs):
+    """Invoke a registered MCP tool the way the SDK would, with real headers.
+
+    Deliberately local rather than imported from tests/test_mcp_tools.py: the
+    two MCP assertions here are about the ACTIVITY row, and a shared harness
+    would couple this file to that one's fixture shape for no gain.
+    """
+    from memory.mcp import tools as tool_module
+
+    ctx = type("Ctx", (), {"headers": dict(headers)})()
+    return tool_module.REGISTRY[tool_name](ctx=ctx, **kwargs)
 
 
 def _mock_hindsight() -> None:
@@ -49,16 +64,13 @@ def _mock_hindsight() -> None:
 
 
 @respx.mock
-def test_a_retain_records_one_row(client, session, user_key, tenant):
+def test_a_retain_records_one_row(client, session, juan, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    _, key = user_key
 
-    client.post(
-        "/v1/memory/retain", json=_retain_body(), headers=_headers(key)
-    )
+    client.post("/v1/memory/retain", json=_retain_body(), headers=juan["headers"])
 
     row = session.query(ActivityEvent).one()
     assert (row.action, row.surface, row.scope, row.outcome) == (
@@ -69,69 +81,91 @@ def test_a_retain_records_one_row(client, session, user_key, tenant):
 
 
 @respx.mock
-def test_an_upstream_failure_is_recorded_as_an_error(client, session, user_key, tenant):
+def test_an_upstream_failure_is_recorded_as_an_error(client, session, juan, tenant):
     """The row must not claim the write landed. This is the whole reason the
     INSERT happens at the end instead of at resolution."""
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
         return_value=httpx.Response(500, json={"error": "boom"})
     )
-    _, key = user_key
 
-    client.post(
-        "/v1/memory/retain", json=_retain_body(), headers=_headers(key)
-    )
+    client.post("/v1/memory/retain", json=_retain_body(), headers=juan["headers"])
 
     row = session.query(ActivityEvent).one()
     assert (row.outcome, row.error_code) == ("error", "HINDSIGHT_ERROR")
 
 
 def test_a_rejected_credential_records_no_row(client, session, tenant):
-    client.post(
+    """No provider accepts this token -- ach-memory mints none of its own, so
+    the refusal is now "nobody issued you", not "unknown key". Either way an
+    unauthenticated call must leave no activity row."""
+    response = client.post(
         "/v1/memory/recall",
         json={"scope": "user", "query": "x"},
-        headers={"Authorization": "Bearer mem_nope"},
+        headers={"Authorization": "Bearer not-a-token-any-issuer-minted"},
     )
 
+    assert response.status_code == 401
     assert session.query(ActivityEvent).count() == 0
 
 
 @respx.mock
-def test_an_mcp_tool_call_records_a_row(call_tool, session, tenant):  # noqa: F811
-    _mock_bank()
+def test_an_mcp_tool_call_records_a_row(client, new_user, session, tenant):
+    _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    key = call_tool.make_user()
+    headers = new_user()["headers"]
 
-    call_tool("retain", key, scope="user", content="hello", **_retain_kwargs())
+    _call_tool("retain", headers, scope="user", content="hello", **_retain_kwargs())
 
     row = session.query(ActivityEvent).one()
     assert (row.surface, row.action, row.outcome) == ("mcp", "memory.retain", "ok")
 
 
 @respx.mock
-def test_an_mcp_tool_error_is_recorded_with_its_code(call_tool, session, tenant):  # noqa: F811
+def test_an_mcp_tool_error_is_recorded_with_its_code(client, new_user, session, tenant):
     from memory.mcp.tools import MCPToolError
 
-    _mock_bank()
+    _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
         return_value=httpx.Response(500, json={"error": "boom"})
     )
-    key = call_tool.make_user()
+    headers = new_user()["headers"]
 
     with pytest.raises(MCPToolError):
-        call_tool("recall", key, scope="user", query="x")
+        _call_tool("recall", headers, scope="user", query="x")
 
     row = session.query(ActivityEvent).one()
     assert row.outcome == "error"
     assert row.error_code
 
 
-def test_activity_requires_the_master_key(client, user_key):
-    _, key = user_key
+def test_activity_requires_operator_authority(client, juan, master_headers):
+    """Authority is configuration over an external identity now, not a
+    credential: `juan` is an ordinary user the IdP asserts and
+    MEMORY_MASTER_USERS does not name, so the operator plane is closed to
+    them -- and open to the subject that IS named."""
+    assert client.get("/v1/admin/activity", headers=juan["headers"]).status_code == 403
+    assert client.get("/v1/admin/activity", headers=master_headers).status_code == 200
 
-    assert client.get("/v1/admin/activity", headers=_headers(key)).status_code == 403
+
+def test_a_group_named_in_master_groups_grants_the_operator_plane(
+    client, new_user, tenant, monkeypatch
+):
+    """The MEMORY_MASTER_GROUPS half of the same rule: authority can arrive
+    through a group the IdP asserts, with nothing about the user configured.
+    Membership is re-read from the token on every request, so the IdP dropping
+    the group closes this plane on the very next call."""
+    from memory.config import get_settings
+
+    outsider = new_user(groups=("sre",))
+    assert client.get("/v1/admin/activity", headers=outsider["headers"]).status_code == 403
+
+    monkeypatch.setenv("MEMORY_MASTER_GROUPS", "sre")
+    get_settings.cache_clear()
+
+    assert client.get("/v1/admin/activity", headers=outsider["headers"]).status_code == 200
 
 
 def test_activity_lists_newest_first_and_filters_by_project(
@@ -190,7 +224,7 @@ def test_summary_rolls_up_per_bank(client, master_headers, seeded_activity, sess
     assert row["hours"][-1] >= 1
 
 
-def test_an_unhandled_500_is_recorded_as_an_error(client, session, user_key, tenant, monkeypatch):
+def test_an_unhandled_500_is_recorded_as_an_error(client, session, juan, tenant, monkeypatch):
     """Starlette puts ServerErrorMiddleware -- which owns the catch-all
     `@app.exception_handler(Exception)` -- OUTSIDE user middleware, so that
     handler runs AFTER ObservabilityMiddleware's `finally`. Its set_error()
@@ -210,7 +244,7 @@ def test_an_unhandled_500_is_recorded_as_an_error(client, session, user_key, ten
     monkeypatch.setattr(memory_routes, "submit_retain", _boom)
 
     response = client.post(
-        "/v1/memory/retain", json=_retain_body(), headers=_headers(user_key[1])
+        "/v1/memory/retain", json=_retain_body(), headers=juan["headers"]
     )
 
     assert response.status_code == 500
