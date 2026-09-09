@@ -14,7 +14,7 @@ genuinely read-only: neither provisions or reconciles a definition (SPEC
 import json
 import logging
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
@@ -28,7 +28,7 @@ from memory.api.mental_models import (
     UpdateMentalModelRequest,
     resolve_logical_bank,
 )
-from memory.errors import DomainError
+from memory.errors import DomainError, ProjectNotFound
 from memory.hindsight.client import get_client
 from memory.mcp.server import tool_session
 from memory.mcp.tools import (
@@ -47,16 +47,37 @@ MaxTokens = Annotated[int, Field(ge=256, le=8192)]
 OptionalMaxTokens = Annotated[int | None, Field(default=None, ge=256, le=8192)]
 
 
-def _model_run(ctx: Context, body_factory, action: str, call, *, is_write: bool) -> ToolResult:
+_ABSENT_PROJECT_STILL_RAISES = object()
+
+
+def _model_run(
+    ctx: Context,
+    body_factory,
+    action: str,
+    call,
+    *,
+    is_write: bool,
+    empty_result: dict[str, Any] | object = _ABSENT_PROJECT_STILL_RAISES,
+) -> ToolResult:
     """Same authorize/resolve/authorize-then-call shape as `memory_tools._run`,
-    reshaped for a `LogicalBankRef` instead of a bare `bank_id`."""
+    reshaped for a `LogicalBankRef` instead of a bare `bank_id`.
+
+    `empty_result`, when given, is what list_mental_models/get_mental_model
+    return instead of raising PROJECT_NOT_FOUND (decision 3) -- the four
+    mutation tools that share this pipeline never pass it, so they are
+    unaffected."""
     activity.new_call()
     try:
         with tool_session(ctx) as tc:
             body = body_factory()
-            bank = resolve_logical_bank(
-                body, tc.db, tc.principal, None, action, is_write=is_write
-            )
+            try:
+                bank = resolve_logical_bank(
+                    body, tc.db, tc.principal, None, action, is_write=is_write
+                )
+            except ProjectNotFound:
+                if empty_result is _ABSENT_PROJECT_STILL_RAISES:
+                    raise
+                return ToolResult(result=dict(empty_result))
             tc.db.commit()
             result = call(bank, tc.db, body)
             return ToolResult(result=result)
@@ -158,7 +179,10 @@ def register(mcp: MCPServer) -> None:
             result = mental_model_service.list_models(db, bank, client=get_client())
             return result.model_dump(mode="json")
 
-        return _model_run(ctx, body_factory, "mental_models.list", call, is_write=False)
+        return _model_run(
+            ctx, body_factory, "mental_models.list", call, is_write=False,
+            empty_result={"models": [], "unknown_upstream_count": 0},
+        )
 
     @mcp.tool(
         description="Fetch one registered mental model's governance metadata by its logical key.",
@@ -182,7 +206,10 @@ def register(mcp: MCPServer) -> None:
                 )
             return view.model_dump(mode="json")
 
-        return _model_run(ctx, body_factory, "mental_models.get", call, is_write=False)
+        return _model_run(
+            ctx, body_factory, "mental_models.get", call, is_write=False,
+            empty_result={},
+        )
 
     @mcp.tool(
         description=(

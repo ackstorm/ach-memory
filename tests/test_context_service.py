@@ -554,6 +554,48 @@ def test_a_request_with_no_project_says_the_project_half_is_absent(
     ]
 
 
+def test_a_request_for_an_absent_project_says_the_project_half_is_absent(
+    session, tenant
+):
+    """load_context is one of the twelve read tools that map an absent
+    project to empty (lazy-provisioning plan, decision 3): a project_slug
+    that names nothing must not raise PROJECT_NOT_FOUND, only omit the
+    project half exactly like a bare request does -- an agent does not know
+    whether today is its first day, and its first call is this one, never
+    retain."""
+    juan = _user(tenant, "usr_juan")
+    session.add(juan)
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, juan.id, False, "key_juan"), client=RecordingClient(),
+    ).load(LoadContextRequest(project_slug="does-not-exist"))
+
+    assert ("project", "no_project_resolved") in [
+        (item.key, item.reason) for item in result.omissions
+    ]
+
+
+def test_a_request_for_a_foreign_project_says_the_project_half_is_absent(
+    session, tenant
+):
+    """The oracle guard: a foreign project and an absent one must be
+    indistinguishable here, exactly as everywhere else the twelve read tools
+    reach a project through slug resolution."""
+    juan = _user(tenant, "usr_juan")
+    alice = _user(tenant, "usr_alice")
+    session.add_all([juan, alice, _project(tenant, juan.id, "payments")])
+    session.flush()
+
+    result = ContextService(
+        session, Principal(tenant, alice.id, False, "key_alice"), client=RecordingClient(),
+    ).load(LoadContextRequest(project_slug="payments"))
+
+    assert ("project", "no_project_resolved") in [
+        (item.key, item.reason) for item in result.omissions
+    ]
+
+
 def test_a_custom_model_is_never_delivered_even_with_the_flag_set(session, tenant):
     """Standing context is built-ins only. A custom model -- registered here
     exactly like an ordinary always-in-context row was before the flag was

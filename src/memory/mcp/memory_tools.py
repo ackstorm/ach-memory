@@ -50,7 +50,7 @@ from memory.api.memory import (
 )
 from memory.api.operations import ListOperationsRequest
 from memory.bootstrap import provision_before_retain
-from memory.errors import DomainError
+from memory.errors import DomainError, ProjectNotFound
 from memory.hindsight.client import get_client
 from memory.mcp.compact import compact as compact_payload
 from memory.mcp.server import tool_session
@@ -102,6 +102,9 @@ def _default_limit(limit: int | None, verbose: bool) -> int | None:
         return limit
     return DEFAULT_PAGE_SIZE
 
+_ABSENT_PROJECT_STILL_RAISES = object()
+
+
 def _run(
     ctx: Context,
     body_factory,
@@ -111,6 +114,7 @@ def _run(
     create: bool,
     is_write: bool = False,
     verbose: bool = True,
+    empty_result: dict[str, Any] | object = _ABSENT_PROJECT_STILL_RAISES,
 ) -> ToolResult:
     """The shared pipeline. `body_factory` takes no arguments and returns the
     validated `ScopedRequest` (or subclass) for this call — built inside
@@ -142,6 +146,18 @@ def _run(
     caller cannot dodge the REST limit by switching to the MCP twin, since
     both funnel through the same `_resolve_bank` and the same per-credential
     `memory.ratelimit.Limiter`.
+
+    `empty_result`, when given, is what a read tool returns instead of
+    raising PROJECT_NOT_FOUND: an agent does not know whether today is its
+    first day, and its first call is one of these, never retain, so an error
+    here teaches it to stop calling (decision 3). Caught ONLY around this
+    call's own resolution, never around `call` below -- by the time `call`
+    runs the project is confirmed to exist, so a ProjectNotFound raised from
+    inside it (retention.resolve_bank_ref's own, separate, always-create=False
+    resolution) would be a genuine anomaly, not the absent-project case this
+    parameter exists for. The five write/curation tools that share `_run`
+    (forget, correct, restore, delete_document, cancel_operation) and
+    retain/sync_retain never pass it, so they are unaffected.
     """
     activity.new_call()
     try:
@@ -154,10 +170,15 @@ def _run(
             # this is the same ordering. It stays inside the same try, so the
             # ValidationError/DomainError mapping below is unchanged.
             body = body_factory()
-            bank_id, resolved_from, slug = _resolve_bank(
-                body, tc.db, tc.principal, None, action,
-                create=create, is_write=is_write,
-            )
+            try:
+                bank_id, resolved_from, slug = _resolve_bank(
+                    body, tc.db, tc.principal, None, action,
+                    create=create, is_write=is_write,
+                )
+            except ProjectNotFound:
+                if empty_result is _ABSENT_PROJECT_STILL_RAISES:
+                    raise
+                return ToolResult(result=dict(empty_result))
             # Commit before the upstream call: resolution may have created the
             # project that owns this bank_id, and rolling that back after the
             # bank is materialized upstream orphans it unreachably.
@@ -231,16 +252,25 @@ def _run(
         activity.finish("mcp")
 
 
-def _read_run(ctx: Context, body_factory, action: str, call) -> ToolResult:
-    """MCP pipeline for the genuinely read-only recall/history tools."""
+def _read_run(ctx: Context, body_factory, action: str, call, *, empty_result: dict[str, Any]) -> ToolResult:
+    """MCP pipeline for the genuinely read-only recall/history tools.
+
+    `empty_result` is what a request against an absent project returns
+    instead of PROJECT_NOT_FOUND (decision 3) -- both of this pipeline's
+    callers are in the twelve-tool read set, so unlike `_run` this takes it
+    unconditionally rather than as an opt-in.
+    """
     activity.new_call()
     try:
         with tool_session(ctx) as tc:
             body = body_factory()
-            resolved = read_context.resolve_read_bank(
-                tc.db, tc.principal, None, action, body.scope,
-                user_id=body.user_id, project_slug=body.project_slug,
-            )
+            try:
+                resolved = read_context.resolve_read_bank(
+                    tc.db, tc.principal, None, action, body.scope,
+                    user_id=body.user_id, project_slug=body.project_slug,
+                )
+            except ProjectNotFound:
+                return ToolResult(result=dict(empty_result))
             tc.db.commit()
             result = call(resolved, tc.db, tc.principal, body)
             payload = result.model_dump() if isinstance(result, BaseModel) else result
@@ -380,7 +410,10 @@ def register(mcp: MCPServer) -> None:
                 hits=hits[:body.max_results],
             )
 
-        return _read_run(ctx, body_factory, "read.recall", call)
+        return _read_run(
+            ctx, body_factory, "read.recall", call,
+            empty_result={"hits": [], "truncated": False},
+        )
 
     @mcp.tool(
         description="Fetch bounded history and rationale for a recalled memory.",
@@ -404,6 +437,7 @@ def register(mcp: MCPServer) -> None:
             lambda _resolved, db, principal, body: read_service.history(
                 db, principal, None, body
             ),
+            empty_result={},
         )
 
     @mcp.tool(
@@ -463,6 +497,7 @@ def register(mcp: MCPServer) -> None:
             create=False,
             is_write=True,
             verbose=verbose,
+            empty_result={"text": "", "usage": {}},
         )
 
     @mcp.tool(
@@ -515,7 +550,10 @@ def register(mcp: MCPServer) -> None:
                 limit=page, offset=offset,
             )
 
-        return _run(ctx, body_factory, "memory.list", call, create=False, verbose=verbose)
+        return _run(
+            ctx, body_factory, "memory.list", call, create=False, verbose=verbose,
+            empty_result={"items": []},
+        )
 
     @mcp.tool(
         description="Fetch one memory by id.",
@@ -545,6 +583,7 @@ def register(mcp: MCPServer) -> None:
             call,
             create=False,
             verbose=verbose,
+            empty_result={},
         )
 
     @mcp.tool(
@@ -719,6 +758,7 @@ def register(mcp: MCPServer) -> None:
             lambda bank, db, p, slug: get_client().get_document(bank, document_id),
             create=False,
             verbose=verbose,
+            empty_result={},
         )
 
     @mcp.tool(
@@ -773,6 +813,7 @@ def register(mcp: MCPServer) -> None:
             ),
             create=False,
             verbose=verbose,
+            empty_result={},
         )
 
     @mcp.tool(
@@ -911,7 +952,7 @@ def _list_documents(
 
     return _run(
         ctx, body_factory, "memory.documents.list", call,
-        create=False, verbose=verbose,
+        create=False, verbose=verbose, empty_result={"items": []},
     )
 
 
@@ -939,5 +980,5 @@ def _list_operations(
 
     return _run(
         ctx, body_factory, "memory.operations.list", call,
-        create=False, verbose=verbose,
+        create=False, verbose=verbose, empty_result={"items": []},
     )

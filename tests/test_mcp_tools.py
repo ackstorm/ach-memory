@@ -274,9 +274,10 @@ def test_mcp_refresh_and_delete_forward_the_callers_operation_id_to_the_ledger(c
 
 @respx.mock
 def test_a_tool_cannot_reach_another_users_project(call_tool):
-    """A DomainError raised inside `_run` must surface as `MCPToolError`, not
-    escape raw. Resolution hides the existing project behind the same typed
-    not-found result as an absent slug, including omitting owner metadata."""
+    """`recall` is one of the twelve read tools that map an absent project to
+    empty (decision 3): resolution hides the existing project behind the same
+    empty result as an absent slug, never a distinguishing error -- the
+    oracle guard Task 5 exists for."""
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
@@ -284,11 +285,9 @@ def test_a_tool_cannot_reach_another_users_project(call_tool):
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool("recall", alice, scope="project", project_slug="payments", query="x")
+    result = call_tool("recall", alice, scope="project", project_slug="payments", query="x")
 
-    assert exc_info.value.code == "PROJECT_NOT_FOUND"
-    assert exc_info.value.details == {"project_slug": "payments"}
+    assert result.result == {"hits": [], "truncated": False}
 
 
 @respx.mock
@@ -511,6 +510,26 @@ MCP_CREATE_TABLE: dict[str, bool] = {
     "update_mental_model": False, "refresh_mental_model": False, "delete_mental_model": False,
 }
 
+# The twelve read tools that map an absent project to their own empty shape
+# rather than PROJECT_NOT_FOUND (decision 3) -- readOnlyHint is NOT the
+# selector, recall/reflect are both readOnlyHint=False. load_context is a
+# member too but is exercised separately (test_context_service.py): its
+# resolution doesn't go through _run/_model_run/_read_run at all.
+READ_TOOLS_EMPTY_RESULT: dict[str, dict] = {
+    "recall": {"hits": [], "truncated": False},
+    "memory_history": {},
+    "list_memories": {"items": []},
+    "get_memory": {},
+    "reflect": {"text": "", "usage": {}},
+    "list_documents": {"items": []},
+    "get_document": {},
+    "get_operation": {},
+    "list_operations": {"items": []},
+    "list_mental_models": {"models": [], "unknown_upstream_count": 0},
+    "get_mental_model": {},
+}
+READ_TOOLS = tuple(READ_TOOLS_EMPTY_RESULT)
+
 # Working State tools take no `scope`/generic project kwargs at all -- their
 # shape is entirely different from every Hindsight-routed tool -- so the two
 # security-table tests below use this as a COMPLETE kwargs override rather
@@ -593,7 +612,8 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
     """Verified by mutation: flipping any single tool's `create` makes exactly
     that tool's case fail here. A fresh, never-seen project_slug per tool
     call must be lazily created iff create=True (SPEC §11.3/§16.2), and left
-    untouched -- PROJECT_NOT_FOUND, no row -- iff create=False."""
+    untouched otherwise -- empty result for one of the twelve read tools
+    (decision 3), PROJECT_NOT_FOUND for every other create=False tool."""
     import uuid
 
     from memory.errors import ProjectNotFound
@@ -617,12 +637,59 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
             }
         if expect_create:
             call_tool(name, key, **kwargs)
+        elif name in READ_TOOLS:
+            result = call_tool(name, key, **kwargs)
+            assert result.result == READ_TOOLS_EMPTY_RESULT[name], name
         else:
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == ProjectNotFound.code, name
         exists = session.query(ProjectSlug).filter_by(slug=slug).count() == 1
         assert exists == expect_create, name
+
+
+@respx.mock
+@pytest.mark.parametrize("tool", READ_TOOLS)
+def test_a_read_tool_on_an_absent_project_is_empty_not_an_error(tool, call_tool):
+    """An agent does not know whether today is its first day. Its first call
+    is load_context or recall, never retain, so an error here teaches it to
+    stop calling. Empty is also true: a project with no memories has nothing
+    to say."""
+    respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    key = call_tool.make_user()
+    kwargs = {
+        "scope": "project", "project_slug": "never-seen",
+        **GHOST_EXTRA_KWARGS.get(tool, {}),
+    }
+
+    result = call_tool(tool, key, **kwargs)
+
+    assert result.result == READ_TOOLS_EMPTY_RESULT[tool]
+
+
+@respx.mock
+@pytest.mark.parametrize("tool", READ_TOOLS)
+def test_a_read_tool_never_leaks_project_access_denied(tool, call_tool):
+    """The oracle guard. A foreign project and an absent one must be
+    indistinguishable; ProjectAccessDenied carries owner_type and would
+    distinguish them. Only _authorize_resolution's collapse may be
+    observed."""
+    _mock_bank()
+    respx.route(url__regex=r"^http://hindsight\.test/.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    juan, alice = call_tool.make_user(), call_tool.make_user()
+    call_tool.seed_project(juan, "payments")
+    kwargs = {
+        "scope": "project", "project_slug": "payments",
+        **GHOST_EXTRA_KWARGS.get(tool, {}),
+    }
+
+    result = call_tool(tool, alice, **kwargs)
+
+    assert result.result == READ_TOOLS_EMPTY_RESULT[tool]
 
 
 @respx.mock
@@ -1042,19 +1109,20 @@ def test_get_memory_reaches_the_memory_endpoint(call_tool):
 
 
 @respx.mock
-def test_a_curation_tool_does_not_create_a_project(call_tool, session):
-    from memory.errors import ProjectNotFound
+def test_a_read_tool_does_not_create_a_project(call_tool, session):
+    """list_memories is one of the twelve read tools that map an absent
+    project to empty (decision 3) -- but empty is not the same as lazy
+    creation (out of scope): the project still must not exist afterward."""
     from memory.models import Project, ProjectSlug
 
     _mock_bank()
     key = call_tool.make_user()
 
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "list_memories", key, scope="project", project_slug="never-seen"
-        )
+    result = call_tool(
+        "list_memories", key, scope="project", project_slug="never-seen"
+    )
 
-    assert exc_info.value.code == ProjectNotFound.code
+    assert result.result == {"items": []}
     assert session.query(ProjectSlug).filter_by(slug="never-seen").count() == 0
     assert session.query(Project).count() == 0
 
@@ -1259,9 +1327,10 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(call_tool):
     resolves the bank on its own line for every tool, so each needs its own
     case. memory_id must be a syntactically valid UUID (GHOST): the client's
     local `_require_uuid` guard would otherwise zero out call_count for a
-    malformed id whether or not the bank check ran at all."""
-    from memory.errors import ProjectNotFound
-
+    malformed id whether or not the bank check ran at all. get_memory is one
+    of the twelve read tools that map an absent project to empty (decision
+    3), and a foreign project must be indistinguishable from an absent one:
+    empty here too, never a call to the foreign bank."""
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
@@ -1272,13 +1341,12 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(call_tool):
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "get_memory", alice, scope="project", project_slug="payments",
-            memory_id=GHOST,
-        )
+    result = call_tool(
+        "get_memory", alice, scope="project", project_slug="payments",
+        memory_id=GHOST,
+    )
 
-    assert exc_info.value.code == ProjectNotFound.code
+    assert result.result == {}
     assert get.call_count == 0
 
 
@@ -1332,8 +1400,10 @@ def test_idor_restore_cannot_reach_an_unauthorized_bank(call_tool):
 
 @respx.mock
 def test_idor_get_document_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectNotFound
-
+    """get_document is one of the twelve read tools that map an absent
+    project to empty (decision 3); a foreign project is indistinguishable
+    from an absent one, so empty here too, never a call to the foreign
+    bank."""
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
@@ -1344,20 +1414,21 @@ def test_idor_get_document_cannot_reach_an_unauthorized_bank(call_tool):
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "get_document", alice, scope="project", project_slug="payments",
-            document_id="doc1",
-        )
+    result = call_tool(
+        "get_document", alice, scope="project", project_slug="payments",
+        document_id="doc1",
+    )
 
-    assert exc_info.value.code == ProjectNotFound.code
+    assert result.result == {}
     assert get_doc.call_count == 0
 
 
 @respx.mock
 def test_idor_get_operation_cannot_reach_an_unauthorized_bank(call_tool):
-    from memory.errors import ProjectNotFound
-
+    """get_operation is one of the twelve read tools that map an absent
+    project to empty (decision 3); a foreign project is indistinguishable
+    from an absent one, so empty here too, never a call to the foreign
+    bank."""
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
@@ -1368,13 +1439,12 @@ def test_idor_get_operation_cannot_reach_an_unauthorized_bank(call_tool):
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "get_operation", alice, scope="project", project_slug="payments",
-            operation_id=GHOST,
-        )
+    result = call_tool(
+        "get_operation", alice, scope="project", project_slug="payments",
+        operation_id=GHOST,
+    )
 
-    assert exc_info.value.code == ProjectNotFound.code
+    assert result.result == {}
     assert get_op.call_count == 0
 
 

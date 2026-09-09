@@ -18,7 +18,7 @@ from memory.delivery import (
     assemble_context,
     count_tokens,
 )
-from memory.errors import DomainError
+from memory.errors import DomainError, ProjectNotFound
 from memory.hindsight.client import get_client
 from memory.models import MentalModelRegistration, Project, RetainedRecord
 from memory.read_context import resolve_read_bank
@@ -140,7 +140,18 @@ class ContextService:
 
         project = None
         if request.project_slug:
-            project = projects.resolve(self.db, self.principal, request.project_slug, create=False).project
+            try:
+                project = projects.resolve(
+                    self.db, self.principal, request.project_slug, create=False
+                ).project
+            except ProjectNotFound:
+                # load_context is one of the twelve read tools that map an
+                # absent project to empty rather than an error (lazy-
+                # provisioning plan, decision 3): an agent does not know
+                # whether today is its first day, and its first call is this
+                # one, never retain. Treated exactly like no project_slug
+                # having been given at all -- the user half still delivers.
+                project = None
         user_bank = self._bank("user")
         project_bank = self._bank("project", project) if project else None
         sections: list[DeliverySection] = []
@@ -149,11 +160,12 @@ class ContextService:
             # Say so rather than just returning the user half. A caller that
             # asked bare cannot otherwise tell "this workspace has no project"
             # from "the project section was dropped" -- and an empty
-            # `omissions` actively asserts nothing is missing. resolve() with
-            # create=False raises for an unknown slug, so reaching here always
-            # means the request carried none. Suppressed under scope="user":
-            # that caller deliberately excluded the project half, so its
-            # absence is not a gap to report.
+            # `omissions` actively asserts nothing is missing. Reached both
+            # when the request carried no project_slug and when it named one
+            # that does not exist (or is not this caller's) -- both
+            # indistinguishable here on purpose. Suppressed under
+            # scope="user": that caller deliberately excluded the project
+            # half, so its absence is not a gap to report.
             omissions.append(
                 DeliveryOmission(key="project", reason="no_project_resolved")
             )
