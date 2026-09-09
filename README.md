@@ -355,13 +355,29 @@ and their own projects — whom `MEMORY_MASTER_USERS` or `MEMORY_MASTER_GROUPS`
 also names.
 
 ```bash
-MEMORY_MASTER_USERS=juancarlos@example.com,usr_232323
+MEMORY_MASTER_USERS=juancarlos@example.com
 MEMORY_MASTER_GROUPS=sre,platform
+MEMORY_MASTER_ISSUER=https://idp.example.com
 ```
 
-Both default to empty, which grants **nobody**, and the service refuses to
-start if either parses to an entry that could match a principal with no
-identity. It gates the audit log, bank clear and delete, slug release, the
+`MEMORY_MASTER_USERS` names the **subject your identity provider asserts** —
+the `sub` or email on the token. Not a `usr_...` id: those are minted here on
+a caller's first request and nobody can predict one in advance, so naming one
+grants nothing.
+
+`MEMORY_MASTER_ISSUER` says which provider may grant, named by its issuer (the
+JWT issuer URL, or the platform resolver URL). It is required once more than
+one provider is enabled, because a subject is only unique within the issuer
+that minted it and a caller chooses their provider by choosing which header to
+send: with both on and no issuer named, a `MEMORY_MASTER_USERS` entry naming a
+JWT subject is equally satisfied by a platform credential resolving to the same
+string, and a group by a matching `team_id`. Neither request contains a bad
+credential.
+
+All three default to empty, which grants **nobody**. The service refuses to
+start on either of the two configurations that could over-grant: an entry that
+parses to empty, or a grant with more than one provider enabled and no
+`MEMORY_MASTER_ISSUER`. It gates the audit log, bank clear and delete, slug release, the
 fleet view and `On-Behalf-Of` delegation — and unlike a shared secret it puts
 a person in `actor_key_id`, which is the only thing that matters when
 reviewing why somebody touched another user's bank.
@@ -461,6 +477,7 @@ its server registration's `extra_headers`.
 | `MEMORY_HINDSIGHT_URL` | required |
 | `MEMORY_MASTER_USERS` | empty (grants nobody) |
 | `MEMORY_MASTER_GROUPS` | empty (grants nobody) |
+| `MEMORY_MASTER_ISSUER` | empty (required with >1 provider) |
 | `MEMORY_HINDSIGHT_API_KEY` | empty |
 | `MEMORY_TENANT_ID` | `default` |
 | `MEMORY_MAX_CONTENT_BYTES` | `256000` |
