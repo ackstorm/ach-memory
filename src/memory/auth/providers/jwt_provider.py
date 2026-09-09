@@ -2,8 +2,10 @@
 
 Trust is anchored to the signature and nothing else. Every claim that could
 grant authority -- tenant, master status -- is ignored: the tenant comes from
-configuration and `is_master` is a constant here, exactly as it is for a stored
-key, so no issuer can mint tenant-wide authority by adding a claim.
+configuration, and operator authority is configuration too (`is_operator`,
+read over the resolved identity), so no issuer can mint tenant-wide authority
+by adding a claim. The token says who the caller is; it never says what they
+are allowed to do.
 """
 
 import logging
@@ -118,7 +120,6 @@ def authenticate(token: str, db: Session) -> Principal:
     return Principal(
         tenant_id=settings.tenant_id,
         user_id=user_id,
-        is_master=False,
         key_id=None,
         groups=_groups(claims, settings.auth_jwt_groups_claim),
         credential_id=credential_id,

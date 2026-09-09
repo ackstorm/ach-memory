@@ -20,7 +20,7 @@ def authenticate(plaintext: str, db: Session) -> Principal:
     # The bootstrap master key is configuration, never a database row (§5.2).
     if keys.verify_key(plaintext, settings.master_key_hash):
         return Principal(
-            tenant_id=settings.tenant_id, user_id=None, is_master=True, key_id=None
+            tenant_id=settings.tenant_id, user_id=None, key_id=None
         )
 
     row = db.execute(
@@ -36,7 +36,6 @@ def authenticate(plaintext: str, db: Session) -> Principal:
     return Principal(
         tenant_id=row.tenant_id,
         user_id=row.user_id,
-        is_master=False,
         key_id=row.id,
         credential_id=row.id,
     )

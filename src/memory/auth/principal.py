@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from memory.auth import keys
-from memory.config import get_settings
+from memory.config import Settings, get_settings
 from memory.errors import Unauthorized
 
 BEARER = "bearer "
@@ -22,7 +22,6 @@ class Principal:
 
     tenant_id: str
     user_id: str | None
-    is_master: bool
     key_id: str | None
     #: Group ids asserted by an external identity provider (SPEC §5.3).
     #: Empty for a local key, whose membership lives in `group_members` and is
@@ -40,6 +39,29 @@ class Principal:
     #: and wrote `actor_key_id=NULL` into every audit row -- both SPEC §20
     #: MUSTs, failing with no error.
     credential_id: str | None = None
+
+    @property
+    def is_master(self) -> bool:
+        """Operator authority, derived rather than carried.
+
+        A credential can no longer assert this. It is configuration read over
+        an already-resolved external identity, so an operator is an ordinary
+        user who also happens to be named in `MEMORY_MASTER_USERS` or to hold
+        a group in `MEMORY_MASTER_GROUPS`.
+        """
+        return is_operator(self, get_settings())
+
+
+def is_operator(principal: Principal, settings: Settings) -> bool:
+    """Whether configuration grants this principal operator authority.
+
+    Takes the settings explicitly so the rule can be tested against a
+    Settings object without reaching through the module-level cache.
+    """
+    return (
+        principal.user_id in settings.master_user_ids
+        or bool(principal.groups & settings.master_group_ids)
+    )
 
 
 def resolve_principal(

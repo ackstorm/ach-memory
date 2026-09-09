@@ -27,6 +27,18 @@ def _warn_if_plaintext(name: str, url: str) -> None:
         logger.warning("%s is not HTTPS: %s", name, url)
 
 
+def _id_set(raw: str) -> frozenset[str]:
+    """Comma-separated ids, with every empty entry discarded.
+
+    The discard is the whole point, not tidiness. `"".split(",")` is `[""]`,
+    so an unset MEMORY_MASTER_USERS would parse to a set containing the empty
+    string -- and any principal whose user id or group id is empty would then
+    match it. An unset variable would grant authority instead of withholding
+    it, which is the one failure mode this configuration cannot have.
+    """
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
 class Settings(BaseSettings):
     """Service configuration. All variables use the MEMORY_ prefix."""
 
@@ -49,6 +61,18 @@ class Settings(BaseSettings):
     # behind any ingress answers 421 Misdirected Request to every MCP call
     # until its real hostname is listed here. Comma-separated.
     mcp_allowed_hosts: str = "127.0.0.1,localhost,127.0.0.1:*,localhost:*"
+
+    # --- Operator authority ------------------------------------------------
+    # Who, among the identities an external provider already resolved, also
+    # holds operator authority: the audit log, bank clear and delete, slug
+    # release, the fleet view, and On-Behalf-Of delegation. Comma-separated
+    # user ids and group ids, matched against the resolved principal.
+    #
+    # Authority is no longer a credential, so nothing is minted and nothing
+    # is stored. Both default to empty, which grants NOBODY -- see
+    # `_id_set` for why an empty default is not on its own enough.
+    master_users: str = ""
+    master_groups: str = ""
 
     # --- External identity (SPEC §5.3) ------------------------------------
     # Both providers may be enabled at once, and the deployed configuration
@@ -211,6 +235,14 @@ class Settings(BaseSettings):
                 "MEMORY_AUTH_PLATFORM_RESOLVER_URL", self.auth_platform_resolver_url
             )
         return self
+
+    @property
+    def master_user_ids(self) -> frozenset[str]:
+        return _id_set(self.master_users)
+
+    @property
+    def master_group_ids(self) -> frozenset[str]:
+        return _id_set(self.master_groups)
 
     @property
     def jwt_audiences(self) -> list[str]:

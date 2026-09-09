@@ -2,7 +2,8 @@ import pytest
 
 from memory import ids
 from memory.auth import keys
-from memory.auth.principal import resolve_principal
+from memory.auth.principal import Principal, is_operator, resolve_principal
+from memory.config import Settings
 from memory.errors import Unauthorized
 from memory.models import ApiKey, User
 
@@ -46,12 +47,53 @@ def _make_user_key(session, tenant) -> tuple[User, str]:
     return user, plaintext
 
 
-def test_master_key_resolves_to_a_tenant_only_principal(session, tenant):
-    principal = resolve_principal(f"Bearer {MASTER_PLAINTEXT}", session)
+def _principal(user_id=None, groups=frozenset()) -> Principal:
+    return Principal(tenant_id="default", user_id=user_id, key_id=None, groups=groups)
 
-    assert principal.is_master is True
-    assert principal.user_id is None
-    assert principal.tenant_id == tenant
+
+def test_an_unset_master_config_grants_nobody():
+    """The failure mode that matters is not "the wrong person is an
+    operator", it is "an unset variable made everyone one". An empty default
+    is not enough on its own: "".split(",") is [""], which would match a
+    principal whose user id or group id is the empty string."""
+    settings = Settings(master_users="", master_groups="")
+
+    assert not is_operator(_principal(user_id="", groups=frozenset({""})), settings)
+    assert not is_operator(_principal(user_id="usr_1"), settings)
+
+
+def test_a_separator_only_master_config_grants_nobody():
+    settings = Settings(master_users=" , ", master_groups=",,")
+
+    assert not is_operator(_principal(user_id="", groups=frozenset({""})), settings)
+
+
+def test_a_configured_user_grants_operator():
+    settings = Settings(master_users="usr_1,juancarlos@example.com", master_groups="")
+
+    assert is_operator(_principal(user_id="juancarlos@example.com"), settings)
+    assert not is_operator(_principal(user_id="usr_2"), settings)
+
+
+def test_a_configured_group_grants_operator():
+    settings = Settings(master_users="", master_groups="sre,platform")
+
+    assert is_operator(_principal(user_id="usr_2", groups=frozenset({"platform"})), settings)
+    assert not is_operator(_principal(user_id="usr_2", groups=frozenset({"devs"})), settings)
+
+
+def test_the_master_credential_no_longer_carries_authority(session, tenant):
+    """Authority is configuration over a resolved identity now, so a
+    credential cannot assert it. The master key still authenticates until its
+    provider is deleted, but it is an operator of nothing."""
+    for principal in (
+        resolve_principal(f"Bearer {MASTER_PLAINTEXT}", session),
+        resolve_principal(None, session, api_key=MASTER_PLAINTEXT),
+    ):
+        assert principal.is_master is False
+        assert principal.user_id is None
+        assert principal.credential_id is None
+        assert principal.tenant_id == tenant
 
 
 def test_user_key_resolves_to_its_user(session, tenant):
@@ -140,13 +182,6 @@ def test_revoked_key_is_unauthorized_via_api_key_header(session, tenant):
         resolve_principal(None, session, api_key=plaintext)
 
 
-def test_master_key_still_works_over_the_api_key_header(session, tenant):
-    principal = resolve_principal(None, session, api_key=MASTER_PLAINTEXT)
-
-    assert principal.is_master is True
-    assert principal.user_id is None
-
-
 def test_principal_defaults_to_no_groups(session, tenant):
     _, plaintext = _make_user_key(session, tenant)
     principal = resolve_principal(f"Bearer {plaintext}", session)
@@ -158,12 +193,6 @@ def test_local_key_credential_id_is_its_key_id(session, tenant):
     principal = resolve_principal(f"Bearer {plaintext}", session)
     assert principal.credential_id == principal.key_id
     assert principal.credential_id is not None
-
-
-def test_master_has_no_credential_id(session):
-    principal = resolve_principal(f"Bearer {MASTER_PLAINTEXT}", session)
-    assert principal.is_master
-    assert principal.credential_id is None
 
 
 def test_a_non_mem_bearer_is_not_tried_as_a_local_key(session, tenant):
