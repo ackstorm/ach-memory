@@ -46,25 +46,6 @@ def test_an_unknown_field_is_refused(client, master_headers, tenant, method, pat
     assert response.status_code == 422, response.text
 
 
-def test_a_typoed_user_id_does_not_silently_provision_a_random_user(
-    client, master_headers, tenant
-):
-    """SPEC §16.3: ACH supplies its own user ids. `{"user_id": ...}` instead of
-    `{"id": ...}` used to 201 with a service-generated usr_<random>, and ACH's
-    own id was never stored -- a provisioning failure that looks like success."""
-    response = client.post(
-        "/v1/users", json={"user_id": "ach-user-82f"}, headers=master_headers
-    )
-    assert response.status_code == 422, response.text
-
-
-def test_a_typoed_group_name_is_refused(client, master_headers, tenant):
-    response = client.post(
-        "/v1/groups", json={"id": "grp_x", "nmae": "X"}, headers=master_headers
-    )
-    assert response.status_code == 422, response.text
-
-
 def test_mental_model_trigger_still_passes_unknown_keys_through(client):
     """§14.5 makes MentalModelTrigger deliberate pass-through. Inheriting
     forbid on the OUTER model must not close it."""

@@ -3,8 +3,7 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 
 from memory.mcp import server as mcp_server
-
-MASTER_PLAINTEXT = "mem_master_secret_for_tests"
+from tests.conftest import OPERATOR_SUBJECT
 
 
 def test_the_static_policy_leaves_room_for_memory():
@@ -23,12 +22,10 @@ def _settings(monkeypatch):
     reaching the `Unauthorized` they're asserting on. Mirrors the pattern in
     test_principal.py's `_settings` fixture.
     """
-    from memory.auth import keys
     from memory.config import get_settings
     from tests.conftest import TEST_DATABASE_URL
 
     monkeypatch.setenv("MEMORY_DATABASE_URL", TEST_DATABASE_URL)
-    monkeypatch.setenv("MEMORY_MASTER_KEY_HASH", keys.hash_key(MASTER_PLAINTEXT))
     monkeypatch.setenv("MEMORY_HINDSIGHT_URL", "http://hindsight.test")
     get_settings.cache_clear()
     yield
@@ -56,23 +53,44 @@ def test_a_missing_authorization_header_is_unauthorized(tenant):
         pass
 
 
-def test_a_master_key_is_refused_over_mcp(tenant):
-    """Invariant 22: the master key never resides in an ordinary agent
-    runtime, and MCP is exactly that. Measured live before this fix: a
-    master key over MCP reached ANY project in the tenant and returned
-    another user's private project memory, with `on_behalf_of` hardcoded to
-    None the whole time (SPEC §20.3 unsatisfiable over MCP). See
-    test_mcp_tools.py::test_a_master_key_is_refused_by_a_real_tool_call for
-    the same refusal proven through `_run`'s MCPToolError wrapping."""
-    from memory.errors import Forbidden
+def test_an_operator_reaches_mcp_as_an_ordinary_user_with_no_authority(
+    client, master_headers, tenant
+):
+    """Invariant 22, now enforced by withholding the authority rather than by
+    refusing the caller.
 
-    with pytest.raises(Forbidden), mcp_server.tool_session(
-        _headers({"authorization": f"Bearer {MASTER_PLAINTEXT}"})
-    ):
-        pass
+    It used to raise Forbidden, which was right while authority WAS the
+    credential: take the authority off a master key and nothing was left to
+    be. Authority is configuration over an ordinary external identity now, so
+    refusing here would lock a configured operator out of their own memory on
+    the one surface an agent runtime actually uses. What must still hold is
+    that the authority does not travel: `_resolve_bank` bypasses ownership for
+    `is_master` (§7) and `_run` hardcodes `on_behalf_of=None`, so an operator
+    who kept it here would read another user's project and audit the
+    delegation to nobody.
+
+    See test_mcp_tools.py::test_an_operator_cannot_reach_another_users_project_over_mcp
+    for the same rule proven through a real tool call.
+    """
+    from memory.auth.principal import is_operator
+    from memory.config import get_settings
+
+    with mcp_server.tool_session(_headers(master_headers)) as tc:
+        # The same identity, unchanged: still themselves, still their own bank.
+        assert tc.principal.subject == OPERATOR_SUBJECT
+        assert tc.principal.user_id is not None
+        # Configuration still names them an operator -- what MCP withholds is
+        # the exercise of it, not the grant. Asserting both halves is the
+        # point: `is_master is False` alone would stay green if the operator
+        # config had simply stopped matching.
+        assert is_operator(tc.principal, get_settings()) is True
+        assert tc.principal.authority_allowed is False
+        assert tc.principal.is_master is False
 
 
-def test_a_bad_key_is_unauthorized(tenant):
+def test_a_token_no_provider_accepts_is_unauthorized(tenant):
+    """No local keys left, so there is nothing here to be a *wrong* key: a
+    token is refused because no configured issuer minted it."""
     from memory.errors import Unauthorized
 
     with pytest.raises(Unauthorized), mcp_server.tool_session(
@@ -81,70 +99,56 @@ def test_a_bad_key_is_unauthorized(tenant):
         pass
 
 
-def test_the_api_key_header_authenticates_over_mcp(client, master_headers, tenant):
-    """The MCP surface reads `x-ach-memory-key` too, not just Authorization.
+def test_the_dedicated_key_header_wins_over_authorization_on_mcp(app, monkeypatch):
+    """The MCP surface reads `x-ach-memory-key` too, not just Authorization --
+    the header an agent can set without fighting whatever LiteLLM or a gateway
+    has already put in Authorization.
 
-    This is the header an agent can set without fighting whatever LiteLLM or a
-    gateway has already put in Authorization.
+    The provider is a spy for the same reason test_principal.py's is: what
+    this file owns is that `tool_session` forwards the header at all, not
+    PyJWT's signature checking.
     """
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
+    from memory.auth.principal import Principal
+    from memory.auth.providers import jwt_provider
+    from memory.config import get_settings
 
-    with mcp_server.tool_session(_headers({"x-ach-memory-key": key})) as tc:
-        assert tc.principal.user_id == user_id
-        assert tc.principal.is_master is False
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://idp.example.com")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_AUDIENCE", "mcp:ach-memory")
+    get_settings.cache_clear()
 
+    seen: list[str] = []
 
-def test_the_api_key_header_beats_authorization_over_mcp(
-    client, master_headers, tenant
-):
-    """A master key parked in Authorization must not win. Over MCP the master
-    key is refused outright (Invariant 22), so if precedence regressed this
-    would raise Forbidden instead of resolving the user."""
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
+    def _authenticate(token, db):
+        seen.append(token)
+        return Principal(tenant_id="default", user_id="usr_jwt", subject="jwt@test")
+
+    monkeypatch.setattr(jwt_provider, "authenticate", _authenticate)
 
     with mcp_server.tool_session(
         _headers(
             {
-                "authorization": f"Bearer {MASTER_PLAINTEXT}",
-                "x-ach-memory-key": key,
+                "authorization": "Bearer from_a_proxy",
+                "x-ach-memory-key": "mine",
             }
         )
     ) as tc:
-        assert tc.principal.user_id == user_id
+        assert tc.principal.user_id == "usr_jwt"
+
+    assert seen == ["mine"]
 
 
-def test_a_valid_user_key_yields_its_own_principal(client, master_headers, tenant):
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
+def test_an_external_identity_yields_its_own_principal(new_user, tenant):
+    user = new_user()
 
-    with mcp_server.tool_session(_headers({"authorization": f"Bearer {key}"})) as tc:
-        assert tc.principal.user_id == user_id
+    with mcp_server.tool_session(_headers(user["headers"])) as tc:
+        assert tc.principal.user_id == user["user_id"]
+        assert tc.principal.subject == user["subject"]
         assert tc.principal.is_master is False
 
 
-def test_the_session_is_closed_when_the_tool_returns(client, master_headers, tenant):
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-
-    with mcp_server.tool_session(_headers({"authorization": f"Bearer {key}"})) as tc:
+def test_the_session_is_closed_when_the_tool_returns(new_user, tenant):
+    with mcp_server.tool_session(_headers(new_user()["headers"])) as tc:
         session = tc.db
         assert session.get_transaction() is not None
 
@@ -154,19 +158,10 @@ def test_the_session_is_closed_when_the_tool_returns(client, master_headers, ten
     assert session.get_transaction() is None
 
 
-def test_the_session_is_closed_even_when_the_tool_raises(
-    client, master_headers, tenant
-):
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-
+def test_the_session_is_closed_even_when_the_tool_raises(new_user, tenant):
     session = None
     with pytest.raises(RuntimeError), mcp_server.tool_session(
-        _headers({"authorization": f"Bearer {key}"})
+        _headers(new_user()["headers"])
     ) as tc:
         session = tc.db
         raise RuntimeError("the tool blew up")

@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from memory.mcp.tools import MCPToolError
+from tests.conftest import IDENTITY_HEADER, create_user
 
 BASE = "http://hindsight.test"
 GHOST = "22222222-2222-2222-2222-222222222222"
@@ -28,7 +29,7 @@ def _retain_kwargs(**overrides) -> dict:
 
 
 @pytest.fixture
-def call_tool(app, client, master_headers, tenant):
+def call_tool(app, client, session, tenant):
     """Invoke a registered tool the way the SDK would, with real headers.
 
     Goes through the same registry the transport uses, so a tool that is not
@@ -37,13 +38,16 @@ def call_tool(app, client, master_headers, tenant):
     from memory.mcp import tools as tool_module
 
     def _make_user() -> str:
-        user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-            "user_id"
-        ]
-        _call.last_user_id = user_id
-        return client.post(
-            f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-        ).json()["key"]
+        """A distinct caller, as an external identity provider asserts one.
+
+        Still returns a single opaque string -- every call site below passes
+        it straight back as the caller's credential -- but the string is now
+        the IdP's subject, not a key this service minted. There is no
+        `POST /v1/users` and no key endpoint left to call.
+        """
+        user = create_user(client, session)
+        _call.last_user_id = user["user_id"]
+        return user["subject"]
 
     def _seed_project(key: str, slug: str) -> None:
         """Typed retain is existing-only (create=False); several tests here
@@ -52,7 +56,7 @@ def call_tool(app, client, master_headers, tenant):
         old lazy-creation side effect."""
         response = client.post(
             "/v1/projects", json={"project_slug": slug},
-            headers={"Authorization": f"Bearer {key}"},
+            headers=_headers_for(key),
         )
         assert response.status_code == 201, response.text
 
@@ -61,13 +65,19 @@ def call_tool(app, client, master_headers, tenant):
         # kwarg (the model's display name), which collided with this
         # fixture's own lookup parameter under **kwargs expansion.
         class _Ctx:
-            headers: ClassVar = {"authorization": f"Bearer {key}"}
+            headers: ClassVar = _headers_for(key)
 
         return tool_module.REGISTRY[tool_name](ctx=_Ctx(), **kwargs)
 
     _call.make_user = _make_user
     _call.seed_project = _seed_project
+    _call.headers = _headers_for
     return _call
+
+
+def _headers_for(key: str) -> dict[str, str]:
+    """The one place a caller token becomes headers, for MCP and REST alike."""
+    return {IDENTITY_HEADER: key}
 
 
 @respx.mock
@@ -302,7 +312,7 @@ def test_project_scope_retain_forwards_a_retired_slug_to_the_same_bank(call_tool
         return_value=httpx.Response(200, json={"status": "pending"})
     )
     key = call_tool.make_user()
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = _headers_for(key)
     assert client.post(
         "/v1/projects", json={"project_slug": "payments-api"}, headers=headers
     ).status_code == 201
@@ -1377,17 +1387,33 @@ def test_idor_cancel_operation_cannot_reach_an_unauthorized_bank(call_tool):
 
 
 @respx.mock
-def test_a_master_key_is_refused_by_a_real_tool_call(call_tool, master_headers):
-    """Same invariant as test_mcp_server.py::test_a_master_key_is_refused_over_mcp,
-    proven through a real tool call: `_run` must surface `tool_session`'s
-    Forbidden as an MCPToolError, not let it escape raw, exactly like any
-    other DomainError raised inside the pipeline."""
-    master_key = master_headers["Authorization"].removeprefix("Bearer ")
+def test_an_operator_cannot_reach_another_users_project_over_mcp(
+    call_tool, master_headers
+):
+    """Same invariant as
+    test_mcp_server.py::test_an_operator_reaches_mcp_as_an_ordinary_user_with_no_authority,
+    proven through a real tool call rather than on the Principal.
 
-    with pytest.raises(MCPToolError) as exc_info:
-        call_tool("recall", master_key, scope="project", project_slug="payments", query="x")
+    The operator is no longer refused -- authority is configuration over an
+    ordinary identity now, so refusing would lock them out of their own
+    memory over MCP. What must not happen is the thing the refusal existed to
+    stop: `_resolve_bank` bypasses ownership for `is_master` (§7), so an
+    operator who kept their authority here would resolve juan's project bank
+    and read it. They get the same empty result any stranger gets.
+    """
+    _mock_bank()
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"hits": [{"id": "juan's"}]})
+    )
+    juan = call_tool.make_user()
+    call_tool.seed_project(juan, "payments")
+    operator = master_headers[IDENTITY_HEADER]
 
-    assert exc_info.value.code == "FORBIDDEN"
+    result = call_tool(
+        "recall", operator, scope="project", project_slug="payments", query="x"
+    )
+
+    assert result.result == {"hits": [], "truncated": False}
 
 
 @respx.mock
@@ -2016,7 +2042,7 @@ async def test_working_state_tool_descriptions_state_their_constraints():
 
 def test_start_working_session_allocates_a_positive_epoch(call_tool, client, master_headers):
     key = call_tool.make_user()
-    headers = {"authorization": f"Bearer {key}"}
+    headers = _headers_for(key)
     _wst_project(client, headers)
 
     result = call_tool(
@@ -2032,7 +2058,7 @@ def test_start_working_session_allocates_a_positive_epoch(call_tool, client, mas
 
 def test_starting_the_same_session_twice_over_mcp_is_idempotent(call_tool, client, master_headers):
     key = call_tool.make_user()
-    headers = {"authorization": f"Bearer {key}"}
+    headers = _headers_for(key)
     _wst_project(client, headers)
 
     first = call_tool(
@@ -2049,7 +2075,7 @@ def test_starting_the_same_session_twice_over_mcp_is_idempotent(call_tool, clien
 
 def test_set_working_state_returns_its_stored_fields(call_tool, client, master_headers):
     key = call_tool.make_user()
-    headers = {"authorization": f"Bearer {key}"}
+    headers = _headers_for(key)
     _wst_project(client, headers)
     epoch = call_tool(
         "start_working_session", key,
@@ -2070,7 +2096,7 @@ def test_set_working_state_returns_its_stored_fields(call_tool, client, master_h
 
 def test_set_working_state_rejects_a_stale_pair(call_tool, client, master_headers):
     key = call_tool.make_user()
-    headers = {"authorization": f"Bearer {key}"}
+    headers = _headers_for(key)
     _wst_project(client, headers)
     epoch = call_tool(
         "start_working_session", key,
@@ -2112,7 +2138,7 @@ def test_set_working_state_for_a_missing_project_creates_no_project(
 
 def test_another_user_is_denied_writing_this_project(call_tool, client, master_headers):
     owner_key = call_tool.make_user()
-    _wst_project(client, {"authorization": f"Bearer {owner_key}"})
+    _wst_project(client, _headers_for(owner_key))
     stranger_key = call_tool.make_user()
 
     with pytest.raises(MCPToolError) as exc_info:
@@ -2129,7 +2155,7 @@ def test_set_working_state_rejects_a_blank_objective_over_mcp(call_tool, client,
     WorkingStateWrite -- confirms the shared model's bounds still apply at
     this boundary, not just over REST."""
     key = call_tool.make_user()
-    headers = {"authorization": f"Bearer {key}"}
+    headers = _headers_for(key)
     _wst_project(client, headers)
     epoch = call_tool(
         "start_working_session", key,

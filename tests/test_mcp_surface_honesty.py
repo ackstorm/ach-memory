@@ -193,9 +193,7 @@ def test_working_state_schemas_advertise_the_bounds_the_models_enforce():
     assert "maxLength" in list_schema and "512" in list_schema
 
 
-def test_a_malformed_upstream_body_is_internal_error_not_invalid_request(
-    client, master_headers, tenant
-):
+def test_a_malformed_upstream_body_is_internal_error_not_invalid_request(new_user):
     """SPEC §18 defines INVALID_REQUEST as input that "failed validation before
     anything was resolved or written". By the time ToolResult is built the bank
     is resolved, the row is committed and the upstream call has happened -- so
@@ -208,13 +206,10 @@ def test_a_malformed_upstream_body_is_internal_error_not_invalid_request(
 
     from memory.mcp.tools import REGISTRY
 
-    uid = client.post("/v1/users", json={}, headers=master_headers).json()["user_id"]
-    secret = client.post(
-        f"/v1/users/{uid}/keys", json={}, headers=master_headers
-    ).json()["key"]
+    caller = new_user()
 
     class Ctx:
-        headers: ClassVar[dict[str, str]] = {"Authorization": f"Bearer {secret}"}
+        headers: ClassVar[dict[str, str]] = caller["headers"]
 
     with respx.mock:
         # A JSON array, not an object -- ToolResult.result is dict[str, Any].

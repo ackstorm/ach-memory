@@ -33,14 +33,8 @@ DIRECTIVE_ID = "33333333-3333-3333-3333-333333333333"
 
 
 @pytest.fixture
-def juan(client, master_headers, tenant) -> dict:
-    user_id = client.post("/v1/users", json={}, headers=master_headers).json()[
-        "user_id"
-    ]
-    key = client.post(
-        f"/v1/users/{user_id}/keys", json={}, headers=master_headers
-    ).json()["key"]
-    return {"user_id": user_id, "headers": {"Authorization": f"Bearer {key}"}}
+def juan(new_user) -> dict:
+    return new_user()
 
 
 def _bank_id(session, user_id: str) -> str:
@@ -51,10 +45,11 @@ def _bank_id(session, user_id: str) -> str:
 
 # name -> (method, path, json body, query params, "juan" | "master")
 #
-# "master" routes (admin.py) are authorized by `require_master`, not a user
-# key -- juan's own key would 403 before ever reaching `_strip_bank_id` -- so
-# they run under `master_headers` with `user_id` added to `params` at call
-# time (see the test body below).
+# "master" routes (admin.py) are authorized by `require_master`, which is
+# configuration over an external identity now -- juan is not named in
+# MEMORY_MASTER_USERS and would 403 before ever reaching `_strip_bank_id`
+# -- so they run under `master_headers` with `user_id` added to `params`
+# at call time (see the test body below).
 ROUTES = {
     # memory.py
     "retain": (
