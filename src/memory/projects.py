@@ -258,9 +258,10 @@ def create(
         # request survives the lost race.
         raise ProjectSlugConflict("that slug is taken", project_slug=slug) from exc
 
-    if principal.is_master:
-        # SPEC §20 MUST: record master-key actions.
-        audit.record(db, principal, "project.create", slug, on_behalf_of=on_behalf_of)
+    # SPEC §20 MUST: record master-key actions -- and every creation, not
+    # only those, since the audit trail is also the counting source for the
+    # per-user creation rate limit.
+    audit.record(db, principal, "project.create", slug, on_behalf_of=on_behalf_of)
     return project
 
 

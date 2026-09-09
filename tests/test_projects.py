@@ -339,6 +339,20 @@ def test_master_key_does_not_lazily_create(session, tenant):
         projects.resolve(session, _principal(tenant, None, master=True), "nope")
 
 
+def test_every_project_creation_is_audited(session, tenant):
+    """Not just master-key creations. The audit trail is the only durable
+    record of who created what, and from here it is also the counting source
+    for the creation rate limit -- an unaudited path is an unlimited path."""
+    _user(session, tenant, "usr_juan")
+    juan = _principal(tenant, "usr_juan")
+
+    projects.create(session, juan, "acme/app", "user", "usr_juan")
+    session.flush()
+
+    events = session.query(AuditEvent).filter(AuditEvent.action == "project.create").all()
+    assert len(events) == 1
+
+
 def test_an_unknown_owner_type_is_rejected(session, tenant):
     """A bad owner_type would make every future authorize() deny, orphaning
     the project — so it is refused at the domain boundary, not just at the
