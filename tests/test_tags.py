@@ -38,3 +38,26 @@ def test_a_malformed_tag_is_refused(bad):
 def test_too_many_tags_are_refused():
     with pytest.raises(InvalidTag):
         normalize_caller_tags([f"kind:{n}" for n in range(9)])
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [5, "repo:x", {"repo": "x"}, [1, 2], ["repo:x", 7], [None], [["repo:x"]]],
+)
+def test_a_non_list_of_strings_is_a_typed_rejection_not_a_crash(bad):
+    """These models run normalize_caller_tags as a `mode="before"` validator,
+    so the value arrives un-type-checked. A TypeError or AttributeError here
+    is not a DomainError, escapes pydantic, and is reported to the caller as
+    a 500 -- a malformed request body dressed up as a server fault."""
+    with pytest.raises(InvalidTag):
+        normalize_caller_tags(bad)
+
+
+def test_none_is_the_only_falsy_input_that_is_not_an_error():
+    assert normalize_caller_tags(None) == ()
+    assert normalize_caller_tags([]) == ()
+    assert normalize_caller_tags(()) == ()
+    with pytest.raises(InvalidTag):
+        normalize_caller_tags(0)
+    with pytest.raises(InvalidTag):
+        normalize_caller_tags("")
