@@ -145,4 +145,5 @@ def authenticate(token: str, db: Session) -> Principal:
         groups=groups,
         credential_id=credential_id,
         subject=subject,
+        issuer=settings.auth_platform_resolver_url,
     )

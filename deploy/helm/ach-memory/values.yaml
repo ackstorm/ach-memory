@@ -152,6 +152,15 @@ config:
 master:
   users: ""
   groups: ""
+  # Which provider may grant the authority above, named by its issuer: the
+  # JWT issuer URL, or the platform resolver URL. A subject is only unique
+  # within the issuer that minted it, and a caller chooses which provider
+  # authenticates them by choosing which header to send -- so with both
+  # providers enabled and this unset, a `users` entry naming a JWT subject is
+  # equally satisfied by a platform credential resolving to the same string.
+  # Required once more than one provider is enabled: the service refuses to
+  # start rather than grant ambiguously.
+  issuer: ""
 
 migration:
   # Runs `python -m alembic upgrade head` as a pre-install/pre-upgrade Helm

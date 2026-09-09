@@ -208,3 +208,68 @@ def test_a_token_with_no_provider_enabled_says_this_service_mints_none(session):
     model: there is no key to be missing, only a provider to configure."""
     with pytest.raises(Unauthorized, match="mints no credentials of its own"):
         resolve_principal("Bearer eyJhbGciOiJFZERTQSJ9.e30.sig", session)
+
+
+# --- Operator authority is qualified by who vouched for the subject --------
+
+
+def test_a_subject_from_another_issuer_is_not_the_operator():
+    """The escalation this closes: both providers can be enabled at once, and
+    a caller picks which one authenticates them by picking which header to
+    send. So `MEMORY_MASTER_USERS=jc@example.com` naming a JWT subject was
+    equally satisfied by anyone holding a platform credential whose resolver
+    returned that same string -- full admin plane and a cross-tenant project
+    read, with no bad credential anywhere in the request.
+
+    A subject is only unique within the issuer that minted it, which is why
+    `link_identity` keys on the pair.
+    """
+    settings = Settings(
+        master_users="jc@example.com", master_issuer="https://idp.example.com"
+    )
+
+    from_the_named_issuer = Principal(
+        tenant_id="default",
+        user_id="usr_1",
+        subject="jc@example.com",
+        issuer="https://idp.example.com",
+    )
+    from_somewhere_else = Principal(
+        tenant_id="default",
+        user_id="usr_2",
+        subject="jc@example.com",
+        issuer="http://litellm.internal/whoami",
+    )
+
+    assert is_operator(from_the_named_issuer, settings)
+    assert not is_operator(from_somewhere_else, settings)
+
+
+def test_a_group_from_another_issuer_is_not_the_operator():
+    settings = Settings(
+        master_groups="platform-admins", master_issuer="https://idp.example.com"
+    )
+    impostor = Principal(
+        tenant_id="default",
+        user_id="usr_2",
+        groups=frozenset({"platform-admins"}),
+        issuer="http://litellm.internal/whoami",
+    )
+
+    assert not is_operator(impostor, settings)
+
+
+def test_an_unnamed_issuer_still_grants_when_only_one_provider_is_enabled():
+    """The common deployment. Requiring the issuer unconditionally would make
+    every single-provider install configure a value with only one possible
+    answer, so the refusal lives in the startup assertion instead, which only
+    fires when the ambiguity is real."""
+    settings = Settings(master_users="jc@example.com")
+    principal = Principal(
+        tenant_id="default",
+        user_id="usr_1",
+        subject="jc@example.com",
+        issuer="https://idp.example.com",
+    )
+
+    assert is_operator(principal, settings)

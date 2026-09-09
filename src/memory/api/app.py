@@ -165,10 +165,29 @@ def _assert_master_config_cannot_over_grant() -> None:
             "entry, which would grant operator authority to a principal with "
             "no identity. Refusing to start."
         )
+    # A subject is only unique within the issuer that minted it, and a caller
+    # picks which provider authenticates them by picking which header to send.
+    # So with both providers enabled, `MEMORY_MASTER_USERS=a@b.com` naming a
+    # JWT subject is equally satisfied by anyone holding a platform credential
+    # whose resolver returns that same string -- a privilege escalation with
+    # no bad credential anywhere in it. Naming the issuer disambiguates; not
+    # naming it, when it matters, is a refusal to start.
+    granting = settings.master_user_ids or settings.master_group_ids
+    providers = sum([settings.auth_jwt_enabled, settings.auth_platform_enabled])
+    if granting and providers > 1 and not settings.master_issuer_value:
+        raise RuntimeError(
+            "MEMORY_MASTER_USERS/MEMORY_MASTER_GROUPS grant operator "
+            "authority while more than one identity provider is enabled, and "
+            "MEMORY_MASTER_ISSUER does not say which one may grant it. A "
+            "subject or group id asserted by either provider would match. "
+            "Set MEMORY_MASTER_ISSUER to the JWT issuer or the platform "
+            "resolver URL. Refusing to start."
+        )
     logger.info(
-        "operator authority: %d user(s), %d group(s)",
+        "operator authority: %d user(s), %d group(s), issuer=%s",
         len(settings.master_user_ids),
         len(settings.master_group_ids),
+        settings.master_issuer_value or "(any enabled provider)",
     )
 
 

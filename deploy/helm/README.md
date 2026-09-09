@@ -64,10 +64,23 @@ asserts on the token, which is usually what you want: membership is re-read
 from the credential on every request, so removing someone from the group in
 the IdP revokes their authority immediately, with no row anywhere to go stale.
 
-Both are comma-separated and both default to empty. An unset value grants
-nobody, and the service asserts this at startup rather than trusting the
-default: a value that could over-grant — an empty entry from a stray comma,
-say — is a refusal to boot, never a silent grant to everyone.
+Both are comma-separated and both default to empty; an unset value grants
+nobody.
+
+`master.issuer` says **which provider** may grant that authority, named by
+its issuer (the JWT issuer URL, or the platform resolver URL). It is required
+once more than one provider is enabled, and the service refuses to start
+without it. The reason is that a subject is only unique within the issuer
+that minted it, and a caller chooses which provider authenticates them simply
+by choosing which header to send: with both providers on and no issuer named,
+`master.users=jc@example.com` naming a JWT subject is equally satisfied by
+anyone holding a platform credential whose resolver returns that same string,
+and `master.groups=platform-admins` by anyone whose `team_id` is that literal
+value. Neither request contains a bad credential.
+
+Two configurations therefore refuse to boot rather than grant ambiguously: an
+entry that parses to empty, and a grant with more than one provider enabled
+and no `master.issuer`.
 
 ## MEMORY_MCP_ALLOWED_HOSTS — read this before enabling Ingress
 

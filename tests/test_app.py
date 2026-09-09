@@ -185,3 +185,37 @@ def test_create_app_refuses_a_master_config_that_could_over_grant(
 
     with pytest.raises(RuntimeError, match="Refusing to start"):
         create_app()
+
+
+def test_create_app_refuses_ambiguous_operator_config_across_two_providers(monkeypatch):
+    """Two providers enabled, operator authority granted, and nothing saying
+    which provider may grant it: either one's assertion would match, so the
+    grant is ambiguous in the direction that hands out the admin plane.
+    Refusing to start is the only signal loud enough."""
+    from memory.api.app import create_app
+    from memory.config import get_settings
+    from tests.conftest import TEST_DATABASE_URL
+
+    monkeypatch.setenv("MEMORY_DATABASE_URL", TEST_DATABASE_URL)
+    monkeypatch.setenv("MEMORY_HINDSIGHT_URL", "http://hindsight.test")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://idp.example.com")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_AUDIENCE", "mcp:ach-memory")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "authorization")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_RESOLVER_HEADER", "authorization")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_RESOLVER_URL", "http://litellm/whoami")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_USER_FIELD", "user_id")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_GROUPS_FIELD", "team_id")
+    monkeypatch.setenv("MEMORY_MASTER_USERS", "jc@example.com")
+    monkeypatch.delenv("MEMORY_MASTER_ISSUER", raising=False)
+    get_settings.cache_clear()
+
+    with pytest.raises(RuntimeError, match="MEMORY_MASTER_ISSUER"):
+        create_app()
+
+    # Naming the issuer resolves it.
+    monkeypatch.setenv("MEMORY_MASTER_ISSUER", "https://idp.example.com")
+    get_settings.cache_clear()
+    create_app()
+    get_settings.cache_clear()

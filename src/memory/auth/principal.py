@@ -45,6 +45,11 @@ class Principal:
     #: exist until after that operator's first login, and that nobody can
     #: predict. An operator is named by the identity their IdP asserts.
     subject: str | None = None
+    #: Who vouched for `subject` -- the JWT issuer, or the platform resolver
+    #: URL. `link_identity` already keys identity on (issuer, subject) because
+    #: a subject is only unique within its issuer; operator matching has to
+    #: qualify by the same thing, or two providers share one namespace.
+    issuer: str | None = None
     #: Surfaces that must not exercise operator authority set this to False.
     #: See `mcp/server.py`: authority bypasses ownership in `_resolve_bank`,
     #: and MCP has no On-Behalf-Of header to attribute the delegation to.
@@ -77,7 +82,18 @@ def is_operator(principal: Principal, settings: Settings) -> bool:
     principal with no subject (none exists today; every caller is external)
     can never match the user branch, rather than matching a configured empty
     string.
+
+    Qualified by issuer when `MEMORY_MASTER_ISSUER` names one. Both providers
+    can be enabled at once, and a caller chooses which one authenticates them
+    simply by choosing which header to send -- send only the platform header
+    and the JWT branch never runs. Without this, `MEMORY_MASTER_USERS=a@b.com`
+    naming a JWT subject is also satisfied by anyone holding a platform
+    credential whose resolver returns the literal string `a@b.com`, and the
+    same for a group id against a `team_id`. A subject is only unique within
+    the issuer that minted it.
     """
+    if settings.master_issuer_value and principal.issuer != settings.master_issuer_value:
+        return False
     return (
         (principal.subject is not None and principal.subject in settings.master_user_ids)
         or bool(principal.groups & settings.master_group_ids)

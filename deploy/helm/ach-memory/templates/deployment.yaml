@@ -52,6 +52,8 @@ spec:
               value: {{ .Values.master.users | quote }}
             - name: MEMORY_MASTER_GROUPS
               value: {{ .Values.master.groups | quote }}
+            - name: MEMORY_MASTER_ISSUER
+              value: {{ .Values.master.issuer | quote }}
             - name: MEMORY_TENANT_ID
               value: {{ .Values.config.tenantId | quote }}
             - name: MEMORY_HINDSIGHT_TIMEOUT_SECONDS

@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # `_id_set` for why an empty default is not on its own enough.
     master_users: str = ""
     master_groups: str = ""
+    #: Which identity provider may grant operator authority, as its issuer:
+    #: the JWT issuer URL, or the platform resolver URL. Required once more
+    #: than one provider is enabled -- see `auth.principal.is_operator`.
+    master_issuer: str = ""
 
     # --- External identity (SPEC §5.3) ------------------------------------
     # Both providers may be enabled at once, and the deployed configuration
@@ -220,6 +224,10 @@ class Settings(BaseSettings):
                 "MEMORY_AUTH_PLATFORM_RESOLVER_URL", self.auth_platform_resolver_url
             )
         return self
+
+    @property
+    def master_issuer_value(self) -> str:
+        return self.master_issuer.strip()
 
     @property
     def master_user_ids(self) -> frozenset[str]:
