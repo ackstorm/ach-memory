@@ -3,9 +3,8 @@ from unittest import mock
 import httpx
 import pytest
 import respx
-from sqlalchemy import text
 
-from memory import ids, model_registry
+from memory import ids, mental_model_service, model_registry
 from memory.auth.principal import Principal
 from memory.bootstrap import BootstrapRequest, bootstrap
 from memory.builtin_models import USER_CONTEXT
@@ -248,13 +247,19 @@ def test_reconcile_builtin_is_a_noop_when_already_current(session, principal, hi
 
 @respx.mock
 def test_a_project_created_through_the_control_plane_is_fully_provisioned(
-    client, session, master_headers
+    client, session, master_headers, monkeypatch
 ):
     """A project is usable when created, not when someone remembers to
     bootstrap it. Before this, POST /v1/projects minted a bank id and
     nothing else: no retain strategy, no project-context model, so
     load_context delivered empty standing context for that project for ever."""
-    key = _make_user_key(client, master_headers)
+    # The app fixture stubs reconcile_builtin out by default for unrelated
+    # route tests -- this test is specifically about what it does, so restore
+    # the real function.
+    monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
+    # Registered before _make_user_key: creating that setup user now provisions
+    # its bank too (Task 1), and these mocks are bank-id-agnostic, so they cover
+    # both the user bank's builtin registration and the project's below.
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
         return_value=httpx.Response(
             201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}
@@ -263,6 +268,7 @@ def test_a_project_created_through_the_control_plane_is_fully_provisioned(
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
+    key = _make_user_key(client, master_headers)
 
     response = client.post(
         "/v1/projects",
@@ -281,39 +287,48 @@ def test_a_project_created_through_the_control_plane_is_fully_provisioned(
 
 
 @respx.mock
-def test_a_failed_provisioning_still_commits_the_project(
+def test_a_failed_provisioning_fails_the_create(
     client, session, master_headers, monkeypatch
 ):
-    """The route promises "the project row is real and the caller gets its
-    201". A DB-level failure inside provisioning -- an IntegrityError from a
-    concurrent bootstrap registering the same built-in -- used to poison the
-    session, so the db.commit() after the except raised PendingRollbackError
-    and the caller got a 500 with nothing committed: the exact opposite of
-    the promise. The savepoint is what makes the comment true."""
-    from sqlalchemy.exc import IntegrityError
-
+    """A 201 means the bank is usable. Provisioning is what makes it usable,
+    so a caller must never be told a project is ready when its bank has no
+    retain strategy and no built-in model -- they would write into a bank
+    that delivers nothing and never learn why."""
+    # Creating the setup user now provisions its bank too (Task 1).
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
+        return_value=httpx.Response(
+            201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}
+        )
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
     key = _make_user_key(client, master_headers)
 
-    def poison(db, principal, project, *, client):
-        db.execute(text("SELECT 1"))  # a real statement, so the session is live
-        raise IntegrityError("duplicate built-in", None, Exception())
+    def fail(db, principal, project, *, client):
+        raise RuntimeError("hindsight is down")
 
     # The route binds the name at import, so this is the target that matters.
-    monkeypatch.setattr("memory.api.projects.provision_project_bank", poison)
+    monkeypatch.setattr("memory.api.projects.provision_project_bank", fail)
 
     response = client.post(
         "/v1/projects",
-        json={"project_slug": "acme-unprovisioned"},
+        json={"project_slug": "acme-app"},
         headers={"Authorization": f"Bearer {key}"},
     )
 
-    assert response.status_code == 201, response.text
-    assert _project_by_slug(session, "acme-unprovisioned") is not None
+    assert response.status_code >= 500
+    assert (
+        session.query(ProjectSlug).filter_by(slug="acme-app").first() is None
+    ), "the row must not survive"
 
 
 @respx.mock
-def test_a_new_user_gets_user_context_without_a_bootstrap_call(client, session, master_headers):
+def test_a_new_user_gets_user_context_without_a_bootstrap_call(
+    client, session, master_headers, monkeypatch
+):
     """Same rule as projects: a bank is provisioned when it is created."""
+    monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models$").mock(
         return_value=httpx.Response(
             201, json={"mental_model_id": "mm-upstream-1", "operation_id": "op-upstream-1"}

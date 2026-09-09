@@ -182,7 +182,7 @@ def seeded_activity(session, tenant) -> None:
 @pytest.fixture
 def app(connection, session, monkeypatch):
     from memory import bootstrap as bootstrap_service
-    from memory import db, ratelimit, retention
+    from memory import db, mental_model_service, ratelimit, retention
     from memory.api.app import create_app
     from memory.auth import keys
     from memory.config import get_settings
@@ -206,6 +206,15 @@ def app(connection, session, monkeypatch):
     monkeypatch.setattr(retention, "ensure_exact_retain_strategy", lambda *_args: None)
     monkeypatch.setattr(
         bootstrap_service, "ensure_exact_retain_strategy", lambda *_args: None
+    )
+    # Same reason, extended to builtin-model registration: since Task 1 made
+    # provisioning failure fatal instead of best-effort, every route test that
+    # creates a user or project now provisions for real, and reconcile_builtin
+    # is the one step here that still makes a live-shaped Hindsight call. Tests
+    # about provisioning itself (test_bootstrap.py, test_bootstrap_api.py)
+    # restore the real function via this same `monkeypatch`.
+    monkeypatch.setattr(
+        mental_model_service, "reconcile_builtin", lambda *_args, **_kwargs: None
     )
 
     factory = sessionmaker(bind=connection, join_transaction_mode="create_savepoint")

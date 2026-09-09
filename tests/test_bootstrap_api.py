@@ -2,6 +2,9 @@ import httpx
 import pytest
 import respx
 
+from memory import mental_model_service
+from memory.mental_model_service import reconcile_builtin
+
 BASE = "http://hindsight.test"
 
 
@@ -33,7 +36,10 @@ def _mock_create(counter: list[int]):
 
 
 @respx.mock
-def test_bootstrap_creates_the_user_builtin(client, juan):
+def test_bootstrap_creates_the_user_builtin(client, juan, monkeypatch):
+    # The app fixture stubs reconcile_builtin out by default for unrelated
+    # route tests -- this test is specifically about what it does.
+    monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
     counter = [0]
     _mock_create(counter)
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
@@ -51,7 +57,8 @@ def test_bootstrap_creates_the_user_builtin(client, juan):
 
 
 @respx.mock
-def test_bootstrap_is_idempotent(client, juan):
+def test_bootstrap_is_idempotent(client, juan, monkeypatch):
+    monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
     counter = [0]
     _mock_create(counter)
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
@@ -65,9 +72,12 @@ def test_bootstrap_is_idempotent(client, juan):
 
 
 @respx.mock
-def test_bootstrap_with_a_project_slug_creates_it_owned_by_the_caller(client, juan, session):
+def test_bootstrap_with_a_project_slug_creates_it_owned_by_the_caller(
+    client, juan, session, monkeypatch
+):
     from memory.models import Project, ProjectSlug
 
+    monkeypatch.setattr(mental_model_service, "reconcile_builtin", reconcile_builtin)
     counter = [0]
     _mock_create(counter)
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(

@@ -1,4 +1,3 @@
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -18,7 +17,6 @@ from memory.identifiers import reject_control_characters
 from memory.models import ApiKey, User
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
-logger = logging.getLogger("memory.api.users")
 
 
 class CreateUserRequest(BaseModel):
@@ -101,26 +99,13 @@ def create_user(
         # handler is small today, but the same shape guards the project-creation
         # race (SPEC §9) where earlier writes must survive the conflict.
         raise UserAlreadyExists("a user with that id already exists") from exc
-    try:
-        # A savepoint, not a bare try/except: provisioning writes to this
-        # session, so a DB-level failure inside it (an IntegrityError from a
-        # concurrent bootstrap registering the same built-in) leaves the
-        # session in a failed state and makes the db.commit() below raise
-        # PendingRollbackError -- a 500 with nothing committed, the exact
-        # opposite of what this handler promises. begin_nested() rolls back
-        # only the provisioning work and leaves the outer transaction usable.
-        # Here it also protects the mandatory audit.record below (SPEC §20),
-        # which a poisoned session would drop along with the user row.
-        with db.begin_nested():
-            provision_user_bank(db, user, client=get_client())
-    except Exception:
-        # The user row is real and the caller gets its 201: provisioning is
-        # idempotent, so a later bootstrap or the next creation attempt repairs
-        # it. Failing the request here would leave a committed user the
-        # caller was told did not exist.
-        logger.warning(
-            "user created but not provisioned", extra={"user_id": user.id}, exc_info=True
-        )
+    # A 201 means the bank is usable. Provisioning is what makes it usable,
+    # so a caller must never be told a user is ready when its bank has no
+    # retain strategy and no built-in model -- they would write into a bank
+    # that delivers nothing and never learn why. Letting the exception
+    # propagate aborts the whole request, so the user row this call added is
+    # never committed either.
+    provision_user_bank(db, user, client=get_client())
     audit.record(db, principal, "user.create", user.id, on_behalf_of=on_behalf_of)
     db.commit()
     return CreateUserResponse(user_id=user.id, created_at=user.created_at.isoformat())

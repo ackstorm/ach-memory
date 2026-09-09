@@ -1,4 +1,3 @@
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -19,7 +18,6 @@ from memory.identifiers import has_control_character
 from memory.models import Project, ProjectSlug
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
-logger = logging.getLogger("memory.api.projects")
 
 
 class Owner(BaseModel):
@@ -165,28 +163,13 @@ def create_project(
         body.git_locator,
         on_behalf_of=on_behalf_of,
     )
-    try:
-        # A savepoint, not a bare try/except: provisioning writes to this
-        # session, so a DB-level failure inside it (an IntegrityError from a
-        # concurrent bootstrap registering the same built-in) leaves the
-        # session in a failed state and makes the db.commit() below raise
-        # PendingRollbackError -- a 500 with nothing committed, the exact
-        # opposite of what this handler promises. begin_nested() rolls back
-        # only the provisioning work and leaves the outer transaction usable.
-        with db.begin_nested():
-            provision_project_bank(db, principal, project, client=get_client())
-    except Exception:
-        # The project row is real and the caller gets its 201: provisioning is
-        # idempotent, so a later bootstrap or the next creation attempt repairs
-        # it. Failing the request here would leave a committed project the
-        # caller was told did not exist.
-        # exc_info: without the cause, a Hindsight outage, a name collision and
-        # a code bug are one indistinguishable log line.
-        logger.warning(
-            "project created but not provisioned",
-            extra={"project_slug": body.project_slug},
-            exc_info=True,
-        )
+    # A 201 means the bank is usable. Provisioning is what makes it usable,
+    # so a caller must never be told a project is ready when its bank has no
+    # retain strategy and no built-in model -- they would write into a bank
+    # that delivers nothing and never learn why. Letting the exception
+    # propagate aborts the whole request, so the project row this call added
+    # is never committed either.
+    provision_project_bank(db, principal, project, client=get_client())
     db.commit()
     return _response(project, domain.canonical_slug(db, project))
 
