@@ -2,10 +2,11 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from memory.contracts import WorkspaceId
 from memory.memory_types import EvidenceBasis, EvidenceKind, Lifecycle, MemoryType, RetainTrigger
+from memory.tags import normalize_caller_tags
 
 
 class RetainEvidence(BaseModel):
@@ -27,6 +28,16 @@ class TypedRetainRequest(BaseModel):
     valid_until: datetime | None = None
     evidence: tuple[RetainEvidence, ...] = Field(min_length=1, max_length=4)
     operation_id: UUID
+    #: Additive, caller-supplied tags (e.g. `repo:group/app`), appended after
+    #: the four server-derived tags in `retention._tags`. Normalised here so
+    #: REST and MCP share one gate and a caller can never forge a reserved
+    #: namespace (memory.tags.RESERVED_PREFIXES).
+    tags: tuple[str, ...] = ()
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, value: list[str] | None) -> tuple[str, ...]:
+        return normalize_caller_tags(value)
 
     @model_validator(mode="after")
     def validate_scope_and_time(self):

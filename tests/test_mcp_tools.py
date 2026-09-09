@@ -123,6 +123,36 @@ def test_retain_tools_always_use_the_fixed_ach_exact_v1_shape(call_tool, tool):
 
 
 @respx.mock
+def test_retain_appends_caller_tags_to_the_derived_ones(call_tool):
+    _mock_bank()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    key = call_tool.make_user()
+
+    call_tool("retain", key, scope="user", content="uv, not pip",
+              tags=["Repo:Group/App"], **_retain_kwargs())
+
+    item = json.loads(route.calls.last.request.read())["items"][0]
+    assert item["tags"] == [
+        "type:fact", "basis:human_explicit",
+        "schema:ach-retain-v1", "validity:indefinite",
+        "repo:group/app",
+    ]
+
+
+@respx.mock
+def test_retain_refuses_a_reserved_tag_namespace(call_tool):
+    """The derived four are server-owned. A caller must not be able to forge
+    a type:, basis:, schema: or validity: tag."""
+    _mock_bank()
+    key = call_tool.make_user()
+    with pytest.raises(MCPToolError):
+        call_tool("retain", key, scope="user", content="x",
+                  tags=["schema:ach-retain-v1"], **_retain_kwargs())
+
+
+@respx.mock
 def test_a_tool_never_returns_a_bank_id(call_tool, session):
     """Both the literal `bank_id` key and its use as a chunk_id substring
     (measured against a live server, SPEC inv. 29 -- see
@@ -1353,9 +1383,8 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved when load_context gained an optional scope: Literal["user", "project",
-# "both"] = "both" parameter to filter standing delivery to one half.
-TOOL_CONTRACT_SHA256 = "ac051862202931bd635e025640fddfe012f32b2391832f09d741557f761e5a9d"
+# moved when retain/sync_retain gained caller tags.
+TOOL_CONTRACT_SHA256 = "5138013ba46195cc8257648b1656b3ca1abaf87cc04435d9aeee23dcf3463d0d"
 
 
 def test_tool_registration_is_stable_after_module_split():

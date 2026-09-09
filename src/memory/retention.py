@@ -68,11 +68,16 @@ def resolve_bank_ref(db: Session, principal: Principal, request: _ScopedIdentity
 
 def _tags(request: TypedRetainRequest) -> list[str]:
     validity = "expiring" if request.valid_until is not None else "indefinite"
+    # Derived tags first, so a human reading a stored memory sees the
+    # server's classification before the caller's own labels. The caller's
+    # tags are additive and already normalised/validated (v040_contracts.
+    # TypedRetainRequest), so no server-owned namespace can reach here twice.
     return [
         f"type:{request.memory_type}",
         f"basis:{request.basis}",
         "schema:ach-retain-v1",
         f"validity:{validity}",
+        *request.tags,
     ]
 
 

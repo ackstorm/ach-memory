@@ -273,9 +273,12 @@ def register(mcp: MCPServer) -> None:
             "provenance (1-4 short excerpts); it is never stored as "
             "searchable memory itself. Write content in English whatever "
             "language the conversation is in: retrieval reranks in English "
-            "only. Returns immediately with an operation you can follow "
-            "with get_operation; use sync_retain when you need to read it "
-            "back straight away."
+            "only. `tags` are additive caller labels merged after the "
+            "server-derived ones, which are never overridable; use "
+            "`repo:<path>` to scope a claim to one repository in a "
+            "project bank shared by many. Returns immediately with an "
+            "operation you can follow with get_operation; use sync_retain "
+            "when you need to read it back straight away."
         ),
     )
     def retain(
@@ -289,17 +292,18 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         valid_until: datetime | None = None,
         operation_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> ToolResult:
         return _retain(
             ctx, scope, content, memory_type, basis, trigger, evidence,
-            project_slug, valid_until, operation_id, wait=False,
+            project_slug, valid_until, operation_id, tags, wait=False,
         )
 
     @mcp.tool(
         description=(
             "Store one durable, independently-correctable claim plus its "
             "evidence, and wait until it is searchable. Same semantics as "
-            "retain."
+            "retain, `tags` included."
         ),
     )
     def sync_retain(
@@ -313,6 +317,7 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         valid_until: datetime | None = None,
         operation_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> ToolResult:
         # No idempotentHint: two calls with no operation_id write two
         # separate memories, same as retain -- this only blocks longer while
@@ -321,7 +326,7 @@ def register(mcp: MCPServer) -> None:
         # duplicate the write.
         return _retain(
             ctx, scope, content, memory_type, basis, trigger, evidence,
-            project_slug, valid_until, operation_id, wait=True,
+            project_slug, valid_until, operation_id, tags, wait=True,
         )
 
     @mcp.tool(
@@ -817,7 +822,7 @@ def register(mcp: MCPServer) -> None:
 
 def _retain(
     ctx, scope, content, memory_type, basis, trigger, evidence,
-    project_slug, valid_until, operation_id, *, wait: bool,
+    project_slug, valid_until, operation_id, tags, *, wait: bool,
 ) -> ToolResult:
     # Generated before the first network attempt (SPEC §6.1) and reused for
     # every retry this call makes -- a direct REST client must supply its own.
@@ -834,6 +839,7 @@ def _retain(
             valid_until=valid_until,
             evidence=tuple(evidence),
             operation_id=op_id,
+            tags=tags,
         )
 
     def call(bank_id, db, principal, slug):
