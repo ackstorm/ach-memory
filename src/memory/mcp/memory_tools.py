@@ -64,6 +64,7 @@ from memory.memory_types import EvidenceBasis, MemoryType, RetainTrigger
 from memory.retained_records import get_by_document_id, get_by_source_memory_id
 from memory.retention import submit_retain
 from memory.sanitization import normalize_claim
+from memory.tags import normalize_caller_tags
 from memory.v040_contracts import RetainEvidence, TypedRetainRequest
 
 logger = logging.getLogger("memory.mcp")
@@ -409,7 +410,9 @@ def register(mcp: MCPServer) -> None:
             "Ask memory a question and get a synthesized answer rather than "
             "a list of facts. Costs more than recall. May also expire a "
             "bounded batch (at most 32) of claims already past their stated "
-            "expiry as a side effect of this access."
+            "expiry as a side effect of this access. `tags` narrows the "
+            "answer to memories carrying ALL of the given tags, same "
+            "convention as recall."
         ),
         # Reflect still spends LLM tokens and keeps confirmation/rate limiting.
         # readOnlyHint=False, explicit rather than relying on the SDK's
@@ -424,6 +427,7 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
         verbose: Verbose = False,
+        tags: list[str] | None = None,
     ) -> ToolResult:
         def body_factory() -> ScopedRequest:
             body = ScopedRequest(
@@ -439,7 +443,16 @@ def register(mcp: MCPServer) -> None:
             reflect_bank_ref = retention.resolve_bank_ref(db, principal, body_factory())
             read_service.ensure_current_read_allowed(db, reflect_bank_ref)
             read_service.run_access_maintenance(db, reflect_bank_ref)
-            return get_client().reflect(bank, query)
+            # Normalised here (inside _run's DomainError-mapping try), not at
+            # the top of `reflect`: an InvalidTag raised before _run starts
+            # would escape the MCPToolError conversion every other error goes
+            # through.
+            normalized = normalize_caller_tags(tags)
+            return get_client().reflect(
+                bank, query,
+                tags=list(normalized) if normalized else None,
+                tags_match="all_strict" if normalized else None,
+            )
 
         return _run(
             ctx,

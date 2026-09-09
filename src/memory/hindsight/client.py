@@ -438,9 +438,26 @@ class HindsightClient:
             not_found=MemoryNotFound,
         )
 
-    def reflect(self, bank_id: str, query: str) -> dict:
+    def reflect(
+        self,
+        bank_id: str,
+        query: str,
+        *,
+        tags: list[str] | None = None,
+        tags_match: str | None = None,
+    ) -> dict:
+        """`tags`/`tags_match`: same upstream tag filter as `recall`, omitted
+        entirely (not sent as empty/null) when the caller passes none --
+        upstream's `ReflectRequest` defaults differ between a tagged and an
+        untagged request, so sending empty keys is not equivalent to
+        omitting them."""
+        body: dict[str, Any] = {"query": query}
+        if tags is not None:
+            body["tags"] = tags
+        if tags_match is not None:
+            body["tags_match"] = tags_match
         return self._request(
-            "POST", paths.reflect(bank_id), {"query": query},
+            "POST", paths.reflect(bank_id), body,
             timeout=self._llm_timeout,  # a full synthesis call
         )
 

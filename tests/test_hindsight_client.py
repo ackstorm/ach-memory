@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 import respx
@@ -455,6 +457,19 @@ def test_reflect_posts_the_query(client):
 
     assert result == {"text": "use uv", "usage": {}}
     assert route.calls.last.request.read() == b'{"query":"how do we manage dependencies"}'
+
+
+@respx.mock
+def test_reflect_sends_caller_tags_upstream(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/reflect").mock(
+        return_value=httpx.Response(200, json={"text": "...", "usage": {}})
+    )
+
+    client.reflect(BANK, "why?", tags=["repo:group/app"], tags_match="all_strict")
+
+    body = json.loads(route.calls.last.request.read())
+    assert body["tags"] == ["repo:group/app"]
+    assert body["tags_match"] == "all_strict"
 
 
 @respx.mock

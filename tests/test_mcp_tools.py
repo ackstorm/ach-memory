@@ -370,6 +370,46 @@ def test_reflect_reaches_the_reflect_endpoint(call_tool):
     assert route.call_count == 1
 
 
+@respx.mock
+def test_reflect_sends_caller_tags_upstream(call_tool):
+    _mock_bank()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
+        return_value=httpx.Response(200, json={"answer": "uv"})
+    )
+    key = call_tool.make_user()
+
+    call_tool("reflect", key, scope="user", query="deps?", tags=["Repo:Group/App"])
+
+    body = json.loads(route.calls.last.request.read())
+    assert body["tags"] == ["repo:group/app"]
+    assert body["tags_match"] == "all_strict"
+
+
+@respx.mock
+def test_reflect_without_tags_sends_no_tag_keys(call_tool):
+    """An untagged reflect must not start sending tags:[] -- upstream treats
+    a tagged request differently from an untagged one."""
+    _mock_bank()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
+        return_value=httpx.Response(200, json={"answer": "uv"})
+    )
+    key = call_tool.make_user()
+
+    call_tool("reflect", key, scope="user", query="deps?")
+
+    body = json.loads(route.calls.last.request.read())
+    assert "tags" not in body
+    assert "tags_match" not in body
+
+
+@respx.mock
+def test_reflect_refuses_a_reserved_tag_namespace(call_tool):
+    _mock_bank()
+    key = call_tool.make_user()
+    with pytest.raises(MCPToolError):
+        call_tool("reflect", key, scope="user", query="deps?", tags=["schema:x"])
+
+
 def _mock_bank() -> None:
     respx.put(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
         return_value=httpx.Response(200, json={})
@@ -1383,8 +1423,8 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved when recall gained caller tags.
-TOOL_CONTRACT_SHA256 = "4a5277d1456554cc6328381336f376678a2f6a19e754b91e32fc563c75260601"
+# moved when reflect gained caller tags.
+TOOL_CONTRACT_SHA256 = "5740d822d2db537a44b03424a7179d7ff24e96f82ab9f7e9e297b22d8d38d436"
 
 
 def test_tool_registration_is_stable_after_module_split():
