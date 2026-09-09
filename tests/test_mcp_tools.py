@@ -1383,8 +1383,8 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved when retain/sync_retain gained caller tags.
-TOOL_CONTRACT_SHA256 = "5138013ba46195cc8257648b1656b3ca1abaf87cc04435d9aeee23dcf3463d0d"
+# moved when recall gained caller tags.
+TOOL_CONTRACT_SHA256 = "4a5277d1456554cc6328381336f376678a2f6a19e754b91e32fc563c75260601"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1681,6 +1681,29 @@ def test_recall_asks_hindsight_not_to_build_the_entity_map(call_tool):
 
     call_tool("recall", key, scope="user", query="deps", verbose=True)
     assert json.loads(route.calls.last.request.content)["include"] == {"entities": None}
+
+
+@respx.mock
+def test_recall_passes_caller_tags_through_to_the_client(call_tool):
+    _mock_bank()
+    route = respx.post(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
+    ).mock(return_value=httpx.Response(200, json={"results": []}))
+    key = call_tool.make_user()
+
+    call_tool("recall", key, scope="user", query="deps", tags=["Repo:Group/App"])
+
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["tags"] == ["schema:ach-retain-v1", "repo:group/app"]
+    assert sent["tags_match"] == "all_strict"
+
+
+@respx.mock
+def test_recall_refuses_a_reserved_tag_namespace(call_tool):
+    _mock_bank()
+    key = call_tool.make_user()
+    with pytest.raises(MCPToolError):
+        call_tool("recall", key, scope="user", query="deps", tags=["schema:x"])
 
 
 @respx.mock

@@ -83,6 +83,42 @@ def test_read_recall_sends_v040_schema_and_type_tags(client, two_users):
 
 
 @respx.mock
+def test_read_recall_ands_caller_tags_into_the_upstream_filter(client, two_users):
+    """The caller's own tag narrows the fixed filter without replacing it,
+    and is normalised the same way retain writes it."""
+    route = respx.post(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
+    ).mock(return_value=httpx.Response(200, json={"results": []}))
+
+    key = two_users[0]["key"]
+    response = client.post(
+        "/v1/read/recall",
+        json={"scope": "user", "query": "database", "tags": ["Repo:Group/App"]},
+        headers=_headers(key),
+    )
+
+    assert response.status_code == 200
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["tags"] == ["schema:ach-retain-v1", "repo:group/app"]
+    assert sent["tags_match"] == "all_strict"
+
+
+@respx.mock
+def test_read_recall_refuses_a_reserved_tag_namespace(client, two_users):
+    """The derived `schema:` tag is server-owned; a caller must not be able
+    to forge one into the read filter either."""
+    key = two_users[0]["key"]
+    response = client.post(
+        "/v1/read/recall",
+        json={"scope": "user", "query": "database", "tags": ["schema:ach-retain-v1"]},
+        headers=_headers(key),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_TAG"
+
+
+@respx.mock
 def test_read_recall_withheld_bank_is_currentness_unavailable(client, two_users, session, tenant):
     """An ACH-mediated safety mutation with an unproven upstream outcome
     withholds ordinary current reads for that bank (SPEC §5.8) -- proven here

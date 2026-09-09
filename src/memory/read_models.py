@@ -5,16 +5,25 @@ Every field here is either a caller input with server-owned validation, or a
 server-constructed output whitelisted field by field -- see the plan's
 "Read-only public contracts" for the wire shapes these implement
 (docs/superpowers/plans/2026-09-02-memory-quality-phase-5-read-only-recall.md).
-No model here ever carries `git_locator`, a raw Hindsight tag/tag-group, a
-bank ID or a tenant ID: the Phase 5 non-negotiable contracts forbid all four
-on the read surface, and `extra="forbid"` on every request model turns a
-caller who sends one into a 422, not a silently-ignored field.
+No model here ever carries `git_locator`, `tag_groups`, `tags_match`, a bank
+ID or a tenant ID: the Phase 5 non-negotiable contracts forbid all five on
+the read surface, and `extra="forbid"` on every request model turns a caller
+who sends one into a 422, not a silently-ignored field.
+
+`RecallRequest.tags` is the one deliberate, narrow exception: a caller-
+supplied list, validated and normalised by `memory.tags.normalize_caller_tags`
+-- the same gate retain applies, so a tag written and a tag searched are
+byte-identical -- then ANDed into the fixed, server-owned `all_strict` filter
+(`resolve_filters`) inside a bank the caller's own `scope`/`project_slug`
+already resolved and authorized. It can only narrow what that caller could
+already read; it is never a raw Hindsight tag expression and never lets a
+caller choose `tags_match` itself.
 
 This module also owns the one piece of caller-controllable Hindsight
-behavior a read exposes: mapping `view`/`kinds` to fixed upstream filters
-(`resolve_filters`). The caller chooses from closed enums; the actual
-Hindsight `types`/`prefer_observations`/tag values are server-owned and never
-themselves caller input.
+behavior a read exposes: mapping `view`/`kinds`/`tags` to fixed upstream
+filters (`resolve_filters`). The caller chooses from closed enums plus its
+own normalised tags; the actual Hindsight `types`/`prefer_observations`/
+`tags_match` values are server-owned and never themselves caller input.
 """
 
 from dataclasses import dataclass
@@ -24,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from memory.identifiers import has_control_character
 from memory.memory_types import EvidenceBasis, MemoryType
+from memory.tags import normalize_caller_tags
 
 ReadScope = Literal["user", "project"]
 
@@ -94,6 +104,15 @@ class RecallRequest(_ReadRequest):
     max_results: int = Field(
         default=DEFAULT_MAX_RESULTS, ge=MIN_MAX_RESULTS, le=MAX_RESULTS_CEILING
     )
+    #: Additive caller tags (e.g. `repo:group/app`), ANDed into the fixed
+    #: `all_strict` filter -- see the module docstring for why this is safe.
+    #: `tags_match` itself stays out of this model entirely.
+    tags: tuple[str, ...] = ()
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, value: list[str] | None) -> tuple[str, ...]:
+        return normalize_caller_tags(value)
 
     @field_validator("query")
     @classmethod
@@ -252,10 +271,11 @@ def build_history_response(
 
 @dataclass(frozen=True)
 class RecallFilters:
-    """The server-owned Hindsight filter set a `view`/`memory_types` choice
-    maps to. Never caller input: a `RecallRequest` cannot construct one of
-    these directly, only name a `view` and `memory_types` for
-    `resolve_filters` to map."""
+    """The server-owned Hindsight filter set a `view`/`memory_types`/
+    `caller_tags` choice maps to. Never caller input directly: a
+    `RecallRequest` cannot construct one of these itself, only name a `view`,
+    `memory_types` and already-normalised `caller_tags` for `resolve_filters`
+    to map."""
 
     types: tuple[FactType, ...]
     tags: tuple[str, ...]
@@ -263,21 +283,30 @@ class RecallFilters:
 
 
 def resolve_filters(
-    view: View, memory_types: tuple[MemoryType, ...] | None
+    view: View,
+    memory_types: tuple[MemoryType, ...] | None,
+    caller_tags: tuple[str, ...] = (),
 ) -> RecallFilters:
-    """Map a caller's closed `view`/`memory_types` choice to Hindsight's
-    actual filter vocabulary.
+    """Map a caller's closed `view`/`memory_types` choice, plus its own
+    already-normalised tags, to Hindsight's actual filter vocabulary.
 
     Every ACH-authored fact is scoped by the fixed `schema:ach-retain-v1`
-    tag, optionally narrowed by the caller's closed `memory_types`. `view`
-    does not currently branch this mapping; the documented views select the
-    same exact retained corpus until a future contract gives them separate
+    tag, optionally narrowed by the caller's closed `memory_types`, then
+    further narrowed by `caller_tags` (`RecallRequest.tags`, already
+    validated by `memory.tags.normalize_caller_tags` -- this function never
+    normalises or validates them itself, only appends). `view` does not
+    currently branch this mapping; the documented views select the same
+    exact retained corpus until a future contract gives them separate
     meaning.
     `ach-exact-v1` never produces an "experience" fact (SPEC §5.7), so only
     `world` (the retained claim) and `observation` (Hindsight's own later
-    consolidation) are ever relevant types.
+    consolidation) are ever relevant types. `tags_match` stays fixed at
+    `all_strict` -- AND-with-extras-allowed -- never caller-settable:
+    `all`/`any` would also return untagged memories and silently defeat the
+    filter.
     """
     tags = ["schema:ach-retain-v1"]
     if memory_types:
         tags.extend(f"type:{value}" for value in memory_types)
+    tags.extend(caller_tags)
     return RecallFilters(types=("world", "observation"), tags=tuple(tags), tags_match="all_strict")

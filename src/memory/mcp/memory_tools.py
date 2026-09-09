@@ -333,7 +333,10 @@ def register(mcp: MCPServer) -> None:
         description=(
             "Search memory and return bounded, grounded matching facts. May "
             "also expire a bounded batch (at most 32) of claims already past "
-            "their stated expiry as a side effect of this access."
+            "their stated expiry as a side effect of this access. `tags` "
+            "narrows results to memories carrying ALL of the given tags in "
+            "addition to the server's own filters (e.g. `repo:<path>` to "
+            "search one repository in a project bank shared by many)."
         ),
         # readOnlyHint=False: run_access_maintenance below can claim expiry
         # work and commit database changes -- a client that skips
@@ -352,12 +355,14 @@ def register(mcp: MCPServer) -> None:
         view: read_models.View = "current",
         kinds: list[MemoryType] | None = None,
         max_results: int = read_models.DEFAULT_MAX_RESULTS,
+        tags: list[str] | None = None,
     ) -> ToolResult:
         def body_factory() -> read_models.RecallRequest:
             _check_content_size(query)
             return read_models.RecallRequest(
                 scope=scope, project_slug=project_slug, query=query, view=view,
                 kinds=tuple(kinds) if kinds else None, max_results=max_results,
+                tags=tags,
             )
 
         def call(resolved, db, principal, body):
@@ -365,7 +370,7 @@ def register(mcp: MCPServer) -> None:
             read_service.ensure_current_read_allowed(db, recall_bank_ref)
             read_service.run_access_maintenance(db, recall_bank_ref)
             hits = read_service._recall_hits(
-                resolved.bank_id, body.query, body.view, body.kinds
+                resolved.bank_id, body.query, body.view, body.kinds, body.tags
             )
             return read_models.build_recall_response(
                 project_slug=resolved.current_slug,

@@ -153,7 +153,11 @@ def run_access_maintenance(db: Session, bank: LogicalBankRef) -> None:
 
 
 def _recall_hits(
-    bank_id: str, query: str, view: View, memory_types: tuple[MemoryType, ...] | None
+    bank_id: str,
+    query: str,
+    view: View,
+    memory_types: tuple[MemoryType, ...] | None,
+    caller_tags: tuple[str, ...] = (),
 ) -> list[RecallHit]:
     """Everything AFTER a bank is already resolved, authorized and proven
     current: build the server-owned filter set, call Hindsight, normalize
@@ -162,8 +166,9 @@ def _recall_hits(
     Shared by `recall` below (which also resolves the bank itself, via
     `read_context.resolve_read_bank`, create=False) and by the legacy
     `POST /v1/memory/recall` (`api/memory.py`, which now resolves the same
-    existing-only way and checks the same currentness barrier). What
-    legitimately differs between the two surfaces is resolution; how an
+    existing-only way and checks the same currentness barrier, and never
+    passes `caller_tags` -- its own `RecallRequest` has no `tags` field).
+    What legitimately differs between the two surfaces is resolution; how an
     already-resolved bank's recall is queried and normalized is identical on
     purpose, so both delegate to one place.
 
@@ -171,7 +176,7 @@ def _recall_hits(
     `max_results` -- the caller decides how much of this to keep and whether
     that makes the response truncated.
     """
-    filters = resolve_filters(view, memory_types)
+    filters = resolve_filters(view, memory_types, caller_tags)
     raw = get_client().recall(
         bank_id,
         query,
@@ -211,7 +216,9 @@ def recall(
     ensure_current_read_allowed(db, ref)
     run_access_maintenance(db, ref)
 
-    hits = _recall_hits(read_bank.bank_id, request.query, request.view, request.kinds)
+    hits = _recall_hits(
+        read_bank.bank_id, request.query, request.view, request.kinds, request.tags
+    )
     capped = hits[: request.max_results]
     response = build_recall_response(
         project_slug=read_bank.current_slug,

@@ -87,7 +87,7 @@ def test_scope_is_required():
 
 @pytest.mark.parametrize(
     "extra_field",
-    ["git_locator", "tags", "tag_groups", "bank_id", "tenant_id", "temporal_anchor"],
+    ["git_locator", "tag_groups", "tags_match", "bank_id", "tenant_id", "temporal_anchor"],
 )
 def test_a_recall_request_rejects_every_unknown_field(extra_field):
     with pytest.raises(ValidationError):
@@ -353,12 +353,40 @@ def test_no_memory_types_means_only_the_schema_tag():
     assert filters.tags == ("schema:ach-retain-v1",)
 
 
+def test_caller_tags_extend_the_filter_after_the_schema_and_type_tags():
+    """all_strict is AND-with-extras-allowed, so adding a caller tag narrows
+    the result set and never excludes a memory for carrying more tags."""
+    filters = resolve_filters("current", None, caller_tags=("repo:group/app",))
+    assert filters.tags == ("schema:ach-retain-v1", "repo:group/app")
+    assert filters.tags_match == "all_strict"
+
+
+def test_caller_tags_come_after_memory_type_tags():
+    filters = resolve_filters("current", ("decision",), caller_tags=("repo:group/app",))
+    assert filters.tags == ("schema:ach-retain-v1", "type:decision", "repo:group/app")
+
+
+def test_no_caller_tags_means_the_schema_tag_is_unchanged():
+    assert resolve_filters("current", None) == resolve_filters("current", None, caller_tags=())
+
+
+def test_recall_request_normalizes_caller_tags_the_same_way_retain_does():
+    """The symmetry that makes the convention work at all: normalisation
+    happens once, on the request model, so `resolve_filters` never needs to
+    (and never re-validates) what it is handed."""
+    request = RecallRequest(scope="user", query="q", tags=[" Repo:Group/App "])
+    assert request.tags == ("repo:group/app",)
+
+
 def test_resolve_filters_never_lets_a_caller_choose_tag_syntax_directly():
     """There is no parameter here through which a `RecallRequest` value ever
     reaches Hindsight's own tag/filter DSL: `resolve_filters` only accepts a
-    closed `view` and closed `memory_types`, and only ever emits the fixed
-    `schema:ach-retain-v1`/`type:<memory_type>` shapes."""
+    closed `view`, a closed `memory_types`, and already-normalised
+    `caller_tags` (`RecallRequest.tags`, validated by
+    `memory.tags.normalize_caller_tags` before it ever reaches here) -- never
+    `tags_match` itself, and only ever emits the fixed
+    `schema:ach-retain-v1`/`type:<memory_type>`/caller-tag shapes."""
     import inspect
 
     signature = inspect.signature(resolve_filters)
-    assert set(signature.parameters) == {"view", "memory_types"}
+    assert set(signature.parameters) == {"view", "memory_types", "caller_tags"}
