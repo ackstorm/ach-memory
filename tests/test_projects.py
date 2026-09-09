@@ -24,7 +24,6 @@ from memory.errors import (
 from memory.models import (
     AuditEvent,
     Group,
-    GroupMember,
     Project,
     ProjectSlug,
     Tenant,
@@ -39,10 +38,26 @@ def _user(session, tenant, user_id: str) -> User:
     return user
 
 
-def _principal(tenant: str, user_id: str | None, master: bool = False) -> Principal:
-    return Principal(
-        tenant_id=tenant, user_id=user_id, is_master=master, key_id="key_x"
-    )
+def _principal(tenant: str, user_id: str | None) -> Principal:
+    return Principal(tenant_id=tenant, user_id=user_id, credential_id="ext_x")
+
+
+OPERATOR_ID = "usr_operator"
+
+
+@pytest.fixture
+def operator(session, tenant, monkeypatch) -> Principal:
+    """An operator is an ordinary external identity that configuration also
+    names. There is no identity-less credential any more, so an operator has
+    a user id, a bank and projects of their own like anybody else -- the only
+    difference is that MEMORY_MASTER_USERS names them."""
+    from memory.config import get_settings
+
+    _user(session, tenant, OPERATOR_ID)
+    monkeypatch.setenv("MEMORY_MASTER_USERS", OPERATOR_ID)
+    get_settings.cache_clear()
+    yield _principal(tenant, OPERATOR_ID)
+    get_settings.cache_clear()
 
 
 def test_first_toucher_creates_and_owns_the_project(session, tenant):
@@ -92,12 +107,15 @@ def test_no_second_bank_is_created_for_the_denied_caller(session, tenant):
     assert session.query(Project).count() == 1
 
 
-def test_group_member_reaches_a_group_owned_project(session, tenant):
+def test_group_access_comes_only_from_the_identity_provider(session, tenant):
+    """A behaviour change to name, not a no-op. `authorize` used to grant on
+    an asserted group OR a local `group_members` row, checked independently.
+    The row is gone, so a caller their token does not vouch for is denied --
+    there is no second place membership can come from, which is also what
+    makes an IdP revocation take effect on the very next request."""
     _user(session, tenant, "usr_juan")
     alice = _user(session, tenant, "usr_alice")
     session.add(Group(id="grp_payments", tenant_id=tenant))
-    session.flush()
-    session.add(GroupMember(group_id="grp_payments", user_id=alice.id))
     session.flush()
 
     result = projects.resolve(session, _principal(tenant, "usr_juan"), "payments-api")
@@ -105,8 +123,12 @@ def test_group_member_reaches_a_group_owned_project(session, tenant):
         session, _principal(tenant, "usr_juan"), result.project, "group", "grp_payments"
     )
 
-    for_alice = projects.resolve(session, _principal(tenant, "usr_alice"), "payments-api")
+    with pytest.raises(ProjectNotFound):
+        projects.resolve(session, _external(tenant, alice.id, set()), "payments-api")
 
+    for_alice = projects.resolve(
+        session, _external(tenant, alice.id, {"grp_payments"}), "payments-api"
+    )
     assert for_alice.project.bank_id == result.project.bank_id
 
 
@@ -323,21 +345,24 @@ def test_a_malformed_locator_is_a_typed_error_not_a_crash(session, tenant):
         projects.resolve(session, juan, "payments-api", git_locator="not-a-url")
 
 
-def test_master_key_reaches_any_project_in_its_tenant(session, tenant):
+def test_an_operator_reaches_any_project_in_its_tenant(session, tenant, operator):
     _user(session, tenant, "usr_juan")
     projects.resolve(session, _principal(tenant, "usr_juan"), "payments-api")
 
-    result = projects.resolve(
-        session, _principal(tenant, None, master=True), "payments-api"
-    )
+    result = projects.resolve(session, operator, "payments-api")
 
     assert result.current_slug == "payments-api"
 
 
-def test_master_key_does_not_lazily_create(session, tenant):
-    """A master key has no identity, so there is no owner to assign (§8.1)."""
-    with pytest.raises(ProjectNotFound):
-        projects.resolve(session, _principal(tenant, None, master=True), "nope")
+def test_an_operator_lazily_creates_a_project_they_own(session, tenant, operator):
+    """The old refusal existed because a master key had no identity to assign
+    as the owner. An operator has one, so the exception disappears rather
+    than being ported: they create like anybody else, and own what they
+    create."""
+    result = projects.resolve(session, operator, "brand-new")
+
+    assert result.project.owner_type == "user"
+    assert result.project.owner_id == OPERATOR_ID
 
 
 def test_every_project_creation_is_audited(session, tenant):
@@ -360,8 +385,7 @@ def test_a_user_cannot_create_more_than_the_hourly_limit(session, tenant):
     free, so a typo storm must not become a bank storm."""
     _user(session, tenant, "usr_juan")
     juan = Principal(
-        tenant_id=tenant, user_id="usr_juan", is_master=False,
-        key_id="key_juan", credential_id="key_juan",
+        tenant_id=tenant, user_id="usr_juan", credential_id="ext_juan"
     )
 
     for n in range(10):
@@ -421,26 +445,22 @@ def test_a_slug_in_another_tenant_is_invisible(session, tenant):
     assert mine.project.bank_id != theirs.project.bank_id
 
 
-def test_master_key_create_rejects_a_nonexistent_user_owner(session, tenant):
+def test_create_rejects_a_nonexistent_user_owner(session, tenant, operator):
     """Gutting the existence check in _validate_owner would let this through
     and permanently orphan the project: authorize() then denies everyone,
-    since no real user ever matches owner_id, and only a master key could
+    since no real user ever matches owner_id, and only an operator could
     even attempt a transfer to fix it."""
-    master = _principal(tenant, None, master=True)
-
     with pytest.raises(UserNotFound):
-        projects.create(session, master, "payments-api", "user", "usr_ghost")
+        projects.create(session, operator, "payments-api", "user", "usr_ghost")
 
     assert session.query(Project).count() == 0
 
 
-def test_master_key_create_rejects_a_nonexistent_group_owner(session, tenant):
+def test_create_rejects_a_nonexistent_group_owner(session, tenant, operator):
     from memory.errors import GroupNotFound
 
-    master = _principal(tenant, None, master=True)
-
     with pytest.raises(GroupNotFound):
-        projects.create(session, master, "payments-api", "group", "grp_ghost")
+        projects.create(session, operator, "payments-api", "group", "grp_ghost")
 
     assert session.query(Project).count() == 0
 
@@ -456,7 +476,7 @@ def test_transfer_rejects_a_nonexistent_owner(session, tenant):
     assert result.project.owner_id == "usr_juan"
 
 
-def test_create_rejects_an_owner_from_another_tenant(session, tenant):
+def test_create_rejects_an_owner_from_another_tenant(session, tenant, operator):
     """The existence check alone is not enough: an owner id that resolves to
     a real row in someone ELSE's tenant must be rejected just as hard as one
     that does not exist at all."""
@@ -468,10 +488,9 @@ def test_create_rejects_an_owner_from_another_tenant(session, tenant):
         User(id="usr_other", tenant_id="ten_other", bank_id=ids.new_user_bank_id())
     )
     session.flush()
-    master = _principal(tenant, None, master=True)
 
     with pytest.raises(UserNotFound):
-        projects.create(session, master, "payments-api", "user", "usr_other")
+        projects.create(session, operator, "payments-api", "user", "usr_other")
 
     assert session.query(Project).count() == 0
 
@@ -821,14 +840,12 @@ def test_race_loser_authorized_gets_the_winners_project(session, tenant, monkeyp
     alice = _user(session, tenant, "usr_alice")
     session.add(Group(id="grp_payments", tenant_id=tenant))
     session.flush()
-    session.add(GroupMember(group_id="grp_payments", user_id=alice.id))
-    session.flush()
     winner = _force_race(
         monkeypatch, session, tenant, "payments-api", "group", "grp_payments"
     )
 
     result = projects._create(
-        session, _principal(tenant, "usr_alice"), "payments-api", None
+        session, _external(tenant, alice.id, {"grp_payments"}), "payments-api", None
     )
 
     assert result.internal_id == winner.internal_id
@@ -886,14 +903,12 @@ def test_a_lost_rename_race_is_a_conflict_not_a_500(session, tenant, monkeypatch
 
 
 def _external(tenant, user_id, groups):
-    """A principal as an identity provider produces it: a real user id, no
-    api-key row, and group membership asserted by the token rather than
-    stored in group_members."""
+    """A principal as an identity provider produces it: a real user id and
+    group membership asserted by the token, which is now the only place
+    membership can come from."""
     return Principal(
         tenant_id=tenant,
         user_id=user_id,
-        is_master=False,
-        key_id=None,
         groups=frozenset(groups),
         credential_id="ext_test",
     )
@@ -923,7 +938,6 @@ def test_an_asserted_group_authorizes_without_a_membership_row(session, tenant):
     )
 
     assert reached.project.bank_id == project.bank_id
-    assert session.get(GroupMember, ("grp_payments", alice.id)) is None
 
 
 def test_a_group_the_token_does_not_assert_is_denied(session, tenant):

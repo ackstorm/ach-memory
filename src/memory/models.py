@@ -47,25 +47,6 @@ class User(Base):
     )
 
 
-class ApiKey(Base):
-    __tablename__ = "api_keys"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
-    # NOT NULL on purpose: every row here is a user key. The bootstrap master
-    # key is configuration, never a row (SPEC §5.2), so a user-less row is not
-    # a legitimate state — and if one existed, principal resolution must never
-    # be able to read it as "this key is the master key".
-    # index=True: GET /v1/users/{id}/keys filters on exactly this column, and
-    # every other tenant-scoped FK in this schema already carries one.
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    secret_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    status: Mapped[str] = mapped_column(String(16), default="active")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
-    )
-
-
 class ExternalIdentity(Base):
     __tablename__ = "external_identities"
 
@@ -94,6 +75,14 @@ class ExternalIdentity(Base):
 
 
 class Group(Base):
+    """A derived projection of a group an identity provider asserted, never
+    the authority on who belongs to it.
+
+    Membership is read from the credential on every request. This row exists
+    only because `Project.owner_id` is a foreign key that has to point
+    somewhere, so `projects._validate_owner` creates it on demand the first
+    time a project is actually assigned to the group."""
+
     __tablename__ = "groups"
 
     # Externally supplied (ACH) or service-generated, like User. SPEC §4.3.
@@ -103,14 +92,6 @@ class Group(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-
-
-class GroupMember(Base):
-    __tablename__ = "group_members"
-
-    # No roles inside a group in v1 (SPEC §4.3): membership is the whole model.
-    group_id: Mapped[str] = mapped_column(ForeignKey("groups.id"), primary_key=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
 
 
 class Project(Base):

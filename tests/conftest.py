@@ -39,7 +39,6 @@ def _default_settings_env():
     `monkeypatch.setenv` (the real values) still takes precedence per test.
     """
     os.environ.setdefault("MEMORY_DATABASE_URL", TEST_DATABASE_URL)
-    os.environ.setdefault("MEMORY_MASTER_KEY_HASH", "unused")
     os.environ.setdefault("MEMORY_HINDSIGHT_URL", "http://hindsight.test")
 
 
@@ -184,12 +183,10 @@ def app(connection, session, monkeypatch):
     from memory import bootstrap as bootstrap_service
     from memory import db, mental_model_service, ratelimit, retention
     from memory.api.app import create_app
-    from memory.auth import keys
     from memory.config import get_settings
     from memory.hindsight.client import get_client
 
     monkeypatch.setenv("MEMORY_DATABASE_URL", TEST_DATABASE_URL)
-    monkeypatch.setenv("MEMORY_MASTER_KEY_HASH", keys.hash_key(MASTER_PLAINTEXT))
     monkeypatch.setenv("MEMORY_HINDSIGHT_URL", "http://hindsight.test")
     get_settings.cache_clear()
     get_client.cache_clear()
@@ -286,11 +283,9 @@ def configured_env(monkeypatch):
     test that constructs the app without going through the `app` fixture has
     to supply them. Nothing here talks to a database or to Hindsight.
     """
-    from memory.auth import keys
     from memory.config import get_settings
 
     monkeypatch.setenv("MEMORY_DATABASE_URL", TEST_DATABASE_URL)
-    monkeypatch.setenv("MEMORY_MASTER_KEY_HASH", keys.hash_key(MASTER_PLAINTEXT))
     monkeypatch.setenv("MEMORY_HINDSIGHT_URL", "http://hindsight.test")
     get_settings.cache_clear()
     yield

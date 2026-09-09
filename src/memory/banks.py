@@ -4,7 +4,6 @@ from memory import projects
 from memory.auth.principal import Principal
 from memory.errors import (
     Forbidden,
-    InvalidScope,
     ProjectContextUnavailable,
     UserNotFound,
 )
@@ -16,30 +15,27 @@ def resolve_user_bank(
 ) -> str:
     """Map scope=user to a bank ID.
 
-    A user key always addresses itself; naming somebody else is a 403, not a
-    silent redirect. A master key has no identity of its own, so it must name
-    its target (SPEC §5.2).
+    Everyone addresses themselves by default, operators included: authority
+    and identity are separate now, so an operator has a bank of their own and
+    reaches it the same way anybody does. Naming somebody ELSE is the
+    authority part, and for anyone without it that is a 403, never a silent
+    redirect.
     """
-    if principal.is_master:
-        if not requested_user_id:
-            raise InvalidScope("master-key requests with scope=user must set user_id")
-        target_id = requested_user_id
-    else:
-        if requested_user_id and requested_user_id != principal.user_id:
-            raise Forbidden("a user key cannot address another user's memory")
-        target_id = principal.user_id
+    target_id = requested_user_id or principal.user_id
+    if target_id != principal.user_id and not principal.is_master:
+        raise Forbidden("this caller cannot address another user's memory")
 
     user = db.get(User, target_id)
     if user is None or user.tenant_id != principal.tenant_id:
         if principal.is_master:
-            # A master key already bypasses ownership inside its tenant (SPEC
-            # §20.3), so there is no existence fact to withhold from it, and
+            # An operator already bypasses ownership inside their tenant (SPEC
+            # §20.3), so there is no existence fact to withhold from them, and
             # §18 names USER_NOT_FOUND for exactly this case. A 403 sent an
             # operator with a typo hunting a permissions problem that does not
             # exist. From tenant A's view a user living only in tenant B does
             # not exist either, so this still discloses nothing cross-tenant.
             raise UserNotFound(user_id=target_id)
-        # For a USER key the shape stays: same as a cross-tenant miss, no
+        # For everyone else the shape stays: same as a cross-tenant miss, no
         # existence signal either way.
         raise Forbidden("no accessible memory for the requested user")
 

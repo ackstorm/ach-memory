@@ -19,7 +19,7 @@ from memory.errors import (
     UserNotFound,
 )
 from memory.identifiers import reject_control_characters
-from memory.models import AuditEvent, Group, GroupMember, Project, ProjectSlug, User
+from memory.models import AuditEvent, Group, Project, ProjectSlug, User
 from memory.slugs import canonical_locator, normalize_slug
 
 
@@ -127,14 +127,12 @@ def authorize(
         return
     if project.owner_type == "user" and project.owner_id == principal.user_id:
         return
-    if project.owner_type == "group" and (
-        # Asserted by the caller's identity provider, or recorded locally.
-        # Checked independently and never merged: an IdP that stops asserting
-        # a group revokes access on the next request without any row changing,
-        # while a local key's membership stays a database fact.
-        project.owner_id in principal.groups
-        or db.get(GroupMember, (project.owner_id, principal.user_id))
-    ):
+    # Membership is whatever the caller's identity provider asserts on THIS
+    # request and nothing else. There is no local `group_members` row to
+    # consult any more, which is what makes an IdP revocation take effect on
+    # the very next call rather than whenever somebody remembers to delete a
+    # row here.
+    if project.owner_type == "group" and project.owner_id in principal.groups:
         return
     raise ProjectAccessDenied(
         "no access to that project",
@@ -183,8 +181,7 @@ def resolve(
     )
 
     if project is None:
-        if not create or principal.is_master:
-            # A master key has no identity, so there is no owner to assign.
+        if not create:
             raise ProjectNotFound("no such project", project_slug=slug)
         project = _create(db, principal, slug, git_locator)
         return Resolution(project, canonical_slug(db, project), None)
@@ -306,8 +303,8 @@ def _create(
     db: Session, principal: Principal, slug: str, git_locator: str | None
 ) -> Project:
     """The lazy path used by resolve(): auto-vivify a project for its first
-    toucher, always owned by the calling user (resolve() already refuses this
-    for a master key, which has no identity to own it)."""
+    toucher, always owned by the calling user. An operator is no exception --
+    they have an identity to own it, so they create like anybody else."""
     try:
         return create(db, principal, slug, "user", principal.user_id, git_locator)
     except ProjectSlugConflict:

@@ -119,7 +119,7 @@ def require_master(
     principal: Annotated[Principal, Depends(current_principal)],
 ) -> Principal:
     if not principal.is_master:
-        raise Forbidden("this operation requires the master key")
+        raise Forbidden("this operation requires operator authority")
     return principal
 
 
@@ -137,12 +137,12 @@ def current_on_behalf_of(
         str | None, Header(max_length=128, pattern=r"^[^\x00-\x1f\x7f]*$")
     ] = None,
 ) -> str | None:
-    """The subject a master key is acting for (SPEC §16.5).
+    """The subject an operator is acting for (SPEC §16.5).
 
-    Ignored for a user key. Delegation is a master-key capability, and a user
-    key that sets the header would otherwise write an unverified claim into the
-    audit trail — which is the one place a claim must not be taken on trust.
-    It is provenance, never authorization evidence.
+    Ignored for everyone else. Delegation is an operator capability, and an
+    ordinary caller that sets the header would otherwise write an unverified
+    claim into the audit trail — which is the one place a claim must not be
+    taken on trust. It is provenance, never authorization evidence.
     """
     return on_behalf_of if principal.is_master else None
 
@@ -182,13 +182,11 @@ def create_app() -> FastAPI:
     from memory.api import curation as curation_routes
     from memory.api import directives as directive_routes
     from memory.api import documents as document_routes
-    from memory.api import groups as group_routes
     from memory.api import memory as memory_routes
     from memory.api import mental_models as mental_model_routes
     from memory.api import operations as operation_routes
     from memory.api import projects as project_routes
     from memory.api import read as read_routes
-    from memory.api import users as user_routes
     from memory.api import working_state as working_state_routes
     from memory.mcp.server import build_mcp
     from memory.mcp.tools import register as register_tools
@@ -252,14 +250,12 @@ def create_app() -> FastAPI:
             content={"error": {"code": "INTERNAL_ERROR", "message": "internal error"}},
         )
 
-    app.include_router(user_routes.router)
     app.include_router(bootstrap_routes.router)
     app.include_router(activity_routes.router)
     app.include_router(memory_routes.router)
     app.include_router(curation_routes.router)
     app.include_router(document_routes.router)
     app.include_router(operation_routes.router)
-    app.include_router(group_routes.router)
     app.include_router(project_routes.router)
     app.include_router(read_routes.router)
     app.include_router(admin_routes.router)

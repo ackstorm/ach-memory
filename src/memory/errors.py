@@ -58,25 +58,6 @@ class GroupNotFound(DomainError):
     status = 404
 
 
-class GroupAlreadyExists(DomainError):
-    code = "GROUP_ALREADY_EXISTS"
-    status = 409
-
-
-class UserAlreadyExists(DomainError):
-    """The sibling of GroupAlreadyExists, and it lived in api/users.py.
-
-    Declaring a DomainError outside this module hid it from
-    tests/test_errors.py's §18 conformance check, which enumerated
-    `vars(errors)` -- so the single code in the codebase that violated §18's
-    closed list was the single code the guard could not see. Every
-    DomainError belongs here.
-    """
-
-    code = "USER_ALREADY_EXISTS"
-    status = 409
-
-
 class UserNotFound(DomainError):
     code = "USER_NOT_FOUND"
     status = 404
@@ -164,11 +145,6 @@ class RateLimited(DomainError):
 
 class RetiredSlugNotFound(DomainError):
     code = "RETIRED_SLUG_NOT_FOUND"
-    status = 404
-
-
-class KeyNotFound(DomainError):
-    code = "KEY_NOT_FOUND"
     status = 404
 
 
