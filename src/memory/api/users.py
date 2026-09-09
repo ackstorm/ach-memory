@@ -102,13 +102,25 @@ def create_user(
         # race (SPEC §9) where earlier writes must survive the conflict.
         raise UserAlreadyExists("a user with that id already exists") from exc
     try:
-        provision_user_bank(db, user, client=get_client())
-    except Exception:  # noqa: BLE001 -- provisioning is best-effort, see below
+        # A savepoint, not a bare try/except: provisioning writes to this
+        # session, so a DB-level failure inside it (an IntegrityError from a
+        # concurrent bootstrap registering the same built-in) leaves the
+        # session in a failed state and makes the db.commit() below raise
+        # PendingRollbackError -- a 500 with nothing committed, the exact
+        # opposite of what this handler promises. begin_nested() rolls back
+        # only the provisioning work and leaves the outer transaction usable.
+        # Here it also protects the mandatory audit.record below (SPEC §20),
+        # which a poisoned session would drop along with the user row.
+        with db.begin_nested():
+            provision_user_bank(db, user, client=get_client())
+    except Exception:
         # The user row is real and the caller gets its 201: provisioning is
         # idempotent, so a later bootstrap or the next creation attempt repairs
         # it. Failing the request here would leave a committed user the
         # caller was told did not exist.
-        logger.warning("user created but not provisioned", extra={"user_id": user.id})
+        logger.warning(
+            "user created but not provisioned", extra={"user_id": user.id}, exc_info=True
+        )
     audit.record(db, principal, "user.create", user.id, on_behalf_of=on_behalf_of)
     db.commit()
     return CreateUserResponse(user_id=user.id, created_at=user.created_at.isoformat())

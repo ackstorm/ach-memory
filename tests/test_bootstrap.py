@@ -3,6 +3,7 @@ from unittest import mock
 import httpx
 import pytest
 import respx
+from sqlalchemy import text
 
 from memory import ids, model_registry
 from memory.auth.principal import Principal
@@ -238,6 +239,37 @@ def test_a_project_created_through_the_control_plane_is_fully_provisioned(
     assert registration is not None, "project-context must exist at creation"
     assert registration.origin == "builtin"
     assert registration.lifecycle_state in {"creating", "active"}
+
+
+@respx.mock
+def test_a_failed_provisioning_still_commits_the_project(
+    client, session, master_headers, monkeypatch
+):
+    """The route promises "the project row is real and the caller gets its
+    201". A DB-level failure inside provisioning -- an IntegrityError from a
+    concurrent bootstrap registering the same built-in -- used to poison the
+    session, so the db.commit() after the except raised PendingRollbackError
+    and the caller got a 500 with nothing committed: the exact opposite of
+    the promise. The savepoint is what makes the comment true."""
+    from sqlalchemy.exc import IntegrityError
+
+    key = _make_user_key(client, master_headers)
+
+    def poison(db, principal, project, *, client):
+        db.execute(text("SELECT 1"))  # a real statement, so the session is live
+        raise IntegrityError("duplicate built-in", None, Exception())
+
+    # The route binds the name at import, so this is the target that matters.
+    monkeypatch.setattr("memory.api.projects.provision_project_bank", poison)
+
+    response = client.post(
+        "/v1/projects",
+        json={"project_slug": "acme-unprovisioned"},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert _project_by_slug(session, "acme-unprovisioned") is not None
 
 
 @respx.mock

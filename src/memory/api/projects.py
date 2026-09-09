@@ -166,14 +166,26 @@ def create_project(
         on_behalf_of=on_behalf_of,
     )
     try:
-        provision_project_bank(db, principal, project, client=get_client())
-    except Exception:  # noqa: BLE001 -- provisioning is best-effort, see below
+        # A savepoint, not a bare try/except: provisioning writes to this
+        # session, so a DB-level failure inside it (an IntegrityError from a
+        # concurrent bootstrap registering the same built-in) leaves the
+        # session in a failed state and makes the db.commit() below raise
+        # PendingRollbackError -- a 500 with nothing committed, the exact
+        # opposite of what this handler promises. begin_nested() rolls back
+        # only the provisioning work and leaves the outer transaction usable.
+        with db.begin_nested():
+            provision_project_bank(db, principal, project, client=get_client())
+    except Exception:
         # The project row is real and the caller gets its 201: provisioning is
         # idempotent, so a later bootstrap or the next creation attempt repairs
         # it. Failing the request here would leave a committed project the
         # caller was told did not exist.
+        # exc_info: without the cause, a Hindsight outage, a name collision and
+        # a code bug are one indistinguishable log line.
         logger.warning(
-            "project created but not provisioned", extra={"project_slug": body.project_slug}
+            "project created but not provisioned",
+            extra={"project_slug": body.project_slug},
+            exc_info=True,
         )
     db.commit()
     return _response(project, domain.canonical_slug(db, project))
