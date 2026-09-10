@@ -726,3 +726,54 @@ def test_an_operator_cannot_reach_another_tenants_user_bank(
     assert response.status_code == 404, response.text
     assert response.json()["error"]["code"] == "USER_NOT_FOUND", response.text
     assert route.call_count == 0, "the request reached Hindsight before being refused"
+
+
+# ---------------------------------------------------------------------------
+# Lazy project creation: provisioning is what makes the creation durable
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_a_first_retain_whose_provisioning_fails_leaves_no_project_behind(
+    client, juan, session, tenant, monkeypatch
+):
+    """The whole point of ordering provisioning BEFORE the commit. A slug is
+    unique across live AND retired names, so a project committed without a
+    usable bank squats its slug for ever, and its `project.create` audit row
+    permanently burns one of the caller's hourly creations -- the caller is
+    told the retain failed and cannot even retry the same name."""
+    from memory import bootstrap as bootstrap_service
+    from memory.models import AuditEvent
+    from memory.retain_strategy import ensure_exact_retain_strategy
+
+    # The app fixture stubs provisioning out for unrelated route tests; this
+    # test is about provisioning, so it gets the real one back.
+    monkeypatch.setattr(
+        bootstrap_service, "ensure_exact_retain_strategy", ensure_exact_retain_strategy
+    )
+    respx.put(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    # Provisioning's first verification round trip is what fails here.
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/config$").mock(
+        return_value=httpx.Response(503, json={"detail": "down"})
+    )
+    memories = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+
+    response = client.post(
+        "/v1/memory/retain",
+        json=_retain_body(scope="project", project_slug="brand-new"),
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 502, response.text
+    assert not memories.called
+    assert session.query(ProjectSlug).filter_by(slug="brand-new").count() == 0
+    assert (
+        session.query(AuditEvent)
+        .filter_by(tenant_id=tenant, action="project.create")
+        .count()
+        == 0
+    )

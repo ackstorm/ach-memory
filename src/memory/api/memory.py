@@ -369,8 +369,18 @@ def _typed_retain(
     bank_id, _resolved_from, _project_slug = _resolve_bank(
         body, db, principal, on_behalf_of, "memory.retain", create=True, is_write=True
     )
-    db.commit()
+    # Provision BEFORE the commit, exactly as POST /v1/projects does: a 2xx
+    # here means the bank is usable, and a caller must never be left holding a
+    # committed project whose bank has no retain strategy and no built-in.
+    # Letting the failure propagate aborts the whole request, so a project
+    # this call minted is never committed -- which also means a failed first
+    # retain does not permanently burn one of the caller's hourly creations,
+    # nor squat a slug that is unrecoverable once taken (invariant 8).
     provision_before_retain(db, principal, scope=body.scope, bank_id=bank_id, client=get_client())
+    # Then commit, before the upstream retain: rolling the project back after
+    # Hindsight has accepted a memory into its bank would orphan that memory
+    # in a bank no project row points at.
+    db.commit()
     return submit_retain(db, principal, body, client=get_client(), wait=wait)
 
 

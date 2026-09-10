@@ -113,6 +113,7 @@ def _run(
     is_write: bool = False,
     verbose: bool = True,
     empty_result: dict[str, Any] | object = ABSENT_PROJECT_STILL_RAISES,
+    provision=None,
 ) -> ToolResult:
     """The shared pipeline. `body_factory` takes no arguments and returns the
     validated `ScopedRequest` (or subclass) for this call — built inside
@@ -178,6 +179,17 @@ def _run(
                 if empty_result is ABSENT_PROJECT_STILL_RAISES:
                     raise
                 return ToolResult(result=dict(empty_result))
+            # `provision`, when given, runs BEFORE the commit -- the REST twin
+            # (`api/memory.py:_typed_retain`) and POST /v1/projects both order
+            # it that way for the same reason: a caller must never be left
+            # holding a committed project whose bank has no retain strategy
+            # and no built-in. Letting a provisioning failure propagate from
+            # here aborts the request with the Project row still uncommitted,
+            # so a failed first retain neither burns one of the caller's
+            # hourly creations nor squats a slug that is unrecoverable once
+            # taken (invariant 8).
+            if provision is not None:
+                provision(bank_id, tc.db, tc.principal)
             # Commit before the upstream call: resolution may have created the
             # project that owns this bank_id, and rolling that back after the
             # bank is materialized upstream orphans it unreachably.
@@ -907,10 +919,12 @@ def _retain(
             tags=tags,
         )
 
-    def call(bank_id, db, principal, slug):
+    def provision(bank_id, db, principal):
         provision_before_retain(
             db, principal, scope=scope, bank_id=bank_id, client=get_client()
         )
+
+    def call(bank_id, db, principal, slug):
         return submit_retain(
             db, principal, body_factory(), client=get_client(), wait=wait,
         ).model_dump(mode="json")
@@ -919,7 +933,10 @@ def _retain(
     # project (lazy-provisioning plan, decision 1), guarded by
     # projects.create's own per-user hourly limit. Every other v0.4.0 retain
     # surface stays existing-only.
-    return _run(ctx, body_factory, "memory.retain", call, create=True, is_write=True)
+    return _run(
+        ctx, body_factory, "memory.retain", call,
+        create=True, is_write=True, provision=provision,
+    )
 
 
 def _list_documents(
