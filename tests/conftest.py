@@ -54,21 +54,6 @@ def _fake_resolve(token: str) -> tuple[str, frozenset[str]]:
     return subject, frozenset(g for g in raw_groups.split(",") if g)
 
 
-@pytest.fixture(autouse=True)
-def _forget_verified_banks():
-    """`retain_strategy._VERIFIED_BANKS` is process-global on purpose -- it is
-    what keeps retain from re-verifying the same bank upstream on every single
-    write. Process-global also means it outlives a test, so one test's verdict
-    would silently satisfy the next one's call: cleared here rather than in
-    each test that happens to notice.
-    """
-    from memory import retain_strategy
-
-    retain_strategy._VERIFIED_BANKS.clear()
-    yield
-    retain_strategy._VERIFIED_BANKS.clear()
-
-
 @pytest.fixture(autouse=True, scope="session")
 def _default_settings_env():
     """Baseline so `Settings()` can construct for any test.
