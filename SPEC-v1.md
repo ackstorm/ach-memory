@@ -1157,7 +1157,7 @@ never overridable (§7): a caller-supplied tag in one of these namespaces is
 refused as `INVALID_TAG` (§18) rather than merged.
 
 Beyond that, from v0.4.x, a caller may attach its own additive tags on
-`retain` and filter `recall`/`reflect` by them (`tags`). One shared gate
+`retain` and filter `recall`/`reflect` by them (`tags_filter`). One shared gate
 (`memory.tags.normalize_caller_tags`) validates and normalizes every tag on
 every surface, so a tag written and a tag searched are byte-identical. The
 motivating case is an agent serving many repositories from one project bank,
@@ -1170,19 +1170,27 @@ Enforcing either is explicitly out of scope -- it would require resolving an
 identity (a project, a repository) server-side for every event, which is
 exactly the per-event resolution this design avoids.
 
-`tags_match` is fixed at `all_strict` (AND, untagged memories excluded) on
-every surface and is never caller-settable: `all`/`any` would also return
-untagged memories and silently defeat the filter. A caller tag can only
-narrow what an already-authorized bank already returns; it is never a raw
-Hindsight tag/tag-group expression, and there is still no `list_tags` (§11.7)
-to browse a bank's tag space with.
+Matching is always strict -- untagged memories are excluded -- and the caller
+chooses only between the two strict forms, through `tags_filter_mode`: `all`
+(every named tag, the default) or `any` (at least one). Hindsight's own
+`tags_match` vocabulary is never exposed: the loose `all`/`any` forms would
+also return untagged memories and silently defeat the filter, so they are
+unrepresentable rather than merely discouraged. A caller tag can only narrow
+what an already-authorized bank already returns; it is never a raw Hindsight
+tag/tag-group expression, and there is still no `list_tags` (§11.7) to browse
+a bank's tag space with.
 
-Mental models (§14) are unaffected: a built-in's fixed source filter
-(`tags_match="all"` over `{schema:ach-retain-v1, validity:indefinite}`) still
-matches a memory that also carries caller tags, since `all`/`any` match a
-superset of the required tags, not an exact set. A mental model scoped by a
-caller's own tags is not implemented today: a custom model's `source_tags`
-must equal that same fixed pair exactly.
+Mental models (§14) select on the same tags. A model's effective source
+filter is `{schema:ach-retain-v1, validity:indefinite}` -- `validity:indefinite`
+keeps a claim with an expiry out of a summary that would outlive it (§5.6,
+§6.4), `schema:ach-retain-v1` keeps the source to ACH's own typed retain --
+AND-ed with whatever caller tags the model was created with. Those two are
+server-composed and never caller input: both prefixes are reserved (above), so
+a caller cannot name either one, and a custom model's `source_tags` carries
+only its own narrowing tags, or none at all for a model that reads everything
+the bank holds. Because the required pair is always ANDed in, the only sound
+match is the strict AND, and there is correspondingly no mode to choose on a
+mental model.
 
 ---
 
