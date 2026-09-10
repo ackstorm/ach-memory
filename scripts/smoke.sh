@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# End-to-end smoke: provision a user, mint a key, retain a fact, recall it.
+# End-to-end smoke: name two identities, retain a fact, recall it.
 # Requires the compose stack to be up and migrated.
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
-MASTER="${MEMORY_MASTER_KEY:?set MEMORY_MASTER_KEY to an identity named in the stack's MEMORY_MASTER_USERS}"
 
 # Bounded wait with an explicit failure path. Never `until ...; do sleep; done`:
 # if the target never appears, that loop hangs forever with no signal.
@@ -21,15 +20,20 @@ curl -sf "${API}/docs" >/dev/null || { echo "FAIL: API never came up at ${API}" 
 # and kept dropping its tables; isolating the test database exposed it.
 project_slug="smoke-project-$(date +%s)-$$"
 
-user_id=$(curl -sf -X POST "${API}/v1/users" \
-  -H "Authorization: Bearer ${MASTER}" -H 'Content-Type: application/json' \
-  -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_id"])')
-echo "provisioned user: ${user_id}"
-
-user_key=$(curl -sf -X POST "${API}/v1/users/${user_id}/keys" \
-  -H "Authorization: Bearer ${MASTER}" -H 'Content-Type: application/json' \
-  -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')
-echo "minted key: ${user_key:0:8}..."
+# The token IS the identity: the stack authenticates through an external
+# provider (`deploy/dev-identity/whoami.py` echoes the bearer token back as
+# the user id), so there is nothing to mint here and no master credential to
+# mint it with. Two tokens are two people with two banks.
+#
+# POST /v1/bootstrap still matters: `link_identity` deliberately does not
+# provision a bank -- that would put a Hindsight round trip on the
+# authentication path of every request -- so a brand-new identity has a
+# `users` row and an unusable bank until this call.
+user_key="smoke-user-$(date +%s)-$$"
+curl -sf -X POST "${API}/v1/bootstrap" \
+  -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
+  -d '{}' >/dev/null
+echo "named and provisioned identity: ${user_key}"
 
 # sync_retain, not retain: extraction must finish before we can recall.
 curl -sf -X POST "${API}/v1/memory/sync_retain" \
@@ -48,12 +52,10 @@ echo "${recalled}" | grep -q "bank_id" \
   && { echo "FAIL: bank_id leaked to the client" >&2; exit 1; }
 
 # A second user must not see the first user's memory.
-other_id=$(curl -sf -X POST "${API}/v1/users" \
-  -H "Authorization: Bearer ${MASTER}" -H 'Content-Type: application/json' \
-  -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_id"])')
-other_key=$(curl -sf -X POST "${API}/v1/users/${other_id}/keys" \
-  -H "Authorization: Bearer ${MASTER}" -H 'Content-Type: application/json' \
-  -d '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')
+other_key="smoke-other-$(date +%s)-$$"
+curl -sf -X POST "${API}/v1/bootstrap" \
+  -H "Authorization: Bearer ${other_key}" -H 'Content-Type: application/json' \
+  -d '{}' >/dev/null
 
 cross=$(curl -sf -X POST "${API}/v1/memory/recall" \
   -H "Authorization: Bearer ${other_key}" -H 'Content-Type: application/json' \
