@@ -26,7 +26,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema.
+
+    The values have to come back inside 8 characters BEFORE the column does.
+    Every built-in written since the upgrade holds 'all_strict' (10), so
+    narrowing first raises StringDataRightTruncation and leaves the schema
+    mid-migration on any database that actually ran this.
+    """
+    op.execute(
+        "UPDATE mental_model_registrations "
+        "SET tags_match = replace(tags_match, '_strict', '') "
+        "WHERE tags_match IN ('all_strict', 'any_strict')"
+    )
     op.alter_column('mental_model_registrations', 'tags_match',
                existing_type=sa.String(length=16),
                type_=sa.VARCHAR(length=8),
