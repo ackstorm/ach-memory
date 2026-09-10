@@ -32,6 +32,7 @@ from memory.errors import DomainError, ProjectNotFound
 from memory.hindsight.client import get_client
 from memory.mcp.server import tool_session
 from memory.mcp.tools import (
+    ABSENT_PROJECT_STILL_RAISES,
     REGISTRY,
     MCPToolError,
     ToolResult,
@@ -48,9 +49,6 @@ MaxTokens = Annotated[int, Field(ge=256, le=8192)]
 OptionalMaxTokens = Annotated[int | None, Field(default=None, ge=256, le=8192)]
 
 
-_ABSENT_PROJECT_STILL_RAISES = object()
-
-
 def _model_run(
     ctx: Context,
     body_factory,
@@ -58,7 +56,7 @@ def _model_run(
     call,
     *,
     is_write: bool,
-    empty_result: dict[str, Any] | object = _ABSENT_PROJECT_STILL_RAISES,
+    empty_result: dict[str, Any] | object = ABSENT_PROJECT_STILL_RAISES,
 ) -> ToolResult:
     """Same authorize/resolve/authorize-then-call shape as `memory_tools._run`,
     reshaped for a `LogicalBankRef` instead of a bare `bank_id`.
@@ -76,7 +74,7 @@ def _model_run(
                     body, tc.db, tc.principal, None, action, is_write=is_write
                 )
             except ProjectNotFound:
-                if empty_result is _ABSENT_PROJECT_STILL_RAISES:
+                if empty_result is ABSENT_PROJECT_STILL_RAISES:
                     raise
                 return ToolResult(result=dict(empty_result))
             tc.db.commit()

@@ -55,6 +55,7 @@ from memory.hindsight.client import get_client
 from memory.mcp.compact import compact as compact_payload
 from memory.mcp.server import tool_session
 from memory.mcp.tools import (
+    ABSENT_PROJECT_STILL_RAISES,
     REGISTRY,
     MCPToolError,
     ToolResult,
@@ -102,9 +103,6 @@ def _default_limit(limit: int | None, verbose: bool) -> int | None:
         return limit
     return DEFAULT_PAGE_SIZE
 
-_ABSENT_PROJECT_STILL_RAISES = object()
-
-
 def _run(
     ctx: Context,
     body_factory,
@@ -114,7 +112,7 @@ def _run(
     create: bool,
     is_write: bool = False,
     verbose: bool = True,
-    empty_result: dict[str, Any] | object = _ABSENT_PROJECT_STILL_RAISES,
+    empty_result: dict[str, Any] | object = ABSENT_PROJECT_STILL_RAISES,
 ) -> ToolResult:
     """The shared pipeline. `body_factory` takes no arguments and returns the
     validated `ScopedRequest` (or subclass) for this call — built inside
@@ -177,7 +175,7 @@ def _run(
                     create=create, is_write=is_write,
                 )
             except ProjectNotFound:
-                if empty_result is _ABSENT_PROJECT_STILL_RAISES:
+                if empty_result is ABSENT_PROJECT_STILL_RAISES:
                     raise
                 return ToolResult(result=dict(empty_result))
             # Commit before the upstream call: resolution may have created the

@@ -80,6 +80,15 @@ def _internal_error() -> MCPToolError:
     return MCPToolError("INTERNAL_ERROR", "internal error")
 
 
+#: Default for the `empty_result` parameter of the pipelines in
+#: `memory_tools`/`model_tools`: an absent project keeps raising
+#: PROJECT_NOT_FOUND unless a read tool asked for the empty shape instead.
+#: One object, shared, because the pipelines compare it by IDENTITY -- two
+#: modules each defining their own sentinel means passing one module's to the
+#: other silently reads as "return empty" where it meant "raise".
+ABSENT_PROJECT_STILL_RAISES = object()
+
+
 def register(mcp: MCPServer) -> None:
     """Register each product-owned MCP surface on one server."""
     # Kept local so product modules can import the shared contracts above
