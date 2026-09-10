@@ -322,28 +322,24 @@ Resolves to `tenant_id` + `user_id`. The client never sends a user ID to
 identify itself.
 
 ```text
-x-ach-memory-key: mem_...
+Authorization: Bearer <token>
 ```
 
-or, equivalently:
+or, when a platform in front of this service forwards its own credential, the
+header that platform is configured to use (§5.3).
 
-```text
-Authorization: Bearer mem_...
-```
+There is no ach-memory-specific credential header. Every credential is issued
+elsewhere, so there is nothing for such a header to name that the token does
+not already say itself: **the token's shape selects its provider.** A JWT is
+self-describing — three dot-separated segments whose first decodes to a JOSE
+header — and anything else is opaque, resolvable only by the platform
+resolver. Both providers may therefore be enabled at once, reading the same
+header, with no precedence rule to get wrong.
 
-Both headers are accepted on REST and MCP alike. `Authorization` is the
-original form and is not deprecated, but it is contested: anything deployed in
-front of this service — LiteLLM, an API gateway, ACH — has its own claim on
-`Authorization`, and whoever writes it last wins. `x-ach-memory-key` names the
-credential meant for this service and nothing else.
-
-When both are present, `x-ach-memory-key` is the only one considered, and a
-present-but-empty value is rejected rather than falling back. Falling back
-would let a typo'd key silently authenticate as whoever `Authorization`
-happens to name. A `Bearer ` prefix on `x-ach-memory-key` is tolerated and
-stripped, because the neighbouring platform header `x-litellm-api-key`
-requires one and copying that habit across would otherwise fail as an
-indistinguishable "unknown API key".
+That choice is final. A token that parses as a JWT and then fails validation
+is refused; it is never retried against the platform resolver. A fall-through
+there would authenticate a caller whose token was forged, expired or signed
+by the wrong issuer as whoever the platform header names.
 
 `Authorization` keeps carrying `mem_` keys even though it now also carries
 externally-issued tokens (§5.3), and that is a host constraint rather than a
@@ -405,10 +401,10 @@ the providers existed.
 Resolution is ordered and fail-closed:
 
 ```text
-x-ach-memory-key             -> local key
-Authorization: Bearer mem_   -> local key
-Authorization: Bearer <jwt>  -> JWT provider    (when enabled)
-platform header              -> HTTP resolver   (when enabled)
+Authorization: Bearer <jwt>  -> JWT provider    (when enabled; shape decides)
+Authorization: Bearer <opaque>
+  / platform header          -> HTTP resolver   (when enabled)
+a JWT the provider refuses   -> 401, never retried elsewhere
 otherwise                    -> 401
 ```
 

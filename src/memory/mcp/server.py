@@ -15,7 +15,7 @@ from typing import Protocol
 from mcp.server.mcpserver import MCPServer
 from sqlalchemy.orm import Session
 
-from memory.auth.principal import API_KEY_HEADER, Principal, resolve_principal
+from memory.auth.principal import Principal, resolve_principal
 from memory.config import get_settings
 from memory.db import session_scope
 
@@ -46,10 +46,6 @@ def tool_session(ctx: HasHeaders) -> Iterator[ToolContext]:
     # pair covered only two of the spellings a client may send.
     headers = {k.lower(): v for k, v in (ctx.headers or {}).items()}
     authorization = headers.get("authorization")
-    # Same precedence as the REST surface: when present, this is the only
-    # credential considered. It exists because everything that fronts this
-    # service has its own claim on Authorization (SPEC §5.1).
-    api_key = headers.get(API_KEY_HEADER)
 
     settings = get_settings()
     platform_token = None
@@ -63,7 +59,7 @@ def tool_session(ctx: HasHeaders) -> Iterator[ToolContext]:
 
     with session_scope() as db:
         principal = resolve_principal(
-            authorization, db, api_key=api_key, platform_token=platform_token
+            authorization, db, platform_token=platform_token
         )
         # Invariant 22, enforced by withholding the authority rather than by
         # refusing the caller. Measured live: a master key over MCP reached

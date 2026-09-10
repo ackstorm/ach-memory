@@ -193,7 +193,7 @@ MCP-capable agent that prefers to speak to it directly:
 
 ```text
 POST http://<host>:8000/mcp/
-x-ach-memory-key: <user key>
+Authorization: Bearer <token>
 ```
 
 The trailing slash is not optional: `/mcp` answers `307` to `/mcp/`, and
@@ -201,11 +201,11 @@ because the transport is stateless that redirect costs a round trip on
 every tool call, not just the first. `ach-memory init` already writes the
 correct form.
 
-`Authorization: Bearer <token>` also works — both headers carry the same
-externally issued token. Prefer the dedicated header when a gateway already
-uses `Authorization`; when both are sent, `x-ach-memory-key` wins. An
-operator identity is rejected on MCP (invariant 22), and v1 supports
-native/non-browser MCP clients only.
+The credential is whatever your identity provider issued — a JWT, or the key
+a platform forwards on the header it is configured to use. An operator
+identity is accepted on MCP but carries no operator authority there
+(invariant 22): the same person is an operator over REST and an ordinary user
+here. v1 supports native/non-browser MCP clients only.
 
 `ach-memory context load` reads the endpoint and credential from
 `ACH_MEMORY_URL` / `ACH_MEMORY_API_KEY` and prints exactly the authorized
@@ -329,13 +329,13 @@ monitor can never point at an endpoint that is switched off.
 **Every credential is issued elsewhere.** This service mints none, stores none
 and verifies none of its own, so at least one provider must be configured or
 nothing can authenticate. Two ways in, tried in a fixed order and fail-closed:
-whichever provider the credential names is the only one consulted, so a
+the token's own shape selects its provider, and that choice is final -- a
 rejected credential is never retried as something else.
 
-1. **A JWKS-verified JWT** on `Authorization: Bearer <token>`, or on
-   `x-ach-memory-key` from behind a gateway that claims `Authorization`. Use
-   it when an identity provider you already run (ACH, Dex) mints tokens for
-   the agent.
+1. **A JWKS-verified JWT** on `Authorization: Bearer <token>`. Use it when an
+   identity provider you already run (ACH, Dex) mints tokens for the agent.
+   A token is routed here by its own shape, so this can share a header with
+   the platform key below.
 2. **A platform API key** on a header you name. Use it when callers arrive
    through a platform that forwards its own key rather than a token this
    service could verify offline (LiteLLM). Identity comes from an HTTP round

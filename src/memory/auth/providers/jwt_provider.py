@@ -82,6 +82,22 @@ def _groups(claims: Mapping[str, object], claim_name: str) -> frozenset[str]:
     )
 
 
+def looks_like_jwt(token: str) -> bool:
+    """Whether this token claims to be a JWT, by its own structure.
+
+    Routing on shape is what lets two providers share one header without a
+    precedence rule nobody read. `get_unverified_header` parses the JOSE
+    header and nothing else -- it verifies no signature and trusts no claim --
+    so a forged header can only ever route a token to the provider that then
+    refuses it. It never grants anything.
+    """
+    try:
+        jwt.get_unverified_header(token)
+    except jwt.PyJWTError:
+        return False
+    return True
+
+
 def authenticate(token: str, db: Session) -> Principal:
     settings = get_settings()
     options: dict[str, Any] = {

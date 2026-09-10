@@ -99,45 +99,6 @@ def test_a_token_no_provider_accepts_is_unauthorized(tenant):
         pass
 
 
-def test_the_dedicated_key_header_wins_over_authorization_on_mcp(app, monkeypatch):
-    """The MCP surface reads `x-ach-memory-key` too, not just Authorization --
-    the header an agent can set without fighting whatever LiteLLM or a gateway
-    has already put in Authorization.
-
-    The provider is a spy for the same reason test_principal.py's is: what
-    this file owns is that `tool_session` forwards the header at all, not
-    PyJWT's signature checking.
-    """
-    from memory.auth.principal import Principal
-    from memory.auth.providers import jwt_provider
-    from memory.config import get_settings
-
-    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
-    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://idp.example.com")
-    monkeypatch.setenv("MEMORY_AUTH_JWT_AUDIENCE", "mcp:ach-memory")
-    get_settings.cache_clear()
-
-    seen: list[str] = []
-
-    def _authenticate(token, db):
-        seen.append(token)
-        return Principal(tenant_id="default", user_id="usr_jwt", subject="jwt@test")
-
-    monkeypatch.setattr(jwt_provider, "authenticate", _authenticate)
-
-    with mcp_server.tool_session(
-        _headers(
-            {
-                "authorization": "Bearer from_a_proxy",
-                "x-ach-memory-key": "mine",
-            }
-        )
-    ) as tc:
-        assert tc.principal.user_id == "usr_jwt"
-
-    assert seen == ["mine"]
-
-
 def test_an_external_identity_yields_its_own_principal(new_user, tenant):
     user = new_user()
 

@@ -193,7 +193,7 @@ jobs:
             # bound and the explicit failure path existed; they were simply
             # unreachable.
             code=$(curl -s -o /dev/null -w '%{http_code}' \
-              -H "x-ach-memory-key: ci-master-key" \
+              -H "Authorization: Bearer ci-master-key" \
               http://localhost:8000/v1/projects || true)
             if [ "$code" = "200" ]; then
               echo "answered 200 after ${i} attempt(s)"

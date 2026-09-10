@@ -1,13 +1,61 @@
 import pytest
 
 from memory.auth.principal import (
-    API_KEY_HEADER,
     Principal,
     is_operator,
     resolve_principal,
 )
 from memory.config import Settings
 from memory.errors import Unauthorized
+
+#: A token that is structurally a JWT and nothing more: a real JOSE header,
+#: an empty payload, a meaningless signature. `looks_like_jwt` parses only
+#: the header, so this is exactly enough to be ROUTED to the JWT provider --
+#: which is what these tests are about. Real signature verification is
+#: tests/test_auth_jwt.py's.
+JWT_SHAPED = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.not-a-real-signature"
+
+
+@pytest.fixture
+def platform(monkeypatch):
+    """Spy on the platform provider, for the same reason `jwt_enabled` spies
+    on the JWT one: what the dispatcher owns is the choice, not the check."""
+    from memory.auth.providers import platform as platform_provider
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "authorization")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_RESOLVER_URL", "http://identity.test/whoami")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_RESOLVER_HEADER", "x-resolver-key")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_USER_FIELD", "user_id")
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_GROUPS_FIELD", "groups")
+    get_settings.cache_clear()
+
+    seen: list[str] = []
+
+    def _authenticate(token, db):
+        seen.append(token)
+        return Principal(tenant_id="default", user_id="usr_platform", credential_id="ext_2")
+
+    monkeypatch.setattr(platform_provider, "authenticate", _authenticate)
+    return seen
+
+
+@pytest.fixture
+def jwt_rejecting(monkeypatch):
+    """The JWT provider as it behaves for a token it refuses."""
+    from memory.auth.providers import jwt_provider
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_ISSUER", "https://idp.example.com")
+    monkeypatch.setenv("MEMORY_AUTH_JWT_AUDIENCE", "mcp:ach-memory")
+    get_settings.cache_clear()
+
+    def _authenticate(token, db):
+        raise Unauthorized("token rejected")
+
+    monkeypatch.setattr(jwt_provider, "authenticate", _authenticate)
 
 
 @pytest.fixture(autouse=True)
@@ -150,47 +198,35 @@ def test_the_service_refuses_to_start_when_master_config_could_over_grant(monkey
 # --- Dispatch: every credential is externally issued -----------------------
 
 
-def test_a_bearer_token_goes_to_the_jwt_provider(session, jwt_enabled):
-    principal = resolve_principal("Bearer some.jwt.token", session)
+def test_a_jwt_shaped_token_goes_to_the_jwt_provider(session, jwt_enabled):
+    principal = resolve_principal(f"Bearer {JWT_SHAPED}", session)
 
-    assert jwt_enabled == ["some.jwt.token"]
+    assert jwt_enabled == [JWT_SHAPED]
     assert principal.user_id == "usr_jwt"
 
 
-def test_a_mem_prefixed_token_is_no_longer_special(session, jwt_enabled):
-    """The `mem_` prefix existed to discriminate a local key from a JWT on
-    Authorization. With no local keys there is nothing to discriminate, so a
-    token that happens to start with it is simply a token."""
-    resolve_principal("Bearer mem_looks_like_the_old_thing", session)
-
-    assert jwt_enabled == ["mem_looks_like_the_old_thing"]
-
-
-def test_the_dedicated_header_wins_over_authorization(session, jwt_enabled):
-    """Precedence is the whole point: whatever a proxy leaves in
-    Authorization must not override the credential the caller explicitly
-    nominated for this service."""
-    resolve_principal("Bearer from_a_proxy", session, api_key="mine")
-
-    assert jwt_enabled == ["mine"]
-
-
-def test_the_dedicated_header_tolerates_a_bearer_prefix(session, jwt_enabled):
-    resolve_principal(None, session, api_key="Bearer mine")
-
-    assert jwt_enabled == ["mine"]
-
-
-def test_a_blank_dedicated_header_does_not_fall_back_to_authorization(
-    session, jwt_enabled
-):
-    """A present-but-empty dedicated header is a caller error, not an absent
-    one. Falling through would authenticate as whoever Authorization names --
-    the confused deputy this precedence exists to prevent."""
-    with pytest.raises(Unauthorized, match=API_KEY_HEADER):
-        resolve_principal("Bearer from_a_proxy", session, api_key="   ")
+def test_an_opaque_token_goes_to_the_platform_resolver(session, jwt_enabled, platform):
+    """Both providers enabled, one header: the token's own shape decides, so
+    there is no precedence rule to get wrong. An opaque string is not a JWT
+    and only the resolver can name it."""
+    resolve_principal("Bearer mem_looks_like_the_old_thing", session,
+                      platform_token="mem_looks_like_the_old_thing")
 
     assert jwt_enabled == []
+    assert platform == ["mem_looks_like_the_old_thing"]
+
+
+def test_a_rejected_jwt_never_falls_through_to_the_platform_resolver(
+    session, jwt_rejecting, platform
+):
+    """The property the shape check buys. Falling through here would
+    authenticate a caller whose JWT was forged, expired or signed by the
+    wrong issuer as whoever the platform header names -- a confused deputy
+    that stays invisible until it matters."""
+    with pytest.raises(Unauthorized):
+        resolve_principal(f"Bearer {JWT_SHAPED}", session, platform_token="somebody_else")
+
+    assert platform == []
 
 
 def test_missing_credential_is_unauthorized(session):

@@ -7,13 +7,6 @@ from memory.errors import Unauthorized
 
 BEARER = "bearer "
 
-#: Dedicated credential header. `Authorization` still works and is not going
-#: away, but it is contested: anything fronting this service (LiteLLM, an API
-#: gateway, ACH) has its own claim on `Authorization`, and whoever writes it
-#: last wins. A caller that sends this header states unambiguously which
-#: credential is meant for ach-memory.
-API_KEY_HEADER = "x-ach-memory-key"
-
 
 @dataclass(frozen=True, kw_only=True)
 class Principal:
@@ -104,42 +97,34 @@ def resolve_principal(
     authorization: str | None,
     db: Session,
     *,
-    api_key: str | None = None,
     platform_token: str | None = None,
 ) -> Principal:
-    """Authenticate the caller against every configured provider, in order.
+    """Authenticate the caller. The token's own shape names its provider.
 
     Every credential is issued elsewhere. This service mints none, stores
-    none and verifies none of its own, so there is nothing left to
-    discriminate between on `Authorization` -- the `mem_` prefix went with
-    the local keys it existed to tell apart.
+    none and verifies none of its own, so there is nothing to discriminate
+    between on `Authorization` -- except the token itself, and a JWT says
+    what it is: three dot-separated segments whose first decodes to a JOSE
+    header. Anything else is opaque, and only the platform resolver can name
+    it. Both providers can therefore be enabled at once, reading the same
+    header, with no precedence rule to get wrong.
 
-    Fail-closed at each step: once a credential names a provider, that
-    provider is the ONLY one consulted, and a JWT whose signature is bad is
-    never downgraded to the platform resolver. Falling through would mean a
-    bad credential silently authenticates as whoever the *next* header names,
-    which is a confused deputy that stays invisible until it matters.
+    Fail-closed, and this is the property the shape check buys: once shape
+    picks the JWT provider, that decision is FINAL. A token that parses as a
+    JWT and then fails validation is refused, never retried against the
+    platform resolver -- a fall-through there would authenticate a bad
+    credential as whoever the platform header names, which is a confused
+    deputy that stays invisible until it matters.
     """
     settings = get_settings()
+    token = _bearer_token(authorization)
 
-    # 1. The dedicated header names the credential meant for THIS service and
-    #    is the only source considered once present (SPEC §5.1). It carries a
-    #    token, exactly like `Authorization`; the point is only that no proxy
-    #    in front of us has a claim on this header's name.
-    token = (
-        _strip_bearer(api_key, API_KEY_HEADER)
-        if api_key is not None
-        else _bearer_token(authorization)
-    )
-
-    # 2. A token is an externally-issued JWT.
     if token is not None and settings.auth_jwt_enabled:
         from memory.auth.providers import jwt_provider
 
-        return jwt_provider.authenticate(token, db)
+        if jwt_provider.looks_like_jwt(token):
+            return jwt_provider.authenticate(token, db)
 
-    # 3. The platform header is the documented fallback, reached only when
-    #    neither token header carried anything we could use.
     if platform_token and settings.auth_platform_enabled:
         from memory.auth.providers import platform
 
@@ -155,23 +140,7 @@ def resolve_principal(
             "no credentials of its own: the token must come from the "
             "configured JWT issuer or the platform that issued your key"
         )
-    raise Unauthorized(
-        f"missing or malformed credential: send {API_KEY_HEADER} "
-        "or Authorization: Bearer"
-    )
-
-
-def _strip_bearer(value: str, header: str) -> str:
-    """Tolerated, not documented. The neighbouring platform header
-    (`x-litellm-api-key`) *requires* a "Bearer " prefix, so pasting the habit
-    across is the likely mistake, and it would otherwise fail as "unknown API
-    key" -- indistinguishable from a wrong key."""
-    value = value.strip()
-    if value.lower().startswith(BEARER):
-        value = value[len(BEARER) :].strip()
-    if not value:
-        raise Unauthorized(f"malformed {header} header")
-    return value
+    raise Unauthorized("missing or malformed credential: send Authorization: Bearer")
 
 
 def _bearer_token(authorization: str | None) -> str | None:

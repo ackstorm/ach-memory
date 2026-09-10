@@ -101,17 +101,10 @@ def _platform_token(request: Request) -> str | None:
 def current_principal(
     request: Request,
     authorization: Annotated[str | None, Header()] = None,
-    # FastAPI maps this parameter name to the `x-ach-memory-key` header. It
-    # takes precedence over Authorization when present -- see
-    # memory.auth.principal.API_KEY_HEADER for why the dedicated header exists.
-    x_ach_memory_key: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_session),
 ) -> Principal:
     return resolve_principal(
-        authorization,
-        db,
-        api_key=x_ach_memory_key,
-        platform_token=_platform_token(request),
+        authorization, db, platform_token=_platform_token(request)
     )
 
 
