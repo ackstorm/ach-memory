@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP smoke test: proves the fifteen-tool surface against a live stack.
+"""MCP smoke test: proves the advertised tool surface against a live stack.
 
 `scripts/smoke.sh` is curl against REST. This is a real MCP client (the SDK's
 `ClientSession` over `streamable_http_client`) against the same running
@@ -16,6 +16,8 @@ import asyncio
 import json
 import os
 import sys
+import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -27,21 +29,14 @@ from mcp.client.streamable_http import streamable_http_client
 
 API = os.environ.get("API", "http://localhost:8000")
 MCP_URL = f"{API}/mcp/"
-MASTER = os.environ["MEMORY_MASTER_KEY"]
 
-# The exact fifteen of SPEC §11 -- the excluded set (bank/mental-model/
-# directive/admin management) must never appear here.
-EXPECTED_TOOLS = {
-    "retain", "sync_retain", "recall", "reflect",
-    "list_memories", "get_memory", "forget", "correct", "restore",
-    "list_documents", "get_document", "delete_document",
-    "get_operation", "list_operations", "cancel_operation",
-}
-
-# The pattern lives in scripts/leakscan.py so smoke.sh, e2e.py and this
-# script cannot drift apart again.
+# Both the leak pattern and the advertised tool set live beside this script
+# so smoke.sh, e2e.py and this file cannot drift apart again. The tool set
+# had already drifted: this script pinned "the exact fifteen of SPEC §11"
+# through the whole of v0.4.0, which added eleven more plus `transfer`.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from leakscan import LEAK_RE
+from mcp_surface import EXPECTED_MCP_TOOLS
 
 
 def fail(msg: str) -> None:
@@ -67,15 +62,23 @@ async def wait_for_api(client: httpx.AsyncClient) -> None:
     fail(f"API never came up at {API}")
 
 
-async def provision_user_key(client: httpx.AsyncClient) -> str:
-    headers = {"Authorization": f"Bearer {MASTER}"}
-    user = (await client.post(f"{API}/v1/users", json={}, headers=headers)).json()
-    key = (
-        await client.post(
-            f"{API}/v1/users/{user['user_id']}/keys", json={}, headers=headers
-        )
-    ).json()
-    return key["key"]
+async def provision_user_identity(client: httpx.AsyncClient) -> str:
+    """Name an identity, provision its bank, return the bearer token.
+
+    Nothing is minted: the stack authenticates through an external provider
+    (`deploy/dev-identity/whoami.py` echoes the token back as the user id),
+    so the token IS the identity and a fresh one per run is a fresh user.
+    `POST /v1/bootstrap` is what makes that user's bank usable, and
+    `link_identity` deliberately does not -- provisioning there would put a
+    Hindsight round trip on every request's authentication path.
+    """
+    token = f"mcp-smoke-{int(time.time())}-{os.getpid()}"
+    response = await client.post(
+        f"{API}/v1/bootstrap", json={}, headers={"Authorization": f"Bearer {token}"}
+    )
+    if response.status_code != 200:
+        fail(f"bootstrap failed for {token}: HTTP {response.status_code} {response.text}")
+    return token
 
 
 def unwrap(result):
@@ -95,6 +98,22 @@ def unwrap(result):
     return result.structured_content["result"]
 
 
+def retain_args(text: str) -> dict:
+    """A typed retain body. The tool signature carries the same contract REST
+    does -- the SDK derives the advertised JSON Schema from it -- so a bare
+    {scope, content} call is refused on both surfaces identically, which is
+    what this script kept sending for the whole of v0.4.0."""
+    return {
+        "scope": "user",
+        "content": text,
+        "memory_type": "fact",
+        "basis": "human_explicit",
+        "trigger": "user_requested",
+        "evidence": [{"kind": "user_quote", "raw": text[:1024]}],
+        "operation_id": str(uuid.uuid4()),
+    }
+
+
 def find_memory(listing: dict, needle: str) -> str | None:
     """Real `memories/list` wraps results under "items", not "memories" --
     measured against the live server in the previous plan's smoke run."""
@@ -108,7 +127,7 @@ def find_memory(listing: dict, needle: str) -> str | None:
 async def main() -> None:
     async with httpx.AsyncClient(timeout=30.0) as rest:
         await wait_for_api(rest)
-        user_key = await provision_user_key(rest)
+        user_key = await provision_user_identity(rest)
 
     if "--proxy" in sys.argv:
         # --proxy: same fifteen-tool run, but through a spawned `ach-memory
@@ -140,19 +159,15 @@ async def main() -> None:
 
         tools = await session.list_tools()
         names = {t.name for t in tools.tools}
-        if names != EXPECTED_TOOLS:
+        if names != EXPECTED_MCP_TOOLS:
             fail(
                 "advertised tool set mismatch: "
-                f"extra={sorted(names - EXPECTED_TOOLS)} "
-                f"missing={sorted(EXPECTED_TOOLS - names)}"
+                f"extra={sorted(names - EXPECTED_MCP_TOOLS)} "
+                f"missing={sorted(EXPECTED_MCP_TOOLS - names)}"
             )
 
         content = "The mcp-smoke script pins its Python tooling with uv, never with pip."
-        unwrap(
-            await session.call_tool(
-                "sync_retain", {"scope": "user", "content": content}
-            )
-        )
+        unwrap(await session.call_tool("sync_retain", retain_args(content)))
 
         recalled = unwrap(
             await session.call_tool(
@@ -208,10 +223,9 @@ async def main() -> None:
         op = unwrap(
             await session.call_tool(
                 "retain",
-                {
-                    "scope": "user",
-                    "content": "Scenario P: the async retain lifecycle, chained into get_operation.",
-                },
+                retain_args(
+                    "Scenario P: the async retain lifecycle, chained into get_operation."
+                ),
             )
         )
         operation_id = op.get("operation_id")
@@ -228,8 +242,8 @@ async def main() -> None:
             fail(f"get_operation did not resolve retain's operation_id: {got}")
 
     print(
-        "PASS: 15 tools, retain -> recall -> forget -> restore, "
-        "operation followed, no bank_id leak"
+        f"PASS: {len(EXPECTED_MCP_TOOLS)} tools, retain -> recall -> forget -> "
+        "restore, operation followed, no bank_id leak"
     )
 
 

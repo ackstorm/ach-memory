@@ -41,9 +41,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from benchlib import API, HINDSIGHT_URL, MARK, Http, Outcome, ProbeResult, bank_path, table
 
-MASTER = os.environ.get("MEMORY_MASTER_KEY")
-if not MASTER:
-    print("FAIL: MEMORY_MASTER_KEY is not set. Run via `make bench`.", file=sys.stderr)
+# An operator IDENTITY, not a credential: ach-memory mints nothing, so this
+# is simultaneously the token the probes send and the subject named in
+# MEMORY_MASTER_USERS, which is what grants it authority. scripts/bench-
+# compose.sh sets both to one value.
+OPERATOR = os.environ.get("MEMORY_OPERATOR_TOKEN")
+if not OPERATOR:
+    print("FAIL: MEMORY_OPERATOR_TOKEN is not set. Run via `make bench`.", file=sys.stderr)
     sys.exit(1)
 
 RUN = uuid.uuid4().hex[:10]
@@ -83,7 +87,7 @@ def retain_body(scope: str, content: str, **kw) -> dict:
 async def _(ach: Http, van: Http, ctx: dict) -> ProbeResult:
     # ach arm: Bob asks for Alice's user-scope memory. There is no route that
     # accepts a bank id at all, so the strongest reachable form of the
-    # question is a master-key delegation versus a peer's key.
+    # question is an operator delegation versus a peer's token.
     status, data = await ach.call(
         "POST", "/v1/memory/recall", key=ctx["key.bob"],
         json_body={"scope": "user", "user_id": ctx["user.alice"], "query": "salary"},
@@ -94,7 +98,8 @@ async def _(ach: Http, van: Http, ctx: dict) -> ProbeResult:
         code = data.get("error", {}).get("code") if isinstance(data, dict) else None
         ach_out = Outcome(
             "ENFORCED",
-            f"HTTP {status} {code}; user_id is ignored for a non-master key",
+            f"HTTP {status} {code}; a caller without operator authority is "
+            "refused the delegation, not silently redirected to their own bank",
         )
 
     # vanilla arm: address the bank directly, with no credential at all.
@@ -361,14 +366,14 @@ async def _(ach: Http, van: Http, ctx: dict) -> ProbeResult:
     return ProbeResult("correction_applied", "", ach_out, van_out)
 
 
-@probe("master_key_traceability", "Is an admin reaching into a user's private bank recorded?")
+@probe("operator_traceability", "Is an admin reaching into a user's private bank recorded?")
 async def _(ach: Http, van: Http, ctx: dict) -> ProbeResult:
     await ach.call(
-        "POST", "/v1/memory/recall", key=MASTER,
+        "POST", "/v1/memory/recall", key=OPERATOR,
         json_body={"scope": "user", "user_id": ctx["user.alice"], "query": "anything"},
     )
     status, data = await ach.call(
-        "GET", "/v1/admin/audit", key=MASTER, params={"limit": 50}
+        "GET", "/v1/admin/audit", key=OPERATOR, params={"limit": 50}
     )
     rows = _items(data)
     hit = [r for r in rows if ctx["user.alice"] in str(r)]
@@ -377,7 +382,7 @@ async def _(ach: Http, van: Http, ctx: dict) -> ProbeResult:
         f"audit query HTTP {status}, {len(hit)} row(s) naming the delegated user",
     )
     van_out = Outcome("OUT_OF_SCOPE", "no actor identity, so nothing to attribute an access to")
-    return ProbeResult("master_key_traceability", "", ach_out, van_out)
+    return ProbeResult("operator_traceability", "", ach_out, van_out)
 
 
 @probe("content_cap", "Is an oversize payload refused at the boundary or forwarded?")
@@ -494,7 +499,7 @@ def _items(data) -> list:
 
     Three real shapes had to be accommodated, each of which silently
     returned [] before -- and an empty list reads as a finding rather than a
-    harness bug, which is how `master_key_traceability` reported 0 audit
+    harness bug, which is how `operator_traceability` reported 0 audit
     rows against a service that had written them:
       GET /v1/admin/audit  -> a BARE JSON list, no envelope
       POST /v1/read/history-> {"changes": [...]}, not "revisions"
@@ -524,20 +529,34 @@ def _items(data) -> list:
 
 async def bootstrap(ach: Http, van: Http) -> dict:
     ctx: dict = {}
+    # The token IS the identity: the stack authenticates through an external
+    # provider, so nothing is minted here and there is no operator credential
+    # to mint it with. Three tokens are three people with three banks.
+    # `POST /v1/bootstrap` is what makes each bank usable -- `link_identity`
+    # deliberately does not provision one, to keep a Hindsight round trip off
+    # every request's authentication path.
     for name in ("alice", "bob", "ratelimituser"):
-        uid = f"bench-{name}-{RUN}"
-        status, data = await ach.call("POST", "/v1/users", key=MASTER, json_body={"id": uid})
-        if status != 201:
-            raise SystemExit(f"bootstrap failed creating {uid}: HTTP {status} {data}")
-        ctx[f"user.{name}"] = uid
-        status, data = await ach.call("POST", f"/v1/users/{uid}/keys", key=MASTER, json_body={})
-        if status != 201:
-            raise SystemExit(f"bootstrap failed minting a key for {uid}: HTTP {status} {data}")
-        ctx[f"key.{name}"] = data["key"]
+        token = f"bench-{name}-{RUN}"
+        status, data = await ach.call("POST", "/v1/bootstrap", key=token, json_body={})
+        if status != 200:
+            raise SystemExit(f"bootstrap failed for {token}: HTTP {status} {data}")
+        ctx[f"key.{name}"] = token
 
     slug = f"bench-private-{RUN}"
-    await ach.call("POST", "/v1/projects", key=ctx["key.alice"], json_body={"project_slug": slug})
+    # Alice's INTERNAL user id, which is NOT her token: `link_identity`
+    # generates it, and a delegation names its target by it
+    # (`banks.resolve_user_bank`). `cross_user_read` and
+    # `operator_traceability` both need it, and this call is already being
+    # made, so read its owner rather than spending another one. The status
+    # check is new with that read: a failed create used to be survivable
+    # here, and now it is a KeyError three probes later.
+    status, data = await ach.call(
+        "POST", "/v1/projects", key=ctx["key.alice"], json_body={"project_slug": slug}
+    )
+    if status != 201:
+        raise SystemExit(f"bootstrap failed creating project {slug}: HTTP {status} {data}")
     ctx["project.private"] = slug
+    ctx["user.alice"] = data["owner"]["id"]
 
     # The vanilla arm's bank. Hindsight creates a bank on first write and the
     # id is chosen by the caller, which is itself part of what probe

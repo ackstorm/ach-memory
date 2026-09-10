@@ -69,9 +69,9 @@ fi
 # that same id in MEMORY_MASTER_USERS is what grants it authority -- so the
 # value below is simultaneously the token the scripts send and the operator
 # the API recognises. It is not a secret and there is nothing to hash.
-MEMORY_MASTER_KEY="bench-operator"
-export MEMORY_MASTER_KEY
-MEMORY_MASTER_USERS="$MEMORY_MASTER_KEY"
+MEMORY_OPERATOR_TOKEN="bench-operator"
+export MEMORY_OPERATOR_TOKEN
+MEMORY_MASTER_USERS="$MEMORY_OPERATOR_TOKEN"
 export MEMORY_MASTER_USERS
 
 stack_started=1

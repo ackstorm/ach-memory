@@ -47,8 +47,8 @@ esac
         bin_dir / "uv",
         """#!/usr/bin/env bash
 set -eu
-printf 'uv|%s|API=%s|HINDSIGHT_URL=%s|master=%s\n' \
-  "$*" "${API-}" "${HINDSIGHT_URL-}" "${MEMORY_MASTER_KEY:+set}" >>"$CALL_LOG"
+printf 'uv|%s|API=%s|HINDSIGHT_URL=%s|operator=%s\n' \
+  "$*" "${API-}" "${HINDSIGHT_URL-}" "${MEMORY_OPERATOR_TOKEN:+set}" >>"$CALL_LOG"
 if [ "${E2E_BLOCK-0}" = 1 ]; then
   : >"$E2E_READY_FILE"
   trap 'exit 143' TERM
@@ -113,7 +113,7 @@ def test_runner_uses_random_loopback_ports_and_removes_its_project(tmp_path: Pat
     assert any(
         line
         == "uv|run python scripts/e2e.py|API=http://127.0.0.1:49152|"
-        "HINDSIGHT_URL=http://127.0.0.1:49153|master=set"
+        "HINDSIGHT_URL=http://127.0.0.1:49153|operator=set"
         for line in lines
     )
     assert " down -v --remove-orphans" in docker_lines[-1]

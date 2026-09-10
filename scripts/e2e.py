@@ -58,12 +58,16 @@ HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "http://localhost:8888")
 sys.stdout.reconfigure(line_buffering=True)  # keep PASS/FAIL in true chronological order
                                               # under redirection (2>&1 | tee, etc.)
 
-MASTER = os.environ.get("MEMORY_MASTER_KEY")
-if not MASTER:
+# An operator IDENTITY, not a credential: ach-memory mints nothing, so this
+# is simultaneously the token this script sends and the subject named in
+# MEMORY_MASTER_USERS, which is what grants it authority. scripts/e2e-
+# compose.sh sets both to one value.
+OPERATOR = os.environ.get("MEMORY_OPERATOR_TOKEN")
+if not OPERATOR:
     print(
-        "FAIL: MEMORY_MASTER_KEY is not set in the environment.\n"
-        "Run:  set -a && . ./.env && set +a\n"
-        "then re-invoke this script.",
+        "FAIL: MEMORY_OPERATOR_TOKEN is not set in the environment.\n"
+        "Run:  make e2e\n"
+        "which brings up an isolated stack and sets it.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -78,6 +82,7 @@ RUN = uuid.uuid4().hex[:10]
 # scan existed to catch.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from leakscan import LEAK_RE
+from mcp_surface import EXPECTED_MCP_TOOLS
 
 LEAKS: list[tuple[str, str]] = []
 
@@ -423,7 +428,7 @@ async def _() -> None:
     """
     slug = f"e2e-proj-operator-{RUN}"
     body = {"project_slug": slug}
-    status, data = await call("POST", "/v1/projects", MASTER, json_body=body)
+    status, data = await call("POST", "/v1/projects", OPERATOR, json_body=body)
     expect_status("POST", "/v1/projects", body, status, data, 201)
     assert data["owner"]["type"] == "user" and data["owner"]["id"], data
     S["project.operator"] = slug
@@ -614,7 +619,7 @@ async def _() -> None:
         "project.self", "project.release", "project.transfer", "project.group",
         "project.outsider_only",
     )
-    status, data = await call("GET", "/v1/projects", MASTER)
+    status, data = await call("GET", "/v1/projects", OPERATOR)
     expect_status("GET", "/v1/projects", None, status, data, 200)
     slugs = {p["project_slug"] for p in data}
     expected = {
@@ -1456,7 +1461,7 @@ async def _() -> None:
     """
     need("user.alice", "project.self")
     status, data = await call(
-        "GET", "/v1/admin/audit", MASTER, params={"limit": 500}
+        "GET", "/v1/admin/audit", OPERATOR, params={"limit": 500}
     )
     expect_status("GET", "/v1/admin/audit", None, status, data, 200)
     blob = json.dumps(data)
@@ -1519,7 +1524,7 @@ async def _() -> None:
     status, data = await call(
         "POST",
         "/v1/admin/memory/user/clear",
-        MASTER,
+        OPERATOR,
         params={"user_id": S["user.victim"]},
     )
     expect_status("POST", "/v1/admin/memory/user/clear", None, status, data, 200)
@@ -1535,7 +1540,7 @@ async def _() -> None:
 async def _() -> None:
     need("user.victim", "key.victim")
     status, data = await call(
-        "DELETE", "/v1/admin/memory/user", MASTER, params={"user_id": S["user.victim"]}
+        "DELETE", "/v1/admin/memory/user", OPERATOR, params={"user_id": S["user.victim"]}
     )
     expect_status("DELETE", "/v1/admin/memory/user", None, status, data, 200)
 
@@ -1551,7 +1556,7 @@ async def _() -> None:
 async def _() -> None:
     need("project.release_old_slug", "key.bob")
     old = S["project.release_old_slug"]
-    status, data = await call("POST", f"/v1/admin/slugs/{old}/release", MASTER)
+    status, data = await call("POST", f"/v1/admin/slugs/{old}/release", OPERATOR)
     expect_status("POST", f"/v1/admin/slugs/{old}/release", None, status, data, 204)
 
     status, data = await call(
@@ -1565,25 +1570,9 @@ async def _() -> None:
 # 10. The MCP surface -- the advertised set, plus the master-key refusal.
 # ===========================================================================
 
-# The advertised set, pinned. v0.4.0 added the read, mental-model,
-# working-state and context tools on top of the original fifteen; this is the
-# one place the surface is stated, so an accidental registration (or an
-# accidental removal) fails here rather than reaching an agent.
-EXPECTED_MCP_TOOLS = {
-    # memory
-    "retain", "sync_retain", "recall", "reflect", "memory_history",
-    "list_memories", "get_memory", "forget", "correct", "restore",
-    "list_documents", "get_document", "delete_document",
-    "get_operation", "list_operations", "cancel_operation",
-    # mental models
-    "create_mental_model", "list_mental_models", "get_mental_model",
-    "update_mental_model", "refresh_mental_model", "delete_mental_model",
-    # working state and standing context
-    "start_working_session", "set_working_state", "clear_working_state",
-    "load_context",
-    # projects -- the only project route advertised over MCP
-    "transfer",
-}
+# The advertised set is pinned in scripts/mcp_surface.py, imported at the top
+# of this file -- it used to be stated here AND in scripts/mcp-smoke.py, which
+# is how the two drifted a whole release apart.
 
 
 def mcp_unwrap(label: str, result) -> dict:
@@ -1811,7 +1800,7 @@ async def _() -> None:
         )
 
     async with (
-        streamable_http_client(MCP_URL, http_client=as_client(MASTER)) as (read, write),
+        streamable_http_client(MCP_URL, http_client=as_client(OPERATOR)) as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.discover()

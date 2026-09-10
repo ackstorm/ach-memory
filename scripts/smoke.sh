@@ -35,10 +35,38 @@ curl -sf -X POST "${API}/v1/bootstrap" \
   -d '{}' >/dev/null
 echo "named and provisioned identity: ${user_key}"
 
+# Every retain carries the typed contract v0.4.0 introduced: memory_type,
+# basis, trigger, evidence and operation_id are all required, and a bare
+# {scope, content} body is a 422. This script went on sending the bare shape,
+# so `make smoke` died at its first write against any v0.4.0+ service --
+# scripts/bench.py and scripts/e2e.py each grew their own typed builder and
+# this one was never brought along. Built in python3 (already a dependency
+# below, for reading operation_id) so the content is JSON-escaped rather than
+# interpolated into a hand-written literal.
+retain_body() {  # $1 = content, $2 = project slug (omit for user scope)
+  python3 - "$1" "${2:-}" <<'PYEOF'
+import json, sys, uuid
+
+content, slug = sys.argv[1], sys.argv[2]
+body = {
+    "scope": "project" if slug else "user",
+    "content": content,
+    "memory_type": "fact",
+    "basis": "human_explicit",
+    "trigger": "user_requested",
+    "evidence": [{"kind": "user_quote", "raw": content[:1024]}],
+    "operation_id": str(uuid.uuid4()),
+}
+if slug:
+    body["project_slug"] = slug
+print(json.dumps(body))
+PYEOF
+}
+
 # sync_retain, not retain: extraction must finish before we can recall.
 curl -sf -X POST "${API}/v1/memory/sync_retain" \
   -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
-  -d '{"scope":"user","content":"This project pins its Python dependencies with uv, never with pip."}' \
+  -d "$(retain_body 'This project pins its Python dependencies with uv, never with pip.')" \
   >/dev/null
 echo "retained one fact"
 
@@ -66,7 +94,7 @@ echo "${cross}" | grep -qi "uv" \
 # Project memory: shared where authorized, denied where not.
 curl -sf -X POST "${API}/v1/memory/sync_retain" \
   -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
-  -d '{"scope":"project","project_slug":"'"${project_slug}"'","content":"Migrations in this project run with alembic upgrade head."}' \
+  -d "$(retain_body 'Migrations in this project run with alembic upgrade head.' "${project_slug}")" \
   >/dev/null
 echo "retained one project fact"
 
@@ -79,8 +107,14 @@ echo "${proj}" | grep -qi "alembic" \
 denied=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${API}/v1/memory/recall" \
   -H "Authorization: Bearer ${other_key}" -H 'Content-Type: application/json' \
   -d '{"scope":"project","project_slug":"'"${project_slug}"'","query":"how do migrations run"}')
-[ "${denied}" = "403" ] \
-  || { echo "FAIL: a stranger reached the project, got HTTP ${denied}" >&2; exit 1; }
+# 404, not 403: a project the caller cannot see has to be indistinguishable
+# from one that does not exist, or the status code itself confirms a private
+# slug to a stranger. This asserted 403 -- the behaviour from before
+# non-disclosure landed -- so it failed against a service that was correct.
+# The matching half (an UNKNOWN slug answering identically) is probed by
+# `project_non_disclosure` in scripts/bench.py.
+[ "${denied}" = "404" ] \
+  || { echo "FAIL: a stranger got HTTP ${denied} for a private project, expected 404" >&2; exit 1; }
 echo "project memory is owner-scoped"
 
 # Curation against real Hindsight: retain synchronously, find the memory,
@@ -89,7 +123,7 @@ runbook_fact='The deploy runbook lives in docs/runbooks/deploy.md.'
 runbook_marker='docs/runbooks/deploy.md'
 curl -sf -X POST "${API}/v1/memory/sync_retain" \
   -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
-  -d '{"scope":"user","content":"'"${runbook_fact}"'"}' \
+  -d "$(retain_body "${runbook_fact}")" \
   >/dev/null
 
 listed=$(curl -sf -X POST "${API}/v1/memory/list" \
@@ -124,22 +158,22 @@ if ! printf '%s' "${restored}" | python3 "$(dirname "$0")/verify_active_memory.p
 fi
 echo "restore brought it back"
 
-# reflect, which is a different Hindsight endpoint from recall. Bounded
-# retry, not a naked poll loop: reflect can run moments after sync_retain
-# before Hindsight's post-write consolidation has finished and answer "no
-# information" even though the fact is already searchable via recall
-# (scripts/e2e.py's reflect_with_retry hits the same race).
-reflect_attempts=4
-reflect_ok=0
-for _ in $(seq 1 "${reflect_attempts}"); do
-  reflected=$(curl -sf -X POST "${API}/v1/memory/reflect" \
-    -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
-    -d '{"scope":"user","query":"where is the deploy runbook"}')
-  echo "${reflected}" | grep -qi "runbook" && { reflect_ok=1; break; }
-  sleep 3
-done
-[ "${reflect_ok}" = "1" ] \
-  || { echo "FAIL: reflect did not use the retained fact after ${reflect_attempts} attempts" >&2; echo "${reflected}" >&2; exit 1; }
+# reflect, which is a different Hindsight endpoint from recall. No semantic
+# claim about the answer: this stack runs MockLLM by default, which returns
+# generic prose by design, so grepping the answer for a keyword failed
+# against a service that was working perfectly -- and on a real model the
+# same grep would be nondeterministic. The response contract is what can be
+# proved here; scripts/e2e.py's `validate_mock_reflect_result` draws exactly
+# this line, and measuring retrieval quality is scripts/bench_quality.py's
+# job, on a real model. The bounded retry went with the keyword: it existed
+# only because consolidation could still be in flight and answer "no
+# information", which is a well-formed answer.
+reflected=$(curl -sf -X POST "${API}/v1/memory/reflect" \
+  -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
+  -d '{"scope":"user","query":"where is the deploy runbook"}')
+printf '%s' "${reflected}" | python3 -c \
+  'import json,sys; t=json.load(sys.stdin)["result"].get("text"); sys.exit(0 if isinstance(t,str) and t.strip() else 1)' \
+  || { echo "FAIL: reflect returned no well-formed answer" >&2; echo "${reflected}" >&2; exit 1; }
 echo "reflect answered from memory"
 
 # SPEC §24 scenario P, the async retain lifecycle: retain (not sync_retain)
@@ -149,9 +183,14 @@ echo "reflect answered from memory"
 # sequence itself was never exercised against the real thing.
 op_retain=$(curl -sf -X POST "${API}/v1/memory/retain" \
   -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
-  -d '{"scope":"user","content":"Scenario P: the async retain lifecycle."}')
+  -d "$(retain_body 'Scenario P: the async retain lifecycle.')")
+# No "result" envelope on this one. `reflect`, `documents/list` and
+# `operations/list` below all wrap their payload in one and the MCP surface
+# wraps everything, so unwrapping was the reasonable guess -- but the write
+# routes answer with the bare record, and this asked for a key that is not
+# there.
 operation_id=$(echo "${op_retain}" | python3 -c \
-  'import json,sys; print(json.load(sys.stdin)["result"]["operation_id"])')
+  'import json,sys; print(json.load(sys.stdin)["operation_id"])')
 [ -n "${operation_id}" ] \
   || { echo "FAIL: retain did not return an operation_id" >&2; echo "${op_retain}" >&2; exit 1; }
 echo "async retain returned operation: ${operation_id}"

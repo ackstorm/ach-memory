@@ -13,7 +13,7 @@ VALID_MOCK_RESULT = {
 
 
 def _load_e2e(monkeypatch, provider: str):
-    monkeypatch.setenv("MEMORY_MASTER_KEY", "unit-test-master-key")
+    monkeypatch.setenv("MEMORY_OPERATOR_TOKEN", "unit-test-operator-token")
     monkeypatch.setenv("HINDSIGHT_LLM_PROVIDER", provider)
     path = Path(__file__).parents[1] / "scripts" / "e2e.py"
     spec = importlib.util.spec_from_file_location("e2e_mock_reflect_target", path)

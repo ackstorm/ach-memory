@@ -18,7 +18,7 @@ SCRIPTS = Path(__file__).parents[1] / "scripts"
 
 
 def _load(name: str, monkeypatch):
-    monkeypatch.setenv("MEMORY_MASTER_KEY", "unit-test-master-key")
+    monkeypatch.setenv("MEMORY_OPERATOR_TOKEN", "unit-test-operator-token")
     if str(SCRIPTS) not in sys.path:
         sys.path.insert(0, str(SCRIPTS))
     spec = importlib.util.spec_from_file_location(f"bench_target_{name}", SCRIPTS / f"{name}.py")

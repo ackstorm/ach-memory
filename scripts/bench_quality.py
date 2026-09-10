@@ -60,11 +60,6 @@ from benchlib import API, HINDSIGHT_URL, Http, Samples, bank_path, table
 
 from memory.delivery import count_tokens
 
-MASTER = os.environ.get("MEMORY_MASTER_KEY")
-if not MASTER:
-    print("FAIL: MEMORY_MASTER_KEY is not set. Run via `make bench-quality`.", file=sys.stderr)
-    sys.exit(1)
-
 REPEATS = int(os.environ.get("BENCH_REPEATS", "3"))
 TOP_K = int(os.environ.get("BENCH_TOP_K", "5"))
 CORPUS = Path(__file__).resolve().parents[1] / "benchmarks" / "corpus.jsonl"
@@ -332,16 +327,16 @@ async def main() -> int:
             print(f"repeat {repeat + 1}/{REPEATS}")
 
             ctx: dict = {}
+            # The token IS the identity, so nothing is minted and no operator
+            # credential is needed to mint it -- see `bootstrap` in
+            # scripts/bench.py. This harness never addresses anyone but the
+            # holder of a token, so it needs no internal user id either.
             for name in ("alice", "bob"):
-                uid = f"bq-{name}-{run_tag}"
-                s, _ = await ach.call("POST", "/v1/users", key=MASTER, json_body={"id": uid})
-                if s != 201:
-                    raise SystemExit(f"could not create {uid}: HTTP {s}")
-                ctx[f"user.{name}"] = uid
-                s, d = await ach.call(
-                    "POST", f"/v1/users/{uid}/keys", key=MASTER, json_body={}
-                )
-                ctx[f"key.{name}"] = d["key"]
+                token = f"bq-{name}-{run_tag}"
+                s, d = await ach.call("POST", "/v1/bootstrap", key=token, json_body={})
+                if s != 200:
+                    raise SystemExit(f"could not bootstrap {token}: HTTP {s} {d}")
+                ctx[f"key.{name}"] = token
             for project in ("payments", "search"):
                 slug = f"bq-{project}-{run_tag}"
                 await ach.call(

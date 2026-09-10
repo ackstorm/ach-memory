@@ -174,7 +174,7 @@ up: ## Start the local stack (migrations run before the api serves)
 	docker compose up -d --build
 
 .PHONY: smoke
-smoke: ## REST + MCP smoke against a running stack (needs MEMORY_MASTER_KEY)
+smoke: ## REST + MCP smoke against a running stack (no credentials needed)
 	./scripts/smoke.sh
 	uv run python scripts/mcp-smoke.py
 

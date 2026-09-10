@@ -10,7 +10,7 @@ import pytest
 
 def _load_e2e(monkeypatch):
     """Load the scenario definitions without running the E2E runner."""
-    monkeypatch.setenv("MEMORY_MASTER_KEY", "unit-test-master-key")
+    monkeypatch.setenv("MEMORY_OPERATOR_TOKEN", "unit-test-operator-token")
     path = Path(__file__).parents[1] / "scripts" / "e2e.py"
     spec = importlib.util.spec_from_file_location("e2e_contract_target", path)
     assert spec is not None and spec.loader is not None
