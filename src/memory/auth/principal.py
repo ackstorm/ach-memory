@@ -29,8 +29,12 @@ class Principal:
     groups: frozenset[str] = frozenset()
     #: Stable identity of the *credential*, for rate limiting and audit:
     #: `ext_<hash>`, from `auth.provisioning.credential_id_for`. Every
-    #: authenticated caller has one, because every caller is external.
-    credential_id: str | None = None
+    #: authenticated caller has one, because every caller is external --
+    #: REQUIRED rather than defaulted so that stays true by construction.
+    #: Optional, it reached `ratelimit.check` as None and indexed a
+    #: `defaultdict`: no error, and every such caller silently sharing one
+    #: anonymous bucket where SPEC §20 asks for one per credential.
+    credential_id: str
     #: The external identity as its issuer names it -- an email, an opaque
     #: `sub`. This, NOT `user_id`, is what `MEMORY_MASTER_USERS` matches:
     #: `user_id` is minted locally by `link_identity` on first sight, so

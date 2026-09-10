@@ -116,7 +116,8 @@ def test_an_empty_configured_entry_never_matches_a_blank_principal(monkeypatch):
     from memory.auth.principal import Principal, is_operator
 
     settings = _operator_env(monkeypatch, users="", groups="")
-    blank = Principal(
+    blank = Principal(credential_id="ext_test",
+                
         tenant_id="default", user_id="usr_x", subject="", groups=frozenset({""})
     )
 

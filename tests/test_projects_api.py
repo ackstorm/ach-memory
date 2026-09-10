@@ -441,7 +441,8 @@ def test_patch_canonicalizes_a_non_canonical_locator(client, juan, tenant, sessi
     assert response.status_code == 200
     assert response.json()["git_locator"] == "github.com/acme/payments-api"
 
-    principal = Principal(
+    principal = Principal(credential_id="ext_test",
+                    
         tenant_id=tenant, user_id=juan["user_id"], subject=juan["subject"]
     )
     try:

@@ -94,7 +94,8 @@ def jwt_enabled(monkeypatch):
 
 
 def _principal(user_id=None, groups=frozenset(), subject=None) -> Principal:
-    return Principal(
+    return Principal(credential_id="ext_test",
+               
         tenant_id="default", user_id=user_id, groups=groups, subject=subject
     )
 
@@ -158,7 +159,8 @@ def test_a_surface_can_withhold_authority_from_an_operator(monkeypatch):
     monkeypatch.setenv("MEMORY_MASTER_USERS", "juancarlos@example.com")
     get_settings.cache_clear()
 
-    operator = Principal(
+    operator = Principal(credential_id="ext_test",
+                   
         tenant_id="default", user_id="usr_1", subject="juancarlos@example.com"
     )
     assert operator.is_master
@@ -264,13 +266,15 @@ def test_a_subject_from_another_issuer_is_not_the_operator():
         master_users="jc@example.com", master_issuer="https://idp.example.com"
     )
 
-    from_the_named_issuer = Principal(
+    from_the_named_issuer = Principal(credential_id="ext_test",
+                                
         tenant_id="default",
         user_id="usr_1",
         subject="jc@example.com",
         issuer="https://idp.example.com",
     )
-    from_somewhere_else = Principal(
+    from_somewhere_else = Principal(credential_id="ext_test",
+                              
         tenant_id="default",
         user_id="usr_2",
         subject="jc@example.com",
@@ -285,7 +289,8 @@ def test_a_group_from_another_issuer_is_not_the_operator():
     settings = Settings(
         master_groups="platform-admins", master_issuer="https://idp.example.com"
     )
-    impostor = Principal(
+    impostor = Principal(credential_id="ext_test",
+                   
         tenant_id="default",
         user_id="usr_2",
         groups=frozenset({"platform-admins"}),
@@ -301,7 +306,8 @@ def test_an_unnamed_issuer_still_grants_when_only_one_provider_is_enabled():
     answer, so the refusal lives in the startup assertion instead, which only
     fires when the ambiguity is real."""
     settings = Settings(master_users="jc@example.com")
-    principal = Principal(
+    principal = Principal(credential_id="ext_test",
+                    
         tenant_id="default",
         user_id="usr_1",
         subject="jc@example.com",
@@ -309,3 +315,12 @@ def test_an_unnamed_issuer_still_grants_when_only_one_provider_is_enabled():
     )
 
     assert is_operator(principal, settings)
+
+
+def test_a_principal_cannot_exist_without_a_credential_id():
+    """Optional, it reached `ratelimit.check` as None and indexed a
+    `defaultdict`: no error, and every such caller silently sharing one
+    anonymous bucket where SPEC §20 asks for one per credential. Required,
+    that is unrepresentable rather than merely unlikely."""
+    with pytest.raises(TypeError):
+        Principal(tenant_id="default", user_id="usr_x")
