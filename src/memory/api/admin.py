@@ -161,6 +161,23 @@ def _admin_scope(
     if body is not None:
         user_id = _one_of("user_id", user_id, body.user_id)
         project_slug = _one_of("project_slug", project_slug, body.project_slug)
+    if scope == "user" and not user_id:
+        # Everywhere else in the service an omitted user_id means "me", and
+        # that is right: `banks.resolve_user_bank` resolves `None` to the
+        # caller's own bank. This plane is the exception, because nobody
+        # reaches for /v1/admin to manage their OWN memory -- there is no
+        # other reason to be here than acting on somebody else. So the only
+        # way the target goes missing is that it was meant to be there:
+        # an unset shell variable arriving as `user_id=`, a script that lost
+        # an argument. Falling back to "me" turns that slip into an
+        # irreversible erase of the caller's whole bank, answered with a 200.
+        #
+        # `not user_id` rather than `is None`: the empty string is the case
+        # that actually happens, and Query's own pattern admits it.
+        raise InvalidScope(
+            "scope=user on the admin plane must name user_id explicitly; "
+            "it never defaults to the caller"
+        )
     return ScopedRequest(scope=scope, user_id=user_id, project_slug=project_slug)
 
 

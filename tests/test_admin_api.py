@@ -372,6 +372,52 @@ def test_delete_reaches_the_delete_bank_endpoint(client, juan, master_headers, t
     assert route.called
 
 
+@pytest.mark.parametrize("missing", [None, ""])
+@pytest.mark.parametrize("method,path", [("delete", "/v1/admin/memory/user"),
+                                         ("post", "/v1/admin/memory/user/clear")])
+@respx.mock
+def test_the_admin_plane_never_defaults_scope_user_to_the_caller(
+    client, master_headers, session, missing, method, path
+):
+    """An omitted target must not mean "me" HERE, unlike everywhere else.
+
+    Nobody reaches for /v1/admin to manage their own memory, so a missing
+    user_id is always a slip -- an unset shell variable arriving as
+    `user_id=`, a script that lost an argument. Defaulting to the caller
+    turns that into an irreversible erase of their whole bank, answered 200.
+    The empty string is the case that actually happens: Query's own pattern
+    admits it, and it is falsy, so `requested_user_id or principal.user_id`
+    silently resolved to the operator.
+    """
+    upstream = respx.route(url__regex=rf"{BASE}/v1/default/banks/.*").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    params = {} if missing is None else {"user_id": missing}
+    response = getattr(client, method)(path, params=params, headers=master_headers)
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "INVALID_SCOPE"
+    assert not upstream.called
+
+
+@respx.mock
+def test_the_admin_plane_still_erases_a_named_target(client, juan, master_headers):
+    """The guard names the target; it does not forbid one. An operator who
+    genuinely means their own bank can still say so explicitly."""
+    respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories(\?|$)").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    response = client.post(
+        "/v1/admin/memory/user/clear",
+        params={"user_id": juan["user_id"]},
+        headers=master_headers,
+    )
+
+    assert response.status_code == 200, response.text
+
+
 # --- Bank-id redaction: directives.py and mental_models.py both already had
 # a test pinning `_strip_bank_id(result, bank_id)` on their responses;
 # admin.py did not, even though its `delete_bank` upstream body is literally
@@ -598,40 +644,6 @@ def test_deleting_a_users_bank_leaves_the_user_row_and_its_bank_id_intact(
 
 
 
-
-
-@respx.mock
-def test_clear_without_a_target_clears_the_operators_own_bank(
-    client, master_headers, tenant, session
-):
-    """The rule that REPLACED "master-key requests with scope=user must set
-    user_id". Authority and identity are separate now, so an operator is an
-    ordinary user who also has authority: with no `user_id` they address
-    THEMSELVES, exactly like anybody else, and naming somebody else is the
-    part authority buys.
-
-    Also pins that this self-directed call writes no audit row: `_resolve_bank`
-    records only `principal.is_master and body.user_id`, i.e. reaching into
-    SOMEBODY ELSE's bank. Auditing an operator touching their own memory would
-    drown the log the delegation records live in.
-    """
-    from memory.models import AuditEvent, User
-
-    route = respx.delete(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories(\?|$)"
-    ).mock(return_value=httpx.Response(200, json={"success": True}))
-    before = session.query(AuditEvent).count()
-
-    response = client.post("/v1/admin/memory/user/clear", headers=master_headers)
-
-    assert response.status_code == 200, response.text
-    operator = (
-        session.query(User)
-        .filter(User.id == _operator_user_id(session))
-        .one()
-    )
-    assert f"banks/{operator.bank_id}/" in str(route.calls.last.request.url)
-    assert session.query(AuditEvent).count() == before
 
 
 def test_clear_still_refuses_an_ordinary_user_addressing_someone_else(
