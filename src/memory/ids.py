@@ -5,14 +5,6 @@ def new_user_id() -> str:
     return f"usr_{uuid.uuid4().hex}"
 
 
-def new_group_id() -> str:
-    return f"grp_{uuid.uuid4().hex}"
-
-
-def new_key_id() -> str:
-    return f"key_{uuid.uuid4().hex}"
-
-
 def new_model_key() -> str:
     return f"mm_{uuid.uuid4().hex}"
 
