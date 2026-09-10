@@ -175,7 +175,17 @@ def test_released_v035_data_survives_v040_upgrade(
         ("current-name", True),
         ("previous-name", False),
     ]
-    assert head == "d1e2f3a4b5c6"
+    # Asked of alembic rather than pinned to a literal. The invariant is
+    # "upgrade head actually landed on head", and a hard-coded revision id
+    # tests that only until the next migration, then fails for the one
+    # reason that is never interesting.
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    expected_head = ScriptDirectory.from_config(
+        Config(str(_ROOT / "alembic.ini"))
+    ).get_current_head()
+    assert head == expected_head
 
 
 def test_pre_retirement_state_survives_forward_removal(
