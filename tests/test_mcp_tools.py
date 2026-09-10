@@ -501,10 +501,10 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
     "clear_working_state": True, "load_context": False,
     "create_mental_model": True, "list_mental_models": False, "get_mental_model": False,
     "update_mental_model": True, "refresh_mental_model": True, "delete_mental_model": True,
-    # transfer mutates ownership but, like REST's own transfer_project route,
-    # never calls ratelimit.check -- it doesn't resolve a Hindsight bank at
-    # all, so there is no _resolve_bank is_write flag to set.
-    "transfer": False,
+    # transfer resolves no Hindsight bank, so it has no _resolve_bank
+    # is_write flag -- `projects.transfer` applies the ceiling in the domain
+    # instead, which is what makes this True on REST and MCP alike.
+    "transfer": True,
 }
 
 MCP_CREATE_TABLE: dict[str, bool] = {
@@ -607,29 +607,31 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
             continue
         if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS or name in PROJECT_KWARGS:
             # project_slug need not exist: ratelimit.check() runs before any
-            # project resolution, so RATE_LIMITED fires first regardless --
-            # true for every tool here except transfer, which never calls
-            # ratelimit.check at all (see its own carve-out below).
+            # project resolution, so RATE_LIMITED fires first regardless.
+            # transfer is the exception in placement, not in effect: its
+            # check lives in `projects.transfer`, AFTER resolution, so a ghost
+            # slug raises PROJECT_NOT_FOUND before the ceiling is reached.
             kwargs = {
                 "project_slug": "wst-ratelimit",
                 **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS.get(name) or PROJECT_KWARGS[name]),
             }
         else:
             kwargs = {"scope": "user", **GHOST_EXTRA_KWARGS.get(name, {})}
-        if expect_write:
+        if expect_write and name != "transfer":
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == "RATE_LIMITED", name
         elif name in ("memory_history", "get_mental_model", "transfer"):
             # get_mental_model is a pure registry read with no Hindsight call
             # to mock success from -- a ghost model_key genuinely 404s.
-            # transfer targets a project_slug that does not exist, so it
-            # always raises PROJECT_NOT_FOUND. The property under test is
-            # still "not RATE_LIMITED", same as memory_history's own
-            # carve-out above.
+            # transfer's own ceiling lives in the domain, after resolution, so
+            # a ghost slug reaches PROJECT_NOT_FOUND first; the code is
+            # asserted directly rather than by absence.
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
-            assert exc_info.value.code != "RATE_LIMITED"
+            assert exc_info.value.code == (
+                "PROJECT_NOT_FOUND" if name == "transfer" else exc_info.value.code
+            )
         else:
             call_tool(name, key, **kwargs)  # must NOT raise RATE_LIMITED
 
@@ -743,6 +745,41 @@ def test_transfer_moves_ownership(call_tool):
         owner_type="user", owner_id=juan_id,
     )
     assert second.result["owner_id"] == juan_id
+
+
+def test_transfer_is_metered_like_every_other_write(call_tool, monkeypatch):
+    """Transfer resolves no Hindsight bank, so it never passes through
+    `_resolve_bank` -- the choke point where SPEC §20's ceiling is applied to
+    everything else. `projects.transfer` carries it in the domain instead, so
+    a caller cannot dodge the limit by picking this one tool, on either
+    surface."""
+    from memory import ratelimit
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_WRITE_LIMIT", "1")
+    monkeypatch.setenv("MEMORY_WRITE_WINDOW_SECONDS", "60")
+    get_settings.cache_clear()
+    ratelimit.get_limiter.cache_clear()
+
+    juan = call_tool.make_user()
+    call_tool.seed_project(juan, "payments")
+    call_tool.seed_project(juan, "billing")
+    call_tool.make_user()
+    alice_id = call_tool.last_user_id
+
+    # Two transfers by ONE credential: the ceiling is per-credential, so both
+    # have to come from the same caller for the second to be refused.
+    call_tool(
+        "transfer", juan, project_slug="payments",
+        owner_type="user", owner_id=alice_id,
+    )
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "transfer", juan, project_slug="billing",
+            owner_type="user", owner_id=alice_id,
+        )
+
+    assert exc_info.value.code == "RATE_LIMITED"
 
 
 def test_transfer_on_a_foreign_project_is_indistinguishable_from_absent(call_tool):

@@ -51,11 +51,26 @@ def register(mcp: MCPServer) -> None:
                 # absent one raises. projects.transfer's own authorize()
                 # call is defense in depth, never reached as the first
                 # denial for a caller that only knows the slug.
+                #
+                # `projects.transfer` applies SPEC §20's write ceiling itself,
+                # for both surfaces at once -- transfer resolves no bank, so
+                # there is no `_resolve_bank` here to carry it, nor to fill in
+                # the activity row below.
                 result = projects.resolve(
                     tc.db, tc.principal, project_slug, create=False
                 )
                 project = projects.transfer(
                     tc.db, tc.principal, result.project, owner_type, owner_id,
+                )
+                activity.describe(
+                    action="projects.transfer",
+                    scope="project",
+                    tenant_id=tc.principal.tenant_id,
+                    credential_id=tc.principal.credential_id,
+                    # The RESOLVED slug, never the caller's raw argument --
+                    # same rule `_describe` follows, for the same reason.
+                    project_slug=result.current_slug,
+                    bank_fingerprint=activity.fingerprint(result.project.bank_id),
                 )
                 tc.db.commit()
                 return ToolResult(

@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from memory import audit, ids
+from memory import audit, ids, ratelimit
 from memory.auth.principal import Principal
 from memory.config import get_settings
 from memory.errors import (
@@ -398,7 +398,15 @@ def transfer(
     transfer a group-owned project to themselves and lock the group out. The
     alternative is a group-admin role, and v1 has no permission model. The
     audit event is the mitigation.
+
+    Rate-limited HERE rather than at each route, and it is the only mutating
+    operation in the service that needs saying so: transfer resolves no
+    Hindsight bank, so neither surface passes through `_resolve_bank`, the
+    choke point where SPEC §20's per-credential ceiling is applied to
+    everything else. One call in the domain is what stops a caller dodging
+    the limit by picking whichever of the two surfaces had been missed.
     """
+    ratelimit.check(principal, on_behalf_of)
     authorize(db, principal, project)
     _validate_owner(db, principal, owner_type, owner_id)
 
