@@ -46,8 +46,7 @@ def _create_body(**overrides) -> dict:
         "scope": "user",
         "name": "review-context",
         "source_query": "Summarize review conventions.",
-        "source_tags": REQUIRED_TAGS,
-        "source_tags_mode": "all",
+        "source_tags": ["repo:group/app"],
         "max_tokens": 256,
         "trigger": TRIGGER,
         "operation_id": str(uuid.uuid4()),
@@ -98,14 +97,40 @@ def test_create_forwards_the_internal_locator_name_not_the_display_name(client, 
     assert sent["name"] != "my-display-name"
 
 
-def test_create_rejects_a_source_selection_missing_a_required_tag(client, juan):
+def test_create_refuses_a_caller_that_names_a_server_owned_tag(client, juan):
+    """The required pair is composed server-side; a caller naming either half
+    is refused the same way any reserved namespace is, on this surface and on
+    MCP, because both run the one `memory.tags` gate."""
     response = client.post(
         "/v1/mental-models",
         json=_create_body(source_tags=["schema:ach-retain-v1"]),
         headers=juan["headers"],
     )
 
-    assert response.status_code == 422, response.text
+    # INVALID_TAG, not a bare 422: the one shared `memory.tags` gate raises a
+    # typed DomainError, so REST and MCP report a reserved namespace with the
+    # same SPEC §18 code instead of two different shapes.
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "INVALID_TAG"
+
+
+@respx.mock
+def test_create_composes_the_required_pair_into_what_it_sends_upstream(client, juan):
+    """The model must select on the pair even though the caller never typed
+    it -- otherwise a narrowed model would also draw on expiring claims."""
+    route = _mock_create()
+    response = client.post(
+        "/v1/mental-models",
+        json=_create_body(source_tags=["repo:group/app"]),
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 201, response.text
+    sent = json.loads(route.calls.last.request.content)
+    assert sorted(sent["tags"]) == sorted([*REQUIRED_TAGS, "repo:group/app"])
+    assert response.json()["source_tags"] == sorted(
+        [*REQUIRED_TAGS, "repo:group/app"]
+    )
 
 
 def test_create_rejects_caller_supplied_tags_field(client, juan):

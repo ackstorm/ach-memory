@@ -37,8 +37,7 @@ MEM_ID = "33333333-3333-3333-3333-333333333333"
 OP_ID = "44444444-4444-4444-4444-444444444444"
 MM_OP_ID = "55555555-5555-5555-5555-555555555555"
 MM_CREATE_FIELDS = {
-    "source_tags": ["schema:ach-retain-v1", "validity:indefinite"],
-    "source_tags_mode": "all", "max_tokens": 512,
+    "source_tags": ["repo:group/app"], "max_tokens": 512,
     "trigger": {"mode": "delta"},
 }
 

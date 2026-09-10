@@ -221,7 +221,7 @@ def test_mental_model_tools_never_return_a_physical_or_upstream_id(call_tool, se
 
     created = call_tool(
         "create_mental_model", key, scope="user", name="n", source_query="q",
-        source_tags=MM_REQUIRED_TAGS, source_tags_mode="all", max_tokens=512,
+        source_tags=["repo:group/app"], max_tokens=512,
         trigger={"mode": "delta"},
     )
 
@@ -252,7 +252,7 @@ def test_mcp_refresh_and_delete_forward_the_callers_operation_id_to_the_ledger(c
 
     created = call_tool(
         "create_mental_model", key, scope="user", name="n", source_query="q",
-        source_tags=MM_REQUIRED_TAGS, source_tags_mode="all", max_tokens=512,
+        source_tags=["repo:group/app"], max_tokens=512,
         trigger={"mode": "delta"},
     )
     model_key = created.result["model_key"]
@@ -481,8 +481,8 @@ GHOST_EXTRA_KWARGS: dict[str, dict] = {
     "get_operation": {"operation_id": GHOST},
     "cancel_operation": {"operation_id": GHOST},
     "create_mental_model": {
-        "name": "n", "source_query": "q", "source_tags": MM_REQUIRED_TAGS,
-        "source_tags_mode": "all", "max_tokens": 512,
+        "name": "n", "source_query": "q", "source_tags": ["repo:group/app"],
+        "max_tokens": 512,
         "trigger": {"mode": "delta"},
     },
     "get_mental_model": {"model_key": MM_GHOST},
@@ -1592,10 +1592,10 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved by the tag-surface rename (v1c plan): recall/reflect's tags param
-# became tags_filter/tags_filter_mode, and create_mental_model's tags_match
-# became source_tags_mode.
-TOOL_CONTRACT_SHA256 = "8c5f9c5941e518126bd76447a0861997ba14cbe36f5d1a06c0c4664b6a97d8a7"
+# moved by the mental-model tag simplification: create_mental_model dropped
+# source_tags_mode entirely and source_tags became optional, carrying only the
+# caller's own narrowing tags.
+TOOL_CONTRACT_SHA256 = "2b56923577793f0b47d470e87a5462197476b95a8a2b2615392fd2e91e8cfc9c"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1653,7 +1653,7 @@ def test_create_mental_model_rejects_always_in_context(call_tool):
     with pytest.raises(TypeError):
         call_tool(
             "create_mental_model", key, scope="user", name="Ops",
-            source_query="?", source_tags=MM_REQUIRED_TAGS, source_tags_mode="all",
+            source_query="?", source_tags=["repo:group/app"],
             max_tokens=512, trigger={}, always_in_context=True,
         )
 

@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -34,7 +34,7 @@ from memory.errors import (
 from memory.ids import new_model_key
 from memory.models import MentalModelRegistration
 from memory.retained_records import LogicalBankRef
-from memory.tags import RESERVED_PREFIXES, FilterMode, default_filter_mode
+from memory.tags import normalize_caller_tags
 
 logger = logging.getLogger("memory.mental_model_service")
 
@@ -88,58 +88,48 @@ def _canonical_trigger(value: dict[str, object]) -> dict[str, object]:
     return {**_TRIGGER_DEFAULTS, **value}
 
 
-def _validate_source_tag_superset(value: tuple[str, ...] | None) -> tuple[str, ...] | None:
-    """The required pair must be present; extras are allowed so a caller can
-    narrow further (e.g. one repo, one subject), but never into a
-    server-owned namespace."""
-    if value is None:
-        return None
-    tags = frozenset(value)
-    if not REQUIRED_SOURCE_TAGS <= tags:
-        raise ValueError(
-            "source_tags must include schema:ach-retain-v1 and validity:indefinite"
-        )
-    extra = tags - REQUIRED_SOURCE_TAGS
-    if any(tag.startswith(prefix) for tag in extra for prefix in RESERVED_PREFIXES):
-        raise ValueError("that tag namespace is reserved")
-    return value
+def effective_source_tags(caller_tags: tuple[str, ...]) -> list[str]:
+    """The filter a custom model actually gets: the server's required pair,
+    AND-ed with whatever the caller narrowed by.
 
-
-def _reject_loose_mode_with_extras(source_tags: tuple[str, ...], mode: FilterMode) -> None:
-    """`any` lets a single extra tag alone qualify a source, bypassing the
-    required schema:ach-retain-v1 + validity:indefinite pair entirely -- a
-    model that looks scoped to that tag and actually reads everything
-    carrying it, typed curation or not."""
-    if mode != "all" and frozenset(source_tags) != REQUIRED_SOURCE_TAGS:
-        raise ValueError(
-            "source_tags_mode must be 'all' when source_tags narrows beyond the required pair"
-        )
+    The pair is not caller input and never was a caller decision.
+    `validity:indefinite` keeps a claim with an expiry out of a summary that
+    would outlive it (SPEC §5.6/§6.4); `schema:ach-retain-v1` keeps the source
+    to ACH's own typed retain. Composing them here rather than making the
+    caller repeat them is what removes the mode question entirely: with the
+    pair always ANDed in, the only sound match is `all_strict`, so there is
+    nothing left to choose. Both prefixes live in `tags.RESERVED_PREFIXES`, so
+    `normalize_caller_tags` already refuses a caller that tries to name either
+    one, in any case.
+    """
+    return sorted(REQUIRED_SOURCE_TAGS | set(caller_tags))
 
 
 class CustomModelCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
     source_query: str
-    source_tags: tuple[str, ...]
-    source_tags_mode: FilterMode = Field(default_factory=default_filter_mode)
+    #: The caller's OWN narrowing tags (e.g. `repo:group/app`), never the
+    #: required pair -- `effective_source_tags` adds that. Empty means the
+    #: whole indefinite ACH corpus, which is what a built-in reads.
+    source_tags: tuple[str, ...] = ()
     max_tokens: int = Field(ge=MIN_MAX_TOKENS)
     trigger: dict[str, object]
     operation_id: str
 
-    @field_validator("source_tags")
+    @field_validator("source_tags", mode="before")
     @classmethod
-    def _validate_source_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _validate_source_tag_superset(value)  # type: ignore[return-value]
+    def _normalize_source_tags(cls, value: object) -> tuple[str, ...]:
+        # The same one gate every other surface runs caller tags through
+        # (`read_models.RecallRequest.tags_filter`), so a tag written by
+        # retain and a tag a model selects on are byte-identical, and a
+        # server-owned namespace is refused here exactly as it is there.
+        return normalize_caller_tags(value)
 
     @field_validator("trigger")
     @classmethod
     def _validate_trigger(cls, value: dict[str, object]) -> dict[str, object]:
         return _validated_trigger(value)  # type: ignore[return-value]
-
-    @model_validator(mode="after")
-    def _validate_mode_against_extras(self) -> CustomModelCreateRequest:
-        _reject_loose_mode_with_extras(self.source_tags, self.source_tags_mode)
-        return self
 
 
 class CustomModelUpdateRequest(BaseModel):
@@ -156,13 +146,6 @@ class CustomModelUpdateRequest(BaseModel):
         return _validated_trigger(value)
 
 
-#: `MentalModelView.source_tags_mode` only ever echoes an already-stored
-#: value -- never caller input -- so it widens past the closed `FilterMode`
-#: a request accepts: a built-in's own definition (never caller-authored)
-#: stores Hindsight's `_strict` vocabulary directly (see `builtin_models.py`).
-StoredTagsMode = Literal["all", "any", "all_strict", "any_strict"]
-
-
 class MentalModelView(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model_key: str
@@ -173,8 +156,10 @@ class MentalModelView(BaseModel):
     # custom model.
     definition_version: int | None = None
     source_query: str
+    #: The EFFECTIVE filter -- the server's required pair plus whatever the
+    #: caller narrowed by. Always matched strictly and as an AND, so there
+    #: is no mode to report alongside it.
     source_tags: tuple[str, ...]
-    source_tags_mode: StoredTagsMode
     max_tokens: int
     trigger: dict[str, object]
     delivery_state: Literal["ready", "withheld"]
@@ -237,7 +222,6 @@ def _payload_hash(bank: LogicalBankRef, request: CustomModelCreateRequest) -> st
         "name": request.name,
         "source_query": request.source_query,
         "source_tags": sorted(request.source_tags),
-        "source_tags_mode": request.source_tags_mode,
         "max_tokens": request.max_tokens,
         "trigger": request.trigger,
     }
@@ -307,7 +291,6 @@ def _to_view(row: MentalModelRegistration) -> MentalModelView:
         definition_version=row.definition_version,
         source_query=row.source_query,
         source_tags=tuple(row.source_tags),
-        source_tags_mode=row.tags_match,
         max_tokens=row.max_tokens,
         trigger=row.trigger,
         delivery_state=row.delivery_state,
@@ -369,6 +352,10 @@ def create_custom_model(
 
     model_key = new_model_key()
     digest = _payload_hash(bank, request)
+    # Composed once and used for both halves: the row and the upstream model
+    # must select on the same set, or `_matches_recorded` stops recognizing
+    # our own model during crash recovery.
+    source_tags = effective_source_tags(request.source_tags)
     model_registry.register_model(
         db,
         bank,
@@ -376,8 +363,11 @@ def create_custom_model(
         model_key=model_key,
         name=request.name,
         source_query=request.source_query,
-        source_tags=list(request.source_tags),
-        tags_match=request.source_tags_mode,
+        source_tags=source_tags,
+        # Hindsight's own default for a tagged model, stated rather than
+        # inferred (`memory_engine._resolve_tags_match`): every tag in the set
+        # must be present, and an untagged memory is excluded.
+        tags_match="all_strict",
         max_tokens=request.max_tokens,
         trigger=request.trigger,
         lifecycle_state="creating",
@@ -396,7 +386,7 @@ def create_custom_model(
         # Hindsight has no literal ``manual`` mode. An empty ACH trigger is
         # the explicit manual policy and must be omitted on create.
         trigger=request.trigger or None,
-        tags=list(request.source_tags),
+        tags=source_tags,
     )
     upstream_id, refresh_operation_id = _created_identity(upstream)
     activated = model_registry.activate_model(

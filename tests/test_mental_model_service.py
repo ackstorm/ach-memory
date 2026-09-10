@@ -10,6 +10,7 @@ from memory.errors import (
     BuiltinModelImmutable,
     CurationNeedsOperator,
     IdempotencyConflict,
+    InvalidTag,
     MentalModelNotFound,
     MentalModelQuotaExceeded,
 )
@@ -21,6 +22,7 @@ from memory.mental_model_service import (
     _payload_hash,
     create_custom_model,
     delete_model,
+    effective_source_tags,
     get_model,
     list_models,
     reconcile_builtin,
@@ -63,8 +65,7 @@ def custom_request(
     return CustomModelCreateRequest(
         name=name,
         source_query="Summarize review conventions.",
-        source_tags=REQUIRED_TAGS,
-        source_tags_mode="all",
+        source_tags=("repo:group/app",),
         max_tokens=max_tokens,
         trigger=TRIGGER,
         operation_id=operation_id or str(uuid4()),
@@ -74,8 +75,7 @@ def custom_request(
 CUSTOM_REQUEST = CustomModelCreateRequest(
     name="overflow",
     source_query="Summarize overflow.",
-    source_tags=REQUIRED_TAGS,
-    source_tags_mode="all",
+    source_tags=("repo:group/app",),
     max_tokens=256,
     trigger=TRIGGER,
     operation_id=str(uuid4()),
@@ -262,7 +262,7 @@ def test_create_retry_resumes_a_still_creating_row_to_active(session, bank, hind
     model_registry.register_model(
         session, bank, origin="user", model_key=model_key, name=request.name,
         source_query=request.source_query, source_tags=list(request.source_tags),
-        tags_match=request.source_tags_mode, max_tokens=request.max_tokens, trigger=request.trigger,
+        tags_match="all_strict", max_tokens=request.max_tokens, trigger=request.trigger,
         lifecycle_state="creating", mutation_operation_id=operation_id,
         mutation_payload_hash=digest,
         delivery_state="ready",
@@ -291,17 +291,15 @@ def test_create_retry_resumes_a_still_creating_row_to_active(session, bank, hind
     hindsight.create_mental_model.assert_not_called()
 
 
-def test_create_rejects_a_source_selection_missing_a_required_tag():
-    with pytest.raises(ValueError):
-        CustomModelCreateRequest(
-            name="bad",
-            source_query="q",
-            source_tags=("schema:ach-retain-v1",),
-            source_tags_mode="all",
-            max_tokens=256,
-            trigger=TRIGGER,
-            operation_id=str(uuid4()),
-        )
+def test_the_required_pair_is_composed_server_side_not_asked_of_the_caller():
+    """The pair is a server rule, not a caller decision -- `validity:indefinite`
+    keeps an expiring claim out of a durable summary and `schema:ach-retain-v1`
+    keeps the source to ACH's own retain. Making the caller repeat them is what
+    let a caller get them wrong."""
+    assert effective_source_tags(()) == sorted(REQUIRED_TAGS)
+    assert effective_source_tags(("repo:group/app",)) == sorted(
+        (*REQUIRED_TAGS, "repo:group/app")
+    )
 
 
 def test_create_rejects_the_nonexistent_manual_trigger_mode():
@@ -309,8 +307,6 @@ def test_create_rejects_the_nonexistent_manual_trigger_mode():
         CustomModelCreateRequest(
             name="bad-trigger",
             source_query="q",
-            source_tags=REQUIRED_TAGS,
-            source_tags_mode="all",
             max_tokens=256,
             trigger={"mode": "manual"},
             operation_id=str(uuid4()),
@@ -324,44 +320,45 @@ def test_a_custom_model_may_narrow_to_a_caller_tag():
     request = CustomModelCreateRequest(
         name="repo-scoped",
         source_query="q",
-        source_tags=(*REQUIRED_TAGS, "repo:group/app"),
-        source_tags_mode="all",
+        source_tags=("repo:group/app",),
         max_tokens=256,
         trigger=TRIGGER,
         operation_id=str(uuid4()),
     )
-    assert frozenset(request.source_tags) == frozenset((*REQUIRED_TAGS, "repo:group/app"))
+    assert request.source_tags == ("repo:group/app",)
 
 
-def test_a_narrowed_model_cannot_use_a_mode_that_admits_untagged():
-    """The trap this feature exists to avoid: extra source_tags under `any`
-    would let the extra tag alone qualify a source, bypassing the required
-    schema:ach-retain-v1 + validity:indefinite pair entirely -- a model that
-    looks scoped to one repo and actually reads everything tagged with it,
-    typed curation or not."""
-    with pytest.raises(ValueError):
-        CustomModelCreateRequest(
-            name="bad-mode",
-            source_query="q",
-            source_tags=(*REQUIRED_TAGS, "repo:group/app"),
-            source_tags_mode="any",
-            max_tokens=256,
-            trigger=TRIGGER,
-            operation_id=str(uuid4()),
-        )
-
-
-def test_source_tags_refuses_a_reserved_extra_tag():
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize(
+    "tag", ["type:decision", "schema:ach-retain-v1", "SCHEMA:ach-retain-v1", "Type:decision"]
+)
+def test_source_tags_refuses_a_server_owned_namespace_in_any_case(tag):
+    """Routing these through `normalize_caller_tags` is what makes the check
+    case-insensitive: the hand-rolled copy this replaced compared raw input
+    against lowercase prefixes, so `SCHEMA:` walked straight past it."""
+    with pytest.raises(InvalidTag):
         CustomModelCreateRequest(
             name="bad-extra",
             source_query="q",
-            source_tags=(*REQUIRED_TAGS, "type:decision"),
-            source_tags_mode="all",
+            source_tags=(tag,),
             max_tokens=256,
             trigger=TRIGGER,
             operation_id=str(uuid4()),
         )
+
+
+def test_source_tags_are_normalised_the_same_way_retain_normalises_them():
+    """A tag written by retain and a tag a model selects on have to be
+    byte-identical or the model silently summarizes nothing, for ever, with
+    no error anywhere."""
+    request = CustomModelCreateRequest(
+        name="mixed-case",
+        source_query="q",
+        source_tags=("  Repo:Group/App  ",),
+        max_tokens=256,
+        trigger=TRIGGER,
+        operation_id=str(uuid4()),
+    )
+    assert request.source_tags == ("repo:group/app",)
 
 
 # ---------------------------------------------------------------------------

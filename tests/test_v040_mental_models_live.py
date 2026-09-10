@@ -107,8 +107,7 @@ def _custom_request(**overrides) -> CustomModelCreateRequest:
     body = {
         "name": "live-custom",
         "source_query": "Summarize durable ach-memory v0.4.0 live-governance test content.",
-        "source_tags": REQUIRED_TAGS,
-        "source_tags_mode": "all",
+        "source_tags": ["repo:group/app"],
         "max_tokens": 256,
         "trigger": TRIGGER,
         "operation_id": str(uuid.uuid4()),
