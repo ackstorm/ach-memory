@@ -183,11 +183,17 @@ def _run(
             # (`api/memory.py:_typed_retain`) and POST /v1/projects both order
             # it that way for the same reason: a caller must never be left
             # holding a committed project whose bank has no retain strategy
-            # and no built-in. Letting a provisioning failure propagate from
-            # here aborts the request with the Project row still uncommitted,
-            # so a failed first retain neither burns one of the caller's
-            # hourly creations nor squats a slug that is unrecoverable once
-            # taken (invariant 8).
+            # and no built-in.
+            #
+            # It protects the first half of provisioning, not all of it. A
+            # failure in `ensure_exact_retain_strategy` propagates with the
+            # Project row still uncommitted, so the slug is released and no
+            # hourly creation is burnt. Built-in creation is different:
+            # `mental_model_service._create_builtin` commits its `creating`
+            # row before calling Hindsight so a crash cannot orphan an
+            # upstream model, and that commit takes this session's pending
+            # Project with it. Past that point the slug is taken for good
+            # (invariant 8). See the longer note on the REST twin.
             if provision is not None:
                 provision(bank_id, tc.db, tc.principal)
             # Commit before the upstream call: resolution may have created the

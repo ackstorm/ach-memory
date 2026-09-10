@@ -783,14 +783,23 @@ def test_an_operator_cannot_reach_another_tenants_user_bank(
 
 
 @respx.mock
-def test_a_first_retain_whose_provisioning_fails_leaves_no_project_behind(
+def test_a_first_retain_whose_strategy_check_fails_leaves_no_project_behind(
     client, juan, session, tenant, monkeypatch
 ):
     """The whole point of ordering provisioning BEFORE the commit. A slug is
     unique across live AND retired names, so a project committed without a
     usable bank squats its slug for ever, and its `project.create` audit row
     permanently burns one of the caller's hourly creations -- the caller is
-    told the retain failed and cannot even retry the same name."""
+    told the retain failed and cannot even retry the same name.
+
+    Scoped to the STRATEGY half deliberately, which is what the mock below
+    fails. The built-in half does not roll back and cannot be made to from
+    here: `mental_model_service._create_builtin` commits its `creating` row
+    before calling Hindsight so a crash cannot orphan an upstream model, and
+    that commit takes the pending Project with it. The app fixture also
+    stubs `reconcile_builtin` out entirely, so this test could not reach that
+    path even if it tried. See the note in `api/memory.py::_typed_retain`.
+    """
     from memory import bootstrap as bootstrap_service
     from memory.models import AuditEvent
     from memory.retain_strategy import ensure_exact_retain_strategy
@@ -829,12 +838,20 @@ def test_a_first_retain_whose_provisioning_fails_leaves_no_project_behind(
 
 
 @respx.mock
-def test_provisioning_verifies_a_bank_once_not_on_every_retain(
+def test_provisioning_reverifies_a_bank_on_every_retain(
     client, juan, tenant, monkeypatch
 ):
-    """Retain provisions on every write, so an unguarded verification put two
-    upstream round trips on the hottest path in the service, for ever rather
-    than once."""
+    """This costs two upstream round trips per write, and it is the price of
+    being right.
+
+    A per-process memo of the verdict was tried and removed. `DELETE /v1/
+    admin/memory/{scope}` tears a bank down while deliberately leaving its id
+    for the next retain to auto-create, and auto-creation brings the bank
+    back with Hindsight's DEFAULT config -- so a surviving verdict skipped
+    the repair and every later retain was silently stored under the default
+    extraction strategy. `client.ensure_bank` carries the same warning from
+    the previous time a cache here was found and removed.
+    """
     from memory import bootstrap as bootstrap_service
     from memory import retain_strategy
 
@@ -873,4 +890,6 @@ def test_provisioning_verifies_a_bank_once_not_on_every_retain(
         )
         assert response.status_code == 202, response.text
 
-    assert config.call_count == 1
+    assert config.call_count == 3, (
+        "a memoised verdict outlives the bank it describes -- see the docstring"
+    )

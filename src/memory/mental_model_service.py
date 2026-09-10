@@ -75,12 +75,26 @@ _MANUAL_TRIGGER_UPDATE: dict[str, object] = {
 }
 
 
+#: Trigger keys that decide which memories a model is built from. Upstream
+#: reads them in preference to the model's own tags -- `tags_match` replaces
+#: the match mode, `tag_groups` discards the tag list outright -- so a caller
+#: that set either one chose the source selection while the row went on
+#: recording `all_strict` over `effective_source_tags`. Everything else in a
+#: trigger governs WHEN a refresh happens and is forwarded verbatim by
+#: design; these two govern WHAT is summarised, which is server-owned for the
+#: same reason `tags.RESERVED_PREFIXES` is.
+_SERVER_OWNED_TRIGGER_KEYS = ("tags_match", "tag_groups")
+
+
 def _validated_trigger(value: dict[str, object] | None) -> dict[str, object] | None:
     if value is None:
         return None
     mode = value.get("mode")
     if mode is not None and mode not in ("full", "delta"):
         raise ValueError("trigger mode must be 'full' or 'delta'; use {} for manual refresh")
+    for key in _SERVER_OWNED_TRIGGER_KEYS:
+        if value.get(key) is not None:
+            raise ValueError(f"trigger.{key} is server-owned; narrow with source_tags instead")
     return value
 
 
@@ -716,12 +730,21 @@ def _upgrade_builtin(
         upstream_changes["max_tokens"] = definition.max_tokens
     if dict(definition.trigger) != existing.trigger:
         upstream_changes["trigger"] = dict(definition.trigger)
+    # `tags` upstream, `source_tags` on the row. This IS an upstream property
+    # -- `_create_builtin` sends it as `tags` -- so a definition that changes
+    # which sources feed a built-in has to move both, and has to refresh:
+    # without it the row kept the old tag set, claimed the new
+    # `definition_version`, left `upstream_changes` empty, and therefore
+    # skipped the update AND the refresh. Nothing ever converged.
+    if list(definition.source_tags) != list(existing.source_tags or []):
+        upstream_changes["tags"] = list(definition.source_tags)
     if upstream_changes and existing.upstream_model_id is not None:
         client.update_mental_model(bank.bank_id, existing.upstream_model_id, **upstream_changes)
 
     existing.source_query = definition.source_query
     existing.max_tokens = definition.max_tokens
     existing.trigger = dict(definition.trigger)
+    existing.source_tags = list(definition.source_tags)
     # Never sent upstream (Hindsight's mental-model tags_match lives in its
     # trigger, which this codebase never sets): a definition_version bump for
     # a mode-only change like all_strict is local bookkeeping, so it's safe

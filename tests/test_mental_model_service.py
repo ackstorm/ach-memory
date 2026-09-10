@@ -718,3 +718,54 @@ def test_reconcile_builtin_still_refreshes_when_the_prompt_itself_changed(
 
     hindsight.refresh_mental_model.assert_called_once()
     assert result.delivery_state == "withheld"
+
+
+def test_reconcile_builtin_applies_a_changed_source_tag_set(session, bank, hindsight):
+    """`source_tags` IS an upstream property -- create sends it as `tags` --
+    so a definition that changes which sources feed a built-in has to move
+    the row, tell Hindsight, and refresh.
+
+    It did none of the three: `source_tags` was absent from both the
+    `upstream_changes` diff and the assignments below it, so the row kept the
+    old tag set while claiming the new `definition_version`, and an empty
+    diff skipped the update and the refresh alike. Nothing ever converged,
+    and a later reconcile saw a version that already matched.
+    """
+    model_registry.register_model(
+        session, bank, origin="builtin", model_key=USER_CONTEXT.key,
+        name="User context", source_query=USER_CONTEXT.source_query,
+        source_tags=["schema:ach-retain-v1"], tags_match="all_strict",
+        max_tokens=USER_CONTEXT.max_tokens, trigger=dict(USER_CONTEXT.trigger),
+        builtin_key=USER_CONTEXT.key, definition_version=USER_CONTEXT.version - 1,
+        delivery_state="ready", upstream_model_id="mm-upstream-old",
+    )
+    session.commit()
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-tags"}
+
+    reconcile_builtin(session, bank, USER_CONTEXT, client=hindsight)
+
+    row = model_registry.get_registered_model(session, bank, USER_CONTEXT.key)
+    assert list(row.source_tags) == list(USER_CONTEXT.source_tags)
+    _, kwargs = hindsight.update_mental_model.call_args
+    assert kwargs["tags"] == list(USER_CONTEXT.source_tags)
+    hindsight.refresh_mental_model.assert_called_once()
+
+
+@pytest.mark.parametrize("key", ["tags_match", "tag_groups"])
+def test_a_trigger_cannot_choose_which_memories_a_model_is_built_from(key):
+    """Upstream reads these two in preference to the model's own tags --
+    `tags_match` replaces the match mode, `tag_groups` discards the tag list
+    outright. Forwarded verbatim through the `extra="allow"` trigger, they
+    let a caller pick the source selection while the row went on recording
+    `all_strict` over `effective_source_tags`: the stored filter and the one
+    actually applied disagreed, with nothing reporting it.
+    """
+    with pytest.raises(ValueError, match="server-owned"):
+        CustomModelCreateRequest(
+            name="n",
+            source_query="q",
+            source_tags=["repo:group/app"],
+            max_tokens=512,
+            trigger={"mode": "full", key: "any" if key == "tags_match" else [{"tags": ["x"]}]},
+            operation_id=str(uuid4()),
+        )

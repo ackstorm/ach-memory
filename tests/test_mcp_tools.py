@@ -629,9 +629,13 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
             # asserted directly rather than by absence.
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
-            assert exc_info.value.code == (
-                "PROJECT_NOT_FOUND" if name == "transfer" else exc_info.value.code
-            )
+            if name == "transfer":
+                assert exc_info.value.code == "PROJECT_NOT_FOUND", name
+            else:
+                # The point of these two is that they raise for their OWN
+                # reason and never because the write ceiling caught them.
+                # `code == code` asserted nothing here.
+                assert exc_info.value.code != "RATE_LIMITED", name
         else:
             call_tool(name, key, **kwargs)  # must NOT raise RATE_LIMITED
 

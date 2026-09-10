@@ -392,10 +392,22 @@ def _typed_retain(
     # Provision BEFORE the commit, exactly as POST /v1/projects does: a 2xx
     # here means the bank is usable, and a caller must never be left holding a
     # committed project whose bank has no retain strategy and no built-in.
-    # Letting the failure propagate aborts the whole request, so a project
-    # this call minted is never committed -- which also means a failed first
-    # retain does not permanently burn one of the caller's hourly creations,
-    # nor squat a slug that is unrecoverable once taken (invariant 8).
+    #
+    # How far that actually protects a first project-scoped retain, precisely,
+    # because the obvious reading is too strong: a failure in
+    # `ensure_exact_retain_strategy` -- which runs first -- propagates with
+    # the Project row still uncommitted, so the slug is released and no hourly
+    # creation is burnt. A failure in built-in creation does NOT roll back,
+    # because `mental_model_service._create_builtin` commits its `creating`
+    # row before calling Hindsight, on purpose: a crash between the two must
+    # leave a repairable row rather than an upstream model nothing points at.
+    # That commit flushes this session, the caller's pending Project included,
+    # so once provisioning reaches built-in creation the slug IS taken for
+    # good (invariant 8) and the creation IS spent.
+    #
+    # Closing that window means giving provisioning its own session rather
+    # than borrowing the caller's, which is a change across bootstrap, retain
+    # and project creation alike -- not a comment's worth of work.
     provision_before_retain(db, principal, scope=body.scope, bank_id=bank_id, client=get_client())
     # Then commit, before the upstream retain: rolling the project back after
     # Hindsight has accepted a memory into its bank would orphan that memory
