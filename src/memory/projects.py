@@ -219,9 +219,11 @@ def _check_creation_rate_limit(db: Session, principal: Principal) -> None:
     creation regardless of caller (see the audit fix this rate limit needs),
     so it is the one count nothing can dodge or rewrite.
 
-    Keyed by `actor_key_id`, same identity `ratelimit.check` already uses --
-    None only for the master key, which then shares one bucket exactly like
-    its write-rate-limit counterpart.
+    Keyed by `actor_key_id`, same identity `ratelimit.check` already uses:
+    the `ext_` credential id derived from (issuer, subject), so every caller
+    gets its own bucket -- operators included, since authority is now
+    configuration read over an ordinary external identity rather than a
+    credential of its own.
 
     No composite index covers (tenant_id, actor_key_id, action, created_at)
     today; AuditEvent only indexes those columns individually. Left alone

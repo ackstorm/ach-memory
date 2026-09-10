@@ -158,10 +158,11 @@ def _assert_master_config_cannot_over_grant() -> None:
             "entry, which would grant operator authority to a principal with "
             "no identity. Refusing to start."
         )
-    # A subject is only unique within the issuer that minted it, and a caller
-    # picks which provider authenticates them by picking which header to send.
-    # So with both providers enabled, `MEMORY_MASTER_USERS=a@b.com` naming a
-    # JWT subject is equally satisfied by anyone holding a platform credential
+    # A subject is only unique within the issuer that minted it, and which
+    # provider authenticates a caller is decided by the token's own shape
+    # (`resolve_principal`), not by anything configuration pins down. So with
+    # both providers enabled, `MEMORY_MASTER_USERS=a@b.com` naming a JWT
+    # subject is equally satisfied by anyone holding a platform credential
     # whose resolver returns that same string -- a privilege escalation with
     # no bad credential anywhere in it. Naming the issuer disambiguates; not
     # naming it, when it matters, is a refusal to start.

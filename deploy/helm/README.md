@@ -134,10 +134,12 @@ inspect.
 ```bash
 helm lint deploy/helm/ach-memory \
   --set config.databaseUrl=postgresql+psycopg://memory:memory@postgres:5432/memory \
-  --set config.hindsight.url=http://hindsight:8888 \
+  --set config.hindsight.url=http://hindsight:8888
+
 helm template ach-memory deploy/helm/ach-memory \
   --set config.databaseUrl=postgresql+psycopg://memory:memory@postgres:5432/memory \
-  --set config.hindsight.url=http://hindsight:8888 \
+  --set config.hindsight.url=http://hindsight:8888
+
 helm template ach-memory deploy/helm/ach-memory \
   --set config.databaseUrl=postgresql+psycopg://memory:memory@postgres:5432/memory \
   --set config.hindsight.url=http://hindsight:8888 \
