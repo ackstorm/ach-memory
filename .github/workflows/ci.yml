@@ -47,16 +47,30 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
       - run: helm lint deploy/helm/ach-memory
-      - name: helm template must refuse with no master key
+      # The chart used to be REQUIRED to fail without a master key, because
+      # the key was a credential that had to come from a Secret. Operator
+      # authority is now configuration naming identities an IdP already
+      # asserts, so there is nothing secret to demand and rendering must
+      # SUCCEED. The fail-closed property moved rather than disappeared: what
+      # has to hold is that the default grants nobody. Mirrors `make chart`;
+      # this job is the copy CI runs, and the two drifted once already.
+      - name: helm template renders and grants nobody by default
         run: |
-          if helm template t deploy/helm/ach-memory \
+          # helm's OWN exit status, checked before anything is grepped: a
+          # chart that fails to render produces no output, `grep -q` exits 1,
+          # and the failure would read as "grants nobody" -- the gate passing
+          # on a chart nobody could install.
+          rendered=$(helm template t deploy/helm/ach-memory \
             --set config.databaseUrl=postgresql+psycopg://u:p@h:5432/m \
-            --set config.hindsight.url=http://hindsight:8888 >/dev/null 2>&1
-          then
-            echo "FAIL: the chart rendered with no master key configured" >&2
+            --set config.hindsight.url=http://hindsight:8888) \
+            || { echo "FAIL: chart does not render" >&2; exit 1; }
+          if printf '%s\n' "$rendered" \
+            | grep -A1 -e 'name: MEMORY_MASTER_USERS' -e 'name: MEMORY_MASTER_GROUPS' \
+            | grep -q 'value: "[^"]'; then
+            echo "FAIL: chart grants an operator by default" >&2
             exit 1
           fi
-          echo "correctly refused"
+          echo "chart grants no operator by default"
       - name: helm template must render hardened manifests
         run: |
           helm template ach-memory deploy/helm/ach-memory \
@@ -165,11 +179,41 @@ jobs:
             -e MEMORY_DATABASE_URL="postgresql+psycopg://memory:memory@localhost:5432/memory" \
             ach-memory:ci python -m alembic upgrade head
 
+      # The service issues no credentials, so an image with no identity
+      # provider configured cannot answer a single authenticated request --
+      # which is precisely what the probe below has to exercise. This is the
+      # same stdlib whoami the Compose stack uses, run straight on the runner
+      # (it imports nothing outside the standard library) and reachable on
+      # localhost because the container runs with --network host. Read
+      # deploy/dev-identity/whoami.py before copying any of this: the token
+      # IS the identity, so it authenticates everybody, by construction.
+      - name: Start a dev identity resolver for the probe
+        run: |
+          python3 deploy/dev-identity/whoami.py &
+          echo "WHOAMI_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 20); do
+            curl -sf -H 'Authorization: Bearer ci-probe' \
+              http://localhost:8080/whoami >/dev/null && exit 0
+            sleep 1
+          done
+          echo "FAIL: the dev identity resolver never answered within 20s" >&2
+          exit 1
+
+      # Every platform var spelled out because the service refuses to boot
+      # without them -- there are no application-level defaults for auth
+      # wiring, on purpose. Compose only appears to have them because its
+      # `${VAR:-default}` expansions supply them from the shell.
       - name: Start the container against the Postgres service
         run: |
           docker run -d --name ach-memory-ci --network host \
             -e MEMORY_DATABASE_URL="postgresql+psycopg://memory:memory@localhost:5432/memory" \
             -e MEMORY_HINDSIGHT_URL="http://localhost:1" \
+            -e MEMORY_AUTH_PLATFORM_ENABLED="true" \
+            -e MEMORY_AUTH_PLATFORM_RESOLVER_URL="http://localhost:8080/whoami" \
+            -e MEMORY_AUTH_PLATFORM_INCOMING_HEADER="authorization" \
+            -e MEMORY_AUTH_PLATFORM_RESOLVER_HEADER="authorization" \
+            -e MEMORY_AUTH_PLATFORM_USER_FIELD="user_id" \
+            -e MEMORY_AUTH_PLATFORM_GROUPS_FIELD="groups" \
             ach-memory:ci
 
       # Bounded wait with an explicit failure path -- never `until ...; do
@@ -178,10 +222,12 @@ jobs:
       # unauthenticated and touches neither the database nor Hindsight -- it
       # certified an image that could not serve one real request (measured:
       # moving alembic+psycopg to the dev group left /docs green while every
-      # other request 500'd). `GET /v1/projects` with a real master key
-      # exercises auth AND a live DB round trip through psycopg. The
-      # plaintext below is CI-only, matched to the hash passed above
-      # (sha256("ci-master-key")); it authenticates nothing outside this job.
+      # other request 500'd). `GET /v1/projects` as a resolved identity
+      # exercises the whole path: the platform provider's round trip to the
+      # resolver, `link_identity` creating the User row on first sight, and a
+      # live DB round trip through psycopg. It reaches no Hindsight, which is
+      # why the unreachable URL above is harmless -- provisioning a bank is
+      # deliberately NOT on the authentication path.
       - name: Wait for an authenticated request to answer
         run: |
           for i in $(seq 1 30); do
@@ -193,7 +239,7 @@ jobs:
             # bound and the explicit failure path existed; they were simply
             # unreachable.
             code=$(curl -s -o /dev/null -w '%{http_code}' \
-              -H "Authorization: Bearer ci-master-key" \
+              -H "Authorization: Bearer ci-probe" \
               http://localhost:8000/v1/projects || true)
             if [ "$code" = "200" ]; then
               echo "answered 200 after ${i} attempt(s)"
