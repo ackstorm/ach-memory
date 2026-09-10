@@ -187,14 +187,30 @@ services:
       # The sidecar, wired through the ordinary platform provider. The
       # incoming header is `Authorization` so an unmodified client -- the CLI,
       # the stdio proxy, curl -- drives this stack with `Bearer <name>` and
-      # nothing has a dev-only code path. The JWT provider stays off here, so
-      # a bearer token falls through to this resolver.
-      MEMORY_AUTH_PLATFORM_ENABLED: "true"
-      MEMORY_AUTH_PLATFORM_INCOMING_HEADER: authorization
-      MEMORY_AUTH_PLATFORM_RESOLVER_HEADER: authorization
-      MEMORY_AUTH_PLATFORM_RESOLVER_URL: http://dev-identity:8080/whoami
-      MEMORY_AUTH_PLATFORM_USER_FIELD: user_id
-      MEMORY_AUTH_PLATFORM_GROUPS_FIELD: groups
+      # nothing has a dev-only code path.
+      #
+      # Every one is an interpolated default rather than a literal, which is
+      # what makes `.env.example`'s "setting these here overrides the compose
+      # defaults" true: `docker compose` reads `.env` for interpolation on its
+      # own, so an uncommented line there reaches the container. As literals
+      # they did not, and a developer enabling the JWT provider in `.env` got
+      # both providers in their shell and only this one in the container --
+      # including MEMORY_MASTER_ISSUER, which the two-provider startup
+      # assertion demands and which nothing here passed at all.
+      #
+      # Enumerated, not `env_file: .env`: the container keeps declaring
+      # exactly what it receives, instead of inheriting whatever a file
+      # outside the repo happens to hold.
+      MEMORY_AUTH_PLATFORM_ENABLED: "${MEMORY_AUTH_PLATFORM_ENABLED:-true}"
+      MEMORY_AUTH_PLATFORM_INCOMING_HEADER: ${MEMORY_AUTH_PLATFORM_INCOMING_HEADER:-authorization}
+      MEMORY_AUTH_PLATFORM_RESOLVER_HEADER: ${MEMORY_AUTH_PLATFORM_RESOLVER_HEADER:-authorization}
+      MEMORY_AUTH_PLATFORM_RESOLVER_URL: ${MEMORY_AUTH_PLATFORM_RESOLVER_URL:-http://dev-identity:8080/whoami}
+      MEMORY_AUTH_PLATFORM_USER_FIELD: ${MEMORY_AUTH_PLATFORM_USER_FIELD:-user_id}
+      MEMORY_AUTH_PLATFORM_GROUPS_FIELD: ${MEMORY_AUTH_PLATFORM_GROUPS_FIELD:-groups}
+      MEMORY_AUTH_JWT_ENABLED: "${MEMORY_AUTH_JWT_ENABLED:-false}"
+      MEMORY_AUTH_JWT_ISSUER: ${MEMORY_AUTH_JWT_ISSUER:-}
+      MEMORY_AUTH_JWT_AUDIENCE: ${MEMORY_AUTH_JWT_AUDIENCE:-}
+      MEMORY_AUTH_JWT_JWKS_URI: ${MEMORY_AUTH_JWT_JWKS_URI:-}
       # 0: the sidecar derives identity from the token itself, so a cache
       # only hides that during development.
       MEMORY_AUTH_PLATFORM_CACHE_TTL: "0"
@@ -202,6 +218,10 @@ services:
       # yourself to reach the operator plane on the local stack.
       MEMORY_MASTER_USERS: ${MEMORY_MASTER_USERS:-}
       MEMORY_MASTER_GROUPS: ${MEMORY_MASTER_GROUPS:-}
+      # Which provider may grant that authority. The startup assertion demands
+      # it once more than one provider is enabled, so it has to be reachable
+      # from `.env` or that configuration is unsatisfiable on this stack.
+      MEMORY_MASTER_ISSUER: ${MEMORY_MASTER_ISSUER:-}
     ports:
       # Loopback only. See the postgres/hindsight services above for why.
       - "127.0.0.1:${MEMORY_API_PORT:-8000}:8000"
