@@ -207,8 +207,11 @@ def _recall_hits(
         query,
         with_entities=False,
         types=list(filters.types),
-        tags=list(filters.tags),
-        tags_match=filters.tags_match,
+        # `tag_groups`, never `tags`: upstream treats the two as mutually
+        # exclusive, and only the grouped form can give the server's scoping
+        # tags and the caller's narrowing tags different match modes in one
+        # query. See `read_models.resolve_filters`.
+        tag_groups=list(filters.tag_groups),
     )
     raw_results = raw.get("results") if isinstance(raw, dict) else None
     if not isinstance(raw_results, list):

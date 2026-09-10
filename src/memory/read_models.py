@@ -5,26 +5,31 @@ Every field here is either a caller input with server-owned validation, or a
 server-constructed output whitelisted field by field -- see the plan's
 "Read-only public contracts" for the wire shapes these implement
 (docs/superpowers/plans/2026-09-02-memory-quality-phase-5-read-only-recall.md).
-No model here ever carries `git_locator`, `tag_groups`, `tags_match`, a bank
-ID or a tenant ID: the Phase 5 non-negotiable contracts forbid all five on
-the read surface, and `extra="forbid"` on every request model turns a caller
-who sends one into a 422, not a silently-ignored field.
+No CALLER-FACING model here ever carries `git_locator`, `tag_groups`,
+`tags_match`, a bank ID or a tenant ID: the Phase 5 non-negotiable contracts
+forbid all five on the read surface, and `extra="forbid"` on every request
+model turns a caller who sends one into a 422, not a silently-ignored field.
+`RecallFilters` does carry `tag_groups`, and that is the point of it: it is
+server-constructed, never caller input, and it is the one place upstream tag
+syntax is allowed to exist so that no request model has to admit it.
 
 `RecallRequest.tags_filter` is the one deliberate, narrow exception: a
 caller-supplied list, validated and normalised by
 `memory.tags.normalize_caller_tags` -- the same gate retain applies, so a tag
-written and a tag searched are byte-identical -- then ANDed into the fixed,
-server-owned strict filter (`resolve_filters`) inside a bank the caller's own
-`scope`/`project_slug` already resolved and authorized. It can only narrow
-what that caller could already read; it is never a raw Hindsight tag
-expression. `tags_filter_mode` chooses only from `memory.tags`'s closed,
-already-strict enum -- never raw Hindsight `tags_match` syntax.
+written and a tag searched are byte-identical -- then ANDed, as a group of
+its own, into the fixed server-owned strict filter (`resolve_filters`) inside
+a bank the caller's own `scope`/`project_slug` already resolved and
+authorized. It can only narrow what that caller could already read; it is
+never a raw Hindsight tag expression. `tags_filter_mode` chooses only from
+`memory.tags`'s closed, already-strict enum -- never raw Hindsight
+`tags_match` syntax -- and it governs that group alone, never the server's
+own scoping tags.
 
 This module also owns the one piece of caller-controllable Hindsight
 behavior a read exposes: mapping `view`/`kinds`/`tags_filter`/
 `tags_filter_mode` to fixed upstream filters (`resolve_filters`). The caller
 chooses from closed enums plus its own normalised tags; the actual Hindsight
-`types`/`prefer_observations`/`tags_match` values are server-owned and never
+`types`/`prefer_observations`/`tag_groups` values are server-owned and never
 themselves caller input.
 """
 
@@ -289,8 +294,12 @@ class RecallFilters:
     to map."""
 
     types: tuple[FactType, ...]
-    tags: tuple[str, ...]
-    tags_match: str
+    #: Upstream's compound tag filter. Top-level groups are ANDed together,
+    #: which is the whole reason this is not a flat `tags`/`tags_match` pair:
+    #: the server's scoping tags and the caller's narrowing tags need
+    #: DIFFERENT match modes in the same query, and one flat list can only
+    #: carry one mode for all of them.
+    tag_groups: tuple[dict[str, object], ...]
 
 
 def resolve_filters(
@@ -313,17 +322,35 @@ def resolve_filters(
     meaning.
     `ach-exact-v1` never produces an "experience" fact (SPEC §5.7), so only
     `world` (the retained claim) and `observation` (Hindsight's own later
-    consolidation) are ever relevant types. `tags_match` now reflects the
-    caller's own `mode` (`RecallRequest.tags_filter_mode`), mapped through
-    `memory.tags.to_upstream` -- caller-settable, but only from that closed,
-    already-strict enum: the loose Hindsight forms (`all`/`any` without
-    `_strict`) that would also return untagged memories and silently defeat
-    the filter are never reachable this way, whatever the caller picks.
+    consolidation) are ever relevant types.
+
+    The caller's `mode` governs the caller's OWN tags and nothing else, which
+    is why this builds three ANDed groups instead of one flat list. A flat
+    list carries a single match mode, so every tag in it shared whatever the
+    caller picked, and both server-owned narrowings broke:
+
+    * `mode="any"` ORed `schema:ach-retain-v1` in with the caller's tags.
+      Every ACH-authored memory carries that tag, so the filter matched the
+      entire corpus -- a caller asking for LESS silently received
+      EVERYTHING, with no error to notice.
+    * `mode="all"` ANDed the `type:` tags together, and a memory carries
+      exactly one. Asking for two memory types could therefore never match
+      anything, and `all` is the default, so this was the ordinary path.
+
+    Grouped, each axis keeps the mode it actually needs: the schema tag is
+    always required, the requested `memory_types` are ORed against each
+    other, and only the caller's tags answer to `mode`. Every mode stays
+    `_strict` (`memory.tags.to_upstream`); the loose Hindsight forms, which
+    also return untagged memories, are never reachable whatever the caller
+    picks.
     """
-    tags = ["schema:ach-retain-v1"]
+    groups: list[dict[str, object]] = [
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"}
+    ]
     if memory_types:
-        tags.extend(f"type:{value}" for value in memory_types)
-    tags.extend(caller_tags)
-    return RecallFilters(
-        types=("world", "observation"), tags=tuple(tags), tags_match=to_upstream(mode)
-    )
+        groups.append(
+            {"tags": [f"type:{value}" for value in memory_types], "match": "any_strict"}
+        )
+    if caller_tags:
+        groups.append({"tags": list(caller_tags), "match": to_upstream(mode)})
+    return RecallFilters(types=("world", "observation"), tag_groups=tuple(groups))

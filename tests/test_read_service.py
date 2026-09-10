@@ -333,8 +333,9 @@ def test_a_history_response_rejects_an_undocumented_top_level_field():
 def test_current_view_always_carries_the_schema_tag_and_no_experience_type():
     filters = resolve_filters("current", None)
     assert set(filters.types) == {"world", "observation"}
-    assert filters.tags == ("schema:ach-retain-v1",)
-    assert filters.tags_match == "all_strict"
+    assert filters.tag_groups == (
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+    )
 
 
 @pytest.mark.parametrize("view", ["current", "evidence", "all"])
@@ -343,36 +344,62 @@ def test_every_documented_view_resolves_to_the_same_v040_filter(view):
     assert resolve_filters(view, None) == resolve_filters("current", None)
 
 
-def test_memory_types_become_bounded_type_tags_after_the_schema_tag():
+def test_several_memory_types_are_ored_against_each_other():
+    """A memory carries exactly one `type:` tag, so ANDing two of them can
+    never match. Flat `all_strict` over both is what made a two-type recall
+    return nothing at all, on the default mode."""
     filters = resolve_filters("current", ("decision", "gotcha"))
-    assert filters.tags == ("schema:ach-retain-v1", "type:decision", "type:gotcha")
+    assert filters.tag_groups == (
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["type:decision", "type:gotcha"], "match": "any_strict"},
+    )
 
 
-def test_no_memory_types_means_only_the_schema_tag():
+def test_no_memory_types_means_only_the_schema_group():
     filters = resolve_filters("current", None)
-    assert filters.tags == ("schema:ach-retain-v1",)
+    assert filters.tag_groups == (
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+    )
 
 
-def test_caller_tags_extend_the_filter_after_the_schema_and_type_tags():
-    """all_strict is AND-with-extras-allowed, so adding a caller tag narrows
-    the result set and never excludes a memory for carrying more tags."""
+def test_caller_tags_form_their_own_group_after_the_server_groups():
+    """Groups are ANDed, so a caller tag narrows the schema-scoped set and
+    never excludes a memory for carrying more tags."""
     filters = resolve_filters("current", None, caller_tags=("repo:group/app",))
-    assert filters.tags == ("schema:ach-retain-v1", "repo:group/app")
-    assert filters.tags_match == "all_strict"
+    assert filters.tag_groups == (
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["repo:group/app"], "match": "all_strict"},
+    )
 
 
-def test_caller_mode_any_maps_to_any_strict():
-    filters = resolve_filters("current", None, mode="any")
-    assert filters.tags_match == "any_strict"
+def test_caller_mode_any_never_loosens_the_server_scope():
+    """The bug this shape exists to prevent: `any` belongs to the caller's
+    own tags. Flat, it ORed `schema:ach-retain-v1` in too -- and since every
+    ACH memory carries that tag, a request to narrow returned the whole
+    corpus instead."""
+    filters = resolve_filters(
+        "current", ("decision",), caller_tags=("repo:group/app", "area:auth"), mode="any"
+    )
+    assert filters.tag_groups == (
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["type:decision"], "match": "any_strict"},
+        {"tags": ["repo:group/app", "area:auth"], "match": "any_strict"},
+    )
+    schema_group = filters.tag_groups[0]
+    assert schema_group["match"] == "all_strict", "the server scope must stay ANDed"
 
 
 def test_no_mode_means_the_default_narrowing_mode():
     assert resolve_filters("current", None) == resolve_filters("current", None, mode="all")
 
 
-def test_caller_tags_come_after_memory_type_tags():
+def test_caller_tags_come_after_the_memory_type_group():
     filters = resolve_filters("current", ("decision",), caller_tags=("repo:group/app",))
-    assert filters.tags == ("schema:ach-retain-v1", "type:decision", "repo:group/app")
+    assert filters.tag_groups == (
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["type:decision"], "match": "any_strict"},
+        {"tags": ["repo:group/app"], "match": "all_strict"},
+    )
 
 
 def test_no_caller_tags_means_the_schema_tag_is_unchanged():

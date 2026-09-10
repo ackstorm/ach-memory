@@ -725,6 +725,108 @@ async def _() -> None:
     )
 
 
+TAGGED_KEYWORD = "argocd"
+TAGGED_CONTENT = "Deployments in this repository are rolled out with ArgoCD."
+TAGGED_QUERY = "how are deployments rolled out"
+CALLER_TAG = "repo:e2e-tagsurface"
+
+
+@scenario("read.recall_narrows_by_a_caller_tag")
+async def _() -> None:
+    """A caller tag must narrow the corpus, not decorate the request.
+
+    Alice's bank already holds the untagged seed from
+    `memory.sync_retain_and_recall_user_scope`, so a filtered recall that
+    still surfaces that seed has not filtered anything.
+    """
+    need("key.alice", "memory.user_seed_written")
+    body = retain_body("user", TAGGED_CONTENT, tags=[CALLER_TAG])
+    status, data = await call(
+        "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=60.0
+    )
+    expect_status("POST", "/v1/memory/sync_retain", body, status, data, 200)
+    S["memory.tagged_seed_written"] = True
+
+    recall = sc_body("user", query=TAGGED_QUERY, tags_filter=[CALLER_TAG])
+    status, data = await call(
+        "POST", "/v1/read/recall", S["key.alice"], json_body=recall
+    )
+    expect_status("POST", "/v1/read/recall", recall, status, data, 200)
+    blob = json.dumps(data).lower()
+    assert TAGGED_KEYWORD in blob, f"the tagged memory was filtered out of its own tag: {data}"
+    assert USER_FACT_KEYWORD not in blob, (
+        f"a tag-filtered recall returned the untagged seed too: {data}"
+    )
+
+
+@scenario("read.recall_any_mode_does_not_widen_to_the_whole_corpus")
+async def _() -> None:
+    """`mode="any"` ORs the CALLER'S tags with each other, and nothing else.
+
+    Flat, the server's `schema:ach-retain-v1` scope tag was ORed in with
+    them -- and every ACH-authored memory carries it, so asking to narrow
+    returned the entire corpus with no error. The untagged seed is the
+    canary: it can only come back if the scope tag was loosened.
+    """
+    need("key.alice", "memory.user_seed_written", "memory.tagged_seed_written")
+    recall = sc_body(
+        "user",
+        query=TAGGED_QUERY,
+        tags_filter=[CALLER_TAG, "area:not-present-anywhere"],
+        tags_filter_mode="any",
+    )
+    status, data = await call(
+        "POST", "/v1/read/recall", S["key.alice"], json_body=recall
+    )
+    expect_status("POST", "/v1/read/recall", recall, status, data, 200)
+    blob = json.dumps(data).lower()
+    assert TAGGED_KEYWORD in blob, f"an OR over the caller's tags lost a tagged match: {data}"
+    assert USER_FACT_KEYWORD not in blob, (
+        f'mode="any" widened past the caller tags and returned the corpus: {data}'
+    )
+
+
+@scenario("read.recall_several_kinds_are_ored_not_anded")
+async def _() -> None:
+    """A memory carries exactly one `type:` tag, so several `kinds` can only
+    mean OR. Flat `all_strict` ANDed them, which no memory could satisfy --
+    on the DEFAULT mode, so an ordinary two-kind recall returned nothing."""
+    need("key.alice", "memory.user_seed_written", "memory.tagged_seed_written")
+    recall = sc_body("user", query=TAGGED_QUERY, kinds=["fact", "decision"])
+    status, data = await call(
+        "POST", "/v1/read/recall", S["key.alice"], json_body=recall
+    )
+    expect_status("POST", "/v1/read/recall", recall, status, data, 200)
+    # `hits`, not `results`: RecallResponse closes its own field set and the
+    # read surface names them hits.
+    assert data.get("hits"), (
+        f"a recall naming two kinds matched nothing, which ANDing type tags guarantees: {data}"
+    )
+
+
+@scenario("mental_models.create_narrowed_by_a_caller_tag")
+async def _() -> None:
+    """`source_tags` is the caller's OWN narrowing set; the server composes
+    the required pair on top and echoes back the EFFECTIVE filter."""
+    need("key.alice")
+    body = sc_body(
+        "user",
+        name=f"e2e-narrowed-{RUN}",
+        source_query="how are deployments rolled out here?",
+        source_tags=[CALLER_TAG],
+        max_tokens=512,
+        trigger={"mode": "delta"},
+        operation_id=str(uuid.uuid4()),
+    )
+    status, data = await call("POST", "/v1/mental-models", S["key.alice"], json_body=body)
+    expect_status("POST", "/v1/mental-models", body, status, data, 201)
+    effective = data.get("source_tags") or []
+    assert CALLER_TAG in effective, f"the caller's narrowing tag was dropped: {data}"
+    assert "schema:ach-retain-v1" in effective, (
+        f"the server's required pair was not composed in: {data}"
+    )
+
+
 @scenario("memory.retain_async_returns_operation")
 async def _() -> None:
     need("key.alice")

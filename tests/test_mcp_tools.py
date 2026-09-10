@@ -1942,8 +1942,11 @@ def test_recall_passes_caller_tags_through_to_the_client(call_tool):
     call_tool("recall", key, scope="user", query="deps", tags_filter=["Repo:Group/App"])
 
     sent = json.loads(route.calls.last.request.content)
-    assert sent["tags"] == ["schema:ach-retain-v1", "repo:group/app"]
-    assert sent["tags_match"] == "all_strict"
+    assert sent["tag_groups"] == [
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["repo:group/app"], "match": "all_strict"},
+    ]
+    assert "tags" not in sent, "tags and tag_groups are mutually exclusive upstream"
 
 
 @respx.mock

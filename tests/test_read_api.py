@@ -79,8 +79,11 @@ def test_read_recall_sends_v040_schema_and_type_tags(client, two_users):
 
     assert response.status_code == 200
     sent = json.loads(route.calls.last.request.content)
-    assert sent["tags"] == ["schema:ach-retain-v1", "type:decision"]
-    assert sent["tags_match"] == "all_strict"
+    assert sent["tag_groups"] == [
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["type:decision"], "match": "any_strict"},
+    ]
+    assert "tags" not in sent, "tags and tag_groups are mutually exclusive upstream"
     assert set(sent["types"]) == {"world", "observation"}
 
 
@@ -101,8 +104,11 @@ def test_read_recall_ands_caller_tags_into_the_upstream_filter(client, two_users
 
     assert response.status_code == 200
     sent = json.loads(route.calls.last.request.content)
-    assert sent["tags"] == ["schema:ach-retain-v1", "repo:group/app"]
-    assert sent["tags_match"] == "all_strict"
+    assert sent["tag_groups"] == [
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["repo:group/app"], "match": "all_strict"},
+    ]
+    assert "tags" not in sent, "tags and tag_groups are mutually exclusive upstream"
 
 
 @respx.mock
