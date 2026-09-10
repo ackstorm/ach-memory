@@ -69,12 +69,20 @@ chart: ## helm lint + render, including the grants-nobody-by-default case
 # secret to demand and rendering must succeed. What has to hold instead is
 # that the default grants nobody -- the same fail-closed property, moved from
 # render time to the value itself, and asserted again at startup.
-	@helm template t deploy/helm/ach-memory --set config.databaseUrl=x \
-		--set config.hindsight.url=y \
+# Rendered first, and helm's OWN exit status checked, before anything is
+# grepped. `pipefail` is not portable to every /bin/sh, so a verdict taken
+# from the last grep in a pipeline is a verdict on grep: a chart that fails
+# to render produces no output, `grep -q` exits 1, and the failure reads as
+# "grants nobody" -- the gate passing on a chart nobody could install.
+	@rendered=$$(helm template t deploy/helm/ach-memory \
+		--set config.databaseUrl=x --set config.hindsight.url=y) \
+		|| { echo "FAIL: chart does not render" >&2; exit 1; }; \
+	if printf '%s\n' "$$rendered" \
 		| grep -A1 -e 'name: MEMORY_MASTER_USERS' -e 'name: MEMORY_MASTER_GROUPS' \
-		| grep -q 'value: "[^"]' \
-		&& { echo "FAIL: chart grants an operator by default" >&2; exit 1; } \
-		|| echo "chart grants no operator by default"
+		| grep -q 'value: "[^"]'; then \
+		echo "FAIL: chart grants an operator by default" >&2; exit 1; \
+	fi; \
+	echo "chart grants no operator by default"
 
 .PHONY: verify
 verify: lint test secrets chart ## The full local gate -- run this before pushing
