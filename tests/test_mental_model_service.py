@@ -691,4 +691,33 @@ def test_reconcile_builtin_upgrades_a_stale_mode_to_all_strict(session, bank, hi
 
     result = reconcile_builtin(session, bank, USER_CONTEXT, client=hindsight)
 
-    assert result.source_tags_mode == "all_strict"
+    row = model_registry.get_registered_model(session, bank, USER_CONTEXT.key)
+    assert row.tags_match == "all_strict"
+    # A version bump that moves nothing Hindsight can see must not withhold.
+    # Built-ins ARE standing context, so withholding here took every bank's
+    # standing context off the air on the first call after a deploy, and paid
+    # for an LLM re-synthesis, for a change that alters no output.
+    hindsight.refresh_mental_model.assert_not_called()
+    assert result.delivery_state == "ready"
+
+
+def test_reconcile_builtin_still_refreshes_when_the_prompt_itself_changed(
+    session, bank, hindsight
+):
+    """The other half of the same rule: a source_query bump DOES change what
+    Hindsight would synthesize, so it must withhold until the refresh lands."""
+    model_registry.register_model(
+        session, bank, origin="builtin", model_key=USER_CONTEXT.key,
+        name="User context", source_query="an older prompt",
+        source_tags=list(USER_CONTEXT.source_tags), tags_match="all_strict",
+        max_tokens=USER_CONTEXT.max_tokens, trigger=dict(USER_CONTEXT.trigger),
+        builtin_key=USER_CONTEXT.key, definition_version=USER_CONTEXT.version - 1,
+        delivery_state="ready", upstream_model_id="mm-upstream-old",
+    )
+    session.commit()
+    hindsight.refresh_mental_model.return_value = {"operation_id": "op-upgrade"}
+
+    result = reconcile_builtin(session, bank, USER_CONTEXT, client=hindsight)
+
+    hindsight.refresh_mental_model.assert_called_once()
+    assert result.delivery_state == "withheld"

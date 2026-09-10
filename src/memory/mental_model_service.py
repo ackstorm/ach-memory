@@ -743,14 +743,20 @@ def _upgrade_builtin(
     _touch(db, existing)
     db.flush()
 
-    if existing.upstream_model_id is not None:
+    # Refresh only what actually changed upstream. A version bump that moves
+    # nothing Hindsight can see -- `tags_match`, which lives in ACH's own row
+    # and not in the model we created -- has nothing to re-synthesize, and
+    # withholding for it would take standing context (built-ins, and nothing
+    # else) off the air on every bank at once, on the first call after a
+    # deploy, for a change that alters no output.
+    if upstream_changes and existing.upstream_model_id is not None:
         result = client.refresh_mental_model(bank.bank_id, existing.upstream_model_id)
         operation_id = result.get("operation_id") or result.get("id")
-        withheld = model_registry.withhold_model(db, bank, definition.key, operation_id)
+        upgraded = model_registry.withhold_model(db, bank, definition.key, operation_id)
     else:
-        withheld = existing
+        upgraded = existing
     db.commit()
-    return _to_view(withheld)
+    return _to_view(upgraded)
 
 
 def _repair_not_before(now: datetime) -> datetime:
