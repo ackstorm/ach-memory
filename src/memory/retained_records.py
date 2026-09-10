@@ -173,7 +173,7 @@ def accept_retain(
         lifecycle="active",
         upstream_state="pending",
         calling_agent=None,
-        created_by_credential=principal.credential_id or principal.key_id,
+        created_by_credential=principal.credential_id,
     )
     db.add(row)
     db.flush()
