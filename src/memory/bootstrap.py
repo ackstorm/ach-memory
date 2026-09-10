@@ -89,7 +89,11 @@ def provision_before_retain(
     """
     if principal.user_id is not None:
         user = db.get(User, principal.user_id)
-        if user is not None:
+        # The tenant clause is not redundant: `User.id` is a global primary
+        # key, not tenant-scoped, so `db.get` alone would provision a bank for
+        # a row that belongs to another tenant. `banks.resolve_user_bank`
+        # makes the same check on the same lookup.
+        if user is not None and user.tenant_id == principal.tenant_id:
             provision_user_bank(db, user, client=client)
     if scope == "project":
         project = (
