@@ -343,11 +343,19 @@ def create_user(client, session, *, groups: tuple[str, ...] = ()) -> dict:
 
     subject = f"user-{uuid.uuid4().hex[:12]}@test"
     headers = {IDENTITY_HEADER: identity_token(subject, groups)}
-    client.post("/v1/bootstrap", json={}, headers=headers)
+    # Checked, both of them. Unchecked, a bootstrap that 4xx/5xxs (an auth
+    # misconfiguration, a changed Hindsight stub, a startup assertion) left
+    # no identity row and this handed back `user_id: None`. Every test
+    # downstream then asserted against None -- ownership comparisons most of
+    # all -- and either passed vacuously or failed somewhere far from the
+    # cause. A broken fixture has to read as broken here.
+    response = client.post("/v1/bootstrap", json={}, headers=headers)
+    assert response.status_code == 200, f"bootstrap failed for {subject}: {response.text}"
     row = session.get(ExternalIdentity, (RESOLVER_URL, subject))
+    assert row is not None, f"bootstrap linked no identity for {subject}"
     return {
         "subject": subject,
-        "user_id": row.user_id if row is not None else None,
+        "user_id": row.user_id,
         "groups": groups,
         "headers": headers,
     }
