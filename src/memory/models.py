@@ -373,6 +373,15 @@ class RetainedRecord(Base):
     canonical_content: Mapped[str] = mapped_column(Text)
     memory_type: Mapped[str] = mapped_column(String(16))
     basis: Mapped[str] = mapped_column(String(32))
+    #: The caller's own narrowing tags, exactly as they were sent upstream.
+    #: The four derived tags (`type:`/`basis:`/`schema:`/`validity:`) are
+    #: recomputed from the columns beside this one, but a caller tag has no
+    #: other column to come from -- and `curation_service` must compare
+    #: against the full set to tell whether a narrowed mental model drew on
+    #: this source. NULL means "not recorded", which is not `[]`: a row from
+    #: before this column cannot prove a model excludes it, and the rule for
+    #: an unprovable exclusion is to withhold.
+    caller_tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     trigger: Mapped[str] = mapped_column(String(32))
     sanitized_evidence: Mapped[list[dict[str, str | None]]] = mapped_column(JSON)
     recorded_at: Mapped[datetime] = mapped_column(

@@ -118,20 +118,42 @@ def _accept_operation(
     return row
 
 
-def _tags_for(retained: RetainedRecord) -> list[str]:
+def _tags_for(retained: RetainedRecord) -> list[str] | None:
+    """The full tag set this source was stored upstream with, or None when it
+    cannot be reconstructed.
+
+    The four derived tags come straight from columns, but the caller's own
+    narrowing tags are only recoverable from `caller_tags`. A row written
+    before that column exists carries NULL rather than `[]`, and the two are
+    not interchangeable here: `[]` says the caller named no tags, NULL says
+    we do not know which it named. Only the first licenses a comparison.
+    """
+    if retained.caller_tags is None:
+        return None
     validity = "expiring" if retained.valid_until is not None else "indefinite"
+    # Mirrors `retention._tags`: derived four first, then the caller's own.
     return [
         f"type:{retained.memory_type}",
         f"basis:{retained.basis}",
         "schema:ach-retain-v1",
         f"validity:{validity}",
+        *retained.caller_tags,
     ]
 
 
-def _model_admits(model: MentalModelRegistration, source_tags: list[str]) -> bool:
+def _model_admits(
+    model: MentalModelRegistration, source_tags: list[str] | None
+) -> bool:
     """True unless the model's own static tag filter provably excludes this
     source. Defaults to admitting whenever the match mode itself cannot be
-    proven exclusionary -- SPEC's "if exclusion cannot be proven, withhold"."""
+    proven exclusionary -- SPEC's "if exclusion cannot be proven, withhold".
+
+    `source_tags=None` is that same rule applied to the source instead of the
+    mode: the record predates `caller_tags`, so a narrowed model cannot be
+    shown to exclude it and is admitted rather than presumed current.
+    """
+    if source_tags is None:
+        return True
     model_tags = set(model.source_tags or [])
     if not model_tags:
         return True

@@ -631,3 +631,80 @@ def test_reconcile_never_loops_past_one_operation(session, bank, hindsight):
 
     remaining = session.query(CurationOperation).filter_by(state="unknown").count()
     assert remaining == 1
+
+
+def test_a_model_narrowed_by_a_caller_tag_is_affected_by_a_correction(
+    session, bank, hindsight
+):
+    """A caller tag narrows a model, so a source carrying that tag feeds it.
+
+    The four derived tags are rebuilt from columns, but a caller's own tag is
+    only recoverable from `retained_records.caller_tags`. Before that column
+    existed the comparison ran against a tag set the caller's label was
+    missing from, so `_model_admits` concluded the model was unaffected and
+    the summary kept the corrected text for ever -- silently, because a
+    model that is never affected is never withheld and never errors.
+    """
+    from memory import model_registry
+
+    retained = _retained(session, bank, caller_tags=["repo:group/app"])
+    model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(),
+        name="n", source_query="q",
+        source_tags=["repo:group/app", "schema:ach-retain-v1"],
+        tags_match="all_strict", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-1",
+    )
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+    hindsight.refresh_mental_model.return_value = {"operation_id": "refresh-7"}
+
+    correct_record(
+        session,
+        retained,
+        "revised",
+        operation_id=str(uuid4()),
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
+
+    model = model_registry.list_registered_models(session, bank)[0]
+    assert model.delivery_state == "withheld"
+    assert model.refresh_status == "pending"
+    hindsight.refresh_mental_model.assert_called_once_with(bank.bank_id, "mm-upstream-1")
+
+
+def test_a_record_with_unrecorded_caller_tags_admits_every_model(
+    session, bank, hindsight
+):
+    """`caller_tags IS NULL` means "not recorded", never "there were none".
+
+    A row written before the column existed cannot prove that a narrowed
+    model excludes it, and SPEC's rule for that is to withhold rather than
+    to presume currentness -- so such a row must admit the model even though
+    the reconstructed tags do not contain its filter.
+    """
+    from memory import model_registry
+
+    retained = _retained(session, bank, caller_tags=None)
+    model_registry.register_model(
+        session, bank, origin="user", model_key=ids.new_model_key(),
+        name="n", source_query="q",
+        source_tags=["repo:never-recorded", "schema:ach-retain-v1"],
+        tags_match="all_strict", max_tokens=100, trigger={},
+        upstream_model_id="mm-upstream-2",
+    )
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+    hindsight.refresh_mental_model.return_value = {"operation_id": "refresh-8"}
+
+    correct_record(
+        session,
+        retained,
+        "revised",
+        operation_id=str(uuid4()),
+        client=hindsight,
+        bank_id=bank.bank_id,
+    )
+
+    model = model_registry.list_registered_models(session, bank)[0]
+    assert model.delivery_state == "withheld"
+    assert model.refresh_status == "pending"

@@ -165,6 +165,10 @@ def accept_retain(
         canonical_content=canonical_content,
         memory_type=request.memory_type,
         basis=request.basis,
+        # Already normalised and reserved-prefix checked by TypedRetainRequest,
+        # and these are the same tags `retention._tags` appends after the
+        # derived four, so the stored set matches what Hindsight was sent.
+        caller_tags=list(request.tags),
         trigger=request.trigger,
         sanitized_evidence=sanitized_evidence,
         recorded_at=now,
