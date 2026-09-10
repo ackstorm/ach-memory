@@ -141,3 +141,27 @@ def test_bootstrap_opt_out_creates_no_models(client, juan):
     assert response.status_code == 200, response.text
     assert response.json()["user_model"] is None
     assert create.call_count == 0
+
+
+@respx.mock
+def test_bootstrap_reports_a_group_owner_as_a_group(client, new_user):
+    """`type` was hardcoded to "user" while `owner_type` could be "group", and
+    `Literal["user"]` validated it because the literal satisfied the literal.
+    So a group-owned project reported the GROUP's id under type "user", and
+    the caller had nothing to tell the two apart by."""
+    member = new_user(groups=("platform-team",))
+    created = client.post(
+        "/v1/projects",
+        json={"project_slug": "team-owned", "owner": {"type": "group", "id": "platform-team"}},
+        headers=member["headers"],
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        "/v1/bootstrap", json={"project_slug": "team-owned"}, headers=member["headers"]
+    )
+
+    assert response.status_code == 200, response.text
+    owner = response.json()["project_owner"]
+    assert owner == {"type": "group", "id": "platform-team"}
+    assert owner["id"] != member["user_id"]

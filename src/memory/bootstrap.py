@@ -112,7 +112,11 @@ class BootstrapRequest(BaseModel):
 
 class ProjectOwnerView(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["user"]
+    #: Both, because both exist. Pinned to "user" while the value was
+    #: hardcoded, this validated for a group-owned project too -- the literal
+    #: satisfied the literal -- and handed the caller a group id labelled as
+    #: a user id, with nothing to tell them apart by.
+    type: Literal["user", "group"]
     id: str
 
 
@@ -158,7 +162,9 @@ def bootstrap(
         if resolution is not None:
             project = resolution.project
             project_slug = resolution.current_slug
-            project_owner = ProjectOwnerView(type="user", id=project.owner_id)
+            project_owner = ProjectOwnerView(
+                type=project.owner_type, id=project.owner_id
+            )
             project_bank = LogicalBankRef(
                 principal.tenant_id, "project", None, project.internal_id, project.bank_id
             )
