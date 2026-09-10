@@ -587,6 +587,55 @@ def test_reflect_reaches_the_reflect_endpoint_of_the_right_bank(client, juan, te
 
 
 @respx.mock
+def test_reflect_forwards_the_caller_tag_filter_like_its_mcp_twin(client, juan, tenant):
+    """The MCP `reflect` tool already narrows by caller tags; REST had no way
+    to. A filter the two surfaces disagree on is how an agent gets a different
+    answer for the same question depending on which door it came through."""
+    _mock_hindsight()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
+        return_value=httpx.Response(200, json={"text": "use uv", "usage": {}})
+    )
+
+    response = client.post(
+        "/v1/memory/reflect",
+        json={
+            "scope": "user",
+            "query": "deps?",
+            "tags_filter": ["Repo:Group/App"],
+            "tags_filter_mode": "any",
+        },
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200, response.text
+    sent = json.loads(route.calls.last.request.content)
+    # Normalised through the one shared gate, and always a strict mode: the
+    # loose forms would also return untagged memories and defeat the filter.
+    assert sent["tags"] == ["repo:group/app"]
+    assert sent["tags_match"] == "any_strict"
+
+
+@respx.mock
+def test_reflect_without_tags_sends_no_tag_keys_at_all(client, juan, tenant):
+    """Upstream's ReflectRequest defaults differ between a tagged and an
+    untagged request, so empty keys are not equivalent to omitting them."""
+    _mock_hindsight()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
+        return_value=httpx.Response(200, json={"text": "use uv", "usage": {}})
+    )
+
+    response = client.post(
+        "/v1/memory/reflect",
+        json={"scope": "user", "query": "deps?"},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200, response.text
+    sent = json.loads(route.calls.last.request.content)
+    assert "tags" not in sent and "tags_match" not in sent
+
+
+@respx.mock
 def test_reflect_is_denied_on_someone_elses_project(client, juan, alice, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(

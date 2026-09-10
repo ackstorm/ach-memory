@@ -23,6 +23,7 @@ from memory.errors import ContentTooLarge
 from memory.hindsight.client import get_client
 from memory.identifiers import has_control_character
 from memory.retention import submit_retain
+from memory.tags import FilterMode, default_filter_mode, normalize_caller_tags, to_upstream
 from memory.v040_contracts import TypedRetainRequest, TypedRetainResponse
 
 router = APIRouter(prefix="/v1/memory", tags=["memory"])
@@ -126,6 +127,25 @@ def scoped_query_params(
 
 class RecallRequest(ScopedRequest):
     query: str
+
+
+class ReflectRequest(RecallRequest):
+    """`RecallRequest` plus the caller tag filter, on its own model rather
+    than on the shared one: `/v1/memories/recall` above is deprecated and
+    forwards no filters, so widening `RecallRequest` would make that route
+    accept `tags_filter` and quietly ignore it -- a filter without saying so,
+    which is exactly what the closed mode vocabulary exists to prevent.
+
+    Mirrors the MCP `reflect` tool, which already takes both (SPEC §13.6).
+    """
+
+    tags_filter: tuple[str, ...] = ()
+    tags_filter_mode: FilterMode = Field(default_factory=default_filter_mode)
+
+    @field_validator("tags_filter", mode="before")
+    @classmethod
+    def _normalize_tags(cls, value: object) -> tuple[str, ...]:
+        return normalize_caller_tags(value)
 
 
 class MemoryResponse(RenameForwarding):
@@ -443,7 +463,7 @@ def recall(
 
 @router.post("/reflect", response_model=MemoryResponse)
 def reflect(
-    body: RecallRequest,
+    body: ReflectRequest,
     principal: Annotated[Principal, Depends(current_principal)],
     on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
     db: Session = Depends(get_session),
@@ -482,7 +502,12 @@ def reflect(
     bank_id = read_bank.bank_id
     resolved_from = read_bank.resolved_from
     project_slug = read_bank.current_slug if read_bank.scope == "project" else None
-    result = get_client().reflect(bank_id, body.query)
+    result = get_client().reflect(
+        bank_id,
+        body.query,
+        tags=list(body.tags_filter) or None,
+        tags_match=to_upstream(body.tags_filter_mode) if body.tags_filter else None,
+    )
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,
