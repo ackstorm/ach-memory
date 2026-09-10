@@ -27,6 +27,20 @@ def _strategies(response: dict) -> dict[str, Any]:
     return strategies
 
 
+#: Banks this process has already verified. Provisioning is idempotent but
+#: not free: it is two upstream round trips, and since retain provisions on
+#: every write (`bootstrap.provision_before_retain`) an unguarded call put
+#: those on the hottest path in the service, doubled for a project-scoped
+#: retain, for ever rather than once.
+#
+# ponytail: per-process, unbounded, never invalidated. A bank whose strategy
+# is changed out from under a running replica keeps the stale verdict until
+# restart -- acceptable because ACH is the only writer of this key and it
+# only ever writes the one value. Give it a TTL or an explicit bust if that
+# stops being true.
+_VERIFIED_BANKS: set[str] = set()
+
+
 def ensure_exact_retain_strategy(client: HindsightClient, bank_id: str) -> None:
     """Ensure the ACH-owned strategy exists and verify it before any retain.
 
@@ -34,9 +48,12 @@ def ensure_exact_retain_strategy(client: HindsightClient, bank_id: str) -> None:
     repaired. Verification after PATCH prevents Hindsight's documented
     unknown-strategy fallback from silently changing typed-retain semantics.
     """
+    if bank_id in _VERIFIED_BANKS:
+        return
     client.ensure_bank(bank_id)
     current = _strategies(client.get_bank_config(bank_id))
     if current.get(EXACT_RETAIN_STRATEGY_NAME) == EXACT_RETAIN_STRATEGY:
+        _VERIFIED_BANKS.add(bank_id)
         return
 
     updated = {**current, EXACT_RETAIN_STRATEGY_NAME: dict(EXACT_RETAIN_STRATEGY)}
@@ -44,3 +61,4 @@ def ensure_exact_retain_strategy(client: HindsightClient, bank_id: str) -> None:
     verified = _strategies(client.get_bank_config(bank_id))
     if verified.get(EXACT_RETAIN_STRATEGY_NAME) != EXACT_RETAIN_STRATEGY:
         raise HindsightError("memory backend retain strategy could not be verified")
+    _VERIFIED_BANKS.add(bank_id)

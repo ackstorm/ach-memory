@@ -777,3 +777,51 @@ def test_a_first_retain_whose_provisioning_fails_leaves_no_project_behind(
         .count()
         == 0
     )
+
+
+@respx.mock
+def test_provisioning_verifies_a_bank_once_not_on_every_retain(
+    client, juan, tenant, monkeypatch
+):
+    """Retain provisions on every write, so an unguarded verification put two
+    upstream round trips on the hottest path in the service, for ever rather
+    than once."""
+    from memory import bootstrap as bootstrap_service
+    from memory import retain_strategy
+
+    monkeypatch.setattr(
+        bootstrap_service,
+        "ensure_exact_retain_strategy",
+        retain_strategy.ensure_exact_retain_strategy,
+    )
+    respx.put(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    config = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/config$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "config": {
+                    "retain_strategies": {
+                        "ach-exact-v1": {
+                            "retain_extraction_mode": "chunks",
+                            "retain_chunk_size": 4096,
+                            "retain_structured_chunk_size": 4096,
+                        }
+                    }
+                },
+                "overrides": {},
+            },
+        )
+    )
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+
+    for _ in range(3):
+        response = client.post(
+            "/v1/memory/retain", json=_retain_body(), headers=juan["headers"]
+        )
+        assert response.status_code == 202, response.text
+
+    assert config.call_count == 1
