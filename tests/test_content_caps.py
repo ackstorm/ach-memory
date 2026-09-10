@@ -10,9 +10,12 @@ import pytest
 
 OVERSIZE = "x" * 300_000  # MEMORY_MAX_CONTENT_BYTES defaults to 256_000
 
+# Every field here must be one the current contract ACCEPTS. These cases
+# assert `status_code in (413, 422)`, so a body that is rejected for any
+# other reason still goes green while never reaching `_check_content_size` --
+# which is what a stale `source_tags_mode`, plus a `source_tags` naming the
+# now server-composed reserved pair, quietly did to all three of them.
 MM_REQUIRED_FIELDS = {
-    "source_tags": ["schema:ach-retain-v1", "validity:indefinite"],
-    "source_tags_mode": "all",
     "max_tokens": 512,
     "operation_id": "44444444-4444-4444-4444-444444444444",
 }

@@ -1207,12 +1207,15 @@ async def _() -> None:
 async def _() -> None:
     """v0.4.0 governs the whole definition, so create states all of it.
 
-    `source_tags` must select exactly the ACH retain schema and the
-    indefinite-validity tag (`REQUIRED_SOURCE_TAGS`) -- a model may only ever
-    be built from durable typed claims -- and `operation_id` makes the
-    creation idempotent the same way retain's does. The response is a
-    `MentalModelView` returned FLAT: no `result` envelope, and the model is
-    addressed by the ACH-owned `model_key`, never an upstream id.
+    The server composes `REQUIRED_SOURCE_TAGS` (`schema:ach-retain-v1` plus
+    `validity:indefinite`) itself -- a model may only ever be built from
+    durable typed claims -- so the request carries only the caller's OWN
+    narrowing tags, and naming a server-owned namespace here is refused as
+    reserved. This scenario narrows by nothing, so the model reads the whole
+    indefinite corpus. `operation_id` makes the creation idempotent the same
+    way retain's does. The response is a `MentalModelView` returned FLAT: no
+    `result` envelope, and the model is addressed by the ACH-owned
+    `model_key`, never an upstream id.
     """
     need("key.alice")
     name = f"e2e-mentalmodel-{RUN}"
@@ -1220,12 +1223,12 @@ async def _() -> None:
         "user",
         name=name,
         source_query="What tool manages Python dependencies here?",
-        source_tags=["schema:ach-retain-v1", "validity:indefinite"],
-        # `source_tags_mode`, and there is no `always_in_context` on this
-        # request at all: both spellings here were older ones that
-        # `CreateMentalModelRequest`'s extra="forbid" rejects outright. The
-        # drift was invisible while this scenario could not reach the route.
-        source_tags_mode="all",
+        # No `source_tags` naming the required pair, no `source_tags_mode`,
+        # no `always_in_context`: all three were older spellings that
+        # `CreateMentalModelRequest`'s extra="forbid" now rejects outright,
+        # and the reserved pair would be refused by `normalize_caller_tags`
+        # even without that. The drift stayed invisible while this scenario
+        # could not reach the route; once it could, it cost six scenarios.
         max_tokens=512,
         trigger={"mode": "delta"},
         operation_id=str(uuid.uuid4()),
