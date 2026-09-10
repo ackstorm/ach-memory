@@ -13,3 +13,7 @@ __pycache__/
 .claude/
 .worktrees/
 /.artifacts/memory-quality/
+
+# Plan documents are scratch for one change, not a record worth shipping.
+# This only stops new ones: the plans already tracked stay tracked.
+docs/plans/
