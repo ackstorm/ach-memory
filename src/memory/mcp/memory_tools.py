@@ -103,6 +103,7 @@ def _default_limit(limit: int | None, verbose: bool) -> int | None:
         return limit
     return DEFAULT_PAGE_SIZE
 
+
 def _run(
     ctx: Context,
     body_factory,
@@ -155,9 +156,17 @@ def _run(
     runs the project is confirmed to exist, so a ProjectNotFound raised from
     inside it (retention.resolve_bank_ref's own, separate, always-create=False
     resolution) would be a genuine anomaly, not the absent-project case this
-    parameter exists for. The five write/curation tools that share `_run`
-    (forget, correct, restore, delete_document, cancel_operation) and
-    retain/sync_retain never pass it, so they are unaffected.
+    parameter exists for.
+
+    Only COLLECTION reads pass it (list_*, recall, reflect; load_context does
+    the same in context_service). A get-by-id never does: nobody holds an id
+    before something was listed or created, so decision 3's first-day case
+    cannot reach it -- and softening it produced the one shape an agent could
+    not branch on, a bare `{}` where the caller expects a record. Absence is
+    therefore one rule everywhere: a collection read of nothing is an empty
+    collection, a get of nothing is a *_NOT_FOUND error with a code, whether
+    the missing thing is the id or the whole project. Write and curation
+    tools never pass it either.
     """
     activity.new_call()
     try:
@@ -172,8 +181,13 @@ def _run(
             body = body_factory()
             try:
                 bank_id, resolved_from, slug = _resolve_bank(
-                    body, tc.db, tc.principal, None, action,
-                    create=create, is_write=is_write,
+                    body,
+                    tc.db,
+                    tc.principal,
+                    None,
+                    action,
+                    create=create,
+                    is_write=is_write,
                 )
             except ProjectNotFound:
                 if empty_result is ABSENT_PROJECT_STILL_RAISES:
@@ -269,13 +283,18 @@ def _run(
         activity.finish("mcp")
 
 
-def _read_run(ctx: Context, body_factory, action: str, call, *, empty_result: dict[str, Any]) -> ToolResult:
+def _read_run(
+    ctx: Context,
+    body_factory,
+    action: str,
+    call,
+    *,
+    empty_result: dict[str, Any] | object = ABSENT_PROJECT_STILL_RAISES,
+) -> ToolResult:
     """MCP pipeline for the genuinely read-only recall/history tools.
 
-    `empty_result` is what a request against an absent project returns
-    instead of PROJECT_NOT_FOUND (decision 3) -- both of this pipeline's
-    callers are in the twelve-tool read set, so unlike `_run` this takes it
-    unconditionally rather than as an opt-in.
+    `empty_result` has the same meaning and the same collection-only rule as
+    on `_run`: recall passes it, memory_history (a get-by-id) does not.
     """
     activity.new_call()
     try:
@@ -283,16 +302,24 @@ def _read_run(ctx: Context, body_factory, action: str, call, *, empty_result: di
             body = body_factory()
             try:
                 resolved = read_context.resolve_read_bank(
-                    tc.db, tc.principal, None, action, body.scope,
-                    user_id=body.user_id, project_slug=body.project_slug,
+                    tc.db,
+                    tc.principal,
+                    None,
+                    action,
+                    body.scope,
+                    user_id=body.user_id,
+                    project_slug=body.project_slug,
                 )
             except ProjectNotFound:
+                if empty_result is ABSENT_PROJECT_STILL_RAISES:
+                    raise
                 return ToolResult(result=dict(empty_result))
             tc.db.commit()
             result = call(resolved, tc.db, tc.principal, body)
             payload = result.model_dump() if isinstance(result, BaseModel) else result
             return ToolResult(
-                result=payload, project_slug=resolved.current_slug,
+                result=payload,
+                project_slug=resolved.current_slug,
                 resolved_from=resolved.resolved_from,
                 notice="PROJECT_RENAMED" if resolved.resolved_from else None,
             )
@@ -344,8 +371,18 @@ def register(mcp: MCPServer) -> None:
         tags: list[str] | None = None,
     ) -> ToolResult:
         return _retain(
-            ctx, scope, content, memory_type, basis, trigger, evidence,
-            project_slug, valid_until, operation_id, tags, wait=False,
+            ctx,
+            scope,
+            content,
+            memory_type,
+            basis,
+            trigger,
+            evidence,
+            project_slug,
+            valid_until,
+            operation_id,
+            tags,
+            wait=False,
         )
 
     @mcp.tool(
@@ -374,8 +411,18 @@ def register(mcp: MCPServer) -> None:
         # here would invite an LLM client to retry blindly on a timeout and
         # duplicate the write.
         return _retain(
-            ctx, scope, content, memory_type, basis, trigger, evidence,
-            project_slug, valid_until, operation_id, tags, wait=True,
+            ctx,
+            scope,
+            content,
+            memory_type,
+            basis,
+            trigger,
+            evidence,
+            project_slug,
+            valid_until,
+            operation_id,
+            tags,
+            wait=True,
         )
 
     @mcp.tool(
@@ -396,8 +443,10 @@ def register(mcp: MCPServer) -> None:
         # work and commit database changes -- a client that skips
         # confirmation for "read-only" tools must not skip it here.
         annotations=ToolAnnotations(
-            readOnlyHint=False, destructiveHint=False,
-            idempotentHint=True, openWorldHint=False,
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
         ),
     )
     def recall(
@@ -414,8 +463,12 @@ def register(mcp: MCPServer) -> None:
         def body_factory() -> read_models.RecallRequest:
             _check_content_size(query)
             return read_models.RecallRequest(
-                scope=scope, project_slug=project_slug, query=query, view=view,
-                kinds=tuple(kinds) if kinds else None, max_results=max_results,
+                scope=scope,
+                project_slug=project_slug,
+                query=query,
+                view=view,
+                kinds=tuple(kinds) if kinds else None,
+                max_results=max_results,
                 tags_filter=tags_filter,
             )
 
@@ -424,25 +477,36 @@ def register(mcp: MCPServer) -> None:
             read_service.ensure_current_read_allowed(db, recall_bank_ref)
             read_service.run_access_maintenance(db, recall_bank_ref)
             hits = read_service._recall_hits(
-                resolved.bank_id, body.query, body.view, body.kinds,
+                resolved.bank_id,
+                body.query,
+                body.view,
+                body.kinds,
                 body.tags_filter,
             )
             return read_models.build_recall_response(
                 project_slug=resolved.current_slug,
                 resolved_from=resolved.resolved_from,
-                hits=hits[:body.max_results],
+                hits=hits[: body.max_results],
             )
 
         return _read_run(
-            ctx, body_factory, "read.recall", call,
+            ctx,
+            body_factory,
+            "read.recall",
+            call,
             empty_result={"hits": [], "truncated": False},
         )
 
     @mcp.tool(
-        description="Fetch bounded history and rationale for a recalled memory.",
+        description=(
+            "Fetch bounded history and rationale for a recalled memory."
+            " Nothing there is an error with a code, never an empty result: MEMORY_NOT_FOUND for an unknown id, PROJECT_NOT_FOUND for an unknown project."
+        ),
         annotations=ToolAnnotations(
-            readOnlyHint=True, destructiveHint=False,
-            idempotentHint=True, openWorldHint=False,
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
         ),
     )
     def memory_history(
@@ -457,10 +521,7 @@ def register(mcp: MCPServer) -> None:
                 scope=scope, project_slug=project_slug, memory_id=memory_id
             ),
             "read.history",
-            lambda _resolved, db, principal, body: read_service.history(
-                db, principal, None, body
-            ),
-            empty_result={},
+            lambda _resolved, db, principal, body: read_service.history(db, principal, None, body),
         )
 
     @mcp.tool(
@@ -488,9 +549,7 @@ def register(mcp: MCPServer) -> None:
         tags_filter: list[str] | None = None,
     ) -> ToolResult:
         def body_factory() -> ScopedRequest:
-            body = ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            )
+            body = ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
             # reflect spends model tokens on a server-level credential with no
             # per-user cost attribution (SPEC §19.4) -- the same cap REST's
             # _check_content_size(body.query) already applies, mirrored here.
@@ -509,7 +568,8 @@ def register(mcp: MCPServer) -> None:
             # Same server-owned scoping as recall, from the same function.
             reflect_filters = read_models.resolve_filters("current", None, normalized)
             return get_client().reflect(
-                bank, query,
+                bank,
+                query,
                 tag_groups=list(reflect_filters.tag_groups),
                 fact_types=list(reflect_filters.types),
             )
@@ -556,9 +616,15 @@ def register(mcp: MCPServer) -> None:
             # as a 502 blaming the backend instead of a typed rejection at
             # the boundary.
             body = ListMemoriesRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator,
-                q=q, type=type, state=state, document_id=document_id,
-                limit=page, offset=offset,
+                scope=scope,
+                project_slug=project_slug,
+                git_locator=git_locator,
+                q=q,
+                type=type,
+                state=state,
+                document_id=document_id,
+                limit=page,
+                offset=offset,
             )
             # q is a caller-authored search query, same embedding-spend risk
             # class as recall's query; optional, so guarded.
@@ -571,17 +637,30 @@ def register(mcp: MCPServer) -> None:
                 db, retention.resolve_bank_ref(db, principal, body_factory())
             )
             return get_client().list_memories(
-                bank, q=q, type=type, state=state, document_id=document_id,
-                limit=page, offset=offset,
+                bank,
+                q=q,
+                type=type,
+                state=state,
+                document_id=document_id,
+                limit=page,
+                offset=offset,
             )
 
         return _run(
-            ctx, body_factory, "memory.list", call, create=False, verbose=verbose,
+            ctx,
+            body_factory,
+            "memory.list",
+            call,
+            create=False,
+            verbose=verbose,
             empty_result={"items": []},
         )
 
     @mcp.tool(
-        description="Fetch one memory by id.",
+        description=(
+            "Fetch one memory by id."
+            " Nothing there is an error with a code, never an empty result: MEMORY_NOT_FOUND for an unknown id, PROJECT_NOT_FOUND for an unknown project."
+        ),
         annotations=ToolAnnotations(readOnlyHint=True),
     )
     def get_memory(
@@ -608,7 +687,6 @@ def register(mcp: MCPServer) -> None:
             call,
             create=False,
             verbose=verbose,
-            empty_result={},
         )
 
     @mcp.tool(
@@ -630,9 +708,7 @@ def register(mcp: MCPServer) -> None:
         git_locator: str | None = None,
     ) -> ToolResult:
         def body_factory() -> ScopedRequest:
-            body = ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            )
+            body = ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
             # reason is caller free text forwarded verbatim to Hindsight;
             # optional, so guarded like the UPDATE routes' `if x is not None`.
             if reason is not None:
@@ -683,8 +759,11 @@ def register(mcp: MCPServer) -> None:
             # authorization has already cleared (see `call`'s comment).
             accepted_operation_id = operation_id or str(uuid.uuid4())
             return CorrectRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator,
-                memory_id=memory_id, content=content,
+                scope=scope,
+                project_slug=project_slug,
+                git_locator=git_locator,
+                memory_id=memory_id,
+                content=content,
                 operation_id=accepted_operation_id,
             )
 
@@ -758,12 +837,13 @@ def register(mcp: MCPServer) -> None:
         offset: PageOffset = None,
         verbose: Verbose = False,
     ) -> ToolResult:
-        return _list_documents(
-            ctx, scope, project_slug, git_locator, q, limit, offset, verbose
-        )
+        return _list_documents(ctx, scope, project_slug, git_locator, q, limit, offset, verbose)
 
     @mcp.tool(
-        description="Fetch one document by its id.",
+        description=(
+            "Fetch one document by its id."
+            " Nothing there is an error with a code, never an empty result: DOCUMENT_NOT_FOUND for an unknown id, PROJECT_NOT_FOUND for an unknown project."
+        ),
         annotations=ToolAnnotations(readOnlyHint=True),
     )
     def get_document(
@@ -776,14 +856,11 @@ def register(mcp: MCPServer) -> None:
     ) -> ToolResult:
         return _run(
             ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
+            lambda: ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator),
             "memory.documents.get",
             lambda bank, db, p, slug: get_client().get_document(bank, document_id),
             create=False,
             verbose=verbose,
-            empty_result={},
         )
 
     @mcp.tool(
@@ -816,7 +893,10 @@ def register(mcp: MCPServer) -> None:
         return _run(ctx, body_factory, "memory.documents.delete", call, create=False, is_write=True)
 
     @mcp.tool(
-        description="Check whether an async retain has finished.",
+        description=(
+            "Check whether an async retain has finished."
+            " Nothing there is an error with a code, never an empty result: OPERATION_NOT_FOUND for an unknown id, PROJECT_NOT_FOUND for an unknown project."
+        ),
         annotations=ToolAnnotations(readOnlyHint=True),
     )
     def get_operation(
@@ -829,16 +909,11 @@ def register(mcp: MCPServer) -> None:
     ) -> ToolResult:
         return _run(
             ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
+            lambda: ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator),
             "memory.operations.get",
-            lambda bank, db, p, slug: get_client().get_operation(
-                bank, operation_id
-            ),
+            lambda bank, db, p, slug: get_client().get_operation(bank, operation_id),
             create=False,
             verbose=verbose,
-            empty_result={},
         )
 
     @mcp.tool(
@@ -857,7 +932,14 @@ def register(mcp: MCPServer) -> None:
         verbose: Verbose = False,
     ) -> ToolResult:
         return _list_operations(
-            ctx, scope, project_slug, git_locator, status, type, limit, offset,
+            ctx,
+            scope,
+            project_slug,
+            git_locator,
+            status,
+            type,
+            limit,
+            offset,
             verbose,
         )
 
@@ -874,13 +956,9 @@ def register(mcp: MCPServer) -> None:
     ) -> ToolResult:
         return _run(
             ctx,
-            lambda: ScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator
-            ),
+            lambda: ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator),
             "memory.operations.cancel",
-            lambda bank, db, p, slug: get_client().cancel_operation(
-                bank, operation_id
-            ),
+            lambda bank, db, p, slug: get_client().cancel_operation(bank, operation_id),
             create=False,
             is_write=True,
         )
@@ -906,8 +984,19 @@ def register(mcp: MCPServer) -> None:
 
 
 def _retain(
-    ctx, scope, content, memory_type, basis, trigger, evidence,
-    project_slug, valid_until, operation_id, tags, *, wait: bool,
+    ctx,
+    scope,
+    content,
+    memory_type,
+    basis,
+    trigger,
+    evidence,
+    project_slug,
+    valid_until,
+    operation_id,
+    tags,
+    *,
+    wait: bool,
 ) -> ToolResult:
     # Generated before the first network attempt (SPEC §6.1) and reused for
     # every retry this call makes -- a direct REST client must supply its own.
@@ -928,13 +1017,15 @@ def _retain(
         )
 
     def provision(bank_id, db, principal):
-        provision_before_retain(
-            db, principal, scope=scope, bank_id=bank_id, client=get_client()
-        )
+        provision_before_retain(db, principal, scope=scope, bank_id=bank_id, client=get_client())
 
     def call(bank_id, db, principal, slug):
         return submit_retain(
-            db, principal, body_factory(), client=get_client(), wait=wait,
+            db,
+            principal,
+            body_factory(),
+            client=get_client(),
+            wait=wait,
         ).model_dump(mode="json")
 
     # create=True: retain is the one place allowed to mint an unknown
@@ -942,8 +1033,13 @@ def _retain(
     # projects.create's own per-user hourly limit. Every other v0.4.0 retain
     # surface stays existing-only.
     return _run(
-        ctx, body_factory, "memory.retain", call,
-        create=True, is_write=True, provision=provision,
+        ctx,
+        body_factory,
+        "memory.retain",
+        call,
+        create=True,
+        is_write=True,
+        provision=provision,
     )
 
 
@@ -963,8 +1059,10 @@ def _list_documents(
         # wire is 20 rather than Hindsight's 100; under `verbose` it stays
         # None and the old behavior of sending nothing is preserved whole.
         kwargs: dict[str, Any] = {
-            "scope": scope, "project_slug": project_slug,
-            "git_locator": git_locator, "q": q,
+            "scope": scope,
+            "project_slug": project_slug,
+            "git_locator": git_locator,
+            "q": q,
         }
         if page is not None:
             kwargs["limit"] = page
@@ -981,8 +1079,13 @@ def _list_documents(
         return get_client().list_documents(bank_id, q=q, limit=page, offset=offset)
 
     return _run(
-        ctx, body_factory, "memory.documents.list", call,
-        create=False, verbose=verbose, empty_result={"items": []},
+        ctx,
+        body_factory,
+        "memory.documents.list",
+        call,
+        create=False,
+        verbose=verbose,
+        empty_result={"items": []},
     )
 
 
@@ -994,8 +1097,11 @@ def _list_operations(
     def body_factory() -> ListOperationsRequest:
         # Same reasoning as _list_documents above, against ListOperationsRequest.
         kwargs: dict[str, Any] = {
-            "scope": scope, "project_slug": project_slug,
-            "git_locator": git_locator, "status": status, "type": type,
+            "scope": scope,
+            "project_slug": project_slug,
+            "git_locator": git_locator,
+            "status": status,
+            "type": type,
         }
         if page is not None:
             kwargs["limit"] = page
@@ -1009,6 +1115,11 @@ def _list_operations(
         )
 
     return _run(
-        ctx, body_factory, "memory.operations.list", call,
-        create=False, verbose=verbose, empty_result={"items": []},
+        ctx,
+        body_factory,
+        "memory.operations.list",
+        call,
+        create=False,
+        verbose=verbose,
+        empty_result={"items": []},
     )

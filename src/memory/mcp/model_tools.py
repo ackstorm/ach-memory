@@ -60,10 +60,11 @@ def _model_run(
     """Same authorize/resolve/authorize-then-call shape as `memory_tools._run`,
     reshaped for a `LogicalBankRef` instead of a bare `bank_id`.
 
-    `empty_result`, when given, is what list_mental_models/get_mental_model
-    return instead of raising PROJECT_NOT_FOUND (decision 3) -- the four
-    mutation tools that share this pipeline never pass it, so they are
-    unaffected."""
+    `empty_result`, when given, is what list_mental_models returns instead
+    of raising PROJECT_NOT_FOUND (decision 3). get_mental_model does not
+    pass it, for the reason `memory_tools._run` gives: a get-by-id of
+    nothing is a *_NOT_FOUND error, never a bare `{}`. The four mutation
+    tools that share this pipeline never pass it either."""
     activity.new_call()
     try:
         with tool_session(ctx) as tc:
@@ -150,9 +151,7 @@ def register(mcp: MCPServer) -> None:
                 trigger=body.trigger.model_dump(exclude_none=True),
                 operation_id=body.operation_id,
             )
-            view = mental_model_service.create_custom_model(
-                db, bank, request, client=get_client()
-            )
+            view = mental_model_service.create_custom_model(db, bank, request, client=get_client())
             return view.model_dump(mode="json")
 
         return _model_run(ctx, body_factory, "mental_models.create", call, is_write=True)
@@ -180,12 +179,19 @@ def register(mcp: MCPServer) -> None:
             return result.model_dump(mode="json")
 
         return _model_run(
-            ctx, body_factory, "mental_models.list", call, is_write=False,
+            ctx,
+            body_factory,
+            "mental_models.list",
+            call,
+            is_write=False,
             empty_result={"models": [], "unknown_upstream_count": 0},
         )
 
     @mcp.tool(
-        description="Fetch one registered mental model's governance metadata by its logical key.",
+        description=(
+            "Fetch one registered mental model's governance metadata by its logical key."
+            " Nothing there is an error with a code, never an empty result: MENTAL_MODEL_NOT_FOUND for an unknown id, PROJECT_NOT_FOUND for an unknown project."
+        ),
         annotations=ToolAnnotations(readOnlyHint=True),
     )
     def get_mental_model(
@@ -207,8 +213,11 @@ def register(mcp: MCPServer) -> None:
             return view.model_dump(mode="json")
 
         return _model_run(
-            ctx, body_factory, "mental_models.get", call, is_write=False,
-            empty_result={},
+            ctx,
+            body_factory,
+            "mental_models.get",
+            call,
+            is_write=False,
         )
 
     @mcp.tool(
@@ -284,7 +293,9 @@ def register(mcp: MCPServer) -> None:
     ) -> ToolResult:
         def body_factory() -> MutationScopedRequest:
             return MutationScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator,
+                scope=scope,
+                project_slug=project_slug,
+                git_locator=git_locator,
                 operation_id=operation_id or str(uuid.uuid4()),
             )
 
@@ -316,7 +327,9 @@ def register(mcp: MCPServer) -> None:
     ) -> ToolResult:
         def body_factory() -> MutationScopedRequest:
             return MutationScopedRequest(
-                scope=scope, project_slug=project_slug, git_locator=git_locator,
+                scope=scope,
+                project_slug=project_slug,
+                git_locator=git_locator,
                 operation_id=operation_id or str(uuid.uuid4()),
             )
 

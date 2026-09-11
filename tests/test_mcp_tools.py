@@ -55,7 +55,8 @@ def call_tool(app, client, session, tenant):
         against, so they create it directly rather than relying on retain's
         old lazy-creation side effect."""
         response = client.post(
-            "/v1/projects", json={"project_slug": slug},
+            "/v1/projects",
+            json={"project_slug": slug},
             headers=_headers_for(key),
         )
         assert response.status_code == 201, response.text
@@ -94,9 +95,7 @@ def test_retain_reaches_the_callers_own_bank(call_tool, session):
     key = call_tool.make_user()
     bank_id = session.get(User, call_tool.last_user_id).bank_id
 
-    result = call_tool(
-        "retain", key, scope="user", content="uv, not pip", **_retain_kwargs()
-    )
+    result = call_tool("retain", key, scope="user", content="uv, not pip", **_retain_kwargs())
 
     assert result.result["status"] == "accepted"
     assert result.result["document_id"].startswith("ach-retain-")
@@ -119,13 +118,19 @@ def test_retain_tools_always_use_the_fixed_ach_exact_v1_shape(call_tool, tool):
     key = call_tool.make_user()
 
     call_tool(
-        tool, key, scope="user", content="uv, not pip",
+        tool,
+        key,
+        scope="user",
+        content="uv, not pip",
         **_retain_kwargs(memory_type="convention", basis="agent_verified"),
     )
 
     item = json.loads(route.calls.last.request.read())["items"][0]
     assert item["tags"] == [
-        "type:convention", "basis:agent_verified", "schema:ach-retain-v1", "validity:indefinite",
+        "type:convention",
+        "basis:agent_verified",
+        "schema:ach-retain-v1",
+        "validity:indefinite",
     ]
     assert item["strategy"] == "ach-exact-v1"
     assert "evidence" not in item
@@ -140,13 +145,21 @@ def test_retain_appends_caller_tags_to_the_derived_ones(call_tool):
     )
     key = call_tool.make_user()
 
-    call_tool("retain", key, scope="user", content="uv, not pip",
-              tags=["Repo:Group/App"], **_retain_kwargs())
+    call_tool(
+        "retain",
+        key,
+        scope="user",
+        content="uv, not pip",
+        tags=["Repo:Group/App"],
+        **_retain_kwargs(),
+    )
 
     item = json.loads(route.calls.last.request.read())["items"][0]
     assert item["tags"] == [
-        "type:fact", "basis:human_explicit",
-        "schema:ach-retain-v1", "validity:indefinite",
+        "type:fact",
+        "basis:human_explicit",
+        "schema:ach-retain-v1",
+        "validity:indefinite",
         "repo:group/app",
     ]
 
@@ -158,8 +171,14 @@ def test_retain_refuses_a_reserved_tag_namespace(call_tool):
     _mock_bank()
     key = call_tool.make_user()
     with pytest.raises(MCPToolError):
-        call_tool("retain", key, scope="user", content="x",
-                  tags=["schema:ach-retain-v1"], **_retain_kwargs())
+        call_tool(
+            "retain",
+            key,
+            scope="user",
+            content="x",
+            tags=["schema:ach-retain-v1"],
+            **_retain_kwargs(),
+        )
 
 
 @respx.mock
@@ -220,8 +239,13 @@ def test_mental_model_tools_never_return_a_physical_or_upstream_id(call_tool, se
     bank_id = session.get(User, call_tool.last_user_id).bank_id
 
     created = call_tool(
-        "create_mental_model", key, scope="user", name="n", source_query="q",
-        source_tags=["repo:group/app"], max_tokens=512,
+        "create_mental_model",
+        key,
+        scope="user",
+        name="n",
+        source_query="q",
+        source_tags=["repo:group/app"],
+        max_tokens=512,
         trigger={"mode": "delta"},
     )
 
@@ -251,22 +275,32 @@ def test_mcp_refresh_and_delete_forward_the_callers_operation_id_to_the_ledger(c
     key = call_tool.make_user()
 
     created = call_tool(
-        "create_mental_model", key, scope="user", name="n", source_query="q",
-        source_tags=["repo:group/app"], max_tokens=512,
+        "create_mental_model",
+        key,
+        scope="user",
+        name="n",
+        source_query="q",
+        source_tags=["repo:group/app"],
+        max_tokens=512,
         trigger={"mode": "delta"},
     )
     model_key = created.result["model_key"]
 
-    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1/refresh$").mock(
-        return_value=httpx.Response(200, json={"operation_id": "op-refresh"})
-    )
+    respx.post(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1/refresh$"
+    ).mock(return_value=httpx.Response(200, json={"operation_id": "op-refresh"}))
     refresh_operation_id = "22222222-2222-4222-8222-222222222222"
     call_tool(
-        "refresh_mental_model", key, scope="user", model_key=model_key,
+        "refresh_mental_model",
+        key,
+        scope="user",
+        model_key=model_key,
         operation_id=refresh_operation_id,
     )
 
-    mutation = session.query(MentalModelMutation).filter_by(model_key=model_key, action="refresh").one()
+    mutation = (
+        session.query(MentalModelMutation).filter_by(model_key=model_key, action="refresh").one()
+    )
     assert mutation.operation_id == refresh_operation_id
 
     respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1$").mock(
@@ -274,17 +308,22 @@ def test_mcp_refresh_and_delete_forward_the_callers_operation_id_to_the_ledger(c
     )
     delete_operation_id = "33333333-3333-4333-8333-333333333333"
     call_tool(
-        "delete_mental_model", key, scope="user", model_key=model_key,
+        "delete_mental_model",
+        key,
+        scope="user",
+        model_key=model_key,
         operation_id=delete_operation_id,
     )
 
-    mutation = session.query(MentalModelMutation).filter_by(model_key=model_key, action="delete").one()
+    mutation = (
+        session.query(MentalModelMutation).filter_by(model_key=model_key, action="delete").one()
+    )
     assert mutation.operation_id == delete_operation_id
 
 
 @respx.mock
 def test_a_tool_cannot_reach_another_users_project(call_tool):
-    """`recall` is one of the twelve read tools that map an absent project to
+    """`recall` is one of the collection reads that map an absent project to
     empty (decision 3): resolution hides the existing project behind the same
     empty result as an absent slug, never a distinguishing error -- the
     oracle guard Task 5 exists for."""
@@ -313,12 +352,19 @@ def test_project_scope_retain_forwards_a_retired_slug_to_the_same_bank(call_tool
     )
     key = call_tool.make_user()
     headers = _headers_for(key)
-    assert client.post(
-        "/v1/projects", json={"project_slug": "payments-api"}, headers=headers
-    ).status_code == 201
+    assert (
+        client.post(
+            "/v1/projects", json={"project_slug": "payments-api"}, headers=headers
+        ).status_code
+        == 201
+    )
 
     call_tool(
-        "retain", key, scope="project", project_slug="payments-api", content="x",
+        "retain",
+        key,
+        scope="project",
+        project_slug="payments-api",
+        content="x",
         **_retain_kwargs(),
     )
     original_bank_url = str(route.calls.last.request.url)
@@ -330,7 +376,11 @@ def test_project_scope_retain_forwards_a_retired_slug_to_the_same_bank(call_tool
     )
 
     call_tool(
-        "retain", key, scope="project", project_slug="payments-api", content="y",
+        "retain",
+        key,
+        scope="project",
+        project_slug="payments-api",
+        content="y",
         **_retain_kwargs(),
     )
 
@@ -338,9 +388,7 @@ def test_project_scope_retain_forwards_a_retired_slug_to_the_same_bank(call_tool
 
 
 @respx.mock
-def test_an_unexpected_exception_is_sanitized_and_never_echoed(
-    call_tool, session, monkeypatch
-):
+def test_an_unexpected_exception_is_sanitized_and_never_echoed(call_tool, session, monkeypatch):
     """A bug below a tool (a driver error, anything not a DomainError) must
     become a fixed message -- never the original text, which can carry a
     bank id, SQL, or a connection string (measured live: a RuntimeError with
@@ -423,9 +471,7 @@ def test_reflect_without_caller_tags_still_scopes_to_the_retained_corpus(call_to
     assert "tags" not in body and "tags_match" not in body
     # The server's group only: no caller tags means no caller group, not an
     # empty one, which upstream would treat differently again.
-    assert body["tag_groups"] == [
-        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"}
-    ]
+    assert body["tag_groups"] == [{"tags": ["schema:ach-retain-v1"], "match": "all_strict"}]
     assert body["fact_types"] == ["world", "observation"]
 
 
@@ -455,9 +501,7 @@ def _seed_tracked_memory(call_tool, key: str, mem_id: str) -> None:
             200, json={"status": "completed", "result": {"memory_id": mem_id}}
         )
     )
-    result = call_tool(
-        "sync_retain", key, scope="user", content="seed claim", **_retain_kwargs()
-    )
+    result = call_tool("sync_retain", key, scope="user", content="seed claim", **_retain_kwargs())
     assert result.result["status"] == "completed"
 
 
@@ -470,10 +514,7 @@ def test_create_is_keyword_only_on_run():
 
     from memory.mcp.memory_tools import _run
 
-    assert (
-        inspect.signature(_run).parameters["create"].kind
-        is inspect.Parameter.KEYWORD_ONLY
-    )
+    assert inspect.signature(_run).parameters["create"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 # One table, both flags, all fifteen tools. Each tool declares `create` and
@@ -499,7 +540,9 @@ GHOST_EXTRA_KWARGS: dict[str, dict] = {
     "get_operation": {"operation_id": GHOST},
     "cancel_operation": {"operation_id": GHOST},
     "create_mental_model": {
-        "name": "n", "source_query": "q", "source_tags": ["repo:group/app"],
+        "name": "n",
+        "source_query": "q",
+        "source_tags": ["repo:group/app"],
         "max_tokens": 512,
         "trigger": {"mode": "delta"},
     },
@@ -510,15 +553,32 @@ GHOST_EXTRA_KWARGS: dict[str, dict] = {
 }
 
 MCP_IS_WRITE_TABLE: dict[str, bool] = {
-    "retain": True, "sync_retain": True, "recall": False, "memory_history": False, "reflect": True,
-    "list_memories": False, "get_memory": False, "forget": True,
-    "correct": True, "restore": True, "list_documents": False,
-    "get_document": False, "delete_document": True, "get_operation": False,
-    "list_operations": False, "cancel_operation": True,
-    "start_working_session": True, "set_working_state": True,
-    "clear_working_state": True, "load_context": False,
-    "create_mental_model": True, "list_mental_models": False, "get_mental_model": False,
-    "update_mental_model": True, "refresh_mental_model": True, "delete_mental_model": True,
+    "retain": True,
+    "sync_retain": True,
+    "recall": False,
+    "memory_history": False,
+    "reflect": True,
+    "list_memories": False,
+    "get_memory": False,
+    "forget": True,
+    "correct": True,
+    "restore": True,
+    "list_documents": False,
+    "get_document": False,
+    "delete_document": True,
+    "get_operation": False,
+    "list_operations": False,
+    "cancel_operation": True,
+    "start_working_session": True,
+    "set_working_state": True,
+    "clear_working_state": True,
+    "load_context": False,
+    "create_mental_model": True,
+    "list_mental_models": False,
+    "get_mental_model": False,
+    "update_mental_model": True,
+    "refresh_mental_model": True,
+    "delete_mental_model": True,
     # transfer resolves no Hindsight bank, so it has no _resolve_bank
     # is_write flag -- `projects.transfer` applies the ceiling in the domain
     # instead, which is what makes this True on REST and MCP alike.
@@ -529,37 +589,55 @@ MCP_CREATE_TABLE: dict[str, bool] = {
     # retain/sync_retain are the one place allowed to lazily create a project
     # (lazy-provisioning plan, decision 1); every other tool stays existing-
     # only, including recall/reflect despite also being is_write=True above.
-    "retain": True, "sync_retain": True, "recall": False, "memory_history": False, "reflect": False,
-    "list_memories": False, "get_memory": False, "forget": False,
-    "correct": False, "restore": False, "list_documents": False,
-    "get_document": False, "delete_document": False, "get_operation": False,
-    "list_operations": False, "cancel_operation": False,
-    "start_working_session": False, "set_working_state": False,
-    "clear_working_state": False, "load_context": False,
+    "retain": True,
+    "sync_retain": True,
+    "recall": False,
+    "memory_history": False,
+    "reflect": False,
+    "list_memories": False,
+    "get_memory": False,
+    "forget": False,
+    "correct": False,
+    "restore": False,
+    "list_documents": False,
+    "get_document": False,
+    "delete_document": False,
+    "get_operation": False,
+    "list_operations": False,
+    "cancel_operation": False,
+    "start_working_session": False,
+    "set_working_state": False,
+    "clear_working_state": False,
+    "load_context": False,
     # Every mental-model tool resolves with create=False (SPEC §7: maintenance
     # over an existing bank, never first-touch project creation).
-    "create_mental_model": False, "list_mental_models": False, "get_mental_model": False,
-    "update_mental_model": False, "refresh_mental_model": False, "delete_mental_model": False,
+    "create_mental_model": False,
+    "list_mental_models": False,
+    "get_mental_model": False,
+    "update_mental_model": False,
+    "refresh_mental_model": False,
+    "delete_mental_model": False,
     "transfer": False,
 }
 
-# The twelve read tools that map an absent project to their own empty shape
+# The COLLECTION reads that map an absent project to their own empty shape
 # rather than PROJECT_NOT_FOUND (decision 3) -- readOnlyHint is NOT the
 # selector, recall/reflect are both readOnlyHint=False. load_context is a
 # member too but is exercised separately (test_context_service.py): its
 # resolution doesn't go through _run/_model_run/_read_run at all.
+#
+# No get-by-id is in here, on purpose. memory_history, get_memory,
+# get_document, get_operation and get_mental_model used to soften to a bare
+# `{}` -- the one shape a caller cannot branch on -- and now raise
+# PROJECT_NOT_FOUND like every other create=False tool, which is what the
+# `else` branch of test_mcp_create_flags_match_the_security_table asserts.
 READ_TOOLS_EMPTY_RESULT: dict[str, dict] = {
     "recall": {"hits": [], "truncated": False},
-    "memory_history": {},
     "list_memories": {"items": []},
-    "get_memory": {},
     "reflect": {"text": "", "usage": {}},
     "list_documents": {"items": []},
-    "get_document": {},
-    "get_operation": {},
     "list_operations": {"items": []},
     "list_mental_models": {"models": [], "unknown_upstream_count": 0},
-    "get_mental_model": {},
 }
 READ_TOOLS = tuple(READ_TOOLS_EMPTY_RESULT)
 
@@ -571,12 +649,20 @@ READ_TOOLS = tuple(READ_TOOLS_EMPTY_RESULT)
 WORKING_STATE_KWARGS: dict[str, dict] = {
     "start_working_session": {"workspace_id": "ws_" + "0" * 32, "session_id": "s1"},
     "set_working_state": {
-        "workspace_id": "ws_" + "0" * 32, "session_id": "s1",
-        "session_epoch": 0, "checkpoint_seq": 0, "objective": "x",
+        "workspace_id": "ws_" + "0" * 32,
+        "session_id": "s1",
+        "session_epoch": 0,
+        "checkpoint_seq": 0,
+        "objective": "x",
     },
 }
 CONTEXT_KWARGS = {
-    "clear_working_state": {"workspace_id": "ws_" + "0" * 32, "session_id": "s1", "session_epoch": 0, "checkpoint_seq": 0},
+    "clear_working_state": {
+        "workspace_id": "ws_" + "0" * 32,
+        "session_id": "s1",
+        "session_epoch": 0,
+        "checkpoint_seq": 0,
+    },
     "load_context": {"workspace_id": None},
 }
 # transfer takes no `scope` either -- a project, unlike a memory bank, is
@@ -618,7 +704,9 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
         return_value=httpx.Response(200, json={})
     )
     key = call_tool.make_user()
-    call_tool("retain", key, scope="user", content="warmup", **_retain_kwargs())  # consumes the slot
+    call_tool(
+        "retain", key, scope="user", content="warmup", **_retain_kwargs()
+    )  # consumes the slot
 
     for name, expect_write in MCP_IS_WRITE_TABLE.items():
         if name == "load_context":
@@ -631,7 +719,11 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
             # slug raises PROJECT_NOT_FOUND before the ceiling is reached.
             kwargs = {
                 "project_slug": "wst-ratelimit",
-                **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS.get(name) or PROJECT_KWARGS[name]),
+                **(
+                    WORKING_STATE_KWARGS.get(name)
+                    or CONTEXT_KWARGS.get(name)
+                    or PROJECT_KWARGS[name]
+                ),
             }
         else:
             kwargs = {"scope": "user", **GHOST_EXTRA_KWARGS.get(name, {})}
@@ -663,8 +755,9 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
     """Verified by mutation: flipping any single tool's `create` makes exactly
     that tool's case fail here. A fresh, never-seen project_slug per tool
     call must be lazily created iff create=True (SPEC §11.3/§16.2), and left
-    untouched otherwise -- empty result for one of the twelve read tools
-    (decision 3), PROJECT_NOT_FOUND for every other create=False tool."""
+    untouched otherwise -- empty result for one of the collection reads
+    (decision 3), PROJECT_NOT_FOUND for every other create=False tool, the
+    five get-by-id reads included."""
     import uuid
 
     from memory.errors import ProjectNotFound
@@ -682,11 +775,16 @@ def test_mcp_create_flags_match_the_security_table(call_tool, session):
         if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS or name in PROJECT_KWARGS:
             kwargs = {
                 "project_slug": slug,
-                **(WORKING_STATE_KWARGS.get(name) or CONTEXT_KWARGS.get(name) or PROJECT_KWARGS[name]),
+                **(
+                    WORKING_STATE_KWARGS.get(name)
+                    or CONTEXT_KWARGS.get(name)
+                    or PROJECT_KWARGS[name]
+                ),
             }
         else:
             kwargs = {
-                "scope": "project", "project_slug": slug,
+                "scope": "project",
+                "project_slug": slug,
                 **GHOST_EXTRA_KWARGS.get(name, {}),
             }
         if expect_create:
@@ -714,7 +812,8 @@ def test_a_read_tool_on_an_absent_project_is_empty_not_an_error(tool, call_tool)
     )
     key = call_tool.make_user()
     kwargs = {
-        "scope": "project", "project_slug": "never-seen",
+        "scope": "project",
+        "project_slug": "never-seen",
         **GHOST_EXTRA_KWARGS.get(tool, {}),
     }
 
@@ -737,7 +836,8 @@ def test_a_read_tool_never_leaks_project_access_denied(tool, call_tool):
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
     kwargs = {
-        "scope": "project", "project_slug": "payments",
+        "scope": "project",
+        "project_slug": "payments",
         **GHOST_EXTRA_KWARGS.get(tool, {}),
     }
 
@@ -754,17 +854,25 @@ def test_transfer_moves_ownership(call_tool):
     alice_id = call_tool.last_user_id
 
     result = call_tool(
-        "transfer", juan, project_slug="payments",
-        owner_type="user", owner_id=alice_id,
+        "transfer",
+        juan,
+        project_slug="payments",
+        owner_type="user",
+        owner_id=alice_id,
     )
 
     assert result.result == {
-        "project_slug": "payments", "owner_type": "user", "owner_id": alice_id,
+        "project_slug": "payments",
+        "owner_type": "user",
+        "owner_id": alice_id,
     }
     # And the new owner, not the old one, can now reach it.
     second = call_tool(
-        "transfer", alice, project_slug="payments",
-        owner_type="user", owner_id=juan_id,
+        "transfer",
+        alice,
+        project_slug="payments",
+        owner_type="user",
+        owner_id=juan_id,
     )
     assert second.result["owner_id"] == juan_id
 
@@ -792,13 +900,19 @@ def test_transfer_is_metered_like_every_other_write(call_tool, monkeypatch):
     # Two transfers by ONE credential: the ceiling is per-credential, so both
     # have to come from the same caller for the second to be refused.
     call_tool(
-        "transfer", juan, project_slug="payments",
-        owner_type="user", owner_id=alice_id,
+        "transfer",
+        juan,
+        project_slug="payments",
+        owner_type="user",
+        owner_id=alice_id,
     )
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "transfer", juan, project_slug="billing",
-            owner_type="user", owner_id=alice_id,
+            "transfer",
+            juan,
+            project_slug="billing",
+            owner_type="user",
+            owner_id=alice_id,
         )
 
     assert exc_info.value.code == "RATE_LIMITED"
@@ -814,13 +928,19 @@ def test_transfer_on_a_foreign_project_is_indistinguishable_from_absent(call_too
 
     with pytest.raises(MCPToolError) as foreign:
         call_tool(
-            "transfer", alice, project_slug="payments",
-            owner_type="user", owner_id=call_tool.last_user_id,
+            "transfer",
+            alice,
+            project_slug="payments",
+            owner_type="user",
+            owner_id=call_tool.last_user_id,
         )
     with pytest.raises(MCPToolError) as absent:
         call_tool(
-            "transfer", alice, project_slug="does-not-exist",
-            owner_type="user", owner_id=call_tool.last_user_id,
+            "transfer",
+            alice,
+            project_slug="does-not-exist",
+            owner_type="user",
+            owner_id=call_tool.last_user_id,
         )
 
     assert foreign.value.code == absent.value.code == "PROJECT_NOT_FOUND"
@@ -893,9 +1013,7 @@ def test_oversize_forget_reason_is_rejected_over_mcp(call_tool, monkeypatch):
     key = call_tool.make_user()
 
     with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "forget", key, scope="user", memory_id=GHOST, reason="x" * 100
-        )
+        call_tool("forget", key, scope="user", memory_id=GHOST, reason="x" * 100)
 
     assert exc_info.value.code == "CONTENT_TOO_LARGE"
 
@@ -940,7 +1058,11 @@ def test_a_non_uuid_operation_id_on_retain_is_rejected_not_blamed_on_hindsight_o
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "retain", key, scope="user", content="x", operation_id="retry-1",
+            "retain",
+            key,
+            scope="user",
+            content="x",
+            operation_id="retry-1",
             **_retain_kwargs(),
         )
 
@@ -1023,9 +1145,9 @@ def test_sync_retain_polls_the_operation_unlike_retain(call_tool):
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"status": "pending"})
     )
-    operation_route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+"
-    ).mock(return_value=httpx.Response(200, json={"status": "completed"}))
+    operation_route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
+        return_value=httpx.Response(200, json={"status": "completed"})
+    )
     key = call_tool.make_user()
 
     call_tool("retain", key, scope="user", content="x", **_retain_kwargs())
@@ -1054,9 +1176,9 @@ def test_sync_retain_carries_no_idempotent_hint():
 @respx.mock
 def test_forget_invalidates_rather_than_deleting(call_tool):
     _mock_bank()
-    route = respx.patch(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    route = respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     key = call_tool.make_user()
 
     call_tool("forget", key, scope="user", memory_id=GHOST, reason="wrong")
@@ -1067,9 +1189,9 @@ def test_forget_invalidates_rather_than_deleting(call_tool):
 @respx.mock
 def test_restore_reverts_it(call_tool):
     _mock_bank()
-    route = respx.patch(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    route = respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     key = call_tool.make_user()
 
     call_tool("restore", key, scope="user", memory_id=GHOST)
@@ -1080,9 +1202,9 @@ def test_restore_reverts_it(call_tool):
 @respx.mock
 def test_correct_replaces_the_text(call_tool):
     _mock_bank()
-    route = respx.patch(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    route = respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     key = call_tool.make_user()
 
     call_tool("correct", key, scope="user", memory_id=GHOST, content="fixed")
@@ -1101,9 +1223,9 @@ def test_correct_rejects_blank_content_at_the_boundary_over_mcp(call_tool):
     gets called and no MCPToolError is raised at all. Route registered (not
     omitted) specifically so the assertion that it was NEVER called is a real
     check, not a byproduct of respx.mock's AllMockedAssertionError."""
-    route = respx.patch(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    route = respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     key = call_tool.make_user()
 
     with pytest.raises(MCPToolError) as exc_info:
@@ -1223,9 +1345,9 @@ def test_mcp_correct_uses_normalized_claim(call_tool):
 @respx.mock
 def test_list_memories_reaches_the_list_endpoint(call_tool):
     _mock_bank()
-    route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list"
-    ).mock(return_value=httpx.Response(200, json={"items": []}))
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
     key = call_tool.make_user()
 
     call_tool("list_memories", key, scope="user")
@@ -1236,9 +1358,9 @@ def test_list_memories_reaches_the_list_endpoint(call_tool):
 @respx.mock
 def test_get_memory_reaches_the_memory_endpoint(call_tool):
     _mock_bank()
-    route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     key = call_tool.make_user()
 
     call_tool("get_memory", key, scope="user", memory_id=GHOST)
@@ -1248,7 +1370,7 @@ def test_get_memory_reaches_the_memory_endpoint(call_tool):
 
 @respx.mock
 def test_a_read_tool_does_not_create_a_project(call_tool, session):
-    """list_memories is one of the twelve read tools that map an absent
+    """list_memories is one of the collection reads that map an absent
     project to empty (decision 3) -- but empty is not the same as lazy
     creation (out of scope): the project still must not exist afterward."""
     from memory.models import Project, ProjectSlug
@@ -1256,9 +1378,7 @@ def test_a_read_tool_does_not_create_a_project(call_tool, session):
     _mock_bank()
     key = call_tool.make_user()
 
-    result = call_tool(
-        "list_memories", key, scope="project", project_slug="never-seen"
-    )
+    result = call_tool("list_memories", key, scope="project", project_slug="never-seen")
 
     assert result.result == {"items": []}
     assert session.query(ProjectSlug).filter_by(slug="never-seen").count() == 0
@@ -1273,16 +1393,20 @@ def test_idor_a_curation_tool_cannot_reach_an_unauthorized_bank(call_tool):
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
-    curate = respx.patch(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/[^/]+"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    curate = respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/[^/]+").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "correct", alice, scope="project", project_slug="payments",
-            memory_id=GHOST, content="mine now",
+            "correct",
+            alice,
+            scope="project",
+            project_slug="payments",
+            memory_id=GHOST,
+            content="mine now",
         )
 
     assert exc_info.value.code == ProjectNotFound.code
@@ -1293,9 +1417,9 @@ def test_idor_a_curation_tool_cannot_reach_an_unauthorized_bank(call_tool):
 def test_document_id_with_colons_and_slashes_reaches_hindsight_verbatim(call_tool):
     _mock_bank()
     doc_id = "github:acme/payments-api:pr:382"
-    route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*"
-    ).mock(return_value=httpx.Response(200, json={"id": doc_id}))
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*").mock(
+        return_value=httpx.Response(200, json={"id": doc_id})
+    )
     key = call_tool.make_user()
 
     call_tool("get_document", key, scope="user", document_id=doc_id)
@@ -1309,9 +1433,9 @@ def test_list_documents_reaches_the_documents_endpoint(call_tool):
     # The query string is optional in this pattern on purpose: the assertion
     # is "it reached the documents endpoint", and the reduced shape now sends
     # a default `?limit=`. test_list_tools_default_to_a_small_page pins that.
-    route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents(\?.*)?$"
-    ).mock(return_value=httpx.Response(200, json={"items": []}))
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents(\?.*)?$").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
     key = call_tool.make_user()
 
     call_tool("list_documents", key, scope="user")
@@ -1331,7 +1455,9 @@ def test_a_traversal_shaped_document_id_is_refused_with_no_upstream_call(call_to
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "get_document", key, scope="user",
+            "get_document",
+            key,
+            scope="user",
             document_id="../../../../v1/default/banks/OTHER/memories",
         )
 
@@ -1343,9 +1469,9 @@ def test_a_traversal_shaped_document_id_is_refused_with_no_upstream_call(call_to
 def test_delete_document_reaches_the_delete_endpoint(call_tool):
     _mock_bank()
     doc_id = "github:acme/payments-api:pr:382"
-    route = respx.delete(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*"
-    ).mock(return_value=httpx.Response(200, json={"deleted": True}))
+    route = respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*").mock(
+        return_value=httpx.Response(200, json={"deleted": True})
+    )
     key = call_tool.make_user()
 
     call_tool("delete_document", key, scope="user", document_id=doc_id)
@@ -1361,15 +1487,18 @@ def test_idor_delete_document_cannot_reach_an_unauthorized_bank(call_tool):
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
-    delete = respx.delete(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*"
-    ).mock(return_value=httpx.Response(200, json={"deleted": True}))
+    delete = respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*").mock(
+        return_value=httpx.Response(200, json={"deleted": True})
+    )
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "delete_document", alice, scope="project", project_slug="payments",
+            "delete_document",
+            alice,
+            scope="project",
+            project_slug="payments",
             document_id="some-doc",
         )
 
@@ -1381,9 +1510,9 @@ def test_idor_delete_document_cannot_reach_an_unauthorized_bank(call_tool):
 def test_cancel_operation_reaches_delete_not_the_delete_subpath(call_tool):
     _mock_bank()
     op_id = GHOST
-    route = respx.delete(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{op_id}$"
-    ).mock(return_value=httpx.Response(200, json={"status": "cancelled"}))
+    route = respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{op_id}$").mock(
+        return_value=httpx.Response(200, json={"status": "cancelled"})
+    )
     key = call_tool.make_user()
 
     call_tool("cancel_operation", key, scope="user", operation_id=op_id)
@@ -1397,9 +1526,9 @@ def test_cancel_operation_reaches_delete_not_the_delete_subpath(call_tool):
 def test_get_operation_reaches_the_operation_endpoint(call_tool):
     _mock_bank()
     op_id = GHOST
-    route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{op_id}$"
-    ).mock(return_value=httpx.Response(200, json={"status": "completed"}))
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{op_id}$").mock(
+        return_value=httpx.Response(200, json={"status": "completed"})
+    )
     key = call_tool.make_user()
 
     call_tool("get_operation", key, scope="user", operation_id=op_id)
@@ -1411,9 +1540,9 @@ def test_get_operation_reaches_the_operation_endpoint(call_tool):
 def test_list_operations_reaches_the_operations_endpoint(call_tool):
     _mock_bank()
     # Query string optional, same reason as the documents case above.
-    route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations(\?.*)?$"
-    ).mock(return_value=httpx.Response(200, json={"items": []}))
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations(\?.*)?$").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
     key = call_tool.make_user()
 
     call_tool("list_operations", key, scope="user")
@@ -1429,15 +1558,18 @@ def test_idor_cancel_operation_cannot_reach_an_unauthorized_bank(call_tool):
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
-    cancel = respx.delete(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/[^/]+$"
-    ).mock(return_value=httpx.Response(200, json={"status": "cancelled"}))
+    cancel = respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/[^/]+$").mock(
+        return_value=httpx.Response(200, json={"status": "cancelled"})
+    )
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "cancel_operation", alice, scope="project", project_slug="payments",
+            "cancel_operation",
+            alice,
+            scope="project",
+            project_slug="payments",
             operation_id=GHOST,
         )
 
@@ -1446,9 +1578,7 @@ def test_idor_cancel_operation_cannot_reach_an_unauthorized_bank(call_tool):
 
 
 @respx.mock
-def test_an_operator_cannot_reach_another_users_project_over_mcp(
-    call_tool, master_headers
-):
+def test_an_operator_cannot_reach_another_users_project_over_mcp(call_tool, master_headers):
     """Same invariant as
     test_mcp_server.py::test_an_operator_reaches_mcp_as_an_ordinary_user_with_no_authority,
     proven through a real tool call rather than on the Principal.
@@ -1468,9 +1598,7 @@ def test_an_operator_cannot_reach_another_users_project_over_mcp(
     call_tool.seed_project(juan, "payments")
     operator = master_headers[IDENTITY_HEADER]
 
-    result = call_tool(
-        "recall", operator, scope="project", project_slug="payments", query="x"
-    )
+    result = call_tool("recall", operator, scope="project", project_slug="payments", query="x")
 
     assert result.result == {"hits": [], "truncated": False}
 
@@ -1481,26 +1609,32 @@ def test_idor_get_memory_cannot_reach_an_unauthorized_bank(call_tool):
     resolves the bank on its own line for every tool, so each needs its own
     case. memory_id must be a syntactically valid UUID (GHOST): the client's
     local `_require_uuid` guard would otherwise zero out call_count for a
-    malformed id whether or not the bank check ran at all. get_memory is one
-    of the twelve read tools that map an absent project to empty (decision
-    3), and a foreign project must be indistinguishable from an absent one:
-    empty here too, never a call to the foreign bank."""
+    malformed id whether or not the bank check ran at all. get_memory is a
+    get-by-id, so an absent project is PROJECT_NOT_FOUND -- and a foreign
+    project must be indistinguishable from an absent one: the same error
+    here too, never a call to the foreign bank."""
+    from memory.errors import ProjectNotFound
+
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
-    get = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    get = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
-    result = call_tool(
-        "get_memory", alice, scope="project", project_slug="payments",
-        memory_id=GHOST,
-    )
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "get_memory",
+            alice,
+            scope="project",
+            project_slug="payments",
+            memory_id=GHOST,
+        )
 
-    assert result.result == {}
+    assert exc_info.value.code == ProjectNotFound.code
     assert get.call_count == 0
 
 
@@ -1512,15 +1646,18 @@ def test_idor_forget_cannot_reach_an_unauthorized_bank(call_tool):
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
-    forget = respx.patch(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    forget = respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "forget", alice, scope="project", project_slug="payments",
+            "forget",
+            alice,
+            scope="project",
+            project_slug="payments",
             memory_id=GHOST,
         )
 
@@ -1536,15 +1673,18 @@ def test_idor_restore_cannot_reach_an_unauthorized_bank(call_tool):
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
-    restore = respx.patch(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$"
-    ).mock(return_value=httpx.Response(200, json={"id": GHOST}))
+    restore = respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "restore", alice, scope="project", project_slug="payments",
+            "restore",
+            alice,
+            scope="project",
+            project_slug="payments",
             memory_id=GHOST,
         )
 
@@ -1554,51 +1694,61 @@ def test_idor_restore_cannot_reach_an_unauthorized_bank(call_tool):
 
 @respx.mock
 def test_idor_get_document_cannot_reach_an_unauthorized_bank(call_tool):
-    """get_document is one of the twelve read tools that map an absent
-    project to empty (decision 3); a foreign project is indistinguishable
-    from an absent one, so empty here too, never a call to the foreign
-    bank."""
+    """get_document is a get-by-id, so an absent project is
+    PROJECT_NOT_FOUND; a foreign project is indistinguishable from an absent
+    one, so the same error here too, never a call to the foreign bank."""
+    from memory.errors import ProjectNotFound
+
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
-    get_doc = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*"
-    ).mock(return_value=httpx.Response(200, json={"id": "doc1"}))
+    get_doc = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/.*").mock(
+        return_value=httpx.Response(200, json={"id": "doc1"})
+    )
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
-    result = call_tool(
-        "get_document", alice, scope="project", project_slug="payments",
-        document_id="doc1",
-    )
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "get_document",
+            alice,
+            scope="project",
+            project_slug="payments",
+            document_id="doc1",
+        )
 
-    assert result.result == {}
+    assert exc_info.value.code == ProjectNotFound.code
     assert get_doc.call_count == 0
 
 
 @respx.mock
 def test_idor_get_operation_cannot_reach_an_unauthorized_bank(call_tool):
-    """get_operation is one of the twelve read tools that map an absent
-    project to empty (decision 3); a foreign project is indistinguishable
-    from an absent one, so empty here too, never a call to the foreign
-    bank."""
+    """get_operation is a get-by-id, so an absent project is
+    PROJECT_NOT_FOUND; a foreign project is indistinguishable from an absent
+    one, so the same error here too, never a call to the foreign bank."""
+    from memory.errors import ProjectNotFound
+
     _mock_bank()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
         return_value=httpx.Response(200, json={"ok": True})
     )
-    get_op = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{GHOST}$"
-    ).mock(return_value=httpx.Response(200, json={"status": "completed"}))
+    get_op = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{GHOST}$").mock(
+        return_value=httpx.Response(200, json={"status": "completed"})
+    )
     juan, alice = call_tool.make_user(), call_tool.make_user()
     call_tool.seed_project(juan, "payments")
 
-    result = call_tool(
-        "get_operation", alice, scope="project", project_slug="payments",
-        operation_id=GHOST,
-    )
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool(
+            "get_operation",
+            alice,
+            scope="project",
+            project_slug="payments",
+            operation_id=GHOST,
+        )
 
-    assert result.result == {}
+    assert exc_info.value.code == ProjectNotFound.code
     assert get_op.call_count == 0
 
 
@@ -1627,9 +1777,9 @@ def test_idor_scenario_z_a_known_secondary_id_from_an_unreachable_bank_is_just_n
     juan_route = respx.get(
         url__regex=rf"{BASE}/v1/default/banks/{juan_bank_id}/memories/{GHOST}$"
     ).mock(return_value=httpx.Response(200, json={"id": GHOST, "secret": "juan's"}))
-    respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/{alice_bank_id}/memories/{GHOST}$"
-    ).mock(return_value=httpx.Response(404, json={"detail": "nope"}))
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/{alice_bank_id}/memories/{GHOST}$").mock(
+        return_value=httpx.Response(404, json={"detail": "nope"})
+    )
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool("get_memory", alice_key, scope="user", memory_id=GHOST)
@@ -1639,26 +1789,42 @@ def test_idor_scenario_z_a_known_secondary_id_from_an_unreachable_bank_is_just_n
 
 
 EXPECTED_TOOLS = {
-    "retain", "sync_retain", "recall", "reflect",
-    "list_memories", "get_memory", "memory_history", "forget", "correct", "restore",
-    "list_documents", "get_document", "delete_document",
-    "get_operation", "list_operations", "cancel_operation",
-    "start_working_session", "set_working_state",
-    "clear_working_state", "load_context",
-    "create_mental_model", "list_mental_models", "get_mental_model",
-    "update_mental_model", "refresh_mental_model", "delete_mental_model",
+    "retain",
+    "sync_retain",
+    "recall",
+    "reflect",
+    "list_memories",
+    "get_memory",
+    "memory_history",
+    "forget",
+    "correct",
+    "restore",
+    "list_documents",
+    "get_document",
+    "delete_document",
+    "get_operation",
+    "list_operations",
+    "cancel_operation",
+    "start_working_session",
+    "set_working_state",
+    "clear_working_state",
+    "load_context",
+    "create_mental_model",
+    "list_mental_models",
+    "get_mental_model",
+    "update_mental_model",
+    "refresh_mental_model",
+    "delete_mental_model",
     "transfer",
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved by narrowing the read surface: `recall` and `reflect` both lost
-# `tags_filter_mode` (caller tags are now always ANDed) and `recall` lost
-# `min_score` (the relevance floor is server-owned and not negotiable per
-# request). Both descriptions were rewritten to say so. This is a deliberate
-# BREAKING schema change to the tool contract, made while the surface is
-# still in testing: a caller still sending either argument now gets an
-# explicit rejection rather than a silently ignored field.
-TOOL_CONTRACT_SHA256 = "8cc8e1ada3ebcbae4c16ab87bf0f3d5f982f778979c3f3f2665af19853613035"
+# moved by the five get-by-id reads (memory_history, get_memory,
+# get_document, get_operation, get_mental_model) stating in their
+# descriptions that nothing-there is a coded error, never an empty result --
+# the same commit stopped them softening an absent project to a bare `{}`.
+# Descriptions only; no schema changed.
+TOOL_CONTRACT_SHA256 = "ca79dbf5deac30e079fb1bf46d9153cd0fae67d56bc620cef9d5a19a3b63ee12"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -1672,8 +1838,12 @@ def test_tool_registration_is_stable_after_module_split():
 
     assert len(tools) == 27
     assert {
-        "retain", "sync_retain", "recall", "reflect",
-        "start_working_session", "set_working_state",
+        "retain",
+        "sync_retain",
+        "recall",
+        "reflect",
+        "start_working_session",
+        "set_working_state",
     }.issubset(names)
 
 
@@ -1694,9 +1864,7 @@ async def test_serialized_tool_contract_is_stable_after_module_split():
             "output_schema": tool.output_schema,
             "annotations": None
             if tool.annotations is None
-            else tool.annotations.model_dump(
-                mode="json", by_alias=True, exclude_none=False
-            ),
+            else tool.annotations.model_dump(mode="json", by_alias=True, exclude_none=False),
         }
         for tool in sorted(tools, key=lambda item: item.name)
     ]
@@ -1715,9 +1883,15 @@ def test_create_mental_model_rejects_always_in_context(call_tool):
     key = call_tool.make_user()
     with pytest.raises(TypeError):
         call_tool(
-            "create_mental_model", key, scope="user", name="Ops",
-            source_query="?", source_tags=["repo:group/app"],
-            max_tokens=512, trigger={}, always_in_context=True,
+            "create_mental_model",
+            key,
+            scope="user",
+            name="Ops",
+            source_query="?",
+            source_tags=["repo:group/app"],
+            max_tokens=512,
+            trigger={},
+            always_in_context=True,
         )
 
 
@@ -1745,24 +1919,43 @@ async def test_load_context_accepts_an_empty_input_object():
 
     assert tool.input_schema.get("required", []) == []
 
+
 # SPEC §11.6 and §11.7. Each is excluded for a stated reason: whole-bank
 # destruction an LLM would reach for when it decides memory is "stale"; bank
 # configuration that is policy for every user of a project; shared, persistent
 # state that steers future agents; a "dry run" whose name invites the model to
 # treat it as free when it costs exactly the same as the real thing.
 FORBIDDEN_TOOLS = {
-    "clear_memories", "delete_bank", "get_bank", "update_bank", "get_bank_stats",
-    "list_banks", "create_bank", "dry_run_refresh", "dry-run-refresh",
-    "list_tags", "retry_operation", "delete_operation",
+    "clear_memories",
+    "delete_bank",
+    "get_bank",
+    "update_bank",
+    "get_bank_stats",
+    "list_banks",
+    "create_bank",
+    "dry_run_refresh",
+    "dry-run-refresh",
+    "list_tags",
+    "retry_operation",
+    "delete_operation",
     # clear_mental_model/list_mental_model_history: dropped entirely from the
     # v0.4.0 governed lifecycle (SPEC §7), REST included -- not merely absent
     # from MCP. create/get/list/update/refresh/delete_mental_model are now
     # part of EXPECTED_TOOLS instead of forbidden.
-    "clear_mental_model", "list_mental_model_history",
-    "create_directive", "list_directives", "delete_directive",
-    "update_project", "transfer_project", "create_project",
-    "create_user", "create_group", "create_key",
-    "list_users", "list_keys", "revoke_key",
+    "clear_mental_model",
+    "list_mental_model_history",
+    "create_directive",
+    "list_directives",
+    "delete_directive",
+    "update_project",
+    "transfer_project",
+    "create_project",
+    "create_user",
+    "create_group",
+    "create_key",
+    "list_users",
+    "list_keys",
+    "revoke_key",
 }
 
 
@@ -1836,9 +2029,7 @@ def test_an_unauthenticated_oversize_retain_is_refused_before_validation(app):
         headers: ClassVar = {}
 
     with pytest.raises(MCPToolError) as exc_info:
-        REGISTRY["retain"](
-            scope="user", content="x" * 300_000, ctx=NoAuth(), **_retain_kwargs()
-        )
+        REGISTRY["retain"](scope="user", content="x" * 300_000, ctx=NoAuth(), **_retain_kwargs())
 
     assert exc_info.value.code == "UNAUTHORIZED"
     assert "256000" not in str(exc_info.value), (
@@ -1881,9 +2072,7 @@ def test_invalid_request_names_the_offending_field(call_tool):
     key = call_tool.make_user()
 
     with pytest.raises(MCPToolError) as exc_info:
-        call_tool(
-            "retain", key, scope="not-a-real-scope", content="x", **_retain_kwargs()
-        )
+        call_tool("retain", key, scope="not-a-real-scope", content="x", **_retain_kwargs())
 
     assert exc_info.value.code == "INVALID_REQUEST"
     assert "scope" in str(exc_info.value)
@@ -1915,9 +2104,9 @@ def test_an_explicit_limit_is_never_overridden(call_tool):
     """The default replaces "unspecified" only -- it caps nothing the caller
     asked for, at any size the PageLimit bound allows."""
     _mock_bank()
-    route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?.*)?$"
-    ).mock(return_value=httpx.Response(200, json={"items": [], "total": 0}))
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?.*)?$").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
+    )
     key = call_tool.make_user()
 
     call_tool("list_memories", key, scope="user", limit=500)
@@ -1930,9 +2119,9 @@ def test_verbose_restores_the_upstream_default_page(call_tool):
     """verbose is the escape hatch to the old behaviour whole, and the old
     behaviour was to send no limit at all and let Hindsight decide."""
     _mock_bank()
-    route = respx.get(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?.*)?$"
-    ).mock(return_value=httpx.Response(200, json={"items": [], "total": 0}))
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?.*)?$").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
+    )
     key = call_tool.make_user()
 
     call_tool("list_memories", key, scope="user", verbose=True)
@@ -1945,9 +2134,9 @@ def test_recall_asks_hindsight_not_to_build_the_entity_map(call_tool):
     """Disabling include.entities upstream saves assembling the map, not just
     shipping it -- which dropping the key on the way out would not."""
     _mock_bank()
-    route = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
-    ).mock(return_value=httpx.Response(200, json={"results": []}))
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
     key = call_tool.make_user()
 
     call_tool("recall", key, scope="user", query="deps")
@@ -1960,9 +2149,9 @@ def test_recall_asks_hindsight_not_to_build_the_entity_map(call_tool):
 @respx.mock
 def test_recall_passes_caller_tags_through_to_the_client(call_tool):
     _mock_bank()
-    route = respx.post(
-        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall"
-    ).mock(return_value=httpx.Response(200, json={"results": []}))
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
     key = call_tool.make_user()
 
     call_tool("recall", key, scope="user", query="deps", tags_filter=["Repo:Group/App"])
@@ -1989,9 +2178,9 @@ def test_verbose_returns_the_upstream_payload_untouched(call_tool):
     upstream = {
         "results": [
             {
-                    "id": "m1",
-                    "text": "we use uv",
-                    "type": "world",
+                "id": "m1",
+                "text": "we use uv",
+                "type": "world",
                 "chunk_id": "c1",
                 "tags": [],
                 "entities": ["uv"],
@@ -2030,6 +2219,7 @@ def test_the_envelope_omits_the_slug_fields_when_no_rename_was_followed(call_too
     dumped = call_tool("recall", key, scope="user", query="deps").model_dump()
 
     assert dumped["result"]["hits"] == ()
+
 
 def test_the_mcp_mount_issues_no_session(app):
     """Stateless, and it has to stay that way to run more than one replica.
@@ -2114,8 +2304,11 @@ def test_start_working_session_allocates_a_positive_epoch(call_tool, client, mas
     _wst_project(client, headers)
 
     result = call_tool(
-        "start_working_session", key,
-        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        "start_working_session",
+        key,
+        project_slug="acme-api",
+        workspace_id=WST_WS,
+        session_id="sess-1",
     )
 
     assert result.result["session_epoch"] > 0
@@ -2130,12 +2323,18 @@ def test_starting_the_same_session_twice_over_mcp_is_idempotent(call_tool, clien
     _wst_project(client, headers)
 
     first = call_tool(
-        "start_working_session", key,
-        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        "start_working_session",
+        key,
+        project_slug="acme-api",
+        workspace_id=WST_WS,
+        session_id="sess-1",
     )
     second = call_tool(
-        "start_working_session", key,
-        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        "start_working_session",
+        key,
+        project_slug="acme-api",
+        workspace_id=WST_WS,
+        session_id="sess-1",
     )
 
     assert first.result["session_epoch"] == second.result["session_epoch"]
@@ -2146,14 +2345,22 @@ def test_set_working_state_returns_its_stored_fields(call_tool, client, master_h
     headers = _headers_for(key)
     _wst_project(client, headers)
     epoch = call_tool(
-        "start_working_session", key,
-        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        "start_working_session",
+        key,
+        project_slug="acme-api",
+        workspace_id=WST_WS,
+        session_id="sess-1",
     ).result["session_epoch"]
 
     result = call_tool(
-        "set_working_state", key,
-        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
-        session_epoch=epoch, checkpoint_seq=1, objective="ship the feature",
+        "set_working_state",
+        key,
+        project_slug="acme-api",
+        workspace_id=WST_WS,
+        session_id="sess-1",
+        session_epoch=epoch,
+        checkpoint_seq=1,
+        objective="ship the feature",
     )
 
     assert result.result["objective"] == "ship the feature"
@@ -2167,20 +2374,33 @@ def test_set_working_state_rejects_a_stale_pair(call_tool, client, master_header
     headers = _headers_for(key)
     _wst_project(client, headers)
     epoch = call_tool(
-        "start_working_session", key,
-        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        "start_working_session",
+        key,
+        project_slug="acme-api",
+        workspace_id=WST_WS,
+        session_id="sess-1",
     ).result["session_epoch"]
     call_tool(
-        "set_working_state", key,
-        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
-        session_epoch=epoch, checkpoint_seq=2, objective="second",
+        "set_working_state",
+        key,
+        project_slug="acme-api",
+        workspace_id=WST_WS,
+        session_id="sess-1",
+        session_epoch=epoch,
+        checkpoint_seq=2,
+        objective="second",
     )
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "set_working_state", key,
-            project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
-            session_epoch=epoch, checkpoint_seq=1, objective="first",
+            "set_working_state",
+            key,
+            project_slug="acme-api",
+            workspace_id=WST_WS,
+            session_id="sess-1",
+            session_epoch=epoch,
+            checkpoint_seq=1,
+            objective="first",
         )
 
     assert exc_info.value.code == "WORKING_STATE_STALE"
@@ -2196,8 +2416,11 @@ def test_set_working_state_for_a_missing_project_creates_no_project(
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "start_working_session", key,
-            project_slug="no-such-project", workspace_id=WST_WS, session_id="sess-1",
+            "start_working_session",
+            key,
+            project_slug="no-such-project",
+            workspace_id=WST_WS,
+            session_id="sess-1",
         )
 
     assert exc_info.value.code == "PROJECT_NOT_FOUND"
@@ -2211,8 +2434,11 @@ def test_another_user_is_denied_writing_this_project(call_tool, client, master_h
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "start_working_session", stranger_key,
-            project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+            "start_working_session",
+            stranger_key,
+            project_slug="acme-api",
+            workspace_id=WST_WS,
+            session_id="sess-1",
         )
 
     assert exc_info.value.code == "PROJECT_NOT_FOUND"
@@ -2226,15 +2452,23 @@ def test_set_working_state_rejects_a_blank_objective_over_mcp(call_tool, client,
     headers = _headers_for(key)
     _wst_project(client, headers)
     epoch = call_tool(
-        "start_working_session", key,
-        project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
+        "start_working_session",
+        key,
+        project_slug="acme-api",
+        workspace_id=WST_WS,
+        session_id="sess-1",
     ).result["session_epoch"]
 
     with pytest.raises(MCPToolError) as exc_info:
         call_tool(
-            "set_working_state", key,
-            project_slug="acme-api", workspace_id=WST_WS, session_id="sess-1",
-            session_epoch=epoch, checkpoint_seq=1, objective="   ",
+            "set_working_state",
+            key,
+            project_slug="acme-api",
+            workspace_id=WST_WS,
+            session_id="sess-1",
+            session_epoch=epoch,
+            checkpoint_seq=1,
+            objective="   ",
         )
 
     assert exc_info.value.code == "INVALID_REQUEST"
