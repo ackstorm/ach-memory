@@ -12,9 +12,45 @@ def test_claim_allows_only_mechanical_normalization():
     assert normalize_claim(decomposed) == "Café\nuses spaces\n"
 
 
+#: A value with the shape of a credential: 16 mixed-case alphanumerics,
+#: Shannon entropy 4.0. The previous fixture, `secret-value`, scores 3.19 --
+#: below the 3.5 gate the keyword rule now shares with gitleaks -- and was
+#: only ever caught because the rule accepted any non-space run as a value.
+SECRET = "API_TOKEN=q7Hx2mZp9LkT4vRw"
+
+
 def test_claim_with_secret_is_rejected_not_rewritten():
     with pytest.raises(ContentRejectedBySanitizer):
-        normalize_claim("Deploy with API_TOKEN=secret-value")
+        normalize_claim(f"Deploy with {SECRET}")
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        # Every one of these was a real retain rejected on 2026-09-11.
+        "Set max_tokens=1 on the recall request so only the ids arrive.",
+        "_RECALL_MAX_TOKENS = 32768 covers roughly 600 claims.",
+        "api_key: rotated monthly, the value lives in Vault.",
+        "The token: 2026-09-11T14:20:58Z stamp is upstream's, not ours.",
+    ],
+)
+def test_configuration_talk_with_a_keyword_is_not_a_secret(claim):
+    """`keyword=value` is only a secret when the VALUE looks like one: a
+    small integer, a word or a timestamp does not, however the key is named."""
+    assert normalize_claim(claim) == claim
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "secret=3f9a1c7e2b8d4f6a9c0e1b2d3f4a5c6e",  # 32 hex, entropy 3.91
+        "password: 'dGhpcyBpcyBhIHRlc3Q='",  # base64, entropy 3.68
+        "auth_token = ghp_x7Fq9Lm2Zt4Rv8Kw1Jn6Hp3Yb5Cd0Aa",  # entropy 5.07
+    ],
+)
+def test_a_credential_shaped_value_is_still_rejected(claim):
+    with pytest.raises(ContentRejectedBySanitizer):
+        normalize_claim(claim)
 
 
 def test_claim_rejects_blank_content():
@@ -33,13 +69,20 @@ def test_claim_allows_exactly_the_byte_ceiling():
 
 def test_evidence_redacts_independently_and_requires_meaning():
     kept = sanitize_evidence((
-        RetainEvidence(kind="tool_result", raw="PASS API_TOKEN=secret-value"),
+        RetainEvidence(kind="tool_result", raw=f"PASS {SECRET}"),
         RetainEvidence(kind="user_quote", raw="Keep the public decision."),
     ))
     assert kept[0].raw == "PASS [redacted]"
     assert kept[1].raw == "Keep the public decision."
     with pytest.raises(ContentRejectedBySanitizer):
-        sanitize_evidence((RetainEvidence(kind="tool_result", raw="API_TOKEN=secret-value"),))
+        sanitize_evidence((RetainEvidence(kind="tool_result", raw=SECRET),))
+
+
+def test_evidence_keeps_configuration_talk_unredacted():
+    kept = sanitize_evidence((
+        RetainEvidence(kind="tool_result", raw="max_tokens=1 | 97 results | 97 w/ ids"),
+    ))
+    assert kept[0].raw == "max_tokens=1 | 97 results | 97 w/ ids"
 
 
 def test_evidence_drops_whitespace_only_survivors_but_keeps_the_rest():

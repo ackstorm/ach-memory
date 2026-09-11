@@ -11,8 +11,10 @@ nothing is dropped, and a request with no meaningful survivor is rejected.
 from __future__ import annotations
 
 import json
+import math
 import re
 import unicodedata
+from collections import Counter
 
 from pydantic import BaseModel, ConfigDict
 
@@ -42,11 +44,26 @@ _SECRET_PATTERNS = [
     re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),  # GitLab PAT
     re.compile(r"\bxapp-[0-9]-[A-Z0-9]+-[A-Za-z0-9-]+\b"),  # Slack app token
     re.compile(r"hooks\.slack\.com/services/[A-Za-z0-9/_-]+"),  # Slack webhook
-    re.compile(r"(?i)\b\w*(?:secret|password|passwd|token|api[_-]?key)\w*\s*[=:]\s*\S+"),
 ]
 
+# `keyword = value` where the VALUE has the shape of a credential: gitleaks'
+# own `generic-api-key` rule, which `make secrets` already runs over this
+# tree, ported -- 10 to 150 credential characters AND Shannon entropy of at
+# least 3.5 bits per character. The rule used to accept any `\S+` as the
+# value, so `max_tokens=1`, `_RECALL_MAX_TOKENS = 32768` and
+# `api_key: rotated monthly` -- configuration talk in a memory about this
+# codebase -- were rejected as secrets (a real retain, 2026-09-11).
+# The trade-off is gitleaks' own: a short dictionary password
+# (`password=hunter2`, entropy 2.8) is indistinguishable from a word and is
+# not caught by THIS rule; the structural rules above still apply.
+_KEYWORD_ASSIGNMENT = re.compile(
+    r"(?i)\b\w*(?:secret|password|passwd|token|api[_-]?key)\w*"
+    r"\s*[=:]\s*[\"'`]?([A-Za-z0-9._=+/-]{10,150})"
+)
+_KEYWORD_VALUE_MIN_ENTROPY = 3.5
 
-# Scanning cost is QUADRATIC in input length: the key=value rule above ends
+
+# Scanning cost is QUADRATIC in input length: the keyword rule above ends
 # in `\w*` either side of the literal, so on a long run of word characters
 # the engine retries from every position. Measured on this codebase:
 # 4 KB 20 ms, 8 KB 79 ms, 16 KB 324 ms, 32 KB 1.3 s -- roughly 4x per
@@ -72,14 +89,27 @@ def _reject_unscannable(text: str) -> None:
         raise ContentTooLarge(f"content exceeds {_MAX_RAW_BYTES} bytes before normalization")
 
 
+def _shannon_entropy(value: str) -> float:
+    n = len(value)
+    return -sum(c / n * math.log2(c / n) for c in Counter(value).values())
+
+
+def _looks_like_credential(match: re.Match[str]) -> bool:
+    return _shannon_entropy(match.group(1)) >= _KEYWORD_VALUE_MIN_ENTROPY
+
+
 def contains_secret(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
+    if any(pattern.search(text) for pattern in _SECRET_PATTERNS):
+        return True
+    return any(_looks_like_credential(m) for m in _KEYWORD_ASSIGNMENT.finditer(text))
 
 
 def redact_secrets(text: str) -> str:
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("[redacted]", text)
-    return text
+    return _KEYWORD_ASSIGNMENT.sub(
+        lambda m: "[redacted]" if _looks_like_credential(m) else m.group(0), text
+    )
 
 
 def sanitize_ref(value: str | None) -> str | None:

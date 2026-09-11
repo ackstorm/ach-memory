@@ -1,7 +1,7 @@
 """The secret scan is quadratic; the size gate must precede it.
 
 `normalize_claim` normalized and scanned the whole input and only then
-checked the 4096-byte ceiling. `_SECRET_PATTERNS`' key=value rule ends in
+checked the 4096-byte ceiling. `_KEYWORD_ASSIGNMENT` (the key=value rule) ends in
 `\\w*` either side of its literal, so a long run of word characters makes the
 engine retry from every position: 4 KB 20 ms, 8 KB 79 ms, 16 KB 324 ms,
 32 KB 1.3 s, which puts 1 MB near twenty minutes of CPU. Since
