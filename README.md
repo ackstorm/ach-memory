@@ -84,7 +84,7 @@ resolver and cannot tell the difference. **The token is the identity**, so any
 value names a person and `+` adds groups:
 
 ```bash
-export ACH_MEMORY_URL=http://localhost:8000
+export ACH_MEMORY_URL=http://localhost:8000/mcp/
 export ACH_MEMORY_API_KEY=alice          # alice, no groups
 # export ACH_MEMORY_API_KEY=alice+sre    # ... and in the group `sre`
 ```
@@ -101,7 +101,7 @@ them however it is launched:
 
 ```bash
 # ~/.zshrc or ~/.bashrc
-export ACH_MEMORY_URL=https://memory.example.com
+export ACH_MEMORY_URL=https://memory.example.com/mcp/
 export ACH_MEMORY_API_KEY=<token from your identity provider>
 ```
 
@@ -116,7 +116,7 @@ arguments, credential in `env`:
   "args": [
     "--from", "git+https://github.com/ackstorm/ach-memory@v0.6.0",
     "ach-memory", "mcp",
-    "--url", "https://memory.example.com"
+    "--url", "https://memory.example.com/mcp/"
   ],
   "env": { "ACH_MEMORY_API_KEY": "<token from your identity provider>" }
 }
@@ -127,6 +127,13 @@ the tag pins an immutable revision. The endpoint is an explicit `--url` so the
 config states what it talks to; the key stays in `env` (or inherited from your
 shell) because `ps aux` shows every argument of every process. `--url` falls
 back to `$ACH_MEMORY_URL` when omitted.
+
+`ACH_MEMORY_URL` is the MCP endpoint, used verbatim — every call this
+package makes is MCP, including the standing context the SessionStart hook
+loads, so one URL has one meaning and nothing is derived from it. Point it at
+this service's own mount (`https://memory.example.com/mcp/`) or at a gateway
+publishing it (`https://gateway.example.com/mcp/mcp-ach-memory`); both work
+unchanged.
 
 Claude Code installs from this repository's own marketplace:
 
@@ -223,7 +230,7 @@ stdio proxy at all:
   "mcpServers": {
     "ach-memory": {
       "type": "http",
-      "url": "${ACH_MEMORY_URL:-http://localhost:8000}/mcp/",
+      "url": "${ACH_MEMORY_URL:-http://localhost:8000/mcp/}",
       "headers": {
         "Authorization": "Bearer ${ACH_MEMORY_API_KEY}"
       }

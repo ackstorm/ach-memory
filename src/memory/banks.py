@@ -59,7 +59,7 @@ def resolve_project_bank(
     create=False by default: every read, write and curation path in this
     service resolves existing-only, and lazy creation there would let any
     authenticated caller squat an arbitrary slug (SPEC §11.3). Creation is
-    explicit and belongs to bootstrap (SPEC §16.2), the only caller that
+    explicit and belongs to retain (SPEC §16.2), the only caller that
     passes create=True.
     """
     if not slug:

@@ -54,6 +54,25 @@ def _fake_resolve(token: str) -> tuple[str, frozenset[str]]:
     return subject, frozenset(g for g in raw_groups.split(",") if g)
 
 
+@pytest.fixture(autouse=True)
+def _no_client_env_from_the_developer_shell(monkeypatch):
+    """Clear the client-side variables the proxy reads from the environment.
+
+    `ACH_MEMORY_HEADER` changes which outgoing header carries the credential,
+    so a developer who exports it for their own agent host -- the documented
+    thing to do behind a gateway that blocks `Authorization` -- failed
+    `test_stdio_http_bridge_forwards_protocol_and_injects_project_context`
+    on a clean tree, asserting `authorization` against a request that
+    correctly carried `x-litellm-api-key` instead. A test that reads the
+    ambient environment is not a test.
+
+    A test that wants a value still sets it: function-scoped `monkeypatch`
+    inside the test runs after this one.
+    """
+    for name in ("ACH_MEMORY_HEADER", "ACH_MEMORY_URL", "ACH_MEMORY_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _default_settings_env():
     """Baseline so `Settings()` can construct for any test.
@@ -313,12 +332,16 @@ def master_headers() -> dict[str, str]:
 def create_user(client, session, *, groups: tuple[str, ...] = ()) -> dict:
     """A distinct external user, provisioned the way a real first-time caller
     is: the first authenticated request links the identity and creates the
-    `User` row, and `POST /v1/bootstrap` provisions its bank -- exactly what
-    the proxy's pre-warm does before an agent's first prompt.
+    `User` row. Nothing else happens, because nothing else happens in
+    production either -- a bank becomes usable on its owner's first retain
+    (see `memory.bootstrap`), and a read before that is legitimately empty.
 
     Replaces the old `POST /v1/users` + `POST /v1/users/{id}/keys` pair. Under
     external identity nobody mints a user: a user exists because an IdP
     asserted them, so there is no route to call and no key to hand back.
+
+    `GET /v1/projects` is the ping: authenticated, parameterless, and it
+    touches neither Hindsight nor any row of its own.
 
     Returns `subject` (what the IdP calls them, and what `MEMORY_MASTER_USERS`
     would name), `user_id` (minted locally by `link_identity`, knowable only
@@ -328,16 +351,16 @@ def create_user(client, session, *, groups: tuple[str, ...] = ()) -> dict:
 
     subject = f"user-{uuid.uuid4().hex[:12]}@test"
     headers = {IDENTITY_HEADER: identity_token(subject, groups)}
-    # Checked, both of them. Unchecked, a bootstrap that 4xx/5xxs (an auth
-    # misconfiguration, a changed Hindsight stub, a startup assertion) left
-    # no identity row and this handed back `user_id: None`. Every test
-    # downstream then asserted against None -- ownership comparisons most of
-    # all -- and either passed vacuously or failed somewhere far from the
-    # cause. A broken fixture has to read as broken here.
-    response = client.post("/v1/bootstrap", json={}, headers=headers)
-    assert response.status_code == 200, f"bootstrap failed for {subject}: {response.text}"
+    # Checked, both of them. Unchecked, a ping that 4xx/5xxs (an auth
+    # misconfiguration, a startup assertion) left no identity row and this
+    # handed back `user_id: None`. Every test downstream then asserted against
+    # None -- ownership comparisons most of all -- and either passed vacuously
+    # or failed somewhere far from the cause. A broken fixture has to read as
+    # broken here.
+    response = client.get("/v1/projects", headers=headers)
+    assert response.status_code == 200, f"identity ping failed for {subject}: {response.text}"
     row = session.get(ExternalIdentity, (RESOLVER_URL, subject))
-    assert row is not None, f"bootstrap linked no identity for {subject}"
+    assert row is not None, f"no identity was linked for {subject}"
     return {
         "subject": subject,
         "user_id": row.user_id,

@@ -47,8 +47,10 @@ def link_identity(
     `provision_user_bank`): this runs on the request-authentication path for
     every externally authenticated caller, so a Hindsight round trip here
     would add upstream latency and failure modes to ordinary auth, not just
-    first-sight creation. The proxy's bootstrap pre-warm covers this bank
-    before the first prompt instead.
+    first-sight creation. The caller's first `retain` provisions this bank
+    instead (`memory.bootstrap.provision_before_retain`); until then their
+    reads are legitimately empty, because Hindsight banks auto-create on first
+    use and there is nothing retained in theirs.
 
     Commits the rows it creates, and must. `db.get_session` never commits on
     its own -- write handlers do it explicitly -- and the read routes have no

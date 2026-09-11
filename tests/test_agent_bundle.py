@@ -99,7 +99,7 @@ def test_claude_mcp_config_is_static_and_takes_both_values_from_the_environment(
             "ach-memory",
             "mcp",
             "--url",
-            "${ACH_MEMORY_URL:-http://localhost:8000}",
+            "${ACH_MEMORY_URL:-http://localhost:8000/mcp/}",
         ],
         "env": {"ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}"},
     }

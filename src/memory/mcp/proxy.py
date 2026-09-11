@@ -101,36 +101,6 @@ def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | N
     return slug_from_locator(canonical), canonical
 
 
-def bootstrap(base_url: str, api_key: str, project_slug: str | None) -> str | None:
-    """Call `POST /v1/bootstrap` exactly once at startup (SPEC §7.5).
-
-    Returns the content-free Project bootstrap error CODE -- never a
-    message or details, which can carry a bank id -- when `project_slug`
-    was configured and bootstrap failed; otherwise None. Never raises: a
-    broken or slow service must cost this session its bootstrap, never its
-    startup (SPEC §4.3, "does not prevent the MCP server from starting").
-    A User-only bootstrap (no project_slug) failing is not reported here:
-    there is nothing project-specific to route around, and startup must
-    proceed regardless.
-    """
-    try:
-        response = httpx.post(
-            f"{base_url.rstrip('/')}/v1/bootstrap",
-            json={"project_slug": project_slug} if project_slug else {},
-            headers=auth_headers(api_key),
-            timeout=10.0,
-        )
-    except httpx.HTTPError:
-        return "BOOTSTRAP_UNAVAILABLE" if project_slug else None
-    if response.status_code == 200 or not project_slug:
-        return None
-    try:
-        code = response.json().get("error", {}).get("code")
-    except ValueError:
-        code = None
-    return code or "BOOTSTRAP_UNAVAILABLE"
-
-
 def resolve_workspace_context(cwd: str | None = None) -> str | None:
     """The opaque workspace id for the git worktree at cwd, or None outside one.
 
@@ -266,7 +236,6 @@ class StdioHttpBridge:
         workspace_id: str | None = None,
         instructions: str | None = None,
         client: httpx.AsyncClient | None = None,
-        project_bootstrap_error: str | None = None,
     ) -> None:
         self._url = url
         self._api_key = api_key
@@ -281,11 +250,6 @@ class StdioHttpBridge:
         # what was actually negotiated -- and sent as the per-request header
         # for hosts whose requests do not carry one themselves.
         self._negotiated_version: str | None = None
-        # Content-free: a code only, never the message/details a real
-        # backend error could carry (SPEC inv. 29). Routes every
-        # scope="project" tool call to a local error until a later process
-        # restart re-bootstraps -- this proxy never retries bootstrap itself.
-        self._project_bootstrap_error = project_bootstrap_error
 
     async def close(self) -> None:
         if self._owns_client:
@@ -310,12 +274,6 @@ class StdioHttpBridge:
                     )
                 else:
                     fill_project_arguments(arguments, self._slug, locator)
-
-                if self._project_bootstrap_error and arguments.get("scope") == "project":
-                    yield _project_bootstrap_error_reply(
-                        outgoing.get("id"), self._project_bootstrap_error
-                    )
-                    return
 
         headers = {
             **auth_headers(self._api_key),
@@ -672,48 +630,79 @@ def _jsonrpc_error(
     }
 
 
-def _project_bootstrap_error_reply(request_id: object, code: str) -> dict:
-    """The standard MCP tool-call error shape (`isError=true` + text
-    content) -- synthesized locally so a host cannot tell this apart from
-    the same failure the remote server would eventually report itself."""
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": {
-            "content": [
-                {"type": "text", "text": f"{code}: project bootstrap failed at startup"}
-            ],
-            "isError": True,
-        },
-    }
-
-
 def fetch_context(
-    base_url: str,
+    mcp_url: str,
     api_key: str,
     slug: str | None,
     timeout: float = CONTEXT_TIMEOUT_SECONDS,
     *,
     workspace_id: str | None = None,
 ) -> dict | None:
-    """The bounded context response, or None -- never an exception.
+    """The bounded context payload, or None -- never an exception.
+
+    One `tools/call load_context` on the same MCP endpoint every other call
+    goes to. There is no REST route to reach instead: `ACH_MEMORY_URL` names
+    the MCP endpoint and nothing else, so this works unchanged whether that
+    endpoint is the service's own mount or a gateway in front of it.
 
     Bounded and silent on purpose: this runs before the host's first prompt,
     so a slow or broken memory service can only omit standing context. The
-    host still starts normally when this returns ``None``.
+    host still starts normally when this returns ``None``. The bound covers
+    the whole exchange -- connect, initialize and call -- because each leg is
+    a separate round trip and a per-leg timeout would multiply.
     """
     try:
-        response = httpx.post(
-            f"{base_url.rstrip('/')}/v1/context/load",
-            json={"project_slug": slug, "workspace_id": workspace_id},
-            headers=auth_headers(api_key),
-            timeout=timeout,
+        payload = asyncio.run(
+            asyncio.wait_for(
+                call_load_context(mcp_url, api_key, slug, workspace_id), timeout
+            )
         )
-        if response.status_code != 200:
-            return None
-        body = response.json()
-    except (httpx.HTTPError, ValueError):
+    except Exception:  # noqa: BLE001 -- every failure here has one outcome
+        # Every failure is the same failure here: no context. A broken
+        # endpoint, a refused credential, a timeout and a malformed reply all
+        # have one correct outcome, and none of them may reach the host's
+        # stderr as a traceback.
         return None
-    if isinstance(body, dict) and isinstance(body.get("text"), str):
-        return body
+    if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+        return payload
+    return None
+
+
+async def call_load_context(
+    mcp_url: str, api_key: str, slug: str | None, workspace_id: str | None
+) -> dict | None:
+    """`load_context` over MCP, unwrapped to the service's own payload.
+
+    Public because `fetch_context`'s bound and fail-open are wrong for a
+    caller that already has an event loop and wants the failure -- the
+    benchmark harness, which measures this response rather than surviving
+    without it.
+
+    Imported here rather than at module import time: the stdio bridge itself
+    needs none of the client session machinery, and `ach-memory --help` must
+    not pay for it.
+    """
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    arguments: dict[str, str] = {}
+    if slug:
+        arguments["project_slug"] = slug
+    if workspace_id:
+        arguments["workspace_id"] = workspace_id
+
+    client = create_mcp_http_client(auth_headers(api_key))
+    async with (
+        client,
+        streamable_http_client(mcp_url, http_client=client) as (read, write),
+        ClientSession(read, write) as session,
+    ):
+        await session.discover()
+        result = await session.call_tool("load_context", arguments)
+    if result.is_error:
+        return None
+    structured = result.structured_content
+    if isinstance(structured, dict):
+        return structured.get("result")
     return None

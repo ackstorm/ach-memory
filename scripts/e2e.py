@@ -314,12 +314,13 @@ TEAM_MEMBERS = {"alice", "bob"}
 
 @scenario("identity.provision_users")
 async def _() -> None:
-    """Name every identity this run needs, and give each one a bank.
+    """Name every identity this run needs.
 
-    `POST /v1/bootstrap` provisions the CALLER's own bank and nobody else's.
-    `auth.provisioning.link_identity` deliberately does not (it would put a
-    Hindsight round trip on the authentication path of every request), so a
-    brand-new identity has a `users` row and an unusable bank until this call.
+    Nothing is provisioned: a bank becomes usable on its owner's first retain
+    (`memory.bootstrap`), and Hindsight banks auto-create on first use, so a
+    read before that is legitimately empty rather than broken. The first
+    authenticated request is what links the identity and mints the `users`
+    row, and the project create below is that request.
 
     The `user_id` the service mints for an external identity is internal and
     unguessable -- `POST /v1/projects` echoing back its `owner` is the only
@@ -332,10 +333,6 @@ async def _() -> None:
         token = f"e2e-{name}-{RUN}"
         if name in TEAM_MEMBERS:
             token = f"{token}+{gid}"
-        status, data = await call(
-            "POST", "/v1/bootstrap", token, json_body={}, timeout=90.0
-        )
-        expect_status("POST", "/v1/bootstrap", {}, status, data, 200)
         S[f"key.{name}"] = token
 
         body = {"project_slug": f"e2e-whoami-{name}-{RUN}"}
@@ -1293,24 +1290,31 @@ async def _() -> None:
 # ===========================================================================
 
 
-@scenario("bootstrap.provisions_the_builtin_user_model")
+@scenario("retain.provisions_the_builtin_user_model")
 async def _() -> None:
-    """SPEC §7.5: `POST /v1/bootstrap` is what materializes the ACH-owned
-    built-in models. Nothing else does -- an ordinary read never creates or
-    reconciles a definition -- so the mental-model scenarios below depend on
-    this having run. The stdio proxy calls it once at startup for exactly
-    this reason.
+    """A first retain is what materializes the ACH-owned built-in models.
+
+    Nothing else does -- an ordinary read never creates or reconciles a
+    definition -- so the mental-model scenarios below depend on this having
+    run. There is no separate pre-warm step and no `/v1/bootstrap`: one rule
+    for a user and for a project alike, at the one moment a bank stops being
+    hypothetical.
     """
     need("key.alice")
+    body = retain_body("user", "Provisioning is what a first retain does.")
     status, data = await call(
-        "POST", "/v1/bootstrap", S["key.alice"], json_body={}, timeout=90.0
+        "POST", "/v1/memory/sync_retain", S["key.alice"], json_body=body, timeout=90.0
     )
-    expect_status("POST", "/v1/bootstrap", {}, status, data, 200)
-    user_model = data.get("user_model")
-    assert user_model, f"bootstrap provisioned no user model: {data}"
-    assert user_model["model_key"] == "user-context", user_model
-    assert user_model["origin"] == "builtin", user_model
-    S["bootstrap.done"] = True
+    expect_status("POST", "/v1/memory/sync_retain", body, status, data, 200)
+
+    status, data = await call(
+        "GET", "/v1/mental-models", S["key.alice"], params={"scope": "user"}
+    )
+    expect_status("GET", "/v1/mental-models", None, status, data, 200)
+    builtin = [m for m in data.get("models", []) if m["model_key"] == "user-context"]
+    assert builtin, f"the first retain provisioned no built-in user model: {data}"
+    assert builtin[0]["origin"] == "builtin", builtin[0]
+    S["retain.provisioned"] = True
 
 
 @scenario("mental_models.create")
@@ -1355,7 +1359,7 @@ async def _() -> None:
 async def _() -> None:
     """The built-in user-context model is ACH-owned and always present, so
     list must show it alongside the custom one this run created."""
-    need("mental_model.key", "key.alice", "bootstrap.done")
+    need("mental_model.key", "key.alice", "retain.provisioned")
     status, data = await call(
         "GET", "/v1/mental-models", S["key.alice"], params={"scope": "user"}
     )
@@ -1397,7 +1401,7 @@ async def _() -> None:
 async def _() -> None:
     """SPEC §7.4: a built-in's definition is ACH-owned and versioned, so the
     custom-model CRUD surface must refuse it rather than silently mutate it."""
-    need("key.alice", "bootstrap.done")
+    need("key.alice", "retain.provisioned")
     body = sc_body("user", max_tokens=1024, operation_id=str(uuid.uuid4()))
     status, data = await call(
         "PATCH", "/v1/mental-models/user-context", S["key.alice"], json_body=body

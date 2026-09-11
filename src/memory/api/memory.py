@@ -405,8 +405,8 @@ def _typed_retain(
     # good (invariant 8) and the creation IS spent.
     #
     # Closing that window means giving provisioning its own session rather
-    # than borrowing the caller's, which is a change across bootstrap, retain
-    # and project creation alike -- not a comment's worth of work.
+    # than borrowing the caller's, which is a change across retain and
+    # project creation alike -- not a comment's worth of work.
     provision_before_retain(db, principal, scope=body.scope, bank_id=bank_id, client=get_client())
     # Then commit, before the upstream retain: rolling the project back after
     # Hindsight has accepted a memory into its bank would orphan that memory

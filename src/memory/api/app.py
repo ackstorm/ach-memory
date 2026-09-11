@@ -196,8 +196,6 @@ def create_app() -> FastAPI:
 
     from memory.api import activity as activity_routes
     from memory.api import admin as admin_routes
-    from memory.api import bootstrap as bootstrap_routes
-    from memory.api import context as context_routes
     from memory.api import curation as curation_routes
     from memory.api import directives as directive_routes
     from memory.api import documents as document_routes
@@ -269,7 +267,6 @@ def create_app() -> FastAPI:
             content={"error": {"code": "INTERNAL_ERROR", "message": "internal error"}},
         )
 
-    app.include_router(bootstrap_routes.router)
     app.include_router(activity_routes.router)
     app.include_router(memory_routes.router)
     app.include_router(curation_routes.router)
@@ -281,7 +278,6 @@ def create_app() -> FastAPI:
     app.include_router(directive_routes.router)
     app.include_router(mental_model_routes.router)
     app.include_router(working_state_routes.router)
-    app.include_router(context_routes.router)
 
     # Kubernetes probes. Unauthenticated on purpose: a kubelet carries no
     # bearer token, and neither route discloses anything a caller who can

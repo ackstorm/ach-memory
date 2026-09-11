@@ -26,22 +26,17 @@ def live_client():
 
 
 @pytest.fixture
-def live_identity(live_client) -> str:
+def live_identity() -> str:
     """A fresh caller on the live stack, with nothing minted anywhere.
 
     There is no master key and no `POST /v1/users` to call: the token IS the
     identity (deploy/dev-identity/whoami.py, which the Compose stack wires
     through the ordinary platform provider), so a value nobody has used before
-    is a person nobody has been before. `POST /v1/bootstrap` is what gives
-    them a bank -- `link_identity` deliberately does not provision one on the
-    authentication path, so without this the first retain has nowhere to go.
+    is a person nobody has been before. Nothing is provisioned here either:
+    the first retain below provisions this caller's bank, and Hindsight banks
+    auto-create on first use, so there is nothing to pre-warm.
     """
-    token = f"append-int-{uuid.uuid4().hex[:10]}"
-    resp = live_client.post(
-        "/v1/bootstrap", json={}, headers={"Authorization": f"Bearer {token}"}
-    )
-    assert resp.status_code == 200, resp.text
-    return token
+    return f"append-int-{uuid.uuid4().hex[:10]}"
 
 
 def test_append_accumulates_document_text(live_client, live_identity):

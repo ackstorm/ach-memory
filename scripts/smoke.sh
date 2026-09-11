@@ -25,15 +25,11 @@ project_slug="smoke-project-$(date +%s)-$$"
 # the user id), so there is nothing to mint here and no master credential to
 # mint it with. Two tokens are two people with two banks.
 #
-# POST /v1/bootstrap still matters: `link_identity` deliberately does not
-# provision a bank -- that would put a Hindsight round trip on the
-# authentication path of every request -- so a brand-new identity has a
-# `users` row and an unusable bank until this call.
+# Nothing is provisioned up front: a bank becomes usable on its owner's first
+# retain, and Hindsight banks auto-create on first use, so the sync_retain
+# below is all the provisioning this identity needs.
 user_key="smoke-user-$(date +%s)-$$"
-curl -sf -X POST "${API}/v1/bootstrap" \
-  -H "Authorization: Bearer ${user_key}" -H 'Content-Type: application/json' \
-  -d '{}' >/dev/null
-echo "named and provisioned identity: ${user_key}"
+echo "named identity: ${user_key}"
 
 # Every retain carries the typed contract v0.4.0 introduced: memory_type,
 # basis, trigger, evidence and operation_id are all required, and a bare
@@ -80,10 +76,9 @@ echo "${recalled}" | grep -q "bank_id" \
   && { echo "FAIL: bank_id leaked to the client" >&2; exit 1; }
 
 # A second user must not see the first user's memory.
+# Never retained into, deliberately: the recall below has to be empty because
+# this is a different person, not because their bank does not exist yet.
 other_key="smoke-other-$(date +%s)-$$"
-curl -sf -X POST "${API}/v1/bootstrap" \
-  -H "Authorization: Bearer ${other_key}" -H 'Content-Type: application/json' \
-  -d '{}' >/dev/null
 
 cross=$(curl -sf -X POST "${API}/v1/memory/recall" \
   -H "Authorization: Bearer ${other_key}" -H 'Content-Type: application/json' \

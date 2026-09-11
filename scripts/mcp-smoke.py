@@ -62,23 +62,16 @@ async def wait_for_api(client: httpx.AsyncClient) -> None:
     fail(f"API never came up at {API}")
 
 
-async def provision_user_identity(client: httpx.AsyncClient) -> str:
-    """Name an identity, provision its bank, return the bearer token.
+def name_user_identity() -> str:
+    """Name an identity and return the bearer token.
 
-    Nothing is minted: the stack authenticates through an external provider
-    (`deploy/dev-identity/whoami.py` echoes the token back as the user id),
-    so the token IS the identity and a fresh one per run is a fresh user.
-    `POST /v1/bootstrap` is what makes that user's bank usable, and
-    `link_identity` deliberately does not -- provisioning there would put a
-    Hindsight round trip on every request's authentication path.
+    Nothing is minted and nothing is provisioned: the stack authenticates
+    through an external provider (`deploy/dev-identity/whoami.py` echoes the
+    token back as the user id), so the token IS the identity and a fresh one
+    per run is a fresh user. Their bank becomes usable on their first retain,
+    which this script performs below.
     """
-    token = f"mcp-smoke-{int(time.time())}-{os.getpid()}"
-    response = await client.post(
-        f"{API}/v1/bootstrap", json={}, headers={"Authorization": f"Bearer {token}"}
-    )
-    if response.status_code != 200:
-        fail(f"bootstrap failed for {token}: HTTP {response.status_code} {response.text}")
-    return token
+    return f"mcp-smoke-{int(time.time())}-{os.getpid()}"
 
 
 def unwrap(result):
@@ -127,14 +120,14 @@ def find_memory(listing: dict, needle: str) -> str | None:
 async def main() -> None:
     async with httpx.AsyncClient(timeout=30.0) as rest:
         await wait_for_api(rest)
-        user_key = await provision_user_identity(rest)
+    user_key = name_user_identity()
 
     if "--proxy" in sys.argv:
         # --proxy: same fifteen-tool run, but through a spawned `ach-memory
         # mcp` child -- proving the stdio transport, the bearer forwarding,
         # and that the proxy's argument injection does not corrupt any
-        # tool's schema. The child gets the provisioned key via env exactly
-        # the way a host would pass it.
+        # tool's schema. The child gets the key via env exactly the way a
+        # host would pass it.
         params = StdioServerParameters(
             command="uv",
             args=["run", "ach-memory", "mcp"],

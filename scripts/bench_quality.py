@@ -329,14 +329,11 @@ async def main() -> int:
             ctx: dict = {}
             # The token IS the identity, so nothing is minted and no operator
             # credential is needed to mint it -- see `bootstrap` in
-            # scripts/bench.py. This harness never addresses anyone but the
-            # holder of a token, so it needs no internal user id either.
+            # scripts/bench.py. Nothing provisions these banks either: the
+            # seeding retains below do. This harness never addresses anyone
+            # but the holder of a token, so it needs no internal user id.
             for name in ("alice", "bob"):
-                token = f"bq-{name}-{run_tag}"
-                s, d = await ach.call("POST", "/v1/bootstrap", key=token, json_body={})
-                if s != 200:
-                    raise SystemExit(f"could not bootstrap {token}: HTTP {s} {d}")
-                ctx[f"key.{name}"] = token
+                ctx[f"key.{name}"] = f"bq-{name}-{run_tag}"
             for project in ("payments", "search"):
                 slug = f"bq-{project}-{run_tag}"
                 await ach.call(

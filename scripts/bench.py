@@ -41,6 +41,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from benchlib import API, HINDSIGHT_URL, MARK, Http, Outcome, ProbeResult, bank_path, table
 
+from memory.mcp.proxy import call_load_context
+
 # An operator IDENTITY, not a credential: ach-memory mints nothing, so this
 # is simultaneously the token the probes send and the subject named in
 # MEMORY_MASTER_USERS, which is what grants it authority. scripts/bench-
@@ -280,9 +282,17 @@ async def _(ach: Http, van: Http, ctx: dict) -> ProbeResult:
     # server-side (each model's own max_tokens plus a global cap), not a
     # caller knob, so the question is whether the RESPONSE accounts for what
     # the budget dropped.
-    status, data = await ach.call("POST", "/v1/context/load", key=ctx["key.alice"], json_body={})
-    if status != 200:
-        ach_out = Outcome("ERROR", f"HTTP {status} {str(data)[:80]}")
+    # Over MCP, because that is the only surface `load_context` has: there is
+    # no REST route, and ACH_MEMORY_URL names an MCP endpoint.
+    try:
+        data = await call_load_context(f"{API.rstrip('/')}/mcp/", ctx["key.alice"], None, None)
+    except Exception as exc:  # noqa: BLE001 -- reported as the probe's outcome
+        data = None
+        failure = f"{type(exc).__name__}: {exc}"[:80]
+    else:
+        failure = "load_context returned nothing" if data is None else ""
+    if data is None:
+        ach_out = Outcome("ERROR", failure)
     else:
         keys = sorted(data) if isinstance(data, dict) else []
         has = "omissions" in keys and "tokenizer_version" in keys
@@ -531,16 +541,11 @@ async def bootstrap(ach: Http, van: Http) -> dict:
     ctx: dict = {}
     # The token IS the identity: the stack authenticates through an external
     # provider, so nothing is minted here and there is no operator credential
-    # to mint it with. Three tokens are three people with three banks.
-    # `POST /v1/bootstrap` is what makes each bank usable -- `link_identity`
-    # deliberately does not provision one, to keep a Hindsight round trip off
-    # every request's authentication path.
+    # to mint it with. Three tokens are three people with three banks, and
+    # nothing provisions them: a bank becomes usable on its owner's first
+    # retain and Hindsight banks auto-create on first use.
     for name in ("alice", "bob", "ratelimituser"):
-        token = f"bench-{name}-{RUN}"
-        status, data = await ach.call("POST", "/v1/bootstrap", key=token, json_body={})
-        if status != 200:
-            raise SystemExit(f"bootstrap failed for {token}: HTTP {status} {data}")
-        ctx[f"key.{name}"] = token
+        ctx[f"key.{name}"] = f"bench-{name}-{RUN}"
 
     slug = f"bench-private-{RUN}"
     # Alice's INTERNAL user id, which is NOT her token: `link_identity`

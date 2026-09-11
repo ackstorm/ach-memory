@@ -17,6 +17,9 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 SUPPORTED = ("codex", "claude", "opencode", "pi")
+#: The local stack's own mount, for a developer who exported nothing. Carries
+#: the `/mcp/` suffix because `ACH_MEMORY_URL` is now used verbatim.
+DEFAULT_ENDPOINT = "http://localhost:8000/mcp/"
 MARKETPLACE = "ackstorm/ach-memory"
 GIT_SOURCE = "git+https://github.com/ackstorm/ach-memory"
 
@@ -42,36 +45,23 @@ def _validated_parts(base: str):
     return parts
 
 
-def _service_path(parts) -> str:
-    """The service root, with the MCP mount suffix removed if it is there.
+def _endpoint(base: str) -> str:
+    """The MCP endpoint, exactly as configured.
 
-    `--url` is written by hand as often as it is generated, and both forms
-    are reasonable to type: the service root, or the endpoint a client
-    actually POSTs to. Only one of them used to work. Passing the mount --
-    `https://host/memory/mcp/` -- appended a second one, so every request
-    went to `/memory/mcp/mcp/` and came back 404 as an opaque
-    "Remote MCP request failed"; measured against a Codex install
-    2026-09-07, whose config carried exactly that URL.
+    `ACH_MEMORY_URL` names the endpoint a client POSTs to and nothing else.
+    Every call this package makes -- the bridge's forwarded tool calls and the
+    `load_context` that fills standing context -- is MCP, so there is one URL
+    with one meaning and nothing is derived from it.
 
-    A deployment whose service root genuinely ends in `/mcp` would be
-    mis-read here. That trade is deliberate: the mount is this service's
-    own, fixed, and documented, and a root that collides with it is a
-    hypothetical no install has ever had.
+    It used to be the service ROOT, with `/mcp/` appended unless the path
+    already ended in `/mcp`. That guess cannot serve a gateway: LiteLLM
+    publishes this server at `/mcp/mcp-ach-memory`, which ends in neither, so
+    the append produced `/mcp/mcp-ach-memory/mcp/` and every request 404'd.
+    No heuristic covers both shapes, and the ones it got wrong failed as an
+    opaque "Remote MCP request failed".
     """
-    path = parts.path.rstrip("/")
-    return path.removesuffix("/mcp")
-
-
-def _mcp_url(base: str) -> str:
     parts = _validated_parts(base)
-    return urlunsplit((parts.scheme, parts.netloc, f"{_service_path(parts)}/mcp/", "", ""))
-
-
-def _base_url(base: str) -> str:
-    """The endpoint without the `/mcp/` suffix `_mcp_url` adds, for routes
-    like `/v1/context/load` that live outside the MCP mount."""
-    parts = _validated_parts(base)
-    return urlunsplit((parts.scheme, parts.netloc, _service_path(parts), "", ""))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
 async def _preflight(url: str, api_key: str) -> None:
@@ -312,12 +302,8 @@ def _proxy_command(mode: str, url: str) -> list[str]:
     here -- argv is world-readable (`ps aux`), so hosts forward it from their
     environment by name instead of persisting its value.
 
-    The service root is what travels, not the `/mcp/` endpoint: the proxy
-    adds the mount itself, and it also talks to `/v1/bootstrap` and
-    `/v1/context/load`, which live outside it. Writing the mount here made
-    every generated stdio config -- codex, opencode and pi alike -- ask for
-    `/mcp/mcp/`; only the claude plugin escaped, because its `.mcp.json` is
-    committed with the root rather than generated.
+    The MCP endpoint travels verbatim: the proxy derives nothing from it and
+    talks to no other route, so what is written here is what gets POSTed.
 
     `uvx --from git+...@vX.Y.Z` is the install source: the repository is
     public, the tag pins an immutable revision, and it needs no package
@@ -337,7 +323,7 @@ def _proxy_command(mode: str, url: str) -> list[str]:
                 "--local needs the ach-memory script on PATH "
                 "(run it as `uv run ach-memory init ... --local`)"
             )
-        return [str(Path(script).resolve()), "mcp", "--url", _base_url(url)]
+        return [str(Path(script).resolve()), "mcp", "--url", url]
     return [
         "uvx",
         "--from",
@@ -345,7 +331,7 @@ def _proxy_command(mode: str, url: str) -> list[str]:
         "ach-memory",
         "mcp",
         "--url",
-        _base_url(url),
+        url,
     ]
 
 
@@ -736,7 +722,7 @@ def _parser() -> argparse.ArgumentParser:
     mcp.add_argument(
         "--url",
         default=None,
-        help="memory service base URL (default: $ACH_MEMORY_URL). The token "
+        help="MCP endpoint URL, used verbatim (default: $ACH_MEMORY_URL). The token "
         "your identity provider issued is read from $ACH_MEMORY_API_KEY and "
         "never taken as an argument, because argv is world-readable. It is "
         "sent on $ACH_MEMORY_HEADER (default Authorization as a Bearer token; "
@@ -773,24 +759,17 @@ def _serve_mcp(url_argument: str | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    base = url_argument or os.environ.get("ACH_MEMORY_URL") or "http://localhost:8000"
-    url = _mcp_url(base)
+    url = _endpoint(
+        url_argument or os.environ.get("ACH_MEMORY_URL") or DEFAULT_ENDPOINT
+    )
     slug, locator = proxy.resolve_project_context()
     workspace_id = proxy.resolve_workspace_context()
 
-    # One initialization bootstrap call (SPEC §7.5), opt-out only: neither
-    # the credential nor the project slug is accepted through argv here --
-    # both are already resolved from environment/config above.
-    bootstrap_enabled = os.environ.get("ACH_MEMORY_BOOTSTRAP", "true").lower() not in {
-        "0", "false", "no",
-    }
-    project_bootstrap_error = (
-        proxy.bootstrap(_base_url(base), key, slug) if bootstrap_enabled else None
-    )
-
     # Fetch fresh authorized context once; failures are fail-open and never
-    # persist user context on the host.
-    fetched = proxy.fetch_context(_base_url(base), key, slug, workspace_id=workspace_id)
+    # persist user context on the host. Nothing is provisioned first: a bank
+    # becomes usable on its owner's first retain (see `memory.bootstrap`), and
+    # until then there is genuinely no standing context to load.
+    fetched = proxy.fetch_context(url, key, slug, workspace_id=workspace_id)
     bridge = proxy.StdioHttpBridge(
         url,
         key,
@@ -798,7 +777,6 @@ def _serve_mcp(url_argument: str | None = None) -> int:
         locator=locator,
         workspace_id=workspace_id,
         instructions=fetched["text"] if fetched else "",
-        project_bootstrap_error=project_bootstrap_error,
     )
     asyncio.run(bridge.serve())
     return 0
@@ -823,12 +801,10 @@ def _context_load() -> int:
     key = os.environ.get("ACH_MEMORY_API_KEY", "")
     if not key:
         return 0
-    base = _base_url(
-        os.environ.get("ACH_MEMORY_URL", "http://localhost:8000")
-    )
+    url = _endpoint(os.environ.get("ACH_MEMORY_URL", DEFAULT_ENDPOINT))
     slug, _locator = proxy.resolve_project_context()
     workspace_id = proxy.resolve_workspace_context()
-    payload = proxy.fetch_context(base, key, slug, workspace_id=workspace_id)
+    payload = proxy.fetch_context(url, key, slug, workspace_id=workspace_id)
     if payload is None:
         print("ach-memory: context unavailable", file=sys.stderr)
         return 0
@@ -862,7 +838,7 @@ def main(argv: list[str] | None = None) -> int:
     base = os.environ.get("ACH_MEMORY_URL")
     mode = "http" if args.http else ("local" if args.local else "stdio")
     try:
-        url = _mcp_url(base or "http://localhost:8000")
+        url = _endpoint(base or DEFAULT_ENDPOINT)
         targets = _targets(args.target)
         for target in targets:
             _require_executable(target)
@@ -927,7 +903,7 @@ def main(argv: list[str] | None = None) -> int:
     # Reported here rather than inside _targets: a skip is part of the summary,
     # not a warning to shout from stderr while the real output goes to stdout.
     skipped = [name for name in SUPPORTED if name not in targets] if args.target == "all" else []
-    _report(results, skipped, base or "http://localhost:8000", base is not None, args.verbose)
+    _report(results, skipped, base or DEFAULT_ENDPOINT, base is not None, args.verbose)
     return 0
 
 

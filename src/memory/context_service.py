@@ -97,8 +97,8 @@ class ContextService:
         so a bank whose built-ins were still withheld delivered empty
         standing context for ever. That is precisely what the SessionStart
         hook does -- `ach-memory context load` and nothing else -- so on a
-        fresh bank the hook could never deliver the very models bootstrap
-        had just registered for it. Measured 2026-09-07: both built-ins sat
+        fresh bank the hook could never deliver the very models a first
+        retain had just registered for it. Measured 2026-09-07: both built-ins sat
         `withheld`/`pending` for 40 minutes after their refresh operations
         had already completed upstream, and one `get_mental_model` call
         flipped each to `ready` immediately.

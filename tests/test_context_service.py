@@ -220,8 +220,8 @@ def test_a_withheld_model_whose_refresh_finished_is_observed_and_delivered(
 
     `ach-memory context load` is all the SessionStart hook runs, and until
     now nothing on this path observed a finished refresh -- `get_mental_model`
-    was the only caller that did. So a bank whose built-ins bootstrap had
-    just registered delivered empty standing context for ever: measured
+    was the only caller that did. So a bank whose built-ins a first retain
+    had just registered delivered empty standing context for ever: measured
     2026-09-07, both built-ins sat withheld for 40 minutes after their
     operations had completed upstream, and a single `get_mental_model` call
     flipped each to ready at once.

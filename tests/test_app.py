@@ -24,7 +24,6 @@ from tests.conftest import IDENTITY_HEADER, OPERATOR_SUBJECT
 # hand back -- re-adding either would restore a second, local source of
 # identity beside the IdP.
 EXPECTED_ROUTES = {
-    ("POST", "/v1/bootstrap"),
     ("POST", "/v1/projects"),
     ("GET", "/v1/projects"),
     ("GET", "/v1/projects/{project_slug}"),
@@ -67,7 +66,6 @@ EXPECTED_ROUTES = {
     ("PATCH", "/v1/mental-models/{model_key}"),
     ("DELETE", "/v1/mental-models/{model_key}"),
     ("POST", "/v1/mental-models/{model_key}/refresh"),
-    ("POST", "/v1/context/load"),
     ("POST", "/v1/working-state/sessions"),
     ("PUT", "/v1/working-state"),
     ("DELETE", "/v1/working-state"),

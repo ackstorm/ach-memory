@@ -7,8 +7,8 @@ share one governed lifecycle rather than growing a second one.
 authorized consumer of the bank -- their descriptions say so and their
 annotations are never `readOnlyHint=True`, so a host's confirmation policy
 sees them as the write they are. `list_mental_models`/`get_mental_model` are
-genuinely read-only: neither provisions or reconciles a definition (SPEC
-§7.5's bootstrap does that, separately).
+genuinely read-only: neither provisions or reconciles a definition (a
+retain does that, separately).
 """
 
 import json

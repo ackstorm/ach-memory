@@ -9,7 +9,7 @@
         "ach-memory",
         "mcp",
         "--url",
-        "${ACH_MEMORY_URL:-http://localhost:8000}"
+        "${ACH_MEMORY_URL:-http://localhost:8000/mcp/}"
       ],
       "env": {
         "ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}"

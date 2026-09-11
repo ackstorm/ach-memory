@@ -18,7 +18,7 @@ def principal(session, tenant):
 
 def test_project_bank_resolution_does_not_create_by_default(session, principal):
     """The only caller that may create a project says so explicitly
-    (bootstrap). A default that creates is one careless caller away from
+    (retain). A default that creates is one careless caller away from
     letting any authenticated principal squat an arbitrary slug."""
     with pytest.raises(ProjectNotFound):
         banks.resolve_project_bank(session, principal, "never/seen")

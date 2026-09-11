@@ -8,8 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 MCP_URL = "https://host/prefix/mcp/"
-# What a generated stdio config carries: the proxy adds the mount itself.
-SERVICE_URL = "https://host/prefix"
 
 from memory import cli
 
@@ -19,38 +17,35 @@ def _files_under(root: Path) -> dict[Path, bytes]:
 
 
 @pytest.mark.parametrize(
-    ("base", "expected"),
+    "configured",
     [
-        ("http://localhost:8000", "http://localhost:8000/mcp/"),
-        ("https://memory.example.com/", "https://memory.example.com/mcp/"),
-        ("https://example.com/team/memory", "https://example.com/team/memory/mcp/"),
+        "http://localhost:8000/mcp/",
+        "https://memory.example.com/mcp/",
+        "https://example.com/team/memory/mcp/",
+        # A gateway publishing this server under a name of its own. No suffix
+        # rule reaches this shape, which is why there is no longer a rule.
+        "https://api.ackstorm.ai/mcp/mcp-ach-memory",
     ],
 )
-def test_mcp_url(base: str, expected: str) -> None:
-    assert cli._mcp_url(base) == expected
+def test_the_endpoint_is_whatever_was_configured(configured: str) -> None:
+    """`ACH_MEMORY_URL` is the MCP endpoint and nothing is derived from it.
 
-
-@pytest.mark.parametrize(
-    "written",
-    [
-        "https://api.example.com/memory",
-        "https://api.example.com/memory/",
-        "https://api.example.com/memory/mcp",
-        "https://api.example.com/memory/mcp/",
-    ],
-)
-def test_either_url_form_resolves_to_the_same_endpoint_and_root(written: str) -> None:
-    """`--url` is written by hand, and both forms are reasonable to type.
-
-    Only one of them used to work: passing the mount appended a second one,
-    so every request went to /memory/mcp/mcp/ and came back 404 behind an
-    opaque "Remote MCP request failed". Measured against an installed Codex
-    whose config carried exactly that URL (2026-09-07), and reachable the
-    same way through opencode and pi, whose stdio configs init generates
-    from the same string.
+    It used to be the service ROOT, with `/mcp/` appended unless the path
+    already ended in `/mcp`. Both forms of this service's own URL worked that
+    way, and a gateway's could not: LiteLLM publishes it at
+    `/mcp/mcp-ach-memory`, so the append produced
+    `/mcp/mcp-ach-memory/mcp/` and every request 404'd behind an opaque
+    "Remote MCP request failed".
     """
-    assert cli._mcp_url(written) == "https://api.example.com/memory/mcp/"
-    assert cli._base_url(written) == "https://api.example.com/memory"
+    assert cli._endpoint(configured) == configured
+
+
+def test_a_trailing_slash_is_the_caller_s_to_get_right() -> None:
+    """`/mcp` answers 307 to `/mcp/`, so the mount without its slash still
+    reaches the server -- one redirect later. Nothing is normalised here
+    because normalising needs a rule about what the path means, and having
+    one is what broke the gateway shape."""
+    assert cli._endpoint("https://memory.example.com/mcp") == "https://memory.example.com/mcp"
 
 
 @pytest.mark.parametrize(
@@ -67,9 +62,9 @@ def test_either_url_form_resolves_to_the_same_endpoint_and_root(written: str) ->
         "https:///memory",
     ],
 )
-def test_mcp_url_rejects_invalid_input(base: str) -> None:
+def test_the_endpoint_rejects_invalid_input(base: str) -> None:
     with pytest.raises(ValueError):
-        cli._mcp_url(base)
+        cli._endpoint(base)
 
 
 def test_run_removes_api_key_from_child_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -469,7 +464,7 @@ def test_preflight_names_the_identity_provider_when_a_token_is_refused(
                     "ach-memory",
                     "mcp",
                     "--url",
-                    "https://host/next",
+                    "https://host/next/mcp/",
                 ],
                 "environment": {
                     "ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}",
@@ -495,7 +490,7 @@ def test_preflight_names_the_identity_provider_when_a_token_is_refused(
                     "ach-memory",
                     "mcp",
                     "--url",
-                    "https://host/next",
+                    "https://host/next/mcp/",
                 ],
             },
             [
@@ -1077,7 +1072,7 @@ def test_codex_install_registers_the_server_from_the_current_environment(
         "ach-memory",
         "mcp",
         "--url",
-        SERVICE_URL,
+        MCP_URL,
     ]
     # The service root, never the /mcp/ endpoint: the proxy mounts that
     # itself, so passing the endpoint made codex ask for /mcp/mcp/ and every
@@ -1157,10 +1152,9 @@ def _recording_bridge(calls: list):
 def test_mcp_runs_stdio_http_bridge_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com/mcp/")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
     calls = []
-    bootstrap_calls = []
     monkeypatch.setattr(
         "memory.mcp.proxy.resolve_project_context",
         lambda: ("acme-api", "git@github.com:acme/api.git"),
@@ -1169,16 +1163,11 @@ def test_mcp_runs_stdio_http_bridge_from_env(
         "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
     )
     monkeypatch.setattr(
-        "memory.mcp.proxy.bootstrap",
-        lambda *args: bootstrap_calls.append(args) or None,
-    )
-    monkeypatch.setattr(
         "memory.mcp.proxy.fetch_context",
         lambda *_a, **_k: {"text": "POLICY + BRIEF"},
     )
     monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge(calls))
     assert cli.main(["mcp"]) == 0
-    # Same /mcp/ derivation init uses -- one _mcp_url, not a second parser.
     assert calls == [
         (
             ("https://mem.example.com/mcp/", "mem_secret"),
@@ -1187,24 +1176,21 @@ def test_mcp_runs_stdio_http_bridge_from_env(
                 "locator": "git@github.com:acme/api.git",
                 "workspace_id": "ws_" + "a" * 32,
                 "instructions": "POLICY + BRIEF",
-                "project_bootstrap_error": None,
             },
         )
     ]
-    assert bootstrap_calls == [("https://mem.example.com", "mem_secret", "acme-api")]
 
 
 def test_mcp_passes_the_resolved_workspace_id_to_the_context_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com/mcp/")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
 
     monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
     monkeypatch.setattr(
         "memory.mcp.proxy.resolve_workspace_context", lambda: "ws_" + "a" * 32
     )
-    monkeypatch.setattr("memory.mcp.proxy.bootstrap", lambda *args: None)
     monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge([]))
     seen = {}
 
@@ -1221,11 +1207,10 @@ def test_mcp_passes_the_resolved_workspace_id_to_the_context_fetch(
 
 def test_mcp_still_runs_when_standing_context_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed context fetch never costs the session its MCP tools."""
-    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com/mcp/")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
     calls = []
     monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
-    monkeypatch.setattr("memory.mcp.proxy.bootstrap", lambda *args: None)
     monkeypatch.setattr("memory.mcp.proxy.fetch_context", lambda *_a, **_k: None)
     monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge(calls))
 
@@ -1237,7 +1222,7 @@ def test_mcp_still_runs_when_standing_context_is_unavailable(monkeypatch: pytest
 def test_context_load_resolves_local_identity_and_prints_only_text(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com/mcp/")
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
     monkeypatch.setattr(
         "memory.mcp.proxy.resolve_project_context",
@@ -1248,8 +1233,8 @@ def test_context_load_resolves_local_identity_and_prints_only_text(
     )
     seen = {}
 
-    def fake_fetch(base, key, slug, **kwargs):
-        seen.update(base=base, key=key, slug=slug, workspace_id=kwargs["workspace_id"])
+    def fake_fetch(url, key, slug, **kwargs):
+        seen.update(url=url, key=key, slug=slug, workspace_id=kwargs["workspace_id"])
         return {"text": "standing context", "omissions": []}
 
     monkeypatch.setattr("memory.mcp.proxy.fetch_context", fake_fetch)
@@ -1259,53 +1244,11 @@ def test_context_load_resolves_local_identity_and_prints_only_text(
     assert captured.out == "standing context\n"
     assert captured.err == ""
     assert seen == {
-        "base": "https://mem.example.com",
+        "url": "https://mem.example.com/mcp/",
         "key": "mem_secret",
         "slug": "acme-api",
         "workspace_id": "ws_" + "a" * 32,
     }
-
-
-def test_mcp_bootstrap_opt_out_makes_no_bootstrap_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
-    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
-    monkeypatch.setenv("ACH_MEMORY_BOOTSTRAP", "false")
-    bootstrap_calls = []
-    monkeypatch.setattr("memory.mcp.proxy.resolve_project_context", lambda: (None, None))
-    monkeypatch.setattr("memory.mcp.proxy.resolve_workspace_context", lambda: None)
-    monkeypatch.setattr(
-        "memory.mcp.proxy.bootstrap", lambda *args: bootstrap_calls.append(args)
-    )
-    monkeypatch.setattr("memory.mcp.proxy.fetch_context", lambda *a, **k: {"text": "P"})
-    monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge([]))
-
-    assert cli.main(["mcp"]) == 0
-    assert bootstrap_calls == []
-
-
-def test_project_bootstrap_failure_still_starts_the_bridge_degraded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A Project bootstrap failure must not prevent stdio startup -- it is
-    forwarded to the bridge, which routes scope="project" calls to a local
-    error while scope="user" tools stay available."""
-    monkeypatch.setenv("ACH_MEMORY_URL", "https://mem.example.com")
-    monkeypatch.setenv("ACH_MEMORY_API_KEY", "mem_secret")
-    calls = []
-    monkeypatch.setattr(
-        "memory.mcp.proxy.resolve_project_context", lambda: ("acme-api", None)
-    )
-    monkeypatch.setattr("memory.mcp.proxy.resolve_workspace_context", lambda: None)
-    monkeypatch.setattr(
-        "memory.mcp.proxy.bootstrap", lambda *args: "PROJECT_SLUG_CONFLICT"
-    )
-    monkeypatch.setattr("memory.mcp.proxy.fetch_context", lambda *a, **k: {"text": "P"})
-    monkeypatch.setattr("memory.mcp.proxy.StdioHttpBridge", _recording_bridge(calls))
-
-    assert cli.main(["mcp"]) == 0
-    assert calls[0][1]["project_bootstrap_error"] == "PROJECT_SLUG_CONFLICT"
 
 
 def test_config_plan_modes_pick_the_server_shape(
@@ -1339,7 +1282,7 @@ def test_config_plan_modes_pick_the_server_shape(
         "command": "/checkout/.venv/bin/ach-memory",
         # The service root, not the `--http` entries' `/mcp/` endpoint: the
         # proxy mounts that itself and would otherwise ask for /mcp/mcp/.
-        "args": ["mcp", "--url", "https://memory.example.com"],
+        "args": ["mcp", "--url", "https://memory.example.com/mcp/"],
     }
 
 

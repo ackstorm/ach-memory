@@ -4,6 +4,8 @@ import asyncio
 import io
 import json
 import subprocess
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -904,113 +906,93 @@ async def test_bridge_does_not_inject_workspace_into_other_tools():
 
 
 import httpx
-import respx
 
 from memory.mcp import proxy
 
 
-@respx.mock
-def test_bootstrap_calls_the_endpoint_once_and_returns_none_on_success():
-    route = respx.post("https://memory.test/v1/bootstrap").mock(
-        return_value=httpx.Response(200, json={"user_model": None})
-    )
-
-    result = proxy.bootstrap("https://memory.test", "k", "acme-api")
-
-    assert result is None
-    assert route.call_count == 1
-    sent = json.loads(route.calls.last.request.content)
-    assert sent == {"project_slug": "acme-api"}
-    assert route.calls.last.request.headers["authorization"] == "Bearer k"
+def test_fetch_context_is_fail_open_when_the_endpoint_cannot_be_reached():
+    """The host's startup may not depend on this. Port 1 refuses instantly, so
+    this asserts the fail-open contract without waiting out the bound."""
+    assert proxy.fetch_context("http://127.0.0.1:1/mcp/", "k", None) is None
 
 
-@respx.mock
-def test_bootstrap_with_no_project_slug_sends_an_empty_body():
-    route = respx.post("https://memory.test/v1/bootstrap").mock(
-        return_value=httpx.Response(200, json={})
-    )
+def test_fetch_context_rejects_a_payload_without_text(monkeypatch):
+    """`instructions` is handed to the bridge as `fetched["text"]`, so a
+    payload missing it must read as no context at all, never as a KeyError
+    moments before the host's first prompt."""
+    async def _no_text(*_args):
+        return {"omissions": []}
 
-    assert proxy.bootstrap("https://memory.test", "k", None) is None
-    assert json.loads(route.calls.last.request.content) == {}
-
-
-@respx.mock
-def test_bootstrap_returns_the_content_free_project_error_code():
-    respx.post("https://memory.test/v1/bootstrap").mock(
-        return_value=httpx.Response(
-            409,
-            json={"error": {"code": "PROJECT_SLUG_CONFLICT", "message": "bank user_abc123"}},
-        )
-    )
-
-    result = proxy.bootstrap("https://memory.test", "k", "acme-api")
-
-    assert result == "PROJECT_SLUG_CONFLICT"
-    assert "user_abc123" not in (result or "")
+    monkeypatch.setattr(proxy, "call_load_context", _no_text)
+    assert proxy.fetch_context("https://memory.test/mcp/", "k", None) is None
 
 
-@respx.mock
-def test_bootstrap_failure_with_no_project_slug_is_not_reported():
-    """Nothing project-specific to route around; a User-only failure must
-    not degrade any tool."""
-    respx.post("https://memory.test/v1/bootstrap").mock(
-        return_value=httpx.Response(500, json={"error": {"code": "INTERNAL_ERROR"}})
-    )
+def test_fetch_context_returns_the_unwrapped_payload(monkeypatch):
+    async def _payload(*_args):
+        return {"text": "standing context", "omissions": []}
 
-    assert proxy.bootstrap("https://memory.test", "k", None) is None
-
-
-@respx.mock
-def test_bootstrap_network_failure_reports_a_fixed_code_only_with_a_project():
-    respx.post("https://memory.test/v1/bootstrap").mock(side_effect=httpx.ConnectError("down"))
-
-    assert proxy.bootstrap("https://memory.test", "k", "acme-api") == "BOOTSTRAP_UNAVAILABLE"
-    assert proxy.bootstrap("https://memory.test", "k", None) is None
+    monkeypatch.setattr(proxy, "call_load_context", _payload)
+    assert proxy.fetch_context("https://memory.test/mcp/", "k", None) == {
+        "text": "standing context",
+        "omissions": [],
+    }
 
 
 @pytest.mark.anyio
-async def test_project_scope_tool_calls_are_routed_locally_after_a_bootstrap_failure():
-    """SPEC §7.5: a Project bootstrap failure degrades scope="project" tool
-    calls to a local, content-free error without a second round trip --
-    scope="user" calls are unaffected."""
-    contacted: list[str] = []
+async def test_load_context_is_called_with_the_resolved_project_and_workspace():
+    """Bare, `load_context` resolves no project and returns user-only standing
+    context -- silently, with nothing in `omissions` to say so. The resolved
+    slug and workspace are this process's to supply (it has the cwd; the
+    service does not), so they have to reach the tool call itself."""
+    calls: list[tuple[str, dict]] = []
 
-    async def remote(request: httpx.Request) -> httpx.Response:
-        message = json.loads(request.content)
-        params = message.get("params", {})
-        arguments = params.get("arguments", {})
-        contacted.append(arguments.get("scope"))
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": message["id"], "result": {}})
+    class _Session:
+        def __init__(self, *_args):
+            pass
 
-    meta = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
-    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as client:
-        bridge = StdioHttpBridge(
-            "https://memory.test/mcp/", "secret", client=client,
-            project_bootstrap_error="PROJECT_SLUG_CONFLICT",
-        )
-        project_reply = await bridge.forward(
-            {
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {
-                    "name": "list_memories", "arguments": {"scope": "project"},
-                    "_meta": meta,
-                },
-            }
-        )
-        user_reply = await bridge.forward(
-            {
-                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": {
-                    "name": "list_memories", "arguments": {"scope": "user"},
-                    "_meta": meta,
-                },
-            }
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def discover(self):
+            return None
+
+        async def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            return SimpleNamespace(
+                is_error=False,
+                structured_content={"result": {"text": "ctx"}},
+            )
+
+    @asynccontextmanager
+    async def _transport(_url, http_client=None):
+        yield (None, None)
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    import mcp.client.session
+    import mcp.client.streamable_http
+    import mcp.shared._httpx_utils
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mcp.client.session, "ClientSession", _Session)
+        mp.setattr(mcp.client.streamable_http, "streamable_http_client", _transport)
+        mp.setattr(mcp.shared._httpx_utils, "create_mcp_http_client", lambda *_a: _Client())
+        payload = await proxy.call_load_context(
+            "https://memory.test/mcp/", "k", "acme-api", "ws_" + "a" * 32
         )
 
-    assert contacted == ["user"]
-    assert project_reply[0]["result"]["isError"] is True
-    assert "PROJECT_SLUG_CONFLICT" in project_reply[0]["result"]["content"][0]["text"]
-    assert user_reply[0]["result"] == {}
+    assert payload == {"text": "ctx"}
+    assert calls == [
+        ("load_context", {"project_slug": "acme-api", "workspace_id": "ws_" + "a" * 32}),
+    ]
 
 
 

@@ -16,8 +16,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from memory.auth.principal import Principal
-from memory.bootstrap import BootstrapRequest, bootstrap
+from memory.bootstrap import provision_user_bank
 from memory.builtin_models import USER_CONTEXT
 from memory.errors import MentalModelNotFound, MentalModelQuotaExceeded
 from memory.hindsight.client import HindsightClient
@@ -97,12 +96,6 @@ def live_bank(session, tenant, live_client):
             ) from last_error
 
 
-def _principal_for(bank: LogicalBankRef) -> Principal:
-    return Principal(
-        tenant_id=bank.tenant_id, user_id=bank.user_id, credential_id="key_v040live",
-    )
-
-
 def _custom_request(**overrides) -> CustomModelCreateRequest:
     body = {
         "name": "live-custom",
@@ -119,13 +112,12 @@ def _custom_request(**overrides) -> CustomModelCreateRequest:
 def test_governed_mental_model_lifecycle_against_disposable_hindsight(
     session, live_bank, live_client
 ):
-    principal = _principal_for(live_bank)
-
-    # bootstrap creates exactly one built-in and a second bootstrap is idempotent
-    first = bootstrap(session, principal, BootstrapRequest(), client=live_client)
-    second = bootstrap(session, principal, BootstrapRequest(), client=live_client)
-    assert first.user_model.model_key == second.user_model.model_key == USER_CONTEXT.key
-    assert first.user_model.delivery_state in {"ready", "withheld"}
+    # provisioning creates exactly one built-in and doing it again is idempotent
+    user = session.get(User, live_bank.user_id)
+    first = provision_user_bank(session, user, client=live_client)
+    second = provision_user_bank(session, user, client=live_client)
+    assert first.model_key == second.model_key == USER_CONTEXT.key
+    assert first.delivery_state in {"ready", "withheld"}
 
     # five custom models succeed while the sixth fails before an upstream request
     created = [

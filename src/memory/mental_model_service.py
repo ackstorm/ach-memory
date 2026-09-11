@@ -650,7 +650,7 @@ def reconcile_builtin(
         #
         # Repaired here rather than at delivery because load_context is
         # read-only and deadline-bound; this runs on the paths that already
-        # talk to Hindsight (bootstrap, and creating a project or user).
+        # talk to Hindsight (a retain, and creating a project).
         # Falls through rather than returning, so a definition bump still
         # applies in the same pass.
         existing = _resume_row(db, bank, existing, client=client)
