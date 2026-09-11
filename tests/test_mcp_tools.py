@@ -388,6 +388,32 @@ def test_project_scope_retain_forwards_a_retired_slug_to_the_same_bank(call_tool
 
 
 @respx.mock
+def test_a_first_touch_retain_says_it_created_the_project(call_tool):
+    """MCP twin of test_memory_api.py's: QA F-10, a typo'd project_slug
+    silently minted a bank. Creation stays lazy (decision 1) but the
+    envelope now announces it, once."""
+    _mock_bank()
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories$").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+    key = call_tool.make_user()
+
+    first = call_tool(
+        "retain", key, scope="project", project_slug="brand-new-slug-2",
+        content="x", **_retain_kwargs(),
+    )
+    assert first.notice == "PROJECT_CREATED"
+
+    # Each call mints its own operation_id, so this is a second real write,
+    # not an idempotent replay of the first.
+    second = call_tool(
+        "retain", key, scope="project", project_slug="brand-new-slug-2",
+        content="y", **_retain_kwargs(),
+    )
+    assert second.notice is None
+
+
+@respx.mock
 def test_an_unexpected_exception_is_sanitized_and_never_echoed(call_tool, session, monkeypatch):
     """A bug below a tool (a driver error, anything not a DomainError) must
     become a fixed message -- never the original text, which can carry a

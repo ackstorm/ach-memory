@@ -215,8 +215,11 @@ def _resolve_bank(
     *,
     create: bool = False,
     is_write: bool = False,
-) -> tuple[str, str | None, str | None]:
+) -> tuple[str, str | None, str | None, bool]:
     """Resolve a request's bank and audit master-key access to it.
+
+    Returns (bank_id, resolved_from, project_slug, created); the last is True
+    only when this call minted the project, which only `create=True` can do.
 
     `action` names what the caller is about to do (e.g. "memory.recall",
     "memory.documents.delete") so the audit trail can tell routes apart
@@ -271,9 +274,9 @@ def _resolve_bank(
             action, "user", principal, bank_id,
             user_id=body.user_id or principal.user_id, body=body,
         )
-        return bank_id, None, None
+        return bank_id, None, None, False
 
-    bank_id, resolved_from, project_slug = resolve_project_bank(
+    bank_id, resolved_from, project_slug, created = resolve_project_bank(
         # getattr: TypedRetainRequest (v0.4.0 retain) has no git_locator
         # field at all, so nothing here enriches or mismatch-checks one --
         # even when this call is the one that lazily creates the project
@@ -287,7 +290,7 @@ def _resolve_bank(
         # person's). Same choke point, so no data-plane route can bypass it.
         audit.record(db, principal, action, project_slug, on_behalf_of=on_behalf_of)
     _describe(action, "project", principal, bank_id, project_slug=project_slug, body=body)
-    return bank_id, resolved_from, project_slug
+    return bank_id, resolved_from, project_slug, created
 
 
 def resolve_bank_and_commit(
@@ -315,7 +318,10 @@ def resolve_bank_and_commit(
     forget/correct/restore, document delete and operation cancel pass it; the
     list/get routes do not.
     """
-    bank_id, resolved_from, project_slug = _resolve_bank(
+    # `created` is dropped, not returned: create=False above means it is
+    # always False here, and this 3-tuple is what every curation/document/
+    # operation route unpacks.
+    bank_id, resolved_from, project_slug, _created = _resolve_bank(
         body, db, principal, on_behalf_of, action, create=False, is_write=is_write
     )
     db.commit()
@@ -385,7 +391,7 @@ def _typed_retain(
     # every other data-plane route funnels through still covers typed
     # retain -- and so a project this call creates is committed before
     # submit_retain's own existing-only resolution looks for it.
-    bank_id, _resolved_from, _project_slug = _resolve_bank(
+    bank_id, _resolved_from, _project_slug, created = _resolve_bank(
         body, db, principal, on_behalf_of, "memory.retain", create=True, is_write=True
     )
     # Provision BEFORE the commit, exactly as POST /v1/projects does: a 2xx
@@ -412,7 +418,12 @@ def _typed_retain(
     # Hindsight has accepted a memory into its bank would orphan that memory
     # in a bank no project row points at.
     db.commit()
-    return submit_retain(db, principal, body, client=get_client(), wait=wait)
+    response = submit_retain(db, principal, body, client=get_client(), wait=wait)
+    if created:
+        # Announced on the response, not swallowed: a misspelt slug that
+        # mints a fresh bank is otherwise invisible to the caller (QA F-10).
+        response = response.model_copy(update={"notice": "PROJECT_CREATED"})
+    return response
 
 
 # SPEC-cited elsewhere in this file, repeated here so the deprecation

@@ -68,7 +68,7 @@ def _bank(
     create=False: a directive route is maintenance over an existing bank
     (SPEC §11.3), never first-touch project creation.
     """
-    bank_id, resolved_from, project_slug = _resolve_bank(
+    bank_id, resolved_from, project_slug, _created = _resolve_bank(
         body, db, principal, on_behalf_of, action, create=False, is_write=is_write
     )
     db.commit()

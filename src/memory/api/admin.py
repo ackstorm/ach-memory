@@ -206,7 +206,7 @@ def clear_memories(
     conjure a bank into existence by "clearing" one that never existed.
     """
     scoped = _admin_scope(scope, user_id, project_slug, body)
-    bank_id, resolved_from, resolved_slug = _resolve_bank(
+    bank_id, resolved_from, resolved_slug, _created = _resolve_bank(
         scoped,
         db,
         principal,
@@ -255,7 +255,7 @@ def delete_bank(
     `create=False` reasoning as clear above.
     """
     scoped = _admin_scope(scope, user_id, project_slug, body)
-    bank_id, resolved_from, resolved_slug = _resolve_bank(
+    bank_id, resolved_from, resolved_slug, _created = _resolve_bank(
         scoped,
         db,
         principal,

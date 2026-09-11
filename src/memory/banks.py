@@ -49,12 +49,13 @@ def resolve_project_bank(
     git_locator: str | None = None,
     *,
     create: bool = False,
-) -> tuple[str, str | None, str]:
+) -> tuple[str, str | None, str, bool]:
     """Map scope=project to a bank ID.
 
-    Returns (bank_id, resolved_from, project_slug) — project_slug is the
-    project's current, live slug, so a caller who followed a rename tombstone
-    (resolved_from set) learns what to switch to without a second round trip.
+    Returns (bank_id, resolved_from, project_slug, created) — project_slug is
+    the project's current, live slug, so a caller who followed a rename
+    tombstone (resolved_from set) learns what to switch to without a second
+    round trip; created is True only when this very call minted the project.
 
     create=False by default: every read, write and curation path in this
     service resolves existing-only, and lazy creation there would let any
@@ -73,4 +74,4 @@ def resolve_project_bank(
             "scope=project needs a project: pass project_slug"
         )
     result = projects.resolve(db, principal, slug, git_locator, create=create)
-    return result.project.bank_id, result.resolved_from, result.current_slug
+    return result.project.bank_id, result.resolved_from, result.current_slug, result.created

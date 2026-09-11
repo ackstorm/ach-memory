@@ -174,6 +174,33 @@ def test_the_first_retain_creates_and_provisions_the_project(
 
 
 @respx.mock
+def test_a_first_touch_retain_says_it_created_the_project(client, juan, tenant):
+    """QA F-10: a typo'd project_slug silently minted a bank. Creation stays
+    lazy (decision 1) but is now announced."""
+    _mock_hindsight()
+    respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+
+    first = client.post(
+        "/v1/memory/retain",
+        json=_retain_body(scope="project", project_slug="brand-new-slug-1"),
+        headers=juan["headers"],
+    )
+    assert first.status_code == 202, first.text
+    assert first.json()["notice"] == "PROJECT_CREATED"
+
+    # A fresh operation_id: a real second write, not an idempotent replay.
+    second = client.post(
+        "/v1/memory/retain",
+        json=_retain_body(scope="project", project_slug="brand-new-slug-1"),
+        headers=juan["headers"],
+    )
+    assert second.status_code == 202, second.text
+    assert second.json().get("notice") is None
+
+
+@respx.mock
 def test_retain_response_never_contains_the_bank_id(client, juan, tenant):
     _mock_hindsight()
     respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(

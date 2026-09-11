@@ -852,12 +852,29 @@ def test_race_loser_authorized_gets_the_winners_project(session, tenant, monkeyp
         monkeypatch, session, tenant, "payments-api", "group", "grp_payments"
     )
 
-    result = projects._create(
+    result, _created = projects._create(
         session, _external(tenant, alice.id, {"grp_payments"}), "payments-api", None
     )
 
     assert result.internal_id == winner.internal_id
     assert session.query(Project).count() == 1
+
+
+def test_race_loser_is_not_told_it_created_the_project(session, tenant, monkeypatch):
+    """The `created` flag feeds retain's PROJECT_CREATED notice (QA F-10).
+    The loser walked away with the winner's project, so announcing a
+    creation would point a caller at a bank it never minted."""
+    _user(session, tenant, "usr_juan")
+    alice = _user(session, tenant, "usr_alice")
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
+    _force_race(monkeypatch, session, tenant, "payments-api", "group", "grp_payments")
+
+    _project, created = projects._create(
+        session, _external(tenant, alice.id, {"grp_payments"}), "payments-api", None
+    )
+
+    assert created is False
 
 
 def test_earlier_write_survives_the_race_savepoint_rollback(session, tenant, monkeypatch):

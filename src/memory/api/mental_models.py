@@ -121,7 +121,7 @@ def resolve_logical_bank(
     never first-touch project creation -- every route here resolves with
     `create=False`, matching the pre-governance surface's own rule.
     """
-    bank_id, _resolved_from, _project_slug = _resolve_bank(
+    bank_id, _resolved_from, _project_slug, _created = _resolve_bank(
         body, db, principal, on_behalf_of, action, create=False, is_write=is_write
     )
     if body.scope == "user":

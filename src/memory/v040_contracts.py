@@ -61,6 +61,14 @@ class TypedRetainResponse(BaseModel):
     recorded_at: datetime
     valid_until: datetime | None
     lifecycle: Lifecycle
+    #: The Hindsight memory id curation tools key on (`forget`, `correct`,
+    #: `get_memory`, `memory_history`). Known once the operation completed --
+    #: `sync_retain` always, `retain` only on an idempotent replay that
+    #: finished in between. None while pending (QA F-03).
+    memory_id: str | None = None
+    #: "PROJECT_CREATED" when this retain minted the project (lazy
+    #: provisioning, decision 1) so a misspelt slug is visible at once (QA F-10).
+    notice: str | None = None
 
 
 class LoadContextRequest(BaseModel):

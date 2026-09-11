@@ -30,6 +30,10 @@ class Resolution:
     # The slug the caller asked for, when it was a retired one (SPEC §8.6).
     # None when they used the project's current slug.
     resolved_from: str | None
+    # True when THIS call minted the project (the lazy create=True path), so
+    # a first-touch write can announce it and a misspelt slug is caught at
+    # once rather than after a bank has quietly filled up (QA F-10).
+    created: bool = False
 
 
 def _raise_missing_canonical(project_internal_id: str) -> None:
@@ -183,8 +187,8 @@ def resolve(
     if project is None:
         if not create:
             raise ProjectNotFound("no such project", project_slug=slug)
-        project = _create(db, principal, slug, git_locator)
-        return Resolution(project, canonical_slug(db, project), None)
+        project, created = _create(db, principal, slug, git_locator)
+        return Resolution(project, canonical_slug(db, project), None, created=created)
 
     _authorize_resolution(db, principal, project, slug)
     current_slug = slug if mapping.is_canonical else canonical_slug(db, project)
@@ -303,12 +307,15 @@ def create(
 
 def _create(
     db: Session, principal: Principal, slug: str, git_locator: str | None
-) -> Project:
+) -> tuple[Project, bool]:
     """The lazy path used by resolve(): auto-vivify a project for its first
     toucher, always owned by the calling user. An operator is no exception --
-    they have an identity to own it, so they create like anybody else."""
+    they have an identity to own it, so they create like anybody else.
+
+    The bool says whether THIS call did the creating: the race loser below
+    gets the winner's project and must not be told it minted one."""
     try:
-        return create(db, principal, slug, "user", principal.user_id, git_locator)
+        return create(db, principal, slug, "user", principal.user_id, git_locator), True
     except ProjectSlugConflict:
         # Lost the creation race (SPEC §9). The winner's project is now the
         # truth; reload it and authorize this caller against it — which is
@@ -320,7 +327,7 @@ def _create(
         if existing is None:
             raise
         _authorize_resolution(db, principal, existing, slug)
-        return existing
+        return existing, False
 
 
 def rename(

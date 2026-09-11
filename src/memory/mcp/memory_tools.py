@@ -180,7 +180,7 @@ def _run(
             # ValidationError/DomainError mapping below is unchanged.
             body = body_factory()
             try:
-                bank_id, resolved_from, slug = _resolve_bank(
+                bank_id, resolved_from, slug, created = _resolve_bank(
                     body,
                     tc.db,
                     tc.principal,
@@ -239,11 +239,20 @@ def _run(
                 payload = _strip_bank_id(result, bank_id)
                 if not verbose:
                     payload = compact_payload(action, payload)
+                # A rename and a creation are exclusive: a retired slug
+                # resolves to an existing project, so the two notices never
+                # compete. The envelope is where MCP callers already read
+                # PROJECT_RENAMED, so PROJECT_CREATED lands there too (QA
+                # F-10); REST answers with the same word on
+                # TypedRetainResponse.notice.
                 return ToolResult(
                     result=payload,
                     project_slug=slug,
                     resolved_from=resolved_from,
-                    notice="PROJECT_RENAMED" if resolved_from else None,
+                    notice=(
+                        "PROJECT_RENAMED" if resolved_from
+                        else ("PROJECT_CREATED" if created else None)
+                    ),
                 )
             except ValidationError as exc:
                 logger.error("upstream response was not a JSON object", exc_info=exc)

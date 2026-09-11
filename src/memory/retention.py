@@ -134,6 +134,7 @@ def _response(row: RetainedRecord, *, status: str) -> TypedRetainResponse:
         recorded_at=row.recorded_at,
         valid_until=row.valid_until,
         lifecycle=row.lifecycle,
+        memory_id=row.source_memory_id,
     )
 
 

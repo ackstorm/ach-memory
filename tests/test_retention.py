@@ -127,6 +127,9 @@ def test_wait_polls_until_completed_and_hydrates_source_memory_id(session, princ
     )
 
     assert result.status == "completed"
+    # QA F-03: the id every curation tool keys on must come back with the
+    # response, not only land on the row.
+    assert result.memory_id == "mem-123"
     row = get_by_operation(
         session,
         _bank_for(session, principal),
@@ -134,6 +137,15 @@ def test_wait_polls_until_completed_and_hydrates_source_memory_id(session, princ
     )
     assert row.source_memory_id == "mem-123"
     assert row.upstream_state == "completed"
+
+
+def test_memory_id_is_unknown_until_the_operation_completes(session, principal, typed_request, client):
+    """`retain` answers before Hindsight assigns the id; the field is present
+    but null rather than guessed from `document_id`."""
+    result = submit_retain(session, principal, typed_request, wait=False, client=client)
+
+    assert result.status == "accepted"
+    assert result.memory_id is None
 
 
 def test_wait_gives_up_after_deadline_without_failing(session, principal, typed_request, client):
