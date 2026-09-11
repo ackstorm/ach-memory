@@ -57,13 +57,51 @@ _BASES = set(get_args(EvidenceBasis))
 _FACT_TYPES = set(get_args(FactType))
 _STATES = set(get_args(MemoryState))
 
-# Defends against a hostile or merely huge upstream array: bounded
-# independent of a caller's own `max_results`/change-count cap, so a
-# malicious or broken Hindsight response cannot make this service do
-# unbounded normalization work. Generous relative to anything a real bank
-# returns (recall/history responses are themselves budget-limited upstream).
-_MAX_RAW_RESULTS_CONSIDERED = 200
+# Two bounds, because the work being bounded is two different things and one
+# number on the wrong one silently decided which answers exist.
+#
+# A single `raw_results[:200]` used to do both, and it sliced in upstream's
+# `final` order while the floor immediately after judged `semantic` -- a
+# different axis, and the one a measured reranker false negative already got
+# wrong (0.000024 on a query a fact with `semantic` 0.6135 plainly answered).
+# So a hit the floor WOULD have admitted could be discarded before the floor
+# ever saw it, for ranking badly among junk. Scanning is cheap --
+# `_passes_semantic_floor` is two dict lookups -- and normalizing is not, so
+# the floor now sees everything and only survivors are built.
+#
+# Insurance, not a repair: measured both ways on a 129-claim bank, slicing
+# first left 58 of 258 entries unjudged and cost no answer (24/25 either way,
+# and the one loss is the relative cut's, below). It was also unreachable
+# until this commit, because upstream's own 4096-token default truncated to
+# 122-167 entries before 200 could bite -- raising `_RECALL_MAX_TOKENS` is
+# what makes this bound live, which is why the two changes belong together.
+#
+# Sized against measurement (2026-09-11, 129-claim bank): upstream returns
+# ~27 tokens per entry and two entries per claim, so `_RECALL_MAX_TOKENS`
+# admits at most ~1200 entries and 2000 leaves margin without letting a
+# hostile or broken response drive unbounded iteration. 200 normalized hits
+# is ~16x the 12.7 hits per query the 0.60 floor actually admitted.
+_MAX_RAW_RESULTS_SCANNED = 2000
+_MAX_HITS_NORMALIZED = 200
 _MAX_RAW_CHANGES_CONSIDERED = 50
+
+# Upstream's own result budget, which it applies in `final` order and reports
+# nothing about -- its response carries `results` and no truncation flag of
+# any kind, so a cut is invisible by construction.
+#
+# Never sent before, which meant Hindsight's 4096 default. Measured on a
+# 129-claim bank: that default returned 161 of 258 entries and 109 of 129
+# claims, cutting 38% of the bank in reranker order before this service saw
+# it, and the cut varied per query (122-167 entries) because a token budget
+# is not a row count. Raised so the floor is what narrows a recall, on the
+# axis that means the same thing on every query, rather than a budget
+# upstream spends on whatever the reranker happened to rank first.
+#
+# Not unbounded: a bank past roughly 600 claims is truncated again, just
+# further out. That ceiling is upstream's to report and it does not, so
+# there is nothing to detect here -- only a number to keep ahead of real
+# banks.
+_RECALL_MAX_TOKENS = 32768
 
 
 def _tag_value(tags: Any, prefix: str, allowed: set[str]) -> str | None:
@@ -327,6 +365,7 @@ def _recall_hits(
         # tags and the caller's narrowing tags different match modes in one
         # query. See `read_models.resolve_filters`.
         tag_groups=list(filters.tag_groups),
+        max_tokens=_RECALL_MAX_TOKENS,
     )
     raw_results = raw.get("results") if isinstance(raw, dict) else None
     if not isinstance(raw_results, list):
@@ -337,12 +376,14 @@ def _recall_hits(
     # it entirely and the filter would mean something different depending on
     # which arm found the hit.
     hits: list[RecallHit] = []
-    for item in raw_results[:_MAX_RAW_RESULTS_CONSIDERED]:
+    for item in raw_results[:_MAX_RAW_RESULTS_SCANNED]:
         if not _passes_semantic_floor(item, floor):
             continue
         hit = _normalize_hit(item)
         if hit is not None:
             hits.append(hit)
+        if len(hits) >= _MAX_HITS_NORMALIZED:
+            break
     return _apply_relative_cut(_collapse_duplicate_claims(hits), ratio)
 
 
