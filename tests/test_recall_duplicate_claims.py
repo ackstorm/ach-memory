@@ -6,7 +6,8 @@ back with 8 hits carrying 1 distinct claim -- 7 of 8 slots spent restating one
 sentence. Two independent mechanisms, both reproduced here:
 
 * every retained claim exists upstream twice, as the `world` fact and as
-  Hindsight's own `observation` of it with the same text, and
+  Hindsight's own `observation` of it, with the same text on a mock
+  consolidator and reworded on a real one (production, 2026-09-11), and
   `resolve_filters` asks for both types;
 * a re-retain of identical content is a NEW claim, because `accept_retain`
   compares `payload_hash` only against a row it already found by
@@ -185,6 +186,96 @@ def test_a_genuine_consolidation_is_never_dropped():
     )
 
     assert len(kept) == 2
+
+
+def test_a_paraphrased_twin_takes_one_slot():
+    """Measured 2026-09-11 in both live banks: a single-source observation is
+    REWORDED, not copied, so the text key never matched and both halves were
+    returned. `43906510`/`1ad16a8b` (user) and `18fdc820`/`f7f159cf` (project)."""
+    fact = _raw(memory_id="fact-1", document_id="ach-retain-aaa")
+    observation = _raw(
+        "Two platform-team approvals are needed before anything ships to production.",
+        memory_id="obs-1",
+        fact_type="observation",
+    )
+
+    kept = _collapse_duplicate_claims(
+        _hits(fact, observation), {"obs-1": ("fact-1",)}
+    )
+
+    assert [hit.memory_id for hit in kept] == ["fact-1"]
+
+
+def test_a_twin_of_a_text_folded_copy_still_takes_no_slot():
+    """A re-retain gives one sentence two `world` ids; text grouping keeps one.
+    An observation derived from the OTHER id still restates a claim the caller
+    receives, so "its source is absent" must mean absent from the input, not
+    from the survivors."""
+    first = _raw(memory_id="fact-1", document_id="ach-retain-aaa")
+    re_retained = _raw(memory_id="fact-2", document_id="ach-retain-bbb")
+    observation = _raw(
+        "Two platform-team approvals are needed before anything ships to production.",
+        memory_id="obs-1",
+        fact_type="observation",
+    )
+
+    kept = _collapse_duplicate_claims(
+        _hits(first, re_retained, observation), {"obs-1": ("fact-2",)}
+    )
+
+    assert [hit.memory_id for hit in kept] == ["fact-1"]
+
+
+def test_a_twin_whose_source_was_withheld_keeps_its_slot():
+    """The floor judges each copy separately and the twins score within 0.002%
+    of each other, so the fact can be cut while its observation passes. Dropping
+    it then would lose the claim, not a duplicate of it."""
+    observation = _raw(
+        "Two platform-team approvals are needed before anything ships to production.",
+        memory_id="obs-1",
+        fact_type="observation",
+    )
+
+    kept = _collapse_duplicate_claims(_hits(observation), {"obs-1": ("fact-1",)})
+
+    assert [hit.memory_id for hit in kept] == ["obs-1"]
+
+
+def test_a_multi_source_consolidation_keeps_its_slot_even_with_every_source_present():
+    """Provenance says it was built from these facts; it does not say it is one
+    of them. Two sources is a summary, and a summary is its own claim."""
+    kept = _collapse_duplicate_claims(
+        _hits(
+            _raw(memory_id="fact-1"),
+            _raw(OTHER, memory_id="fact-2"),
+            _raw(
+                "Production is gated on review and every log line is traceable.",
+                memory_id="obs-1",
+                fact_type="observation",
+            ),
+        ),
+        {"obs-1": ("fact-1", "fact-2")},
+    )
+
+    assert [hit.memory_id for hit in kept] == ["fact-1", "fact-2", "obs-1"]
+
+
+def test_a_paraphrased_twin_takes_one_slot_end_to_end(spy):
+    """The provenance pass through `_recall_hits`, not just the unit: a world
+    fact and a reworded single-source observation collapse to the fact."""
+    spy.results = [
+        _raw(memory_id="fact-1", document_id="ach-retain-aaa"),
+        _raw(
+            "Two platform-team approvals are needed before anything ships to production.",
+            memory_id="obs-1",
+            fact_type="observation",
+            source_fact_ids=["fact-1"],
+        ),
+    ]
+
+    hits = read_service._recall_hits("bank-1", "how many approvals", "current", None)
+
+    assert [hit.memory_id for hit in hits] == ["fact-1"]
 
 
 def test_recall_collapses_before_the_relative_cut(spy):

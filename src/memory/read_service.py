@@ -141,7 +141,8 @@ def _collapse_duplicate_claims(
     """One claim, one slot. Keeps the most traceable copy of each identical text.
 
     `sources` maps a hit's memory_id to the `source_fact_ids` upstream reported
-    for it; it is not yet consulted here.
+    for it. It drives a second pass, after text grouping, that catches what
+    identical text cannot: see `_restates_a_present_source` below.
 
     Two separate mechanisms put the same sentence in a response several times,
     measured on a 10-claim bank (2026-09-11):
@@ -173,8 +174,14 @@ def _collapse_duplicate_claims(
     follow.
 
     Nothing is merged: the hit returned is one upstream record, exactly as it
-    arrived. A genuine consolidation is never dropped -- it summarises several
-    facts, so its text differs from any of them.
+    arrived. A genuine consolidation is never dropped -- but text is not what
+    proves that any more. Measured in production on 2026-09-11 (n=30, two
+    banks): a single-source observation is REWORDED, not copied, so its text
+    never matched its source's and both survived text grouping. `sources`
+    catches that case afterward: an observation with exactly one source
+    already present in the response is dropped as the copy that adds no
+    claim the caller is not already getting, while one with two or more
+    sources always survives -- it says something none of them says alone.
     """
     groups: dict[str, RecallHit] = {}
     for hit in hits:
@@ -182,7 +189,30 @@ def _collapse_duplicate_claims(
         kept = groups.get(key)
         if kept is None or (kept.document_id is None and hit.document_id is not None):
             groups[key] = hit
-    return list(groups.values())
+    survivors = list(groups.values())
+    if not sources:
+        return survivors
+    # Over every input hit, not the survivors: a source the text grouping
+    # folded into an identical copy is still a claim the caller receives.
+    present = {hit.memory_id for hit in hits}
+    return [hit for hit in survivors if not _restates_a_present_source(hit, sources, present)]
+
+
+def _restates_a_present_source(
+    hit: RecallHit, sources: dict[str, tuple[str, ...]], present: set[str]
+) -> bool:
+    """One source, already in the response, means this observation carries no
+    claim the caller is not getting anyway -- and it is the copy with no
+    `document_id`, so it is the one to lose.
+
+    Text equality alone could not see this: measured 2026-09-11, a single-source
+    observation is REWORDED, not copied. Two or more sources is a consolidation
+    and is never dropped, however present its sources are.
+    """
+    if hit.fact_type != "observation":
+        return False
+    ids = sources.get(hit.memory_id, ())
+    return len(ids) == 1 and ids[0] in present
 
 
 def _apply_relative_cut(hits: list[RecallHit], ratio: float) -> list[RecallHit]:
