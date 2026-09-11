@@ -114,7 +114,7 @@ arguments, credential in `env`:
 {
   "command": "uvx",
   "args": [
-    "--from", "git+https://github.com/ackstorm/ach-memory@v0.7.0",
+    "--from", "git+https://github.com/ackstorm/ach-memory@v0.7.1",
     "ach-memory", "mcp",
     "--url", "https://memory.example.com/mcp/"
   ],
