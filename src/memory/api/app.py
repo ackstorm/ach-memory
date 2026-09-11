@@ -36,6 +36,38 @@ _BANNER = r"""
 """
 
 
+class BareMcpPath:
+    """Serve the MCP mount's bare path instead of redirecting to it.
+
+    Starlette answers `/mcp` with a 307 to `/mcp/` and builds that Location
+    from the scope as this app sees it. Behind a gateway that scope is wrong
+    twice: uvicorn runs without `--proxy-headers`, so the scheme is `http`,
+    and without `--root-path`, so a prefix the gateway strips is absent.
+    Measured against production 2026-09-11: POST
+    https://api.ackstorm.ai/memory/mcp answered 307 to
+    http://api.ackstorm.ai/mcp/ -- plaintext, and a path belonging to a
+    different server. The SDK's client hardcodes `follow_redirects=True`
+    (`create_mcp_http_client`), so a credential-bearing POST follows it; the
+    caller's only symptom was an opaque "MCP preflight failed".
+
+    Setting root_path and trusting proxy headers would correct the Location,
+    but only for a deployment whose operator got both right, and it would
+    still leave a redirect hop in a credentialed path. Rewriting emits no
+    redirect at all, so the trailing slash stops being load-bearing for every
+    caller and every gateway. `ACH_MEMORY_URL` is used verbatim (cli
+    `_endpoint`) because no client-side guess covers every mount shape; this
+    is the server end of that same decision.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http" and scope["path"] == "/mcp":
+            scope = {**scope, "path": "/mcp/", "raw_path": b"/mcp/"}
+        await self.app(scope, receive, send)
+
+
 class NegotiatedProtocolMCP:
     """Refuse only a protocol revision the SDK does not know.
 
@@ -237,6 +269,9 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="ach-memory", version=__version__, lifespan=lifespan)
     app.add_middleware(ObservabilityMiddleware)
+    # Added last, so it wraps outermost and the normalized path is what every
+    # later layer -- routing, metrics labels, request logs -- sees.
+    app.add_middleware(BareMcpPath)
 
     # httpx logs the full request URL at INFO, and our Hindsight URLs carry the
     # bank ID. Silent today only because nothing configures the root logger —

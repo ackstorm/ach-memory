@@ -325,3 +325,53 @@ def test_mcp_transport_security_does_not_treat_hosts_as_origins(
     security = captured["security"]
     assert security.allowed_hosts == ["127.0.0.1", "memory.example.com"]
     assert security.allowed_origins == []
+
+
+@pytest.mark.anyio
+async def test_the_bare_mount_path_is_served_not_redirected(monkeypatch, configured_env):
+    """`/mcp` must answer, never 307 to `/mcp/`.
+
+    Starlette builds that Location from the scope this app sees, and behind a
+    gateway that scope is wrong twice. Measured against production
+    2026-09-11: POST https://api.ackstorm.ai/memory/mcp answered 307 to
+    http://api.ackstorm.ai/mcp/ -- the scheme downgraded because uvicorn runs
+    without --proxy-headers, the /memory prefix gone because it runs without
+    --root-path. The SDK client follows redirects by default, so a
+    credentialed POST chased it to a different server.
+    """
+    from memory.api.app import create_app
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_MCP_ALLOWED_HOSTS", "127.0.0.1,memory.example.com")
+    get_settings.cache_clear()
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "server/discover",
+        "params": {
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {"name": "probe", "version": "0"},
+            },
+        },
+    }
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "server/discover",
+        "Host": "memory.example.com",
+    }
+
+    app = create_app()
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://memory.example.com",
+        follow_redirects=False,
+    ) as client:
+        bare = await client.post("/mcp", json=body, headers=headers)
+        slashed = await client.post("/mcp/", json=body, headers=headers)
+
+    assert bare.status_code == slashed.status_code == 200
