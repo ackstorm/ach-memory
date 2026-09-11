@@ -1,5 +1,8 @@
+import logging
+
 import pytest
 
+from memory import __version__
 from memory.api.app import create_app
 from tests.conftest import IDENTITY_HEADER, OPERATOR_SUBJECT
 
@@ -273,3 +276,13 @@ def test_create_app_refuses_ambiguous_operator_config_across_two_providers(monke
     get_settings.cache_clear()
     create_app()
     get_settings.cache_clear()
+
+
+def test_startup_logs_the_version(configured_env, caplog):
+    """The first line an operator reads after a deploy. Emitted after FastMCP
+    installs the root handler: an INFO line before that is dropped, and a
+    banner nobody sees is not a banner."""
+    with caplog.at_level(logging.INFO, logger="memory.api"):
+        create_app()
+
+    assert f"ach-memory {__version__}" in caplog.text

@@ -41,6 +41,7 @@ def _release_fixture(tmp_path: Path) -> Path:
     for relative_path in (
         "Makefile",
         "pyproject.toml",
+        "src/memory/__init__.py",
         "deploy/helm/ach-memory/Chart.yaml",
         "deploy/helm/ach-memory/values.yaml",
         "uv.lock",
@@ -86,6 +87,7 @@ def test_release_bump_synchronizes_bare_versions_without_pinning_values_tag(tmp_
 
     assert result.returncode == 0, result.stderr
     assert _read_version(root / "pyproject.toml", r'^version = "([^"]+)"') == "1.2.3"
+    assert _read_version(root / "src/memory/__init__.py", r'^__version__ = "([^"]+)"') == "1.2.3"
     assert _read_version(
         root / "deploy/helm/ach-memory/Chart.yaml", r"^version: ([^\n]+)"
     ) == "1.2.3"
@@ -242,7 +244,7 @@ def test_release_workflow_is_main_marker_driven_and_creates_release_artifacts():
 
 
 def test_every_manifest_states_the_version_in_pyproject():
-    """One version, stated in six places, with nothing to keep them equal.
+    """One version, stated in seven places, with nothing to keep them equal.
 
     release-bump rewrites all of them now, but a bump is a step someone runs;
     this is the step nobody can forget. A new manifest added without being
@@ -252,6 +254,12 @@ def test_every_manifest_states_the_version_in_pyproject():
     expected = _read_version(REPO_ROOT / "pyproject.toml", r'^version = "([^"]+)"')
     chart = REPO_ROOT / "deploy/helm/ach-memory/Chart.yaml"
 
+    # What the server logs at startup; the image never installs the
+    # distribution, so this literal is the only version it can know.
+    assert (
+        _read_version(REPO_ROOT / "src/memory/__init__.py", r'^__version__ = "([^"]+)"')
+        == expected
+    )
     assert _read_version(chart, r"^version: (.+)$") == expected
     assert _read_version(chart, r'^appVersion: "([^"]+)"') == expected
     for relative_path in VERSIONED_MANIFESTS:

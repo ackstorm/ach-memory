@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 # register with the default REGISTRY and instrumentation runs regardless of
 # whether the /metrics scrape endpoint is exposed; metrics_enabled only
 # controls the endpoint below.
-from memory import activity, db, metrics
+from memory import __version__, activity, db, metrics
 from memory.api.observability import ObservabilityMiddleware
 from memory.auth.principal import Principal, resolve_principal
 from memory.config import get_settings
@@ -22,6 +22,18 @@ from memory.db import get_session
 from memory.errors import DomainError, Forbidden
 
 logger = logging.getLogger("memory.api")
+
+# Generated once with `uvx pyfiglet -f standard ach-memory`; trailing spaces
+# stripped. Logged at startup so the first line an operator reads after a
+# deploy says which build answered.
+_BANNER = r"""
+            _
+  __ _  ___| |__        _ __ ___   ___ _ __ ___   ___  _ __ _   _
+ / _` |/ __| '_ \ _____| '_ ` _ \ / _ \ '_ ` _ \ / _ \| '__| | | |
+| (_| | (__| | | |_____| | | | | |  __/ | | | | | (_) | |  | |_| |
+ \__,_|\___|_| |_|     |_| |_| |_|\___|_| |_| |_|\___/|_|   \__, |
+                                                            |___/
+"""
 
 
 class NegotiatedProtocolMCP:
@@ -210,6 +222,10 @@ def create_app() -> FastAPI:
 
     mcp = build_mcp()
     register_tools(mcp)
+    # After build_mcp(): the root logger has no handler until FastMCP
+    # installs one, and an INFO line emitted before that is dropped, not
+    # deferred.
+    logger.info("%sach-memory %s", _BANNER, __version__)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -219,7 +235,7 @@ def create_app() -> FastAPI:
         async with mcp.session_manager.run():
             yield
 
-    app = FastAPI(title="ach-memory", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="ach-memory", version=__version__, lifespan=lifespan)
     app.add_middleware(ObservabilityMiddleware)
 
     # httpx logs the full request URL at INFO, and our Hindsight URLs carry the

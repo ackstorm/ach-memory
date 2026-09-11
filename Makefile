@@ -117,6 +117,7 @@ TAG_PINNED = plugins/claude-code/.mcp.json \
 release-bump: ## Update release metadata (VERSION=X.Y.Z)
 	$(require_release_version)
 	sed -i -E 's/^version = "[^"]*"$$/version = "$(VERSION)"/' pyproject.toml
+	sed -i -E 's/^__version__ = "[^"]*"$$/__version__ = "$(VERSION)"/' src/memory/__init__.py
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^([[:space:]]*)"version": "[^"]*"/\1"version": "$(VERSION)"/' $(PLUGIN_MANIFESTS)
@@ -131,6 +132,7 @@ release-bump: ## Update release metadata (VERSION=X.Y.Z)
 	# prints back to the user.
 	uv lock
 	@grep -qx 'version = "$(VERSION)"' pyproject.toml \
+		&& grep -qx '__version__ = "$(VERSION)"' src/memory/__init__.py \
 		&& grep -qx 'version: $(VERSION)' deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx 'appVersion: "$(VERSION)"' deploy/helm/ach-memory/Chart.yaml \
 		|| { echo "FAIL: release metadata was not updated." >&2; exit 1; }
@@ -153,6 +155,7 @@ release-cut: ## Create and push the release marker (VERSION=X.Y.Z)
 	@test -z "$$(git status --porcelain)" \
 		|| { echo "FAIL: release-cut requires a clean tree." >&2; exit 1; }
 	@grep -qx 'version = "$(VERSION)"' pyproject.toml \
+		&& grep -qx '__version__ = "$(VERSION)"' src/memory/__init__.py \
 		&& grep -qx 'version: $(VERSION)' deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx 'appVersion: "$(VERSION)"' deploy/helm/ach-memory/Chart.yaml \
 		|| { echo "FAIL: run make release-bump VERSION=$(VERSION) and commit its changes first." >&2; exit 1; }
