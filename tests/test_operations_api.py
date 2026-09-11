@@ -302,3 +302,70 @@ def test_bank_id_is_stripped_from_an_operation_response(client, juan, tenant):
     assert "bank_id" not in str(body)
     assert "user_leaked" not in str(body)
     assert "user_leaked_nested" not in str(body)
+
+
+@respx.mock
+def test_get_operation_describes_an_ach_curation_operation(client, juan, tenant, session):
+    """QA F-15: forget/correct/restore record a `CurationOperation` whose id
+    is not a Hindsight operation, so `get_operation` answered
+    OPERATION_NOT_FOUND for every one of them. One of ours is answered from
+    the ledger, with no upstream round trip at all."""
+    from memory.models import CurationOperation
+    from tests.test_curation_api import _seed_tracked_memory
+
+    mem_id = "22222222-2222-2222-2222-222222222222"
+    _mock_bank()
+    _seed_tracked_memory(client, juan["headers"], mem_id)
+    respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}").mock(
+        return_value=httpx.Response(200, json={"id": mem_id})
+    )
+    forget = client.post(
+        "/v1/memory/forget",
+        json={"scope": "user", "memory_id": mem_id, "reason": "obsolete"},
+        headers=juan["headers"],
+    )
+    assert forget.status_code == 200, forget.text
+    op_id = forget.json()["result"]["operation_id"]
+    assert op_id == session.query(CurationOperation).one().operation_id
+    upstream_calls = respx.calls.call_count
+
+    response = client.post(
+        "/v1/memory/operations/get",
+        json={"scope": "user", "operation_id": op_id},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["operation_id"] == op_id
+    assert result["type"] == "forget"
+    assert result["status"] == "completed"
+    assert result["reason"] == "obsolete"
+    assert result["memory_id"] == mem_id
+    assert result["record_id"]
+    assert respx.calls.call_count == upstream_calls
+
+    restore = client.post(
+        "/v1/memory/restore", json={"scope": "user", "memory_id": mem_id}, headers=juan["headers"]
+    )
+    assert restore.json()["result"]["operation_id"] not in ("", op_id)
+
+
+@respx.mock
+def test_a_curation_shaped_id_that_is_not_ours_is_a_404(client, juan, tenant):
+    """Not in the ledger, so the Hindsight path decides -- and its local UUID
+    guard rejects the shape before any round trip."""
+    _mock_bank()
+    upstream = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/.+").mock(
+        return_value=httpx.Response(200, json={"status": "completed"})
+    )
+
+    response = client.post(
+        "/v1/memory/operations/get",
+        json={"scope": "user", "operation_id": "ach-curate-" + "0" * 32},
+        headers=juan["headers"],
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "OPERATION_NOT_FOUND"
+    assert upstream.called is False

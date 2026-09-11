@@ -49,6 +49,9 @@ class CurationResult:
     state: str  # "completed" | "needs_operator" | "unknown"
     record_id: str
     action: str
+    # The ledger row's id, so a caller can `get_operation` it afterwards (QA
+    # F-15); "" when no operation was touched.
+    operation_id: str
 
 
 def _bank_with_id(retained: RetainedRecord, bank_id: str) -> LogicalBankRef:
@@ -121,6 +124,32 @@ def _accept_operation(
     db.add(row)
     db.flush()
     return row
+
+
+def describe_operation(db: Session, bank: LogicalBankRef, operation_id: str) -> dict | None:
+    """An ACH curation operation in Hindsight's operation shape, or None when
+    the id is not one of ours (QA F-15: forget/correct/restore ids were
+    unfindable -- get_operation only ever asked Hindsight). Scoped to the
+    already-authorized bank, never looked up globally."""
+    row = db.scalar(
+        select(CurationOperation).where(
+            *_bank_filters(CurationOperation, bank),
+            CurationOperation.operation_id == operation_id,
+        )
+    )
+    if row is None:
+        return None
+    retained = db.get(RetainedRecord, row.retained_record_id)
+    return {
+        "operation_id": row.operation_id,
+        "type": row.action,
+        "status": row.state,
+        "reason": row.reason,
+        "memory_id": retained.source_memory_id if retained else None,
+        "record_id": str(row.retained_record_id),
+        "created_at": row.created_at.isoformat(),
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+    }
 
 
 def _tags_for(retained: RetainedRecord) -> list[str] | None:
@@ -363,7 +392,9 @@ def _mutate(
         db, bank, retained, op,
         action=action, desired_content=desired_content, now=now, client=client,
     )
-    return CurationResult(state="completed", record_id=record_id, action=action)
+    return CurationResult(
+        state="completed", record_id=record_id, action=action, operation_id=op.operation_id
+    )
 
 
 def correct_record(
@@ -431,7 +462,7 @@ def reconcile_bank_once(db: Session, bank: LogicalBankRef, *, client: HindsightC
         # ever releases a barrier for the exact operation_id that set it, so
         # there is nothing safe to clear here.
         db.commit()
-        return CurationResult(state="completed", record_id="", action="none")
+        return CurationResult(state="completed", record_id="", action="none", operation_id="")
 
     retained = db.get(RetainedRecord, op.retained_record_id)
     record_id = str(op.retained_record_id)
@@ -441,7 +472,9 @@ def reconcile_bank_once(db: Session, bank: LogicalBankRef, *, client: HindsightC
         db.delete(op)
         ready_bank(db, bank, "")
         db.commit()
-        return CurationResult(state="completed", record_id=record_id, action=op.action)
+        return CurationResult(
+            state="completed", record_id=record_id, action=op.action, operation_id=op.operation_id
+        )
 
     try:
         if op.action == "delete":
@@ -458,10 +491,14 @@ def reconcile_bank_once(db: Session, bank: LogicalBankRef, *, client: HindsightC
                 db, bank, retained, op,
                 action=op.action, desired_content=None, now=db_now(db), client=client,
             )
-            return CurationResult(state="completed", record_id=record_id, action=op.action)
+            return CurationResult(
+                state="completed", record_id=record_id, action=op.action, operation_id=op.operation_id
+            )
         op.state = "needs_operator"
         db.commit()
-        return CurationResult(state="needs_operator", record_id=record_id, action=op.action)
+        return CurationResult(
+            state="needs_operator", record_id=record_id, action=op.action, operation_id=op.operation_id
+        )
 
     # Present: the same desired mutation is always safely repeatable here --
     # it is idempotent in effect (re-invalidate, re-validate, re-delete, or
@@ -470,14 +507,20 @@ def reconcile_bank_once(db: Session, bank: LogicalBankRef, *, client: HindsightC
         _issue(client, bank.bank_id, op, retained)
     except HindsightOutcomeUnknown:
         db.commit()
-        return CurationResult(state="unknown", record_id=record_id, action=op.action)
+        return CurationResult(
+            state="unknown", record_id=record_id, action=op.action, operation_id=op.operation_id
+        )
     except MemoryNotCuratable:
         op.state = "needs_operator"
         db.commit()
-        return CurationResult(state="needs_operator", record_id=record_id, action=op.action)
+        return CurationResult(
+            state="needs_operator", record_id=record_id, action=op.action, operation_id=op.operation_id
+        )
 
     _finalize_proven_mutation(
         db, bank, retained, op,
         action=op.action, desired_content=op.desired_content, now=db_now(db), client=client,
     )
-    return CurationResult(state="completed", record_id=record_id, action=op.action)
+    return CurationResult(
+        state="completed", record_id=record_id, action=op.action, operation_id=op.operation_id
+    )

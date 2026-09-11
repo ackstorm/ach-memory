@@ -200,10 +200,13 @@ def forget(
     )
     retained = _tracked_record(db, principal, body)
     if retained is not None:
-        curation_service.forget_record(
+        outcome = curation_service.forget_record(
             db, retained, reason=body.reason, client=get_client(), bank_id=bank_id
         )
-        result: dict = {"id": body.memory_id, "state": "invalidated"}
+        # `operation_id` is what `get_operation` answers for (QA F-15).
+        result: dict = {
+            "id": body.memory_id, "state": "invalidated", "operation_id": outcome.operation_id
+        }
     else:
         result = get_client().curate(
             bank_id, body.memory_id, state="invalidated", reason=body.reason
@@ -227,8 +230,12 @@ def restore(
     )
     retained = _tracked_record(db, principal, body)
     if retained is not None:
-        curation_service.restore_record(db, retained, client=get_client(), bank_id=bank_id)
-        result: dict = {"id": body.memory_id, "state": "valid"}
+        outcome = curation_service.restore_record(
+            db, retained, client=get_client(), bank_id=bank_id
+        )
+        result: dict = {
+            "id": body.memory_id, "state": "valid", "operation_id": outcome.operation_id
+        }
     else:
         result = get_client().curate(bank_id, body.memory_id, state="valid")
     return MemoryResponse(
@@ -260,7 +267,7 @@ def correct(
     )
     retained = _tracked_record(db, principal, body)
     if retained is not None:
-        curation_service.correct_record(
+        outcome = curation_service.correct_record(
             db,
             retained,
             body.content,
@@ -271,7 +278,11 @@ def correct(
         # Echoes the canonical text `correct_record` actually stored, never
         # the caller's raw input (SPEC: a public response includes text only
         # in its canonical form).
-        result: dict = {"id": body.memory_id, "text": retained.canonical_content}
+        result: dict = {
+            "id": body.memory_id,
+            "text": retained.canonical_content,
+            "operation_id": outcome.operation_id,
+        }
     else:
         canonical_content = normalize_claim(body.content)
         result = get_client().curate(bank_id, body.memory_id, text=canonical_content)

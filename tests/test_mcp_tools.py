@@ -2539,3 +2539,28 @@ def test_set_working_state_rejects_a_blank_objective_over_mcp(call_tool, client,
         )
 
     assert exc_info.value.code == "INVALID_REQUEST"
+
+
+@respx.mock
+def test_get_operation_describes_an_ach_curation_operation(call_tool, session):
+    """MCP twin of the REST case in test_operations_api.py (QA F-15): a
+    curation operation id is answered from ACH's own ledger."""
+    from memory.models import CurationOperation
+
+    _mock_bank()
+    key = call_tool.make_user()
+    _seed_tracked_memory(call_tool, key, GHOST)
+    respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}").mock(
+        return_value=httpx.Response(200, json={"id": GHOST})
+    )
+    forgotten = call_tool("forget", key, scope="user", memory_id=GHOST, reason="obsolete")
+    op_id = forgotten.result["operation_id"]
+    assert op_id == session.query(CurationOperation).one().operation_id
+    upstream_calls = respx.calls.call_count
+
+    result = call_tool("get_operation", key, scope="user", operation_id=op_id)
+
+    assert result.result["type"] == "forget"
+    assert result.result["status"] == "completed"
+    assert result.result["memory_id"] == GHOST
+    assert respx.calls.call_count == upstream_calls

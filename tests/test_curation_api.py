@@ -759,7 +759,7 @@ def test_correct_uses_normalized_claim(client, juan, tenant):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{tracked_id}"
     ).mock(return_value=httpx.Response(200, json={"id": tracked_id}))
 
-    client.post(
+    response = client.post(
         "/v1/memory/correct",
         json={
             "scope": "user",
@@ -770,6 +770,7 @@ def test_correct_uses_normalized_claim(client, juan, tenant):
         headers=juan["headers"],
     )
     assert canonical in tracked_route.calls.last.request.read()
+    assert response.json()["result"]["operation_id"] == CORRECT_OPERATION_ID
 
 
 @respx.mock

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import Field
 from sqlalchemy.orm import Session
 
+from memory import curation_service
 from memory.api.app import current_on_behalf_of, current_principal
 from memory.api.memory import (
     MAX_PAGE_SIZE,
@@ -15,6 +16,7 @@ from memory.api.memory import (
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.hindsight.client import get_client
+from memory.retention import resolve_bank_ref
 
 router = APIRouter(prefix="/v1/memory/operations", tags=["operations"])
 
@@ -79,7 +81,12 @@ def get_operation(
     bank_id, resolved_from, project_slug = resolve_bank_and_commit(
         body, db, principal, on_behalf_of, "memory.operations.get"
     )
-    result = get_client().get_operation(bank_id, body.operation_id)
+    # ACH's own curation ledger first (QA F-15): a forget/correct/restore id
+    # is not a Hindsight operation and was OPERATION_NOT_FOUND upstream.
+    described = curation_service.describe_operation(
+        db, resolve_bank_ref(db, principal, body), body.operation_id
+    )
+    result = described or get_client().get_operation(bank_id, body.operation_id)
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
         resolved_from=resolved_from,

@@ -777,10 +777,13 @@ def register(mcp: MCPServer) -> None:
             read_service.ensure_current_read_allowed(db, bank_ref)
             retained = get_by_source_memory_id(db, bank_ref, memory_id)
             if retained is not None:
-                curation_service.forget_record(
+                outcome = curation_service.forget_record(
                     db, retained, reason=reason, client=get_client(), bank_id=bank
                 )
-                return {"id": memory_id, "state": "invalidated"}
+                # `operation_id` is what `get_operation` answers for (QA F-15).
+                return {
+                    "id": memory_id, "state": "invalidated", "operation_id": outcome.operation_id
+                }
             return get_client().curate(bank, memory_id, state="invalidated", reason=reason)
 
         return _run(ctx, body_factory, "memory.forget", call, create=False, is_write=True)
@@ -830,7 +833,7 @@ def register(mcp: MCPServer) -> None:
             retained = get_by_source_memory_id(db, bank_ref, memory_id)
             if retained is not None:
                 assert accepted_operation_id is not None
-                curation_service.correct_record(
+                outcome = curation_service.correct_record(
                     db,
                     retained,
                     content,
@@ -840,7 +843,11 @@ def register(mcp: MCPServer) -> None:
                 )
                 # Canonical text `correct_record` actually stored, never the
                 # caller's raw input.
-                return {"id": memory_id, "text": retained.canonical_content}
+                return {
+                    "id": memory_id,
+                    "text": retained.canonical_content,
+                    "operation_id": outcome.operation_id,
+                }
             # Untracked legacy fallback: no `curation_service` call in this
             # branch, so canonicalization happens here, right before the one
             # upstream call, same as the REST twin.
@@ -870,8 +877,10 @@ def register(mcp: MCPServer) -> None:
             read_service.ensure_current_read_allowed(db, bank_ref)
             retained = get_by_source_memory_id(db, bank_ref, memory_id)
             if retained is not None:
-                curation_service.restore_record(db, retained, client=get_client(), bank_id=bank)
-                return {"id": memory_id, "state": "valid"}
+                outcome = curation_service.restore_record(
+                    db, retained, client=get_client(), bank_id=bank
+                )
+                return {"id": memory_id, "state": "valid", "operation_id": outcome.operation_id}
             return get_client().curate(bank, memory_id, state="valid")
 
         return _run(ctx, body_factory, "memory.restore", call, create=False, is_write=True)
@@ -951,7 +960,7 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Check whether an async retain has finished."
+            "Fetch one async or curation operation by id."
             " Nothing there is an error with a code, never an empty result: OPERATION_NOT_FOUND for an unknown id, PROJECT_NOT_FOUND for an unknown project."
         ),
         annotations=ToolAnnotations(readOnlyHint=True),
@@ -964,14 +973,19 @@ def register(mcp: MCPServer) -> None:
         git_locator: str | None = None,
         verbose: Verbose = False,
     ) -> ToolResult:
-        return _run(
-            ctx,
-            lambda: ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator),
-            "memory.operations.get",
-            lambda bank, db, p, slug: get_client().get_operation(bank, operation_id),
-            create=False,
-            verbose=verbose,
-        )
+        def body_factory() -> ScopedRequest:
+            return ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
+
+        def call(bank, db, principal, slug):
+            # ACH's own curation ledger first (QA F-15), same two-step as the
+            # REST route: a forget/correct/restore id is not a Hindsight
+            # operation and was OPERATION_NOT_FOUND upstream.
+            described = curation_service.describe_operation(
+                db, retention.resolve_bank_ref(db, principal, body_factory()), operation_id
+            )
+            return described or get_client().get_operation(bank, operation_id)
+
+        return _run(ctx, body_factory, "memory.operations.get", call, create=False, verbose=verbose)
 
     @mcp.tool(
         description="List recent async operations.",
