@@ -3,6 +3,10 @@ and the deterministic view/kinds -> Hindsight-filter mapping. No Hindsight
 client and no `read_context` resolver are exercised here -- this file is
 schema-and-pure-function only, matching Task 2's scope. The FastAPI boundary
 (Task 4) and the extended Hindsight client (Task 3) get their own files.
+
+One exception, at the end: `history`'s ACH provenance/curation half (QA
+F-13/F-14) is read from ACH's own rows, so those tests seed a database and
+stub the Hindsight client.
 """
 
 import pytest
@@ -424,3 +428,187 @@ def test_resolve_filters_never_lets_a_caller_choose_tag_syntax_directly():
 
     signature = inspect.signature(resolve_filters)
     assert set(signature.parameters) == {"view", "memory_types", "caller_tags"}
+
+
+# -- history: ACH provenance and curation events (QA F-13/F-14). The one
+# section here that touches the database and a (stubbed) Hindsight client:
+# what `memory_history` adds over Hindsight's own revision list is read from
+# ACH's rows, so there is nothing pure to test it against.
+
+
+def _provenance(**overrides) -> read_models.Provenance:
+    fields = {
+        "record_id": "rec-1",
+        "basis": "human_explicit",
+        "trigger": "user_requested",
+        "recorded_at": "2026-08-01T00:00:00+00:00",
+        "lifecycle": "active",
+    }
+    fields.update(overrides)
+    return read_models.Provenance(**fields)
+
+
+def _event(n=0, **overrides) -> read_models.CurationEvent:
+    fields = {
+        "operation_id": f"op-{n}",
+        "action": "forget",
+        "state": "completed",
+        "created_at": "2026-08-02T00:00:00+00:00",
+    }
+    fields.update(overrides)
+    return read_models.CurationEvent(**fields)
+
+
+def test_build_history_response_charges_provenance_and_curation_before_changes():
+    """Provenance is what the caller asked `memory_history` for; Hindsight's
+    consolidation edits are the tail. A budget that only fits one of them
+    keeps the provenance and drops the change, never the other way round."""
+    huge = "x" * (read_models.MAX_HIT_TEXT_LENGTH - 1)
+    changes = [_change(text=huge, n=n) for n in range(read_models.MAX_HISTORY_CHANGES)]
+    curation = [_event(n=n, desired_content=huge) for n in range(4)]
+
+    response = build_history_response(
+        project_slug=None,
+        resolved_from=None,
+        memory_id="mem-1",
+        current=CurrentFact(text="current", state="valid"),
+        changes=changes,
+        provenance=_provenance(),
+        curation=curation,
+    )
+
+    assert response.provenance is not None
+    assert len(response.curation) == len(curation)
+    assert 0 < len(response.changes) < len(changes)
+    assert response.truncated is True
+
+
+def test_build_history_response_drops_whole_curation_events_past_the_count_cap():
+    curation = [_event(n=n) for n in range(read_models.MAX_CURATION_EVENTS + 1)]
+    response = build_history_response(
+        project_slug=None,
+        resolved_from=None,
+        memory_id="mem-1",
+        current=CurrentFact(text="current", state="valid"),
+        changes=[],
+        curation=curation,
+    )
+    assert len(response.curation) == read_models.MAX_CURATION_EVENTS
+    assert response.truncated is True
+
+
+@pytest.fixture
+def owner(session, tenant):
+    from memory import ids
+    from memory.auth.principal import Principal
+    from memory.models import User
+
+    user = User(id="usr_history", tenant_id=tenant, bank_id=ids.new_user_bank_id())
+    session.add(user)
+    session.flush()
+    return Principal(
+        tenant_id=tenant, user_id=user.id, credential_id="ext_history", subject="history@test"
+    )
+
+
+@pytest.fixture
+def hindsight(monkeypatch):
+    from unittest.mock import create_autospec
+
+    from memory import read_service
+    from memory.hindsight.client import HindsightClient
+
+    client = create_autospec(HindsightClient, instance=True)
+    client.get_memory.return_value = {"text": "current", "state": "valid"}
+    client.get_memory_history.return_value = []
+    monkeypatch.setattr(read_service, "get_client", lambda: client)
+    return client
+
+
+def _seed_record(session, owner, memory_id: str):
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from memory.models import CurationOperation, RetainedRecord, User
+
+    bank_id = session.get(User, owner.user_id).bank_id
+    record = RetainedRecord(
+        tenant_id=owner.tenant_id,
+        scope="user",
+        user_id=owner.user_id,
+        project_internal_id=None,
+        operation_id=str(uuid4()),
+        payload_hash="h" * 64,
+        document_id=f"ach-retain-{uuid4().hex}",
+        source_memory_id=memory_id,
+        canonical_content="Deploys need two approvals.",
+        memory_type="constraint",
+        basis="human_explicit",
+        caller_tags=["repo:x"],
+        trigger="user_requested",
+        sanitized_evidence=[
+            {"kind": "user_quote", "raw": "two approvals", "source_ref": None},
+            {"kind": "tool_result", "raw": "CODEOWNERS", "source_ref": "git:CODEOWNERS"},
+        ],
+        valid_until=datetime(2027, 1, 1, tzinfo=UTC),
+        lifecycle="forgotten",
+        upstream_state="completed",
+        created_by_credential="ext_history",
+    )
+    session.add(record)
+    session.flush()
+    session.add(
+        CurationOperation(
+            operation_id="ach-curate-stale",
+            retained_record_id=record.id,
+            tenant_id=owner.tenant_id,
+            scope="user",
+            user_id=owner.user_id,
+            project_internal_id=None,
+            action="forget",
+            state="completed",
+            reason="stale",
+        )
+    )
+    session.flush()
+    return bank_id
+
+
+def test_history_carries_the_retained_record_provenance_and_curation(
+    session, owner, hindsight
+):
+    from memory import read_service
+
+    memory_id = "33333333-3333-3333-3333-333333333333"
+    _seed_record(session, owner, memory_id)
+
+    response = read_service.history(
+        session, owner, None, HistoryRequest(scope="user", memory_id=memory_id)
+    )
+
+    assert response.provenance is not None
+    assert response.provenance.basis == "human_explicit"
+    assert response.provenance.trigger == "user_requested"
+    assert [e.kind for e in response.provenance.evidence] == ["user_quote", "tool_result"]
+    assert response.provenance.valid_until is not None
+    assert response.provenance.tags == ("repo:x",)
+    assert response.provenance.lifecycle == "forgotten"
+    assert [(c.action, c.state, c.reason) for c in response.curation] == [
+        ("forget", "completed", "stale")
+    ]
+
+
+def test_history_of_an_untracked_memory_has_no_provenance(session, owner, hindsight):
+    """A memory Hindsight derived on its own, or one retained before typed
+    retain, has no ACH row: absent provenance, not an invented one."""
+    from memory import read_service
+
+    response = read_service.history(
+        session,
+        owner,
+        None,
+        HistoryRequest(scope="user", memory_id="44444444-4444-4444-4444-444444444444"),
+    )
+
+    assert response.provenance is None
+    assert response.curation == ()

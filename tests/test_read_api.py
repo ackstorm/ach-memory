@@ -196,3 +196,80 @@ def test_read_history_is_scoped_to_the_resolved_bank(client, two_users):
     assert response.json()["memory_id"] == memory_id
     assert response.json()["changes"] == []
     assert history_route.called
+
+
+@respx.mock
+def test_read_history_carries_ach_provenance_and_curation(client, session, two_users):
+    """QA F-13/F-14: what ACH recorded at retain time and what it did to the
+    claim since are on the wire, next to Hindsight's revision list."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from memory.models import CurationOperation, RetainedRecord
+
+    memory_id = "55555555-5555-5555-5555-555555555555"
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{memory_id}$"
+    ).mock(return_value=httpx.Response(200, json={"text": "current", "state": "invalidated"}))
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{memory_id}/history$"
+    ).mock(return_value=httpx.Response(200, json=[]))
+
+    owner = two_users[0]
+    record = RetainedRecord(
+        tenant_id="default",
+        scope="user",
+        user_id=owner["user_id"],
+        project_internal_id=None,
+        operation_id=str(uuid4()),
+        payload_hash="h" * 64,
+        document_id=f"ach-retain-{uuid4().hex}",
+        source_memory_id=memory_id,
+        canonical_content="Deploys need two approvals.",
+        memory_type="constraint",
+        basis="human_explicit",
+        caller_tags=["repo:x"],
+        trigger="user_requested",
+        sanitized_evidence=[
+            {"kind": "user_quote", "raw": "two approvals", "source_ref": None},
+            {"kind": "tool_result", "raw": "CODEOWNERS", "source_ref": "git:CODEOWNERS"},
+        ],
+        valid_until=datetime(2027, 1, 1, tzinfo=UTC),
+        lifecycle="forgotten",
+        upstream_state="completed",
+        created_by_credential="ext_x",
+    )
+    session.add(record)
+    session.flush()
+    session.add(
+        CurationOperation(
+            operation_id="ach-curate-rest-stale",
+            retained_record_id=record.id,
+            tenant_id="default",
+            scope="user",
+            user_id=owner["user_id"],
+            project_internal_id=None,
+            action="forget",
+            state="completed",
+            reason="stale",
+        )
+    )
+    session.commit()
+
+    response = client.post(
+        "/v1/read/history",
+        json={"scope": "user", "memory_id": memory_id},
+        headers=owner["headers"],
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    provenance = body["provenance"]
+    assert provenance["basis"] == "human_explicit"
+    assert provenance["trigger"] == "user_requested"
+    assert [e["kind"] for e in provenance["evidence"]] == ["user_quote", "tool_result"]
+    assert provenance["valid_until"] is not None
+    assert provenance["tags"] == ["repo:x"]
+    assert [(c["action"], c["state"], c["reason"]) for c in body["curation"]] == [
+        ("forget", "completed", "stale")
+    ]

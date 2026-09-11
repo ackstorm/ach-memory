@@ -73,6 +73,12 @@ MAX_RECALL_RESPONSE_BYTES = 32_000
 MAX_MEMORY_ID_LENGTH = 128
 MAX_HISTORY_CHANGES = 10
 MAX_SOURCE_FACTS_PER_CHANGE = 5
+MAX_CURATION_EVENTS = 20
+# Mirrors what typed retain admits (`v040_contracts.TypedRetainRequest.
+# evidence` / `RetainEvidence.raw`): history hands back what was stored, so
+# it can never need more than retain could take.
+MAX_PROVENANCE_EVIDENCE = 4
+MAX_PROVENANCE_EVIDENCE_RAW_LENGTH = 1024
 MAX_HISTORY_RESPONSE_BYTES = 32_000
 
 
@@ -236,6 +242,46 @@ class CurrentFact(BaseModel):
     kind: MemoryType | None = None
 
 
+class ProvenanceEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    raw: str = Field(max_length=MAX_PROVENANCE_EVIDENCE_RAW_LENGTH)
+    source_ref: str | None = None
+
+
+class Provenance(BaseModel):
+    """What ACH recorded when the claim was retained (QA F-13): the half of
+    `memory_history` Hindsight cannot know."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    record_id: str
+    basis: str
+    trigger: str
+    recorded_at: str
+    valid_until: str | None = None
+    lifecycle: str
+    tags: tuple[str, ...] = ()
+    evidence: tuple[ProvenanceEvidence, ...] = Field(
+        default=(), max_length=MAX_PROVENANCE_EVIDENCE
+    )
+
+
+class CurationEvent(BaseModel):
+    """One ACH curation operation on this claim (QA F-14/F-15)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str
+    action: str
+    state: str
+    reason: str | None = None
+    desired_content: str | None = Field(default=None, max_length=MAX_HIT_TEXT_LENGTH)
+    created_at: str
+    completed_at: str | None = None
+
+
 class HistoryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -243,6 +289,10 @@ class HistoryResponse(BaseModel):
     resolved_from: str | None = None
     memory_id: str
     current: CurrentFact
+    # None when no ACH row maps to this memory (Hindsight derived it, or it
+    # predates typed retain) -- absent, not invented.
+    provenance: Provenance | None = None
+    curation: tuple[CurationEvent, ...] = Field(default=(), max_length=MAX_CURATION_EVENTS)
     changes: tuple[HistoryChange, ...] = Field(default=(), max_length=MAX_HISTORY_CHANGES)
     truncated: bool = False
 
@@ -290,25 +340,46 @@ def build_history_response(
     memory_id: str,
     current: CurrentFact,
     changes: list[HistoryChange],
+    provenance: Provenance | None = None,
+    curation: list[CurationEvent] = (),
 ) -> HistoryResponse:
     """Same discipline as `build_recall_response`, one level deeper: a
     change's own `source_facts` are already capped at construction
-    (`HistoryChange.source_facts`'s own `max_length`), so only the list of
-    changes itself needs capping here, against both count and total bytes."""
-    kept: list[HistoryChange] = []
+    (`HistoryChange.source_facts`'s own `max_length`), so only the lists
+    themselves need capping here, against both count and total bytes.
+
+    Charged in the order the caller cares about: `provenance` first, then
+    the curation events, then Hindsight's revision `changes` with whatever
+    budget is left. Provenance is what `memory_history` exists to answer
+    (QA F-13); consolidation edits are the tail, so they are what gives way.
+    """
     remaining = MAX_HISTORY_RESPONSE_BYTES
+    if provenance is not None:
+        # Bounded at construction (evidence count and raw length), so it
+        # always fits an empty budget; charging it keeps the arithmetic honest.
+        remaining -= len(provenance.model_dump_json().encode("utf-8"))
+    kept_events: list[CurationEvent] = []
+    for event in curation[:MAX_CURATION_EVENTS]:
+        cost = _fits(remaining, event)
+        if cost is None:
+            break
+        kept_events.append(event)
+        remaining -= cost
+    kept: list[HistoryChange] = []
     for change in changes[:MAX_HISTORY_CHANGES]:
         cost = _fits(remaining, change)
         if cost is None:
             break
         kept.append(change)
         remaining -= cost
-    truncated = len(kept) < len(changes)
+    truncated = len(kept) < len(changes) or len(kept_events) < len(curation)
     return HistoryResponse(
         project_slug=project_slug,
         resolved_from=resolved_from,
         memory_id=memory_id,
         current=current,
+        provenance=provenance,
+        curation=tuple(kept_events),
         changes=tuple(kept),
         truncated=truncated,
     )

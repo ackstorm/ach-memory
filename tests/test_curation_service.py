@@ -708,3 +708,27 @@ def test_a_record_with_unrecorded_caller_tags_admits_every_model(
     model = model_registry.list_registered_models(session, bank)[0]
     assert model.delivery_state == "withheld"
     assert model.refresh_status == "pending"
+
+
+def test_forget_persists_its_reason_on_the_operation(session, bank, hindsight):
+    """QA F-14: the reason given to forget used to ride along to Hindsight and
+    vanish. It is now on the row `memory_history` reads back."""
+    retained = _retained(session, bank)
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+
+    forget_record(session, retained, reason="stale", client=hindsight, bank_id=bank.bank_id)
+
+    assert session.query(CurationOperation).one().reason == "stale"
+
+
+def test_a_forget_retry_keeps_the_first_reason(session, bank, hindsight):
+    """The wording of a retry is not part of the operation's identity: same
+    record, same action, same row -- and the reason recorded is the one
+    that was given when the outcome was first desired."""
+    retained = _retained(session, bank)
+    hindsight.curate.return_value = {"id": retained.source_memory_id}
+
+    forget_record(session, retained, reason="stale", client=hindsight, bank_id=bank.bank_id)
+    forget_record(session, retained, reason="other", client=hindsight, bank_id=bank.bank_id)
+
+    assert session.query(CurationOperation).one().reason == "stale"

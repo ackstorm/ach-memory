@@ -542,7 +542,9 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Fetch bounded history and rationale for a recalled memory."
+            "Fetch a memory's history: ACH provenance (basis, trigger, evidence, "
+            "validity, tags), ACH curation events (forget/correct/restore with "
+            "reason), and Hindsight's revision history."
             " Nothing there is an error with a code, never an empty result: MEMORY_NOT_FOUND for an unknown id, PROJECT_NOT_FOUND for an unknown project."
         ),
         annotations=ToolAnnotations(

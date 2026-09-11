@@ -1888,7 +1888,10 @@ EXPECTED_TOOLS = {
 # content once the refresh has landed, and said only "metadata" before.
 # Then by list_memories.tags_filter and the schema descriptions from QA
 # F-04/F-09/F-11, 2026-09-11.
-TOOL_CONTRACT_SHA256 = "c15c98686f803781027d7ba03a43e8c838d71afbdfb4e5fe2ad21f3a3c2ef7ad"
+# Then by memory_history's provenance/curation half (QA F-13/F-14): its
+# description names what it now returns, and its outputSchema gains the
+# `provenance` and `curation` fields.
+TOOL_CONTRACT_SHA256 = "6625527fb411990c7584b060ae47819d669bdaba1076a7e6db4fc2f60377905c"
 
 
 def test_tool_registration_is_stable_after_module_split():

@@ -76,6 +76,7 @@ def _accept_operation(
     *,
     action: str,
     desired_content: str | None = None,
+    reason: str | None = None,
     operation_id: str | None = None,
 ) -> CurationOperation:
     _lock_bank(db, bank)
@@ -101,6 +102,9 @@ def _accept_operation(
                 "operation_id was already used for a different curation payload",
                 operation_id=operation_id,
             )
+        # Not compared and not overwritten: the wording of a retry is not
+        # part of the identity, and the reason on record is the one given
+        # when this outcome was first desired.
         return existing
     row = CurationOperation(
         operation_id=operation_id,
@@ -111,6 +115,7 @@ def _accept_operation(
         project_internal_id=bank.project_internal_id,
         action=action,
         desired_content=desired_content,
+        reason=reason[:512] if reason else None,
         state="pending",
     )
     db.add(row)
@@ -263,9 +268,10 @@ def _issue(
     """The one upstream call `op.action` desires, against the stable
     source-memory/document identity -- never re-derived from caller input.
 
-    `reason` is not part of `CurationOperation`'s stored identity (SPEC does
-    not require it for outcome-safety); it is best-effort forwarded on the
-    triggering call only, and omitted on a later reconciliation retry.
+    `reason` is not part of `CurationOperation`'s identity (SPEC does not
+    require it for outcome-safety); it is best-effort forwarded on the
+    triggering call only, and omitted on a later reconciliation retry. ACH's
+    own copy lives on `op.reason` (QA F-14), so it survives either way.
     """
     if op.action == "correct":
         client.curate(bank_id, retained.source_memory_id, text=op.desired_content)
@@ -314,6 +320,7 @@ def _mutate(
         retained,
         action=action,
         desired_content=desired_content,
+        reason=reason,
         operation_id=operation_id,
     )
     if action == "correct":
@@ -387,9 +394,10 @@ def correct_record(
 def forget_record(
     db: Session, retained: RetainedRecord, *, reason: str | None = None, client: HindsightClient, bank_id: str
 ) -> CurationResult:
-    # `reason` rides along on the upstream call but is not part of the
-    # idempotency identity: retrying the same forget with a different reason
-    # string is still the same desired outcome.
+    # `reason` rides along on the upstream call and is recorded on the
+    # operation row, but is not part of the idempotency identity: retrying
+    # the same forget with a different reason string is still the same
+    # desired outcome, and keeps the reason first given.
     return _mutate(db, retained, action="forget", client=client, bank_id=bank_id, reason=reason)
 
 

@@ -22,6 +22,7 @@ import re
 from typing import Any, get_args
 
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from memory import read_context
@@ -33,13 +34,19 @@ from memory.errors import BankCurrentnessUnavailable, MemoryNotFound
 from memory.expiry import ensure_no_expiry_backlog
 from memory.hindsight.client import get_client
 from memory.memory_types import EvidenceBasis, MemoryType
+from memory.models import CurationOperation, RetainedRecord
 from memory.read_models import (
+    MAX_HIT_TEXT_LENGTH,
+    MAX_PROVENANCE_EVIDENCE_RAW_LENGTH,
+    CurationEvent,
     CurrentFact,
     FactType,
     HistoryChange,
     HistoryRequest,
     HistoryResponse,
     MemoryState,
+    Provenance,
+    ProvenanceEvidence,
     RecallHit,
     RecallRequest,
     RecallResponse,
@@ -49,7 +56,7 @@ from memory.read_models import (
     build_recall_response,
     resolve_filters,
 )
-from memory.retained_records import LogicalBankRef
+from memory.retained_records import LogicalBankRef, get_by_source_memory_id
 from memory.tags import RESERVED_PREFIXES
 
 _MEMORY_TYPES = set(get_args(MemoryType))
@@ -611,6 +618,56 @@ def _normalize_changes(raw: Any) -> list[HistoryChange]:
     return changes
 
 
+def _provenance_of(record: RetainedRecord) -> Provenance:
+    evidence = []
+    for item in record.sanitized_evidence or ():
+        kind, raw = item.get("kind"), item.get("raw")
+        if not isinstance(kind, str) or not isinstance(raw, str):
+            continue
+        evidence.append(
+            ProvenanceEvidence(
+                kind=kind,
+                raw=raw[:MAX_PROVENANCE_EVIDENCE_RAW_LENGTH],
+                source_ref=_str_or_none(item.get("source_ref")),
+            )
+        )
+    return Provenance(
+        record_id=str(record.id),
+        basis=record.basis,
+        trigger=record.trigger,
+        recorded_at=record.recorded_at.isoformat(),
+        valid_until=record.valid_until.isoformat() if record.valid_until else None,
+        lifecycle=record.lifecycle,
+        tags=tuple(record.caller_tags or ()),
+        evidence=tuple(evidence),
+    )
+
+
+def _curation_of(db: Session, record: RetainedRecord) -> list[CurationEvent]:
+    ops = db.scalars(
+        select(CurationOperation)
+        .where(CurationOperation.retained_record_id == record.id)
+        .order_by(CurationOperation.created_at)
+    )
+    return [
+        CurationEvent(
+            operation_id=op.operation_id,
+            action=op.action,
+            state=op.state,
+            reason=op.reason,
+            # A corrected claim is bounded in BYTES (4096); the hit-text cap
+            # is in characters (4000), so an ASCII-heavy correction can
+            # exceed it. Cut rather than let a row fail the whole history.
+            desired_content=(
+                op.desired_content[:MAX_HIT_TEXT_LENGTH] if op.desired_content else None
+            ),
+            created_at=op.created_at.isoformat(),
+            completed_at=op.completed_at.isoformat() if op.completed_at else None,
+        )
+        for op in ops
+    ]
+
+
 def history(
     db: Session,
     principal: Principal,
@@ -646,10 +703,20 @@ def history(
     history_raw = client.get_memory_history(read_bank.bank_id, request.memory_id)
     changes = _normalize_changes(history_raw)
 
+    # The half Hindsight cannot tell (QA F-13/F-14): what ACH recorded at
+    # retain time and every curation it has applied since. Same bank scoping
+    # as the two upstream calls -- `get_by_source_memory_id` never looks
+    # across banks either.
+    record = get_by_source_memory_id(db, bank_ref(principal, read_bank), request.memory_id)
+    provenance = _provenance_of(record) if record is not None else None
+    curation = _curation_of(db, record) if record is not None else []
+
     return build_history_response(
         project_slug=read_bank.current_slug,
         resolved_from=read_bank.resolved_from,
         memory_id=request.memory_id,
         current=current,
         changes=changes,
+        provenance=provenance,
+        curation=curation,
     )

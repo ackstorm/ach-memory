@@ -469,6 +469,11 @@ class CurationOperation(Base):
     )
     action: Mapped[str] = mapped_column(String(16))
     desired_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The caller's stated reason, recorded once when the outcome was first
+    #: desired so `memory_history` can answer "why was this forgotten" (QA
+    #: F-14). NULL means "not recorded" -- rows from before this column, and
+    #: every action that never took one -- not "no reason given".
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
     state: Mapped[str] = mapped_column(String(32))
     repair_not_before: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
