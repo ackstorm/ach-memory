@@ -106,3 +106,39 @@ def register(mcp: MCPServer) -> None:
     working_state_tools.register(mcp)
     context_tools.register(mcp)
     project_tools.register(mcp)
+    _forbid_undeclared_arguments(mcp)
+
+
+def _forbid_undeclared_arguments(mcp: MCPServer) -> None:
+    """Make every tool refuse an argument it does not declare.
+
+    The SDK builds each tool's argument model from its signature and leaves
+    pydantic's default `extra="ignore"`, so a misspelled parameter is dropped
+    on the floor and the call succeeds meaning something else. Measured on
+    the live surface before this existed: `recall(tags_filter=["fid:u01"])`
+    returned 2 hits and `recall(tags=["fid:u01"])` -- same intent, one wrong
+    name -- returned 8, with no error and nothing in the response to say the
+    filter had not been applied. A caller narrowing a search silently got the
+    unfiltered corpus back and believed it was narrowed.
+
+    That shape is the expensive one, and it is not specific to `tags`: it is
+    every optional parameter of all 27 tools. Hardening the models in one
+    place closes the class rather than the instance. The REST surface has
+    always refused these -- its request models are `extra="forbid"` -- so
+    this also stops the same call meaning different things on two doors.
+
+    Reaches into the SDK's generated models, which is why it fails loudly if
+    the internals move: a silent no-op here would restore exactly the
+    silence it exists to remove.
+    """
+    tools = mcp._tool_manager.list_tools()
+    if not tools:
+        raise RuntimeError(
+            "no MCP tools found to harden -- the SDK's tool manager internals moved"
+        )
+    for tool in tools:
+        arg_model = tool.fn_metadata.arg_model
+        arg_model.model_config["extra"] = "forbid"
+        # Pydantic builds a model's core schema at class creation, so the
+        # config change above does nothing until the schema is rebuilt.
+        arg_model.model_rebuild(force=True)

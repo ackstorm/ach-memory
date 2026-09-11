@@ -390,14 +390,27 @@ def test_reflect_sends_caller_tags_upstream(call_tool):
     call_tool("reflect", key, scope="user", query="deps?", tags_filter=["Repo:Group/App"])
 
     body = json.loads(route.calls.last.request.read())
-    assert body["tags"] == ["repo:group/app"]
-    assert body["tags_match"] == "all_strict"
+    # Grouped, and carrying the server's own scope alongside the caller's.
+    # Sending the caller's tags ALONE is what let `reflect` reason over the
+    # whole bank while `recall` stayed inside the retained corpus.
+    assert "tags" not in body and "tags_match" not in body
+    assert body["tag_groups"] == [
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["repo:group/app"], "match": "all_strict"},
+    ]
+    assert body["fact_types"] == ["world", "observation"]
 
 
 @respx.mock
-def test_reflect_without_tags_sends_no_tag_keys(call_tool):
-    """An untagged reflect must not start sending tags:[] -- upstream treats
-    a tagged request differently from an untagged one."""
+def test_reflect_without_caller_tags_still_scopes_to_the_retained_corpus(call_tool):
+    """An untagged reflect is not an unscoped one.
+
+    This used to assert that no tag keys were sent at all, which was true and
+    was the bug: with nothing sent, upstream applied no filter and `reflect`
+    reasoned over the entire bank -- `experience` facts and anything not
+    written by this service's retain path included -- while `recall` on the
+    same bank stayed inside `schema:ach-retain-v1`/world+observation.
+    """
     _mock_bank()
     route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/reflect").mock(
         return_value=httpx.Response(200, json={"answer": "uv"})
@@ -407,8 +420,13 @@ def test_reflect_without_tags_sends_no_tag_keys(call_tool):
     call_tool("reflect", key, scope="user", query="deps?")
 
     body = json.loads(route.calls.last.request.read())
-    assert "tags" not in body
-    assert "tags_match" not in body
+    assert "tags" not in body and "tags_match" not in body
+    # The server's group only: no caller tags means no caller group, not an
+    # empty one, which upstream would treat differently again.
+    assert body["tag_groups"] == [
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"}
+    ]
+    assert body["fact_types"] == ["world", "observation"]
 
 
 @respx.mock
@@ -1633,10 +1651,14 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved by the mental-model tag simplification: create_mental_model dropped
-# source_tags_mode entirely and source_tags became optional, carrying only the
-# caller's own narrowing tags.
-TOOL_CONTRACT_SHA256 = "2b56923577793f0b47d470e87a5462197476b95a8a2b2615392fd2e91e8cfc9c"
+# moved by narrowing the read surface: `recall` and `reflect` both lost
+# `tags_filter_mode` (caller tags are now always ANDed) and `recall` lost
+# `min_score` (the relevance floor is server-owned and not negotiable per
+# request). Both descriptions were rewritten to say so. This is a deliberate
+# BREAKING schema change to the tool contract, made while the surface is
+# still in testing: a caller still sending either argument now gets an
+# explicit rejection rather than a silently ignored field.
+TOOL_CONTRACT_SHA256 = "8cc8e1ada3ebcbae4c16ab87bf0f3d5f982f778979c3f3f2665af19853613035"
 
 
 def test_tool_registration_is_stable_after_module_split():

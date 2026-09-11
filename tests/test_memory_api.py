@@ -602,7 +602,6 @@ def test_reflect_forwards_the_caller_tag_filter_like_its_mcp_twin(client, juan, 
             "scope": "user",
             "query": "deps?",
             "tags_filter": ["Repo:Group/App"],
-            "tags_filter_mode": "any",
         },
         headers=juan["headers"],
     )
@@ -611,8 +610,16 @@ def test_reflect_forwards_the_caller_tag_filter_like_its_mcp_twin(client, juan, 
     sent = json.loads(route.calls.last.request.content)
     # Normalised through the one shared gate, and always a strict mode: the
     # loose forms would also return untagged memories and defeat the filter.
-    assert sent["tags"] == ["repo:group/app"]
-    assert sent["tags_match"] == "any_strict"
+    #
+    # Grouped now, and carrying the server's own scope as well: `reflect`
+    # used to send the caller's tags ALONE, so it reasoned over the whole
+    # bank while `recall` was confined to the retained corpus -- two answers
+    # to one question, grounded in different sets.
+    assert sent["tag_groups"] == [
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["repo:group/app"], "match": "all_strict"},
+    ]
+    assert sent["fact_types"] == ["world", "observation"]
 
 
 @respx.mock

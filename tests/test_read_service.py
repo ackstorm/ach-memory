@@ -372,25 +372,22 @@ def test_caller_tags_form_their_own_group_after_the_server_groups():
     )
 
 
-def test_caller_mode_any_never_loosens_the_server_scope():
-    """The bug this shape exists to prevent: `any` belongs to the caller's
-    own tags. Flat, it ORed `schema:ach-retain-v1` in too -- and since every
-    ACH memory carries that tag, a request to narrow returned the whole
-    corpus instead."""
+def test_every_group_keeps_its_own_match_mode():
+    """Why this is three groups and not one flat list. Flat, one mode had to
+    serve every axis: ORing swept in `schema:ach-retain-v1`, which every ACH
+    memory carries, so a request to NARROW returned the whole corpus; ANDing
+    joined the `type:` tags, and a memory carries exactly one, so asking for
+    two kinds could never match anything. Grouped, each axis gets the mode it
+    needs -- and the caller's own tags are ANDed, with no mode to loosen
+    them."""
     filters = resolve_filters(
-        "current", ("decision",), caller_tags=("repo:group/app", "area:auth"), mode="any"
+        "current", ("decision", "convention"), caller_tags=("repo:group/app", "area:auth")
     )
     assert filters.tag_groups == (
         {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
-        {"tags": ["type:decision"], "match": "any_strict"},
-        {"tags": ["repo:group/app", "area:auth"], "match": "any_strict"},
+        {"tags": ["type:decision", "type:convention"], "match": "any_strict"},
+        {"tags": ["repo:group/app", "area:auth"], "match": "all_strict"},
     )
-    schema_group = filters.tag_groups[0]
-    assert schema_group["match"] == "all_strict", "the server scope must stay ANDed"
-
-
-def test_no_mode_means_the_default_narrowing_mode():
-    assert resolve_filters("current", None) == resolve_filters("current", None, mode="all")
 
 
 def test_caller_tags_come_after_the_memory_type_group():
@@ -417,13 +414,13 @@ def test_recall_request_normalizes_caller_tags_the_same_way_retain_does():
 def test_resolve_filters_never_lets_a_caller_choose_tag_syntax_directly():
     """There is no parameter here through which a `RecallRequest` value ever
     reaches Hindsight's own tag/filter DSL: `resolve_filters` only accepts a
-    closed `view`, a closed `memory_types`, already-normalised `caller_tags`
-    (`RecallRequest.tags_filter`, validated by `memory.tags.normalize_caller_tags`
-    before it ever reaches here), and a closed `mode` (`RecallRequest.tags_filter_mode`,
-    from `memory.tags`'s own already-strict enum) -- never raw `tags_match`
-    syntax, and only ever emits the fixed
+    closed `view`, a closed `memory_types` and already-normalised
+    `caller_tags` (`RecallRequest.tags_filter`, validated by
+    `memory.tags.normalize_caller_tags` before it ever reaches here) -- never
+    raw `tags_match` syntax, and never a match mode either, now that every
+    group's mode is server-owned. It only ever emits the fixed
     `schema:ach-retain-v1`/`type:<memory_type>`/caller-tag shapes."""
     import inspect
 
     signature = inspect.signature(resolve_filters)
-    assert set(signature.parameters) == {"view", "memory_types", "caller_tags", "mode"}
+    assert set(signature.parameters) == {"view", "memory_types", "caller_tags"}

@@ -465,11 +465,27 @@ def test_reflect_sends_caller_tags_upstream(client):
         return_value=httpx.Response(200, json={"text": "...", "usage": {}})
     )
 
-    client.reflect(BANK, "why?", tags=["repo:group/app"], tags_match="all_strict")
+    client.reflect(
+        BANK,
+        "why?",
+        tag_groups=[
+            {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+            {"tags": ["repo:group/app"], "match": "all_strict"},
+        ],
+        fact_types=["world", "observation"],
+    )
 
     body = json.loads(route.calls.last.request.read())
-    assert body["tags"] == ["repo:group/app"]
-    assert body["tags_match"] == "all_strict"
+    # Grouped, never flat: `tags`/`tags_match` are mutually exclusive with
+    # `tag_groups` upstream, and a flat list carries one match mode for every
+    # tag in it -- so the server's scoping tag and the caller's narrowing tag
+    # could not have had different modes in the same query.
+    assert "tags" not in body and "tags_match" not in body
+    assert body["tag_groups"] == [
+        {"tags": ["schema:ach-retain-v1"], "match": "all_strict"},
+        {"tags": ["repo:group/app"], "match": "all_strict"},
+    ]
+    assert body["fact_types"] == ["world", "observation"]
 
 
 @respx.mock

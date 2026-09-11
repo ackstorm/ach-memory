@@ -54,6 +54,11 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
                 # would read as "unknown" to a client filtering on repo.
                 "tags": [],
                 "document_id": None,
+                # None, not absent: this upstream payload carries no `scores`
+                # at all, which its contract allows. A hit that was never
+                # scored is unjudged, and says so, rather than borrowing a
+                # number it does not have.
+                "score": None,
             }
         ],
         "truncated": False,

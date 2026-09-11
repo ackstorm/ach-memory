@@ -394,6 +394,13 @@ class HindsightClient:
         - `max_tokens`: upstream's own result-budget cap (default 4096
           upstream; never set here, so omitting it keeps that default).
 
+        NOT sent: `min_scores`. Upstream's floors are per-stage and its
+        `semantic` one is a RETRIEVAL-level cutoff pushed into the vector arm
+        alone, so a hit surfaced by keyword bypasses it and the same setting
+        means different things depending on which arm found a hit.
+        `read_service` applies the relevance floor over the whole candidate
+        set instead, where it means one thing.
+
         None of these is caller-supplied Hindsight syntax on any surface that
         reaches this method: the read-only recall surface only ever offers a
         closed `view`/`kinds` choice, mapped to these upstream fields by
@@ -443,19 +450,39 @@ class HindsightClient:
         bank_id: str,
         query: str,
         *,
-        tags: list[str] | None = None,
-        tags_match: str | None = None,
+        tag_groups: list[dict[str, Any]] | None = None,
+        fact_types: list[str] | None = None,
     ) -> dict:
-        """`tags`/`tags_match`: same upstream tag filter as `recall`, omitted
-        entirely (not sent as empty/null) when the caller passes none --
-        upstream's `ReflectRequest` defaults differ between a tagged and an
-        untagged request, so sending empty keys is not equivalent to
-        omitting them."""
+        """The same server-owned scoping `recall` applies, on the surface that
+        needs it more.
+
+        `reflect` used to send only the caller's own `tags`/`tags_match` and
+        nothing of the server's, so the two answered over DIFFERENT corpora
+        in the same bank: `recall` returned only `schema:ach-retain-v1` facts
+        of type world/observation, while `reflect` reasoned over the whole
+        bank, `experience` facts included, and over anything not written by
+        this service's retain path at all. An agent asked both the same
+        question and got answers grounded in different sets, with nothing in
+        either response to say so -- and `reflect` is the surface that
+        returns prose an agent quotes wholesale, so it is the one where a
+        silently wider grounding is least visible.
+
+        `tag_groups`, never `tags`: upstream treats them as mutually
+        exclusive, and only the grouped form gives the server's scoping tags
+        and the caller's narrowing tags different match modes in one query.
+        Built by `read_models.resolve_filters`, the same function `recall`
+        uses, so the two cannot drift apart again.
+
+        Both omitted entirely (not sent as empty/null) when the caller passes
+        none: upstream's `ReflectRequest` defaults differ between a filtered
+        and an unfiltered request, so sending empty keys is not equivalent to
+        omitting them.
+        """
         body: dict[str, Any] = {"query": query}
-        if tags is not None:
-            body["tags"] = tags
-        if tags_match is not None:
-            body["tags_match"] = tags_match
+        if tag_groups is not None:
+            body["tag_groups"] = tag_groups
+        if fact_types is not None:
+            body["fact_types"] = fact_types
         return self._request(
             "POST", paths.reflect(bank_id), body,
             timeout=self._llm_timeout,  # a full synthesis call

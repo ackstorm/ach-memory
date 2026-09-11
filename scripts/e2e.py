@@ -764,30 +764,33 @@ async def _() -> None:
     )
 
 
-@scenario("read.recall_any_mode_does_not_widen_to_the_whole_corpus")
+@scenario("read.recall_several_caller_tags_are_anded")
 async def _() -> None:
-    """`mode="any"` ORs the CALLER'S tags with each other, and nothing else.
+    """Several caller tags narrow TOGETHER. There is no mode to loosen them.
 
-    Flat, the server's `schema:ach-retain-v1` scope tag was ORed in with
-    them -- and every ACH-authored memory carries it, so asking to narrow
-    returned the entire corpus with no error. The untagged seed is the
-    canary: it can only come back if the scope tag was loosened.
+    The tagged seed carries `CALLER_TAG` and not the second tag, so an AND
+    must withhold it -- asking for more tags can only ever return less. Two
+    silent failures are pinned here at once: an OR over the caller's tags
+    would return it anyway, and an OR that also swept in the server's
+    `schema:ach-retain-v1` scope tag would return the whole corpus, which the
+    untagged seed is the canary for.
     """
     need("key.alice", "memory.user_seed_written", "memory.tagged_seed_written")
     recall = sc_body(
         "user",
         query=TAGGED_QUERY,
         tags_filter=[CALLER_TAG, "area:not-present-anywhere"],
-        tags_filter_mode="any",
     )
     status, data = await call(
         "POST", "/v1/read/recall", S["key.alice"], json_body=recall
     )
     expect_status("POST", "/v1/read/recall", recall, status, data, 200)
     blob = json.dumps(data).lower()
-    assert TAGGED_KEYWORD in blob, f"an OR over the caller's tags lost a tagged match: {data}"
+    assert TAGGED_KEYWORD not in blob, (
+        f"the caller's tags were ORed, not ANDed: a memory missing one of them came back: {data}"
+    )
     assert USER_FACT_KEYWORD not in blob, (
-        f'mode="any" widened past the caller tags and returned the corpus: {data}'
+        f"the server's scope tag was loosened and the untagged corpus came back: {data}"
     )
 
 

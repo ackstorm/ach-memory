@@ -20,17 +20,22 @@ written and a tag searched are byte-identical -- then ANDed, as a group of
 its own, into the fixed server-owned strict filter (`resolve_filters`) inside
 a bank the caller's own `scope`/`project_slug` already resolved and
 authorized. It can only narrow what that caller could already read; it is
-never a raw Hindsight tag expression. `tags_filter_mode` chooses only from
-`memory.tags`'s closed, already-strict enum -- never raw Hindsight
-`tags_match` syntax -- and it governs that group alone, never the server's
-own scoping tags.
+never a raw Hindsight tag expression, and it carries no match mode: the group
+is always `all_strict` (see `memory.tags` for why the `any` mode was removed).
 
 This module also owns the one piece of caller-controllable Hindsight
-behavior a read exposes: mapping `view`/`kinds`/`tags_filter`/
-`tags_filter_mode` to fixed upstream filters (`resolve_filters`). The caller
-chooses from closed enums plus its own normalised tags; the actual Hindsight
+behavior a read exposes: mapping `view`/`kinds`/`tags_filter` to fixed
+upstream filters (`resolve_filters`). The caller chooses from closed enums
+plus its own normalised tags; the actual Hindsight
 `types`/`prefer_observations`/`tag_groups` values are server-owned and never
 themselves caller input.
+
+Relevance is NOT caller input either. The floor a hit must clear lives in
+`config.recall_min_semantic`, and there is no per-request override: a quality
+contract a caller can switch off is not a contract, and the one caller who
+reads "too few results" and sets it to 0 gets the padding back for everybody
+downstream of it. Deployments tune it through the environment; `RecallHit`
+carries its `score` so a caller can always see WHY something came back.
 """
 
 from dataclasses import dataclass
@@ -40,7 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from memory.identifiers import has_control_character
 from memory.memory_types import EvidenceBasis, MemoryType
-from memory.tags import FilterMode, default_filter_mode, normalize_caller_tags, to_upstream
+from memory.tags import normalize_caller_tags
 
 ReadScope = Literal["user", "project"]
 
@@ -115,7 +120,6 @@ class RecallRequest(_ReadRequest):
     #: strict filter -- see the module docstring for why this is safe.
     #: Hindsight's own `tags_match` syntax stays out of this model entirely.
     tags_filter: tuple[str, ...] = ()
-    tags_filter_mode: FilterMode = Field(default_factory=default_filter_mode)
 
     @field_validator("tags_filter", mode="before")
     @classmethod
@@ -168,6 +172,23 @@ class RecallHit(BaseModel):
     #: unstripping tags in mcp/compact.py does nothing here, because this
     #: model is `extra="forbid"` and drops anything with no field to land in.
     tags: tuple[str, ...] = ()
+    #: Upstream's `final` ranking score: the value the hits are ordered by,
+    #: blending reranker relevance with recency/temporal/proof boosts.
+    #:
+    #: Exposed so a caller can apply its own judgement instead of trusting
+    #: the order alone. Hindsight sent this from the start and the same
+    #: `extra="forbid"` above dropped it, so every hit arrived looking
+    #: equally confident whether it scored 1.08 or 0.00001 -- both measured,
+    #: in one response, on one query.
+    #:
+    #: NOT bounded to 0-1: `final` is a combined score and 1.0997 is a real
+    #: observed value. And relative, not absolute -- the same fact can score
+    #: orders of magnitude apart on two queries, so compare hits within one
+    #: response and never against a constant remembered from another.
+    #:
+    #: None when upstream sent no scores for a hit, which its own contract
+    #: allows (`scores` is nullable, and source facts carry none).
+    score: float | None = None
 
 
 class RecallResponse(BaseModel):
@@ -306,11 +327,9 @@ def resolve_filters(
     view: View,
     memory_types: tuple[MemoryType, ...] | None,
     caller_tags: tuple[str, ...] = (),
-    mode: FilterMode = default_filter_mode(),
 ) -> RecallFilters:
     """Map a caller's closed `view`/`memory_types` choice, plus its own
-    already-normalised tags and mode, to Hindsight's actual filter
-    vocabulary.
+    already-normalised tags, to Hindsight's actual filter vocabulary.
 
     Every ACH-authored fact is scoped by the fixed `schema:ach-retain-v1`
     tag, optionally narrowed by the caller's closed `memory_types`, then
@@ -324,25 +343,22 @@ def resolve_filters(
     `world` (the retained claim) and `observation` (Hindsight's own later
     consolidation) are ever relevant types.
 
-    The caller's `mode` governs the caller's OWN tags and nothing else, which
-    is why this builds three ANDed groups instead of one flat list. A flat
-    list carries a single match mode, so every tag in it shared whatever the
-    caller picked, and both server-owned narrowings broke:
+    Three ANDed groups, not one flat list, because each axis needs a
+    DIFFERENT match mode and a flat list can only carry one. Sharing a single
+    mode across all of them broke both server-owned narrowings, each silently:
 
-    * `mode="any"` ORed `schema:ach-retain-v1` in with the caller's tags.
-      Every ACH-authored memory carries that tag, so the filter matched the
-      entire corpus -- a caller asking for LESS silently received
-      EVERYTHING, with no error to notice.
-    * `mode="all"` ANDed the `type:` tags together, and a memory carries
-      exactly one. Asking for two memory types could therefore never match
-      anything, and `all` is the default, so this was the ordinary path.
+    * ORing put `schema:ach-retain-v1` in with the caller's tags. Every
+      ACH-authored memory carries that tag, so the filter matched the entire
+      corpus -- a caller asking for LESS silently received EVERYTHING, with
+      no error to notice.
+    * ANDing joined the `type:` tags together, and a memory carries exactly
+      one. Asking for two memory types could therefore never match anything.
 
     Grouped, each axis keeps the mode it actually needs: the schema tag is
     always required, the requested `memory_types` are ORed against each
-    other, and only the caller's tags answer to `mode`. Every mode stays
-    `_strict` (`memory.tags.to_upstream`); the loose Hindsight forms, which
-    also return untagged memories, are never reachable whatever the caller
-    picks.
+    other, and the caller's own tags are ANDed. Every group is `_strict`; the
+    loose Hindsight forms, which also return untagged memories, are not
+    reachable from this surface at all.
     """
     groups: list[dict[str, object]] = [
         {"tags": ["schema:ach-retain-v1"], "match": "all_strict"}
@@ -352,5 +368,5 @@ def resolve_filters(
             {"tags": [f"type:{value}" for value in memory_types], "match": "any_strict"}
         )
     if caller_tags:
-        groups.append({"tags": list(caller_tags), "match": to_upstream(mode)})
+        groups.append({"tags": list(caller_tags), "match": "all_strict"})
     return RecallFilters(types=("world", "observation"), tag_groups=tuple(groups))

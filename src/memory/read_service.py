@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from memory import read_context
 from memory.auth.principal import Principal
+from memory.config import get_settings
 from memory.currentness import bank_is_withheld
 from memory.db import db_now
 from memory.errors import BankCurrentnessUnavailable, MemoryNotFound
@@ -48,7 +49,7 @@ from memory.read_models import (
     resolve_filters,
 )
 from memory.retained_records import LogicalBankRef
-from memory.tags import RESERVED_PREFIXES, FilterMode, default_filter_mode
+from memory.tags import RESERVED_PREFIXES
 
 _MEMORY_TYPES = set(get_args(MemoryType))
 _BASES = set(get_args(EvidenceBasis))
@@ -85,6 +86,56 @@ def _origin_of(tags: Any) -> EvidenceBasis | None:
 
 def _str_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _apply_relative_cut(hits: list[RecallHit], ratio: float) -> list[RecallHit]:
+    """Drop the tail the best hit in this same response makes irrelevant.
+
+    A hit with no score is kept: an unscored hit is unjudged, not judged
+    badly, and upstream's contract allows it. When nothing is scored there
+    is no reference to measure against, so the set passes untouched.
+    """
+    if ratio <= 0:
+        return hits
+    scored = [hit.score for hit in hits if hit.score is not None]
+    if not scored:
+        return hits
+    threshold = max(scored) * ratio
+    return [hit for hit in hits if hit.score is None or hit.score >= threshold]
+
+
+def _score(raw: Any, stage: str) -> float | None:
+    """One upstream per-stage score, or None if it sent none.
+
+    Defensive at every step because `scores` is nullable in upstream's own
+    contract and absent entirely for source facts. `bool` is excluded before
+    the numeric check for the usual reason -- it is an `int` to Python, and
+    `True` would sail through as a score of 1.0.
+    """
+    if not isinstance(raw, dict):
+        return None
+    scores = raw.get("scores")
+    if not isinstance(scores, dict):
+        return None
+    value = scores.get(stage)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _passes_semantic_floor(raw: Any, floor: float) -> bool:
+    """Whether a raw hit is about the query at all.
+
+    `semantic` is a cosine similarity, so unlike `final` it means the same
+    thing on every query and every bank. A hit that upstream surfaced by
+    keyword alone reports no semantic score at all, and is KEPT: unjudged is
+    not judged badly, and dropping it would silently narrow recall to the
+    vector arm.
+    """
+    if floor <= 0:
+        return True
+    semantic = _score(raw, "semantic")
+    return semantic is None or semantic >= floor
 
 
 def _caller_tags_of(tags: Any) -> tuple[str, ...]:
@@ -138,6 +189,7 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
             ),
             document_id=_str_or_none(raw.get("document_id")),
             tags=_caller_tags_of(tags),
+            score=_score(raw, "final"),
         )
     except ValidationError:
         return None
@@ -182,7 +234,6 @@ def _recall_hits(
     view: View,
     memory_types: tuple[MemoryType, ...] | None,
     caller_tags: tuple[str, ...] = (),
-    mode: FilterMode = default_filter_mode(),
 ) -> list[RecallHit]:
     """Everything AFTER a bank is already resolved, authorized and proven
     current: build the server-owned filter set, call Hindsight, normalize
@@ -197,11 +248,22 @@ def _recall_hits(
     already-resolved bank's recall is queried and normalized is identical on
     purpose, so both delegate to one place.
 
-    Returns every hit that normalized cleanly, NOT sliced to any
-    `max_results` -- the caller decides how much of this to keep and whether
-    that makes the response truncated.
+    Returns every hit that CLEARED THE RELEVANCE FLOOR and normalized
+    cleanly, NOT sliced to any `max_results` -- the caller decides how much
+    of this to keep and whether that makes the response truncated. The floor
+    is applied upstream, not here, so `max_results` now caps a set that is
+    already relevant rather than padding it out of the tail.
+
+    Both thresholds come from configuration only. There is no per-request
+    override and deliberately so -- see `read_models`' module docstring. They
+    are also read independently of each other: each answers a different
+    question about a hit, so neither disabling the other is a behaviour any
+    caller asked for.
     """
-    filters = resolve_filters(view, memory_types, caller_tags, mode)
+    settings = get_settings()
+    floor = settings.recall_min_semantic
+    ratio = settings.recall_relative_cut
+    filters = resolve_filters(view, memory_types, caller_tags)
     raw = get_client().recall(
         bank_id,
         query,
@@ -216,12 +278,19 @@ def _recall_hits(
     raw_results = raw.get("results") if isinstance(raw, dict) else None
     if not isinstance(raw_results, list):
         raw_results = []
+    # Filtered here rather than through upstream's own `min_scores`, which
+    # cannot express this: its `semantic` floor is a RETRIEVAL-level cutoff
+    # pushed into the vector arm only, so a hit surfaced by keyword bypasses
+    # it entirely and the filter would mean something different depending on
+    # which arm found the hit.
     hits: list[RecallHit] = []
     for item in raw_results[:_MAX_RAW_RESULTS_CONSIDERED]:
+        if not _passes_semantic_floor(item, floor):
+            continue
         hit = _normalize_hit(item)
         if hit is not None:
             hits.append(hit)
-    return hits
+    return _apply_relative_cut(hits, ratio)
 
 
 def recall(
@@ -246,7 +315,7 @@ def recall(
 
     hits = _recall_hits(
         read_bank.bank_id, request.query, request.view, request.kinds,
-        request.tags_filter, request.tags_filter_mode,
+        request.tags_filter,
     )
     capped = hits[: request.max_results]
     response = build_recall_response(

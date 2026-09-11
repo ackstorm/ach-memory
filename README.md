@@ -484,6 +484,8 @@ its server registration's `extra_headers`.
 | `MEMORY_MCP_ALLOWED_HOSTS` | `127.0.0.1,localhost,127.0.0.1:*,localhost:*` |
 | `MEMORY_HINDSIGHT_TIMEOUT_SECONDS` | `30` |
 | `MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS` | `180` |
+| `MEMORY_RECALL_MIN_SEMANTIC` | `0.60` |
+| `MEMORY_RECALL_RELATIVE_CUT` | `0.01` |
 | `MEMORY_WRITE_LIMIT` | `60` |
 | `MEMORY_WRITE_WINDOW_SECONDS` | `60` |
 | `MEMORY_PROJECT_CREATION_LIMIT` | `10` |
@@ -508,6 +510,31 @@ its server registration's `extra_headers`.
 The three required variables are supplied by Compose for local setup; deployed
 service operators configure them separately. See
 [src/memory/config.py](src/memory/config.py) for defaults.
+
+`MEMORY_RECALL_MIN_SEMANTIC` and `MEMORY_RECALL_RELATIVE_CUT` are the two that
+change what a caller sees rather than how the service runs, so they are worth
+knowing before someone reports that recall "lost" a memory. Together they make
+recall withhold hits it cannot justify instead of padding the answer out to
+`max_results`: the first is an absolute floor on semantic similarity (so a
+query about nothing in the bank returns nothing at all), the second drops
+whatever scores below a fraction of the best hit in the same response. Each
+hit that does come back carries the `score` it was ranked by.
+
+**A caller cannot lower either one.** There is no per-request override, on
+purpose — a quality contract that any single caller can switch off is not a
+contract. Tuning is an operator decision, through these two variables.
+
+The default floor of `0.60` is measured, not guessed. Against
+`benchmarks/corpus.jsonl`, it answers all 25 questions, cuts the reply from 68
+hits to 12.7, and removes 98.7% of the hits returned for deliberately absurd
+queries. It does not have much room above it: `0.62` breaks the smoke test and
+`0.65` starts blinding real questions. Note that no floor separates the two
+cleanly — the best nonsense hit scores `0.6355` and the weakest answered
+question `0.6313` — so raising this trades one error for the other rather than
+removing either. If a memory seems genuinely missing from a recall, setting
+`MEMORY_RECALL_MIN_SEMANTIC=0` is how to tell a withheld hit from one that was
+never retrieved. The reasoning and the full table are in
+[src/memory/config.py](src/memory/config.py).
 
 ## Development
 

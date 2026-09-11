@@ -66,7 +66,7 @@ from memory.memory_types import EvidenceBasis, MemoryType, RetainTrigger
 from memory.retained_records import get_by_document_id, get_by_source_memory_id
 from memory.retention import submit_retain
 from memory.sanitization import normalize_claim
-from memory.tags import FilterMode, default_filter_mode, normalize_caller_tags, to_upstream
+from memory.tags import normalize_caller_tags
 from memory.v040_contracts import RetainEvidence, TypedRetainRequest
 
 logger = logging.getLogger("memory.mcp")
@@ -383,11 +383,14 @@ def register(mcp: MCPServer) -> None:
             "Search memory and return bounded, grounded matching facts. May "
             "also expire a bounded batch (at most 32) of claims already past "
             "their stated expiry as a side effect of this access. "
-            "`tags_filter` narrows results to memories carrying the given "
-            "tags in addition to the server's own filters (e.g. "
+            "`tags_filter` narrows results to memories carrying ALL of the "
+            "given tags, in addition to the server's own filters (e.g. "
             "`repo:<path>` to search one repository in a project bank "
-            "shared by many); `tags_filter_mode` chooses `all` (every given "
-            "tag, the default) or `any` (at least one)."
+            "shared by many). Results below a relevance floor are withheld "
+            "rather than returned as padding, so a query with no good answer "
+            "returns nothing instead of a confident-looking list; each hit "
+            "carries the `score` it was ranked by. The floor is server-owned "
+            "and cannot be lowered per request."
         ),
         # readOnlyHint=False: run_access_maintenance below can claim expiry
         # work and commit database changes -- a client that skips
@@ -407,14 +410,13 @@ def register(mcp: MCPServer) -> None:
         kinds: list[MemoryType] | None = None,
         max_results: int = read_models.DEFAULT_MAX_RESULTS,
         tags_filter: list[str] | None = None,
-        tags_filter_mode: FilterMode = default_filter_mode(),
     ) -> ToolResult:
         def body_factory() -> read_models.RecallRequest:
             _check_content_size(query)
             return read_models.RecallRequest(
                 scope=scope, project_slug=project_slug, query=query, view=view,
                 kinds=tuple(kinds) if kinds else None, max_results=max_results,
-                tags_filter=tags_filter, tags_filter_mode=tags_filter_mode,
+                tags_filter=tags_filter,
             )
 
         def call(resolved, db, principal, body):
@@ -423,7 +425,7 @@ def register(mcp: MCPServer) -> None:
             read_service.run_access_maintenance(db, recall_bank_ref)
             hits = read_service._recall_hits(
                 resolved.bank_id, body.query, body.view, body.kinds,
-                body.tags_filter, body.tags_filter_mode,
+                body.tags_filter,
             )
             return read_models.build_recall_response(
                 project_slug=resolved.current_slug,
@@ -467,9 +469,8 @@ def register(mcp: MCPServer) -> None:
             "a list of facts. Costs more than recall. May also expire a "
             "bounded batch (at most 32) of claims already past their stated "
             "expiry as a side effect of this access. `tags_filter` narrows "
-            "the answer to memories carrying the given tags, same "
-            "convention as recall; `tags_filter_mode` chooses `all` (every "
-            "given tag, the default) or `any` (at least one)."
+            "the answer to memories carrying ALL of the given tags, same "
+            "convention as recall."
         ),
         # Reflect still spends LLM tokens and keeps confirmation/rate limiting.
         # readOnlyHint=False, explicit rather than relying on the SDK's
@@ -485,7 +486,6 @@ def register(mcp: MCPServer) -> None:
         git_locator: str | None = None,
         verbose: Verbose = False,
         tags_filter: list[str] | None = None,
-        tags_filter_mode: FilterMode = default_filter_mode(),
     ) -> ToolResult:
         def body_factory() -> ScopedRequest:
             body = ScopedRequest(
@@ -506,10 +506,12 @@ def register(mcp: MCPServer) -> None:
             # would escape the MCPToolError conversion every other error goes
             # through.
             normalized = normalize_caller_tags(tags_filter)
+            # Same server-owned scoping as recall, from the same function.
+            reflect_filters = read_models.resolve_filters("current", None, normalized)
             return get_client().reflect(
                 bank, query,
-                tags=list(normalized) if normalized else None,
-                tags_match=to_upstream(tags_filter_mode) if normalized else None,
+                tag_groups=list(reflect_filters.tag_groups),
+                fact_types=list(reflect_filters.types),
             )
 
         return _run(

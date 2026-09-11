@@ -141,6 +141,85 @@ class Settings(BaseSettings):
     hindsight_timeout_seconds: float = Field(default=30.0, gt=0)
     hindsight_llm_timeout_seconds: float = Field(default=180.0, gt=0)
 
+    #: Minimum semantic similarity (cosine, 0-1) a recall hit must clear.
+    #:
+    #: Hindsight ranks but never abstains: it returns its whole candidate set
+    #: however badly it scores, so a nonsense query came back with a page of
+    #: confident-looking facts and nothing marking them as noise.
+    #:
+    #: On `semantic` and NOT on `final`/`reranker`, which was the first
+    #: attempt and was wrong. Those two are excellent at ORDERING within one
+    #: response and unusable as absolute thresholds: measured, a fact whose
+    #: cross-encoder score was 0.000024 for one query scored 0.98 for
+    #: another, and `make smoke` caught it -- "pins its Python tooling with
+    #: uv, never with pip" was withheld from "how are Python dependencies
+    #: managed", which is a reranker false negative a human would not make.
+    #: Hindsight's own documentation warns about exactly this and the warning
+    #: was under-weighted. `semantic` is a raw cosine similarity, so it means
+    #: the same thing on every query and every bank size.
+    #:
+    #: Measured against benchmarks/corpus.jsonl (34 facts, 25 questions with
+    #: their expected answers, plus 10 deliberately absurd queries). Scored
+    #: per QUESTION, not per hit -- a question is answered if ANY of its
+    #: expected facts clears the floor, so the number that matters is the
+    #: BEST expected hit each question got:
+    #:
+    #: * best expected hit: min 0.6313, median 0.7884, max 0.8407
+    #: * nonsense hits (n=680): median 0.4782, max 0.6355
+    #:
+    #: Those ranges still OVERLAP, by 0.004 -- the best nonsense outscores
+    #: the weakest answered question -- so no value here abstains on every
+    #: off-topic query without also blinding a real one. A threshold only
+    #: picks which of the two errors to make.
+    #:
+    #: What each candidate floor cost, on that corpus:
+    #:
+    #:      floor   questions blinded   hits/question   nonsense hits left
+    #:       0.00        0/25                    68.0           680/680
+    #:       0.55        0/25                    31.0            61/680
+    #:       0.60        0/25                    12.7             9/680
+    #:       0.65        1/25                     5.4             0/680
+    #:       0.70        2/25                     3.2             0/680
+    #:
+    #: 0.60 buys a 5x cut in answer size and removes 98.7% of the nonsense
+    #: while blinding nothing the corpus can detect.
+    #:
+    #: Know which way this fails before moving it. Too low returns junk the
+    #: caller can see and dismiss (every hit carries its `score`); too high
+    #: makes a real memory silently unreachable and looks like data loss --
+    #: which is why the safe direction is down. Two ceilings sit just above:
+    #: `make smoke`'s fact scores 0.6135, so 0.62 breaks it, and 0.65 blinds
+    #: "how should Python packages be installed" (its best expected hit
+    #: scores 0.6313). Re-measure against the corpus before raising it, with
+    #: scripts/../benchmarks. 0 disables the floor.
+    recall_min_semantic: float = Field(default=0.60, ge=0, le=1)
+
+    #: Drop hits scoring below this fraction of the BEST hit in the same
+    #: response. `recall_min_semantic` answers "is anything here about the
+    #: query at all"; this answers "how much of what came back is just tail".
+    #:
+    #: Both are needed and neither substitutes for the other, and the pairing
+    #: of question to score is the point. On an absurd query every candidate
+    #: is equally bad, so a ratio against the top one keeps them all and only
+    #: the absolute floor abstains. On a good query the floor passes a long
+    #: tail -- one measured response ran 1.08, 1.08, 0.75, 0.50 and then fell
+    #: off a cliff to 0.013, 0.009, 0.003.
+    #:
+    #: On `final`, and relative, because `final` is the value hits are
+    #: ORDERED by and is only meaningful against the other hits beside it: a
+    #: ratio re-calibrates itself on every query and never has to be
+    #: comparable across banks. Using it as an absolute threshold is exactly
+    #: the mistake `recall_min_semantic` documents.
+    #:
+    #: 0.01 measured against the same corpus: it takes 5.0 hits per query
+    #: down to 3.6 and costs nothing that was not already lost. Ratios from
+    #: 0.05 up cost a whole question to save another 0.4 hits.
+    #:
+    #: Read independently of `recall_min_semantic`, not gated by it. The two
+    #: answer different questions about a hit, and no caller ever asked for
+    #: one of them to silently switch the other off. 0 disables the cut.
+    recall_relative_cut: float = Field(default=0.01, ge=0, le=1)
+
     write_limit: int = Field(default=60, ge=1)
     # gt=0 for the same reason write_limit has ge=1, and this one fails more
     # quietly: a window of 0 makes `cutoff = now - window` evict every hit
