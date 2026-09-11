@@ -225,3 +225,41 @@ def test_relevance_is_never_caller_input():
         RecallRequest(scope="user", query="q", min_score=0)
     with pytest.raises(ValueError):
         RecallRequest(scope="user", query="q", min_scores={"final": 0.5})
+
+
+def test_a_keyword_only_hit_the_reranker_dismissed_is_withheld():
+    """QA F-12: keyword-arm hits with no semantic score sailed past the floor
+    at final 0.003-0.013 whenever nothing relevant existed."""
+    raw = _raw(scores={"final": 0.0052, "reranker": 0.006, "keyword": 3.1})
+    assert not _passes_semantic_floor(raw, 0.60, keyword_only_min_reranker=0.10)
+
+
+def test_a_keyword_only_hit_the_reranker_endorsed_survives():
+    raw = _raw(scores={"final": 0.71, "reranker": 0.68, "keyword": 3.1})
+    assert _passes_semantic_floor(raw, 0.60, keyword_only_min_reranker=0.10)
+
+
+def test_a_keyword_only_hit_with_no_reranker_score_is_still_unjudged():
+    """RRF passthrough deployments report no reranker score; nothing judged
+    the hit, so nothing withholds it."""
+    raw = _raw(scores={"final": 0.0164, "keyword": 3.1})
+    assert _passes_semantic_floor(raw, 0.60, keyword_only_min_reranker=0.10)
+
+
+def test_the_reranker_floor_never_touches_a_semantically_surfaced_hit():
+    raw = _raw(scores={"final": 0.000024, "reranker": 0.00002, "semantic": 0.66})
+    assert _passes_semantic_floor(raw, 0.60, keyword_only_min_reranker=0.10)
+
+
+def test_the_keyword_only_floor_reaches_recall_from_configuration(spy, monkeypatch):
+    """The setting is read, not just declared. Mirrors QA F-12: when nothing
+    relevant exists the relative cut has no good hit to measure against, so
+    this floor is all that stands between keyword-only noise and the caller."""
+    settings = get_settings()
+    spy.results = [_raw(id="mem-junk", scores={"final": 0.0052, "reranker": 0.006, "keyword": 3.1})]
+
+    assert read_service._recall_hits("bank", "query", "current", None, ()) == []
+
+    monkeypatch.setattr(settings, "recall_keyword_only_min_reranker", 0.0)
+    hits = read_service._recall_hits("bank", "query", "current", None, ())
+    assert [hit.memory_id for hit in hits] == ["mem-junk"]

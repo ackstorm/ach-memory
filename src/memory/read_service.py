@@ -214,19 +214,25 @@ def _score(raw: Any, stage: str) -> float | None:
     return float(value)
 
 
-def _passes_semantic_floor(raw: Any, floor: float) -> bool:
+def _passes_semantic_floor(
+    raw: Any, floor: float, *, keyword_only_min_reranker: float = 0.0
+) -> bool:
     """Whether a raw hit is about the query at all.
 
     `semantic` is a cosine similarity, so unlike `final` it means the same
     thing on every query and every bank. A hit that upstream surfaced by
-    keyword alone reports no semantic score at all, and is KEPT: unjudged is
-    not judged badly, and dropping it would silently narrow recall to the
-    vector arm.
+    keyword alone reports no semantic score; it is judged by the reranker
+    instead when one ran (`config.recall_keyword_only_min_reranker`), and kept
+    unjudged when none did -- dropping it outright would silently narrow
+    recall to the vector arm.
     """
-    if floor <= 0:
-        return True
     semantic = _score(raw, "semantic")
-    return semantic is None or semantic >= floor
+    if semantic is not None:
+        return floor <= 0 or semantic >= floor
+    if keyword_only_min_reranker <= 0:
+        return True
+    reranker = _score(raw, "reranker")
+    return reranker is None or reranker >= keyword_only_min_reranker
 
 
 def _caller_tags_of(tags: Any) -> tuple[str, ...]:
@@ -417,7 +423,9 @@ def _recall_hits(
     # which arm found the hit.
     hits: list[RecallHit] = []
     for item in raw_results[:_MAX_RAW_RESULTS_SCANNED]:
-        if not _passes_semantic_floor(item, floor):
+        if not _passes_semantic_floor(
+            item, floor, keyword_only_min_reranker=settings.recall_keyword_only_min_reranker
+        ):
             continue
         hit = _normalize_hit(item)
         if hit is not None:

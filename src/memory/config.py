@@ -229,6 +229,17 @@ class Settings(BaseSettings):
     #: one of them to silently switch the other off. 0 disables the cut.
     recall_relative_cut: float = Field(default=0.01, ge=0, le=1)
 
+    #: A hit the KEYWORD arm alone surfaced carries no `semantic` score, so
+    #: the floor above cannot judge it. The cross-encoder can: `reranker` is
+    #: its normalized 0-1 relevance, comparable across queries and banks.
+    #: Measured in production 2026-09-11 (QA F-12): keyword-only noise sat at
+    #: 0.003-0.013 while relevant hits scored 0.55-1.10. Applied ONLY when
+    #: `semantic` is absent -- a semantically-surfaced hit the reranker
+    #: dislikes is a known false negative of the reranker, not of the hit
+    #: (see tests/test_recall_relevance_floor.py). Absent `reranker` (RRF
+    #: passthrough) leaves the hit unjudged and kept. 0 disables.
+    recall_keyword_only_min_reranker: float = Field(default=0.10, ge=0, le=1)
+
     write_limit: int = Field(default=60, ge=1)
     # gt=0 for the same reason write_limit has ge=1, and this one fails more
     # quietly: a window of 0 makes `cutoff = now - window` evict every hit
