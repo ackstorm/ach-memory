@@ -190,14 +190,37 @@ def test_a_first_touch_retain_says_it_created_the_project(client, juan, tenant):
     assert first.status_code == 202, first.text
     assert first.json()["notice"] == "PROJECT_CREATED"
 
-    # A fresh operation_id: a real second write, not an idempotent replay.
+    # A fresh operation_id AND a new claim: a real second write, neither an
+    # idempotent replay nor a restatement (which would say DUPLICATE_CLAIM).
     second = client.post(
         "/v1/memory/retain",
-        json=_retain_body(scope="project", project_slug="brand-new-slug-1"),
+        json=_retain_body(
+            scope="project", project_slug="brand-new-slug-1", content="we pin python 3.12"
+        ),
         headers=juan["headers"],
     )
     assert second.status_code == 202, second.text
     assert second.json().get("notice") is None
+
+
+@respx.mock
+def test_restating_a_claim_under_a_new_operation_id_is_a_duplicate(client, juan, tenant):
+    """QA F-05: byte-identical content in the same bank is one claim. The
+    second POST gets the first record back and Hindsight is not written to
+    again."""
+    _mock_hindsight()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories").mock(
+        return_value=httpx.Response(200, json={"status": "pending"})
+    )
+
+    first = client.post("/v1/memory/retain", json=_retain_body(), headers=juan["headers"])
+    second = client.post("/v1/memory/retain", json=_retain_body(), headers=juan["headers"])
+
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    assert second.json()["notice"] == "DUPLICATE_CLAIM"
+    assert second.json()["record_id"] == first.json()["record_id"]
+    assert route.call_count == 1
 
 
 @respx.mock

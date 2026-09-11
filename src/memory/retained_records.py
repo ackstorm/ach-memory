@@ -126,7 +126,10 @@ def accept_retain(
     bank: LogicalBankRef,
     canonical_content: str,
     sanitized_evidence: list[dict[str, str | None]],
-) -> tuple[RetainedRecord, bool]:
+) -> tuple[RetainedRecord, Literal["created", "replay", "duplicate"]]:
+    """Persist the claim once. The label says which row came back: a fresh
+    insert, the same operation id replayed, or (QA F-05) an active record
+    that already states this exact claim under another operation id."""
     if principal.tenant_id != bank.tenant_id or request.scope != bank.scope:
         raise ValueError("principal, request and logical bank scopes must match")
     if bank.scope == "user" and not principal.is_master and principal.user_id != bank.user_id:
@@ -142,7 +145,29 @@ def accept_retain(
                 "operation_id was already used with a different canonical payload",
                 operation_id=str(request.operation_id),
             )
-        return existing, False
+        return existing, "replay"
+
+    # Same claim, new operation id (QA F-05): a second row would mean two
+    # documents, two world facts and two observation twins for one statement,
+    # and recall could only paper over it at read time. An active, non-failed
+    # record with the same canonical text IS this claim. A forgotten one is
+    # not: re-stating a withdrawn claim is a new decision.
+    # ponytail: plain equality scan under the bank lock; banks hold tens to a
+    # few hundred rows. Add an expression index on md5(canonical_content) if
+    # it ever shows in the write path's latency.
+    duplicate = db.scalar(
+        select(RetainedRecord)
+        .where(
+            *_bank_filters(RetainedRecord, bank),
+            RetainedRecord.canonical_content == canonical_content,
+            RetainedRecord.lifecycle == "active",
+            RetainedRecord.upstream_state != "failed",
+        )
+        .order_by(RetainedRecord.recorded_at)
+        .limit(1)
+    )
+    if duplicate is not None:
+        return duplicate, "duplicate"
 
     # Pydantic's `valid_until > datetime.now(UTC)` check (v040_contracts.py) is
     # early feedback only. The database's clock, read under the same bank
@@ -181,7 +206,7 @@ def accept_retain(
     )
     db.add(row)
     db.flush()
-    return row, True
+    return row, "created"
 
 
 def get_by_operation(

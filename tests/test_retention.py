@@ -106,6 +106,21 @@ def test_retry_reuses_document_and_operation(session, principal, typed_request, 
     assert client.retain_items.call_args_list[1].kwargs["operation_id"] == str(typed_request.operation_id)
 
 
+def test_identical_content_under_a_new_operation_id_is_a_duplicate_claim(
+    session, principal, typed_request, client
+):
+    """QA F-05: the same statement under a fresh operation id is the existing
+    claim. The caller gets that record back and Hindsight hears nothing."""
+    first = submit_retain(session, principal, typed_request, wait=False, client=client)
+    restated = typed_request.model_copy(update={"operation_id": uuid4()})
+    second = submit_retain(session, principal, restated, wait=False, client=client)
+
+    assert second.notice == "DUPLICATE_CLAIM"
+    assert second.record_id == first.record_id
+    assert second.status == "accepted"
+    client.retain_items.assert_called_once()
+
+
 def test_different_payload_at_same_operation_id_conflicts(session, principal, typed_request, client):
     submit_retain(session, principal, typed_request, wait=False, client=client)
     conflicting = typed_request.model_copy(update={"content": "A different claim entirely."})

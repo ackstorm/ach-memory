@@ -67,7 +67,9 @@ class TypedRetainResponse(BaseModel):
     #: finished in between. None while pending (QA F-03).
     memory_id: str | None = None
     #: "PROJECT_CREATED" when this retain minted the project (lazy
-    #: provisioning, decision 1) so a misspelt slug is visible at once (QA F-10).
+    #: provisioning, decision 1) so a misspelt slug is visible at once (QA F-10);
+    #: "DUPLICATE_CLAIM" when an active record with the same canonical text
+    #: already existed and was returned instead of a second one (QA F-05).
     notice: str | None = None
 
 

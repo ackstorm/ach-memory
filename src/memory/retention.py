@@ -125,7 +125,9 @@ def _read_back_source_memory_id(
     return None
 
 
-def _response(row: RetainedRecord, *, status: str) -> TypedRetainResponse:
+def _response(
+    row: RetainedRecord, *, status: str, notice: str | None = None
+) -> TypedRetainResponse:
     return TypedRetainResponse(
         record_id=str(row.id),
         operation_id=row.operation_id,
@@ -135,6 +137,7 @@ def _response(row: RetainedRecord, *, status: str) -> TypedRetainResponse:
         valid_until=row.valid_until,
         lifecycle=row.lifecycle,
         memory_id=row.source_memory_id,
+        notice=notice,
     )
 
 
@@ -152,7 +155,7 @@ def submit_retain(
     canonical_content = normalize_claim(request.content)
     sanitized_evidence = [item.model_dump() for item in sanitize_evidence(request.evidence)]
 
-    row, _created = accept_retain(
+    row, outcome = accept_retain(
         db,
         principal,
         request,
@@ -160,6 +163,10 @@ def submit_retain(
         canonical_content=canonical_content,
         sanitized_evidence=sanitized_evidence,
     )
+    if outcome == "duplicate":
+        # Nothing to send upstream: the claim already exists under its own
+        # document. Report the existing record's state, not a fresh accept.
+        return _response(row, status=row.upstream_state, notice="DUPLICATE_CLAIM")
     # Committed BEFORE the network call: a transport failure after this point
     # leaves a pending, retry-safe record rather than an orphaned upstream
     # write with no local trace (SPEC §6.1).

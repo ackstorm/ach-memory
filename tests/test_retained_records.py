@@ -70,7 +70,7 @@ def test_accept_retain_is_idempotent_and_rejects_payload_conflict(session, retai
         sanitized_evidence=evidence,
     )
 
-    assert created is True and repeated is False and again.id == first.id
+    assert created == "created" and repeated == "replay" and again.id == first.id
     assert first.document_id == f"ach-retain-{request.operation_id.hex}"
     assert first.created_by_credential == principal.credential_id
     assert get_by_operation(session, bank, str(request.operation_id)).id == first.id
@@ -86,6 +86,63 @@ def test_accept_retain_is_idempotent_and_rejects_payload_conflict(session, retai
         )
 
 
+def test_identical_content_under_a_new_operation_id_is_the_existing_claim(
+    session, retained_bank
+):
+    """QA F-05: a restated claim is the same claim, not a second row."""
+    principal, bank = retained_bank
+    evidence = [{"kind": "user_quote", "raw": "quote", "source_ref": None}]
+
+    first, outcome1 = accept_retain(
+        session,
+        principal,
+        _request(),
+        bank=bank,
+        canonical_content="claim",
+        sanitized_evidence=evidence,
+    )
+    second, outcome2 = accept_retain(
+        session,
+        principal,
+        _request(),
+        bank=bank,
+        canonical_content="claim",
+        sanitized_evidence=evidence,
+    )
+
+    assert outcome1 == "created" and outcome2 == "duplicate"
+    assert second.id == first.id
+    assert session.query(RetainedRecord).count() == 1
+
+
+def test_a_forgotten_claim_can_be_retained_again(session, retained_bank):
+    """Re-stating a withdrawn claim is a new decision, so it gets a new row."""
+    principal, bank = retained_bank
+    evidence = [{"kind": "user_quote", "raw": "quote", "source_ref": None}]
+
+    first, _ = accept_retain(
+        session,
+        principal,
+        _request(),
+        bank=bank,
+        canonical_content="claim",
+        sanitized_evidence=evidence,
+    )
+    first.lifecycle = "forgotten"
+    session.flush()
+    second, outcome = accept_retain(
+        session,
+        principal,
+        _request(),
+        bank=bank,
+        canonical_content="claim",
+        sanitized_evidence=evidence,
+    )
+
+    assert outcome == "created"
+    assert second.id != first.id
+
+
 def test_payload_hash_excludes_transport_identity_and_server_time(session, retained_bank):
     principal, bank = retained_bank
     first, _ = accept_retain(
@@ -96,6 +153,10 @@ def test_payload_hash_excludes_transport_identity_and_server_time(session, retai
         canonical_content="claim",
         sanitized_evidence=[{"kind": "user_quote", "raw": "quote"}],
     )
+    # Forgotten first, or the second call would hand back the same row
+    # (QA F-05) and there would be no second hash to compare.
+    first.lifecycle = "forgotten"
+    session.flush()
     second, _ = accept_retain(
         session,
         principal,
@@ -125,6 +186,9 @@ def test_payload_hash_canonicalizes_equivalent_expiry_offsets(session, retained_
         canonical_content="claim",
         sanitized_evidence=[{"raw": "quote", "kind": "user_quote"}],
     )
+    # Same reason as above: a live twin would be deduplicated, not hashed.
+    first.lifecycle = "forgotten"
+    session.flush()
     second, _ = accept_retain(
         session,
         principal,
@@ -268,7 +332,7 @@ def test_concurrent_exact_retry_creates_one_record(engine):
 
         assert "FOR UPDATE" in waiting_query
         assert winner_result[0] == loser_result[0]
-        assert {winner_result[1], loser_result[1]} == {True, False}
+        assert {winner_result[1], loser_result[1]} == {"created", "replay"}
         with factory() as db:
             assert db.query(RetainedRecord).filter_by(tenant_id=tenant_id).count() == 1
     finally:
