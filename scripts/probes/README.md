@@ -18,6 +18,7 @@ Results as measured on 2026-09-11 are in
 | Probe | Question | Runs |
 |---|---|---|
 | `dup_bill.py` | Do duplicates accumulate, and does the caller see them? | host: `uv run python scripts/probes/dup_bill.py` |
+| `twin_bill.py` | Does `source_fact_ids` survive a token-starved `source_facts` map, and are this stack's observations single-source and verbatim? (Reads `memory_units` on `hindsight-db` directly for the census.) | host |
 | `budget_bill.py` | Do duplicates evict answers from upstream's result budget? | host |
 | `cap_bill.py` | Does the 200-result cap blind an admissible hit? | host |
 | `clean_bill.py` | Production-shaped banks (Alice only): is every expected answer returned, and if not, which stage withheld it? | host |

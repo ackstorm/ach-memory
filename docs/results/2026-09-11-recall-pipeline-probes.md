@@ -1,6 +1,6 @@
 # Recall pipeline probes — duplicates, budgets, the cap, the reranker
 
-Status: **MEASURED — three fixes shipped, one decision closed**
+Status: **MEASURED — four fixes shipped, one decision closed**
 
 Stack: local `docker compose`, Hindsight 0.9.1, `cross-encoder/ms-marco-MiniLM-L-6-v2`.
 Corpus: `benchmarks/corpus.jsonl` (34 facts, 25 questions) plus synthetic filler where noted.
@@ -34,6 +34,43 @@ the caller's behalf.
 
 `prefer_observations` (Hindsight's own twin-dropper) was measured and rejected: it halves the
 upstream payload but the survivor is the observation, which carries no `document_id`.
+
+### 1b. The twin is reworded in production, and text cannot see it (`twin_bill.py`)
+
+The collapse above keys on identical text, and every twin this stack ever produced is identical:
+599 of 599 observations across 48 banks, each single-source and a verbatim copy of its `world`
+fact. That is not Hindsight, it is `.env`: the local stack runs `HINDSIGHT_LLM_PROVIDER=mock`,
+and a mock consolidator echoes its input. Bumping the engine to 0.9.2 (production's version)
+changed nothing — 795 of 795 after re-seeding — because the version was never the variable.
+
+Production, on a real LLM, was sampled read-only through `get_memory` (which returns
+`source_memory_ids` on every version; `list_memories` only does so from 0.9.2):
+
+| bank | observations | sampled | multi-source | single, identical | single, **reworded** |
+|---|---|---|---|---|---|
+| project | 28 | 15 | 2 (2 and 7 sources) | 5 | 8 |
+| user | 26 | 15 | 1 (2 sources) | 0 | 14 |
+
+22 of 27 single-source observations are reworded, so the text key never matches them and both
+halves reach the caller: on the user bank, `recall("user's name")` returned 2 hits carrying 1
+claim. And multi-source consolidations exist — one built from 7 facts — so dropping the
+`observation` type from `resolve_filters`, the one-line fix that would also have recovered
+upstream budget, would throw away claims that exist nowhere else.
+
+The parent link is what text was standing in for, and upstream already ships it:
+`include.source_facts` on the recall request populates `results[].source_fact_ids`, and with
+`max_tokens: 1` the ids arrive on every result while the source-text map truncates to nothing
+(measured on banks of 1, 3 and 129 observations: 97 of 97 results carried ids at budget 1).
+
+**Shipped in `6abfebc`, `688ef3d`, `d140d82`:** after text grouping, an `observation` with exactly
+one source that is already among the input hits is dropped — it restates a claim the caller
+receives anyway and is the copy without a `document_id`. One source the floor withheld: kept,
+it is the only carrier. Two or more sources: kept, always. `RecallHit` is unchanged; the ids
+travel beside the hits inside `read_service` only.
+
+Not measured before/after on this stack, and cannot be while it consolidates with a mock. The
+before is the production sample above; the after is the same recall once this ships.
+
 
 ## 2. Upstream's result budget, and what it cut (`budget_bill.py`, `cap_bill.py`)
 
@@ -122,6 +159,9 @@ environment variable in the Hindsight deployment.
 
 ## Left open
 
+- The local stack cannot reproduce production consolidation while `.env` keeps
+  `HINDSIGHT_LLM_PROVIDER=mock`; every twin or consolidation probe run here measures the mock.
+  Pointing it at a real model through the existing LiteLLM route is one env var and some spend.
 - `_RECALL_MAX_TOKENS = 32768` covers roughly 600 claims at the measured ~27 tokens per entry;
   a larger bank is truncated again, silently, further out.
 - The `[Date: …]` prefix Hindsight feeds the cross-encoder costs measurable score on at least
