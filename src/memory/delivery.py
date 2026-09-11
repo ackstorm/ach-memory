@@ -1,5 +1,6 @@
 """Deterministic, whole-entry bounded context delivery."""
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
@@ -57,10 +58,16 @@ class ContextPayload(BaseModel):
     project_status: Literal["ready", "absent"] | None = None
 
 
+_BLANK_LINES = re.compile(r"\n[ \t]*(?:\n[ \t]*)+")
+
+
 def _inert(value: str) -> str:
-    # Content is data; newline-delimited section framing must remain owned by
-    # the assembler even when upstream output contains forged headings.
-    return value.replace("\r", " ").replace("\n", " ").strip()
+    # Content is data; the assembler owns the framing. Sections are separated
+    # by ONE blank line, so a body may keep its newlines (markdown headings,
+    # bullets, Working State fields -- QA F-20/F-28) but never a blank line:
+    # a forged "\n\nUser · x" cannot open a section of its own.
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    return _BLANK_LINES.sub("\n", value).strip()
 
 
 def assemble_context(

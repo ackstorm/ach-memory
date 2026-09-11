@@ -221,6 +221,12 @@ class ContextService:
                 if row.delivery_state != "ready" and not self._observed_ready(
                     row, bank, remaining
                 ):
+                    # A refresh in flight is a reason the caller can act on
+                    # (retry after it lands), so it is reported, not silently
+                    # skipped (QA F-21).
+                    omissions.append(
+                        DeliveryOmission(key=row.model_key, reason="model_refreshing")
+                    )
                     continue
                 jobs.append((row, bank))
         else:

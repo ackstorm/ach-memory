@@ -246,6 +246,7 @@ def test_a_withheld_model_whose_refresh_finished_is_observed_and_delivered(
     assert client.observed == [(juan.bank_id, registration.refresh_operation_id)]
     assert "content:mm-juan" in result.text
     assert registration.delivery_state == "ready"
+    assert "juan" not in [o.key for o in result.omissions]
 
 
 def test_a_withheld_model_whose_refresh_is_unfinished_stays_out_of_context(
@@ -273,6 +274,9 @@ def test_a_withheld_model_whose_refresh_is_unfinished_stays_out_of_context(
     assert client.calls == []
     assert "content:mm-juan" not in result.text
     assert registration.delivery_state == "withheld"
+    # QA F-21: the caller can act on "still refreshing" (retry once it
+    # lands), so the gap is reported rather than silently skipped.
+    assert ("juan", "model_refreshing") in [(o.key, o.reason) for o in result.omissions]
 
 
 def test_context_emits_only_current_claims_from_the_selected_banks(session, tenant):
