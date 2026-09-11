@@ -162,7 +162,15 @@ class RecallHit(BaseModel):
     # Keep released response names; their values follow the v0.4 contracts.
     kind: MemoryType | None = None
     origin: EvidenceBasis | None = None
-    occurred_at: str | None = None
+    #: When this fact was retained -- upstream's `mentioned_at`. It was named
+    #: `occurred_at` and filled from `occurred_start or mentioned_at`, and for
+    #: every fact this service writes that is always the second: retain takes
+    #: no "when did this happen" input, so `occurred_start` is never set, and
+    #: the field carried the retain time under the name of the event time.
+    #: The name now says what the value is. `occurred_start`/`occurred_end` are
+    #: not exposed until a retain can carry them; always-None fields would only
+    #: invite a caller to read meaning into their absence.
+    mentioned_at: str | None = None
     document_id: str | None = None
     #: The caller's OWN tags on this fact (e.g. `repo:group/app`), so a caller
     #: that filtered by one can see which value a hit carries. Server-derived

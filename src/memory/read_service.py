@@ -274,10 +274,7 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
             state="valid",
             kind=_kind_of(tags),
             origin=_origin_of(tags),
-            occurred_at=(
-                _str_or_none(raw.get("occurred_start"))
-                or _str_or_none(raw.get("mentioned_at"))
-            ),
+            mentioned_at=_str_or_none(raw.get("mentioned_at")),
             document_id=_str_or_none(raw.get("document_id")),
             tags=_caller_tags_of(tags),
             score=_score(raw, "final"),
