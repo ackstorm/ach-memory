@@ -62,8 +62,9 @@ request. A different claim or changed payload gets a new ID.
 
 Use `correct` when the same claim was recorded with wrong wording. Use `forget` followed by a new
 `retain` when a new claim supersedes the old one; use `restore` only to undo a mistaken forget.
-Use `delete_document` for source-level erasure. Inspect operations with `get_operation` or
-`list_operations`; `cancel_operation` does not prove an already-started mutation was undone.
+Use `delete_document` for source-level erasure. Inspect operations, including the `operation_id`
+a `forget`/`correct`/`restore` returns, with `get_operation` or `list_operations`;
+`cancel_operation` does not prove an already-started mutation was undone.
 
 Use Working State, not durable memory, for incomplete project work. Before compaction or handoff,
 write the current objective, direction, decisions, open questions and next steps. Working State is

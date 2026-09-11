@@ -18,7 +18,9 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
   `MEMORY_MASTER_GROUPS`) over an already-resolved identity, rather than a
   shared secret.
 - REST endpoints for memory, recall/history, projects, documents, operations,
-  curation, directives, mental models, and audit access.
+  curation, directives, mental models, and audit access. Directives
+  (`POST /v1/directives`) steer `reflect` only: they are not delivered by
+  `load_context`, not listed by `list_memories`, not found by `recall`.
 - A streamable HTTP MCP surface backed by the same authorization and memory
   operations as REST — memory read/write, mental-model governance, Working
   State and bounded context loading. The exact tool set is pinned in
@@ -29,15 +31,24 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
   claim is durable and independently correctable enough to keep, sanitizes
   and canonicalizes it (a 4 KiB limit, secret rejection, `ach-exact-v1`,
   English-only in 0.4.0), and stores it with typed `memory_type`/`basis`/
-  `trigger`/evidence — never an implicit background capture.
+  `trigger`/evidence — never an implicit background capture. The response
+  carries `memory_id` (the Hindsight id curation keys on, known once the
+  operation completed — always for `sync_retain`, `null` while a `retain` is
+  still pending) and a `notice`: `PROJECT_CREATED` when the write minted the
+  project, `DUPLICATE_CLAIM` when identical content already existed in the
+  bank and the existing record was returned instead of a second one.
 - Reversible memory curation (`forget`, `restore`, `correct`), each proving
   its Hindsight outcome before ACH's own record changes. `correct` uses a
   caller-visible operation ID so exact retries deduplicate without collapsing
   separate corrections that happen to return to an earlier value.
+  `memory_history` returns the claim's ACH `provenance` (basis, trigger,
+  evidence, validity, tags) and its `curation` events (forget/correct/restore
+  with `reason`) alongside Hindsight's revision history.
 - Governed mental models: one built-in plus five custom models per bank.
   Standing delivery is a property of being built-in, not a caller-settable
   flag, and a model withheld from delivery — never served as falsely
-  current — until its refresh operation is proven complete.
+  current — until its refresh operation is proven complete; `get_mental_model`
+  returns `content` once the model is `ready`.
 - Bounded standing-context loading (`ach-memory context load` / `load_context`):
   the bank's built-in model, Project Metadata, active time-bounded claims and
   explicit Working State, each under its own token budget, assembled inside
@@ -271,8 +282,10 @@ either as a client-side poll loop.
   60 seconds per credential; replicas multiply the effective limit.
 - `retain`, `recall` and `reflect` accept caller `tags` (e.g. `repo:<path>` to
   separate repositories inside one project bank). They are additive on
-  retain and AND-filtered on recall/reflect; server-derived tags (`type:`,
-  `basis:`, `schema:`, `validity:`) can never be overridden. Tagging is a
+  retain and AND-filtered on recall/reflect, and `list_memories` takes the
+  same `tags_filter` — the non-semantic way to enumerate everything tagged
+  `repo:group/app`; server-derived tags (`type:`, `basis:`, `schema:`,
+  `validity:`) can never be overridden. Tagging is a
   convention, not an enforced scope: nothing rejects a retain that omits a
   tag, and nothing rejects a recall that forgets to filter by one.
 

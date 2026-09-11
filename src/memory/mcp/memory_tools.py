@@ -497,7 +497,6 @@ def register(mcp: MCPServer) -> None:
         query: str,
         ctx: Context,
         project_slug: str | None = None,
-        verbose: Verbose = False,
         view: read_models.View = "current",
         kinds: list[MemoryType] | None = None,
         max_results: MaxResults = read_models.DEFAULT_MAX_RESULTS,
@@ -636,7 +635,11 @@ def register(mcp: MCPServer) -> None:
         )
 
     @mcp.tool(
-        description="List stored memories, most recent first.",
+        description=(
+            "List stored memories, most recent first. Filter by caller tags "
+            "with `tags_filter` (ANDed): the non-semantic way to enumerate "
+            "everything tagged e.g. `repo:group/app`."
+        ),
         annotations=ToolAnnotations(readOnlyHint=True),
     )
     def list_memories(

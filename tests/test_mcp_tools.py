@@ -191,11 +191,10 @@ def test_a_tool_never_returns_a_bank_id(call_tool, session):
     only ever matches the bank_id it is handed, exactly as a live Hindsight
     response would.
 
-    Runs with verbose=True as well, and that is the case that carries the
-    weight: the reduced shape drops `chunk_id` outright, so asserting only
-    against it would leave the substring redaction untested while still
-    looking green. Invariant 29 has to hold on the payload where the field
-    actually survives.
+    Recall has one shape, the reduced one, which drops `chunk_id` outright;
+    the substring redaction on the payload where the field survives is
+    covered by the REST test named above. This one pins that neither the key
+    nor the substring leaks through the tool.
     """
     from memory.models import User
 
@@ -209,14 +208,9 @@ def test_a_tool_never_returns_a_bank_id(call_tool, session):
         )
     )
 
-    for verbose in (False, True):
-        result = call_tool("recall", key, scope="user", query="deps", verbose=verbose)
-        assert bank_id not in str(result.model_dump())
-
-    # Recall is closed even when verbose is supplied for compatibility.
-    assert "chunk_id" not in str(
-        call_tool("recall", key, scope="user", query="deps", verbose=True).result
-    )
+    result = call_tool("recall", key, scope="user", query="deps")
+    assert bank_id not in str(result.model_dump())
+    assert "chunk_id" not in str(result.result)
 
 
 @respx.mock
@@ -1891,7 +1885,11 @@ EXPECTED_TOOLS = {
 # Then by memory_history's provenance/curation half (QA F-13/F-14): its
 # description names what it now returns, and its outputSchema gains the
 # `provenance` and `curation` fields.
-TOOL_CONTRACT_SHA256 = "6625527fb411990c7584b060ae47819d669bdaba1076a7e6db4fc2f60377905c"
+# Then by three changes landing together: recall loses its never-read
+# `verbose` parameter (QA F-08), list_memories' description names
+# `tags_filter` (QA F-09), and get_operation's description covers curation
+# operation ids (QA F-15).
+TOOL_CONTRACT_SHA256 = "494e7971385cb732f91705840232ec2aa839d9f832a1ede39d2bfe2791ec3a9e"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -2209,9 +2207,6 @@ def test_recall_asks_hindsight_not_to_build_the_entity_map(call_tool):
     call_tool("recall", key, scope="user", query="deps")
     assert json.loads(route.calls.last.request.content)["include"]["entities"] is None
 
-    call_tool("recall", key, scope="user", query="deps", verbose=True)
-    assert json.loads(route.calls.last.request.content)["include"]["entities"] is None
-
 
 @respx.mock
 def test_recall_passes_caller_tags_through_to_the_client(call_tool):
@@ -2240,7 +2235,9 @@ def test_recall_refuses_a_reserved_tag_namespace(call_tool):
 
 
 @respx.mock
-def test_verbose_returns_the_upstream_payload_untouched(call_tool):
+def test_recall_reduces_the_upstream_payload(call_tool):
+    """recall has no verbose escape hatch (QA F-08 -- the flag was declared and
+    never read): the reduced shape is the only shape."""
     _mock_bank()
     upstream = {
         "results": [
@@ -2263,13 +2260,10 @@ def test_verbose_returns_the_upstream_payload_untouched(call_tool):
     )
     key = call_tool.make_user()
 
-    result = call_tool("recall", key, scope="user", query="deps", verbose=True).result
-    assert result["hits"][0]["text"] == "we use uv"
-    assert "chunk_id" not in str(result)
-
     reduced = call_tool("recall", key, scope="user", query="deps").result
     assert reduced["hits"][0]["memory_id"] == "m1"
     assert reduced["hits"][0]["text"] == "we use uv"
+    assert "chunk_id" not in str(reduced)
 
 
 @respx.mock
