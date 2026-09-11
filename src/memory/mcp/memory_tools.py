@@ -531,7 +531,9 @@ def register(mcp: MCPServer) -> None:
             "bounded batch (at most 32) of claims already past their stated "
             "expiry as a side effect of this access. `tags_filter` narrows "
             "the answer to memories carrying ALL of the given tags, same "
-            "convention as recall."
+            "convention as recall. The answer comes with `based_on.memories`, "
+            "the stored facts it was grounded on, so a claim in the prose can "
+            "be traced to a memory or seen to have none."
         ),
         # Reflect still spends LLM tokens and keeps confirmation/rate limiting.
         # readOnlyHint=False, explicit rather than relying on the SDK's
@@ -567,11 +569,14 @@ def register(mcp: MCPServer) -> None:
             normalized = normalize_caller_tags(tags_filter)
             # Same server-owned scoping as recall, from the same function.
             reflect_filters = read_models.resolve_filters("current", None, normalized)
-            return get_client().reflect(
-                bank,
-                query,
-                tag_groups=list(reflect_filters.tag_groups),
-                fact_types=list(reflect_filters.types),
+            return read_service.whitelist_reflect_evidence(
+                get_client().reflect(
+                    bank,
+                    query,
+                    tag_groups=list(reflect_filters.tag_groups),
+                    fact_types=list(reflect_filters.types),
+                    include_facts=True,
+                )
             )
 
         return _run(

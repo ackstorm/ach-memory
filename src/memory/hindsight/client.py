@@ -452,9 +452,16 @@ class HindsightClient:
         *,
         tag_groups: list[dict[str, Any]] | None = None,
         fact_types: list[str] | None = None,
+        include_facts: bool = False,
     ) -> dict:
         """The same server-owned scoping `recall` applies, on the surface that
         needs it more.
+
+        `include_facts` asks upstream for `based_on` -- the memories, mental
+        models and directives the answer stood on. Off by default upstream and
+        never requested before, so a reflect answer arrived as prose with no
+        way to see its grounding. The caller-facing shape is decided by
+        `read_service.whitelist_reflect_evidence`, not here.
 
         `reflect` used to send only the caller's own `tags`/`tags_match` and
         nothing of the server's, so the two answered over DIFFERENT corpora
@@ -483,6 +490,9 @@ class HindsightClient:
             body["tag_groups"] = tag_groups
         if fact_types is not None:
             body["fact_types"] = fact_types
+        if include_facts:
+            # `{}` is upstream's "enabled with defaults"; `None`/absent is off.
+            body["include"] = {"facts": {}}
         return self._request(
             "POST", paths.reflect(bank_id), body,
             timeout=self._llm_timeout,  # a full synthesis call

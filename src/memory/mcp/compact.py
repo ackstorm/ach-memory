@@ -130,9 +130,10 @@ _RULES: dict[str, _Rule] = {
     ),
     "memory.reflect": _Rule(
         # Token accounting for the service, not for the agent reading the
-        # answer. `based_on` and `trace` are gated behind `include`, which
-        # defaults to disabled upstream and which we do not send, so reflect is
-        # already lean: `text` is the payload and it is left untouched.
+        # answer. `based_on` is requested and arrives already reduced to
+        # {memories: [{id, text, type}]} by `read_service.
+        # whitelist_reflect_evidence`, so there is nothing left to prune in it;
+        # `trace` stays behind an `include` this service never sends.
         top=frozenset({"usage"}),
     ),
     "memory.list": _Rule(

@@ -283,6 +283,49 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
         return None
 
 
+def whitelist_reflect_evidence(result: Any) -> Any:
+    """Reduce upstream's `based_on` to what a caller may see: the memories.
+
+    Requested with `include_facts=True`, upstream returns three lists. Only
+    `memories` survives, and each entry only as `id`/`text`/`type` -- the same
+    identity class `RecallHit.memory_id` already exposes, so nothing new
+    crosses the boundary. `mental_models` carries upstream's own model ids,
+    which every surface here keeps internal (`upstream_model_id`) behind a
+    caller-facing `model_key`; `directives` is not a surface this service
+    exposes at all. An upstream `context`/`occurred_*` on a memory is dropped
+    for the same reason `RecallHit` never carried them.
+
+    Whitelisted field by field, not stripped: a field upstream adds tomorrow
+    has no place to land. A result with no `based_on` is returned untouched
+    rather than given an empty one -- absent and empty are different answers
+    to "what was this grounded on".
+    """
+    if not isinstance(result, dict) or "based_on" not in result:
+        return result
+    based_on = result["based_on"]
+    if not isinstance(based_on, dict):
+        # Present but not the documented shape: nothing in it is known to be
+        # safe to forward, and a whitelist forwards only what it knows.
+        return {key: value for key, value in result.items() if key != "based_on"}
+    memories = based_on.get("memories")
+    kept = []
+    if isinstance(memories, list):
+        for item in memories:
+            if not isinstance(item, dict):
+                continue
+            text = _str_or_none(item.get("text"))
+            if text is None:
+                continue
+            kept.append(
+                {
+                    "id": _str_or_none(item.get("id")),
+                    "text": text,
+                    "type": _str_or_none(item.get("type")),
+                }
+            )
+    return {**result, "based_on": {"memories": kept}}
+
+
 def ensure_current_read_allowed(db: Session, bank: LogicalBankRef) -> None:
     """Withhold a bank whose current state cannot yet be trusted.
 

@@ -1824,7 +1824,7 @@ EXPECTED_TOOLS = {
 # descriptions that nothing-there is a coded error, never an empty result --
 # the same commit stopped them softening an absent project to a bare `{}`.
 # Descriptions only; no schema changed.
-TOOL_CONTRACT_SHA256 = "ca79dbf5deac30e079fb1bf46d9153cd0fae67d56bc620cef9d5a19a3b63ee12"
+TOOL_CONTRACT_SHA256 = "951585301aa8c965fd1fe45045cbfe07e5e6f5326e7768770d41bdd1f9991991"
 
 
 def test_tool_registration_is_stable_after_module_split():

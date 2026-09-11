@@ -516,11 +516,14 @@ def reflect(
     # The same server-owned scoping `recall` gets, from the same function, so
     # the two cannot answer over different corpora again. See client.reflect.
     reflect_filters = read_models.resolve_filters("current", None, tuple(body.tags_filter))
-    result = get_client().reflect(
-        bank_id,
-        body.query,
-        tag_groups=list(reflect_filters.tag_groups),
-        fact_types=list(reflect_filters.types),
+    result = read_service.whitelist_reflect_evidence(
+        get_client().reflect(
+            bank_id,
+            body.query,
+            tag_groups=list(reflect_filters.tag_groups),
+            fact_types=list(reflect_filters.types),
+            include_facts=True,
+        )
     )
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),
