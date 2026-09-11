@@ -131,6 +131,31 @@ def test_recall_omits_prefer_observations_when_left_at_its_upstream_default(clie
 
 
 @respx.mock
+def test_recall_requests_source_fact_ids_without_dropping_the_entity_switch(client):
+    """`include` carries two independent switches. Assigning the dict twice
+    silently discarded whichever was written first."""
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+
+    client.recall(BANK, "q", with_entities=False, with_source_facts=True)
+
+    body = json.loads(route.calls.last.request.read())
+    assert body["include"] == {"entities": None, "source_facts": {"max_tokens": 1}}
+
+
+@respx.mock
+def test_recall_omits_source_facts_when_left_at_its_upstream_default(client):
+    route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+
+    client.recall(BANK, "q")
+
+    assert "include" not in json.loads(route.calls.last.request.read())
+
+
+@respx.mock
 def test_recall_forwards_tags_and_tags_match(client):
     route = respx.post(f"{BASE}/v1/default/banks/{BANK}/memories/recall").mock(
         return_value=httpx.Response(200, json={"results": []})

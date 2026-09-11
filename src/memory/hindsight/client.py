@@ -47,6 +47,13 @@ class HindsightOutcomeUnknown(Exception):
 # know.
 _NON_TERMINAL = ("pending", "running")
 
+# `include.source_facts.max_tokens` upstream truncates the returned
+# `source_facts` TEXT map, not the `results[].source_fact_ids` list `recall`
+# actually wants -- the ids arrive on every result regardless (measured on 3
+# banks, 2026-09-11, hindsight-api 0.9.1 and 0.9.2). Smallest value that
+# still enables the switch.
+_SOURCE_FACTS_MAX_TOKENS = 1
+
 
 def _derive_failed(record: dict) -> dict:
     """Report `failed` for an operation whose every child already errored.
@@ -355,6 +362,7 @@ class HindsightClient:
         *,
         types: list[str] | None = None,
         prefer_observations: bool = False,
+        with_source_facts: bool = False,
         tags: list[str] | None = None,
         tags_match: str | None = None,
         tag_groups: list[dict[str, Any]] | None = None,
@@ -386,6 +394,12 @@ class HindsightClient:
           backfill from the next result instead of returning both. Upstream
           default is False, matching the parameter default here, so passing
           nothing changes nothing.
+        - `with_source_facts`: ask upstream to populate an observation's
+          `source_fact_ids`, the parent facts it was derived from. Sent as
+          `include.source_facts.max_tokens=1` -- only the ids are wanted,
+          never the source texts, and `max_tokens` truncates the
+          `source_facts` TEXT map, not the ids (see `_SOURCE_FACTS_MAX_TOKENS`).
+          Upstream default is disabled; omitted here too when left False.
         - `tags`/`tags_match`/`tag_groups`: upstream's own tag filter
           (`tags_match` is one of "any"/"all"/"any_strict"/"all_strict"/
           "exact"; `tag_groups` is upstream's compound and/or/not shape,
@@ -407,8 +421,17 @@ class HindsightClient:
         `read_models.resolve_filters` server-side.
         """
         body: dict[str, Any] = {"query": query}
+        include: dict[str, Any] = {}
         if not with_entities:
-            body["include"] = {"entities": None}
+            include["entities"] = None
+        if with_source_facts:
+            # Only the ids are wanted, never the source texts: `max_tokens`
+            # truncates the `source_facts` MAP, and upstream's own contract
+            # (response_models.py:440) keeps `results[].source_fact_ids`
+            # populated when it does. Measured in scripts/probes/twin_bill.py.
+            include["source_facts"] = {"max_tokens": _SOURCE_FACTS_MAX_TOKENS}
+        if include:
+            body["include"] = include
         if types is not None:
             body["types"] = types
         if prefer_observations:
