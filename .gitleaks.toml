@@ -68,3 +68,44 @@ paths = [
   '''(^|/)tests/test_capture_e2e\.py$''',
   '''(^|/)tests/test_phase3_review_closure\.py$''',
 ]
+
+# tests/test_sanitization.py proves the keyword=value rule against values
+# that pass its gate -- 10+ credential characters at 3.5+ bits of entropy --
+# which is gitleaks' own generic-api-key gate ported, so every such fixture
+# trips this scanner by construction. Exact values AND the one file, like the
+# CI key above; none ever authenticated anything.
+[[allowlists]]
+description = "Credential-shaped fixtures for the sanitizer's entropy gate"
+condition = "AND"
+paths = ['''(^|/)tests/test_sanitization\.py$''']
+regexTarget = "match"
+regexes = [
+  '''q7Hx2mZp9LkT4vRw''',
+  '''3f9a1c7e2b8d4f6a9c0e1b2d3f4a5c6e''',
+  '''dGhpcyBpcyBhIHRlc3Q=''',
+  '''ghp_x7Fq9Lm2Zt4Rv8Kw1Jn6Hp3Yb5Cd0Aa''',
+]
+
+# tests/test_sanitization_shapes.py proves the structural rules (AWS, Google,
+# JWT, Stripe, GitLab, Slack) against values shaped exactly like the
+# credentials gitleaks' default rules look for, so every one of them trips
+# this scanner by construction. Exact values AND the one file, like the CI
+# key above; the AWS pair is Amazon's own documentation example and none of
+# the others ever authenticated anything.
+[[allowlists]]
+description = "Credential-shaped fixtures for the sanitizer's structural rules"
+condition = "AND"
+paths = ['''(^|/)tests/test_sanitization_shapes\.py$''']
+regexTarget = "match"
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+  '''AIzaSyA-1234567890abcdefghijklmnopqrst_''',
+  '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c''',
+  '''sk_live_51H8xYzAbCdEfGh''',
+  '''sk-live-AKIA4XPLTESTFAKE9931''',
+  '''rk_test_51H8xYzAbCdEfGh''',
+  '''glpat-abcdefghijklmnopqrst''',
+  '''xapp-1-A0123456789-abcdefghij''',
+  '''hooks\.slack\.com/services/TQA0FIXTURE/BQA0FIXTURE/qa-fixture-not-a-token''',
+]
