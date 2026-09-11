@@ -66,7 +66,7 @@ from memory.memory_types import EvidenceBasis, MemoryType, RetainTrigger
 from memory.retained_records import get_by_document_id, get_by_source_memory_id
 from memory.retention import submit_retain
 from memory.sanitization import normalize_claim
-from memory.tags import normalize_caller_tags
+from memory.tags import MAX_TAGS, normalize_caller_tags
 from memory.v040_contracts import RetainEvidence, TypedRetainRequest
 
 logger = logging.getLogger("memory.mcp")
@@ -84,6 +84,40 @@ PageOffset = Annotated[int | None, Field(ge=0)]
 Verbose = Annotated[
     bool,
     Field(description="Return the full upstream payload instead of the reduced one."),
+]
+
+# QA F-04/F-11: the pydantic models behind these tools enforce every bound
+# below, but the SDK builds the advertised schema from the function SIGNATURE,
+# so a calling model saw bare `str`/`list[str]`/`int` and guessed. Same fix
+# working-state already got for its own parameters.
+OperationId = Annotated[
+    str | None,
+    Field(
+        description=(
+            "A UUID you generate, one per intended claim; reuse it verbatim "
+            "when retrying the same request."
+        )
+    ),
+]
+Tags = Annotated[
+    list[str] | None,
+    Field(
+        max_length=MAX_TAGS,
+        description=(
+            "Additive caller labels, at most 8, each <= 64 chars, lower-case "
+            "`[a-z0-9._-]` with one optional `ns:` prefix (e.g. `repo:group/app`). "
+            "`type:`, `basis:`, `schema:` and `validity:` are server-owned and rejected."
+        ),
+    ),
+]
+Evidence = Annotated[list[RetainEvidence], Field(min_length=1, max_length=4)]
+MaxResults = Annotated[
+    int,
+    Field(
+        ge=read_models.MIN_MAX_RESULTS,
+        le=read_models.MAX_RESULTS_CEILING,
+        description="1-20; the server never returns more than 20.",
+    ),
 ]
 
 # What a list tool asks for when the caller named no limit. Hindsight's own
@@ -372,12 +406,12 @@ def register(mcp: MCPServer) -> None:
         memory_type: MemoryType,
         basis: EvidenceBasis,
         trigger: RetainTrigger,
-        evidence: list[RetainEvidence],
+        evidence: Evidence,
         ctx: Context,
         project_slug: str | None = None,
         valid_until: datetime | None = None,
-        operation_id: str | None = None,
-        tags: list[str] | None = None,
+        operation_id: OperationId = None,
+        tags: Tags = None,
     ) -> ToolResult:
         return _retain(
             ctx,
@@ -407,12 +441,12 @@ def register(mcp: MCPServer) -> None:
         memory_type: MemoryType,
         basis: EvidenceBasis,
         trigger: RetainTrigger,
-        evidence: list[RetainEvidence],
+        evidence: Evidence,
         ctx: Context,
         project_slug: str | None = None,
         valid_until: datetime | None = None,
-        operation_id: str | None = None,
-        tags: list[str] | None = None,
+        operation_id: OperationId = None,
+        tags: Tags = None,
     ) -> ToolResult:
         # No idempotentHint: two calls with no operation_id write two
         # separate memories, same as retain -- this only blocks longer while
@@ -466,8 +500,8 @@ def register(mcp: MCPServer) -> None:
         verbose: Verbose = False,
         view: read_models.View = "current",
         kinds: list[MemoryType] | None = None,
-        max_results: int = read_models.DEFAULT_MAX_RESULTS,
-        tags_filter: list[str] | None = None,
+        max_results: MaxResults = read_models.DEFAULT_MAX_RESULTS,
+        tags_filter: Tags = None,
     ) -> ToolResult:
         def body_factory() -> read_models.RecallRequest:
             _check_content_size(query)
@@ -615,6 +649,7 @@ def register(mcp: MCPServer) -> None:
         limit: PageLimit = None,
         offset: PageOffset = None,
         verbose: Verbose = False,
+        tags_filter: Tags = None,
     ) -> ToolResult:
         # A caller that named no limit gets DEFAULT_PAGE_SIZE instead of
         # Hindsight's 100. Only in the reduced shape: `verbose` keeps the old
@@ -639,6 +674,7 @@ def register(mcp: MCPServer) -> None:
                 document_id=document_id,
                 limit=page,
                 offset=offset,
+                tags_filter=tags_filter,
             )
             # q is a caller-authored search query, same embedding-spend risk
             # class as recall's query; optional, so guarded.
@@ -647,9 +683,12 @@ def register(mcp: MCPServer) -> None:
             return body
 
         def call(bank, db, principal, slug):
+            body = body_factory()
             read_service.ensure_current_read_allowed(
-                db, retention.resolve_bank_ref(db, principal, body_factory())
+                db, retention.resolve_bank_ref(db, principal, body)
             )
+            # The body's normalised tuple, not the raw list: the same tags
+            # the REST twin forwards, lower-cased and deduped once.
             return get_client().list_memories(
                 bank,
                 q=q,
@@ -658,6 +697,8 @@ def register(mcp: MCPServer) -> None:
                 document_id=document_id,
                 limit=page,
                 offset=offset,
+                tags=list(body.tags_filter) or None,
+                tags_match="all" if body.tags_filter else None,
             )
 
         return _run(

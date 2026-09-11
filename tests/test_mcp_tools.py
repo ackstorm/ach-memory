@@ -1382,6 +1382,34 @@ def test_list_memories_reaches_the_list_endpoint(call_tool):
 
 
 @respx.mock
+def test_list_memories_forwards_a_tag_filter_as_an_and_over_mcp(call_tool):
+    """QA F-09, MCP twin of the REST test: the tag reaches Hindsight as a
+    `tags=` param ANDed via `tags_match=all`."""
+    _mock_bank()
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list.*").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    key = call_tool.make_user()
+
+    call_tool("list_memories", key, scope="user", tags_filter=["repo:x"])
+
+    params = route.calls.last.request.url.params
+    assert params.get_list("tags") == ["repo:x"]
+    assert params["tags_match"] == "all"
+
+
+def test_list_memories_refuses_a_reserved_tag_filter_over_mcp(call_tool):
+    """No route registered on purpose: a reserved tag must be refused at the
+    boundary, and a request that reached Hindsight fails via respx itself."""
+    key = call_tool.make_user()
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("list_memories", key, scope="user", tags_filter=["type:constraint"])
+
+    assert exc_info.value.code == "INVALID_TAG"
+
+
+@respx.mock
 def test_get_memory_reaches_the_memory_endpoint(call_tool):
     _mock_bank()
     route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}").mock(
@@ -1858,7 +1886,9 @@ EXPECTED_TOOLS = {
 # callers had been guessing at.
 # Then by the get_mental_model description (F-18): the tool now delivers
 # content once the refresh has landed, and said only "metadata" before.
-TOOL_CONTRACT_SHA256 = "6bc48ff3a94cf5cf57f62a9f45fc2d22b16f8cc87785c2212845a1cd27de7550"
+# Then by list_memories.tags_filter and the schema descriptions from QA
+# F-04/F-09/F-11, 2026-09-11.
+TOOL_CONTRACT_SHA256 = "c15c98686f803781027d7ba03a43e8c838d71afbdfb4e5fe2ad21f3a3c2ef7ad"
 
 
 def test_tool_registration_is_stable_after_module_split():

@@ -21,6 +21,7 @@ from memory.hindsight.client import get_client
 from memory.retained_records import get_by_source_memory_id
 from memory.retention import resolve_bank_ref
 from memory.sanitization import normalize_claim
+from memory.tags import normalize_caller_tags
 
 router = APIRouter(prefix="/v1/memory", tags=["curation"])
 
@@ -51,6 +52,15 @@ class ListMemoriesRequest(ScopedRequest):
     # is meaningless and was forwarded upstream verbatim.
     limit: int | None = Field(default=None, ge=1, le=MAX_PAGE_SIZE)
     offset: int | None = Field(default=None, ge=0)
+    #: Caller tags the listing must carry, ALL of them (QA F-09): the only
+    #: non-semantic way to enumerate "everything tagged repo:x". Same
+    #: normalisation and reserved-namespace rule as retain and recall.
+    tags_filter: tuple[str, ...] = ()
+
+    @field_validator("tags_filter", mode="before")
+    @classmethod
+    def _normalize_tags_filter(cls, value: object) -> tuple[str, ...]:
+        return normalize_caller_tags(value)
 
 
 class MemoryIdRequest(ScopedRequest):
@@ -126,6 +136,10 @@ def list_memories(
         document_id=body.document_id,
         limit=body.limit,
         offset=body.offset,
+        # None, not [] / "all", when unset: _present drops None, so Hindsight
+        # sees no tag params at all rather than an empty AND.
+        tags=list(body.tags_filter) or None,
+        tags_match="all" if body.tags_filter else None,
     )
     return MemoryResponse(
         result=_strip_bank_id(result, bank_id),

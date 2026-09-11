@@ -86,6 +86,43 @@ def test_list_memories_reaches_the_list_subpath(client, juan, tenant):
 
 
 @respx.mock
+def test_list_memories_forwards_a_tag_filter_as_an_and(client, juan):
+    """QA F-09: tags are the multi-repo scoping mechanism, yet the only way to
+    enumerate "everything tagged repo:x" was semantic recall. Every tag must
+    reach Hindsight as a repeated `tags=` param, ANDed via `tags_match=all`."""
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list.*").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0, "limit": 20, "offset": 0})
+    )
+    response = client.post(
+        "/v1/memory/list",
+        json={"scope": "user", "tags_filter": ["repo:group/app", "topic:desk"]},
+        headers=juan["headers"],
+    )
+    assert response.status_code == 200, response.text
+    params = route.calls.last.request.url.params
+    assert params.get_list("tags") == ["repo:group/app", "topic:desk"]
+    assert params["tags_match"] == "all"
+
+
+def test_list_memories_refuses_a_reserved_tag_filter(client, juan):
+    response = client.post(
+        "/v1/memory/list", json={"scope": "user", "tags_filter": ["type:constraint"]}, headers=juan["headers"]
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_TAG"
+
+
+@respx.mock
+def test_list_memories_without_a_tag_filter_sends_no_tag_params(client, juan):
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list.*").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0, "limit": 20, "offset": 0})
+    )
+    client.post("/v1/memory/list", json={"scope": "user"}, headers=juan["headers"])
+    params = route.calls.last.request.url.params
+    assert "tags" not in params and "tags_match" not in params
+
+
+@respx.mock
 def test_forget_invalidates_rather_than_deleting(client, juan, tenant):
     # memory_id must be a syntactically valid UUID: the client now rejects a
     # non-UUID memory_id locally (a malformed id is a 400 upstream, not a
