@@ -15,6 +15,7 @@ from typing import Protocol
 from mcp.server.mcpserver import MCPServer
 from sqlalchemy.orm import Session
 
+from memory import __version__
 from memory.auth.principal import Principal, resolve_principal
 from memory.config import get_settings
 from memory.db import session_scope
@@ -121,4 +122,11 @@ def build_mcp() -> MCPServer:
     return MCPServer(
         name="ach-memory",
         instructions=INSTRUCTIONS,
+        # MCPServer defaults `version` to "", and an empty string is what
+        # `initialize` then reports in serverInfo. Measured against production
+        # 2026-09-11: serverInfo said {"name": "ach-memory", "version": ""},
+        # so the deployed release had to be identified by fingerprinting tool
+        # schemas against the source. The startup banner says it to an
+        # operator reading logs; this says it to the caller.
+        version=__version__,
     )
