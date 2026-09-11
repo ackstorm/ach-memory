@@ -9,6 +9,7 @@ from memory.builtin_models import USER_CONTEXT
 from memory.errors import (
     BuiltinModelImmutable,
     CurationNeedsOperator,
+    HindsightError,
     IdempotencyConflict,
     InvalidTag,
     MentalModelNotFound,
@@ -237,6 +238,51 @@ def test_create_retry_with_same_operation_id_and_payload_is_idempotent(session, 
 
     assert first.model_key == second.model_key
     hindsight.create_mental_model.assert_called_once()
+
+
+def test_an_upstream_rejection_leaves_no_phantom_row(session, bank, hindsight):
+    """QA F-19: Hindsight 422 after the write-ahead commit left a `creating`
+    row that listed as a model and burnt one slot of the five-model quota."""
+    from memory.errors import UpstreamRejected
+
+    hindsight.create_mental_model.side_effect = UpstreamRejected("the memory backend rejected this request shape")
+    hindsight.list_mental_models.return_value = {"items": []}
+    request = custom_request(operation_id=str(uuid4()))
+
+    with pytest.raises(UpstreamRejected):
+        create_custom_model(session, bank, request, client=hindsight)
+
+    assert model_registry.find_by_operation(session, bank, request.operation_id) is None
+    assert list_models(session, bank, client=hindsight).models == []
+
+
+def test_a_transient_upstream_failure_keeps_the_row_for_resume(session, bank, hindsight):
+    """5xx and transport errors are NOT definitive: the upstream model may
+    exist. The `creating` row stays so a retry can adopt or recreate it."""
+    hindsight.create_mental_model.side_effect = HindsightError("upstream unavailable")
+    request = custom_request(operation_id=str(uuid4()))
+
+    with pytest.raises(HindsightError):
+        create_custom_model(session, bank, request, client=hindsight)
+
+    row = model_registry.find_by_operation(session, bank, request.operation_id)
+    assert row is not None and row.lifecycle_state == "creating"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"mode": "delta", "min_refresh_interval_seconds": -5},
+        {"mode": "delta", "min_refresh_interval_seconds": "soon"},
+        {"mode": "full", "refresh_after_consolidation": "yes"},
+    ],
+)
+def test_a_malformed_trigger_is_rejected_before_hindsight(trigger):
+    with pytest.raises(ValueError):
+        CustomModelCreateRequest(
+            name="x", source_query="Summarize.", source_tags=(), max_tokens=256,
+            trigger=trigger, operation_id=str(uuid4()),
+        )
 
 
 def test_create_retry_with_same_operation_id_and_different_payload_conflicts(session, bank, hindsight):

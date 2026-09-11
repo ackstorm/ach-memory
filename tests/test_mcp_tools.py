@@ -1825,7 +1825,12 @@ EXPECTED_TOOLS = {
 # where such a value comes from. Measured 2026-09-11: a caller that was not
 # our own stdio proxy had no way to satisfy it.
 # One field's description; no validation changed.
-TOOL_CONTRACT_SHA256 = "dcb2dcef19491c3dd9c44a603cfc50caeeda150f08ee1da5b9899e46084c2a74"
+# Last moved by two changes landing together on 2026-09-11: load_context
+# returning ToolResult (QA F-24) -- it gains the outputSchema every other tool
+# already advertised, so the SDK emits structuredContent for it -- and the
+# trigger description on create/update_mental_model (QA F-19/F-22), which
+# callers had been guessing at.
+TOOL_CONTRACT_SHA256 = "efe31c0a0fdbdc0e6702f22ee67f8d6bc9bc9cf3678dfe98497c81ba6622a9fc"
 
 
 def test_tool_registration_is_stable_after_module_split():

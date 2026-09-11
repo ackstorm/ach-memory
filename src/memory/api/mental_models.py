@@ -49,6 +49,10 @@ class MentalModelTrigger(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     mode: Literal["full", "delta"] | None = None
+    # Typed here so a bad value is a 422 at the boundary, not Hindsight's
+    # opaque UPSTREAM_REJECTED after a row was already written (QA F-19/F-22).
+    min_refresh_interval_seconds: int | None = Field(default=None, ge=0)
+    refresh_after_consolidation: bool | None = None
 
 
 class CreateMentalModelRequest(ScopedRequest):

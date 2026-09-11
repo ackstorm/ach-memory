@@ -46,6 +46,17 @@ logger = logging.getLogger("memory.mcp")
 Scope = Literal["user", "project"]
 MaxTokens = Annotated[int, Field(ge=256, le=8192)]
 OptionalMaxTokens = Annotated[int | None, Field(default=None, ge=256, le=8192)]
+Trigger = Annotated[
+    dict[str, object],
+    Field(
+        description=(
+            "Refresh policy. `{}` = manual (refresh_mental_model only). Otherwise "
+            "`mode`: 'full' | 'delta'; optional `refresh_after_consolidation` (bool), "
+            "`min_refresh_interval_seconds` (int >= 0), `refresh_cron` (cron string). "
+            "There is no 'manual' mode value."
+        )
+    ),
+]
 
 
 def _model_run(
@@ -119,7 +130,7 @@ def register(mcp: MCPServer) -> None:
         name: str,
         source_query: str,
         max_tokens: MaxTokens,
-        trigger: dict[str, object],
+        trigger: Trigger,
         ctx: Context,
         project_slug: str | None = None,
         git_locator: str | None = None,
@@ -237,7 +248,7 @@ def register(mcp: MCPServer) -> None:
         name: str | None = None,
         source_query: str | None = None,
         max_tokens: OptionalMaxTokens = None,
-        trigger: dict[str, object] | None = None,
+        trigger: Trigger | None = None,
         project_slug: str | None = None,
         git_locator: str | None = None,
         operation_id: str | None = None,

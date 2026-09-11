@@ -30,6 +30,7 @@ from memory.errors import (
     HindsightError,
     IdempotencyConflict,
     MentalModelNotFound,
+    UpstreamRejected,
 )
 from memory.ids import new_model_key
 from memory.models import MentalModelRegistration
@@ -92,6 +93,14 @@ def _validated_trigger(value: dict[str, object] | None) -> dict[str, object] | N
     mode = value.get("mode")
     if mode is not None and mode not in ("full", "delta"):
         raise ValueError("trigger mode must be 'full' or 'delta'; use {} for manual refresh")
+    interval = value.get("min_refresh_interval_seconds")
+    if interval is not None and (
+        isinstance(interval, bool) or not isinstance(interval, int) or interval < 0
+    ):
+        raise ValueError("trigger.min_refresh_interval_seconds must be a non-negative integer")
+    after = value.get("refresh_after_consolidation")
+    if after is not None and not isinstance(after, bool):
+        raise ValueError("trigger.refresh_after_consolidation must be a boolean")
     for key in _SERVER_OWNED_TRIGGER_KEYS:
         if value.get(key) is not None:
             raise ValueError(f"trigger.{key} is server-owned; narrow with source_tags instead")
@@ -392,16 +401,29 @@ def create_custom_model(
     )
     db.commit()
 
-    upstream = client.create_mental_model(
-        bank.bank_id,
-        name=_upstream_name(model_key),
-        source_query=request.source_query,
-        max_tokens=request.max_tokens,
-        # Hindsight has no literal ``manual`` mode. An empty ACH trigger is
-        # the explicit manual policy and must be omitted on create.
-        trigger=request.trigger or None,
-        tags=source_tags,
-    )
+    try:
+        upstream = client.create_mental_model(
+            bank.bank_id,
+            name=_upstream_name(model_key),
+            source_query=request.source_query,
+            max_tokens=request.max_tokens,
+            # Hindsight has no literal ``manual`` mode. An empty ACH trigger is
+            # the explicit manual policy and must be omitted on create.
+            trigger=request.trigger or None,
+            tags=source_tags,
+        )
+    except UpstreamRejected:
+        # Definitive: a 422 means nothing was created upstream and the same
+        # request can never succeed, so there is no lost response to resume.
+        # Left in place, the write-ahead row listed as a model and counted
+        # against the quota (QA F-19). Transient failures fall through and
+        # keep the row: the upstream half may exist and resume_model_mutation
+        # is how it is found.
+        row = model_registry.find_by_operation(db, bank, request.operation_id)
+        if row is not None and row.lifecycle_state == "creating":
+            db.delete(row)
+            db.commit()
+        raise
     upstream_id, refresh_operation_id = _created_identity(upstream)
     activated = model_registry.activate_model(
         db, bank, model_key, upstream_id, refresh_operation_id

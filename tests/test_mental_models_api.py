@@ -172,6 +172,13 @@ def test_an_unknown_trigger_mode_is_a_422(client, juan):
     assert response.status_code == 422, response.text
 
 
+def test_a_negative_refresh_interval_is_a_422(client, juan):
+    body = _create_body()
+    body["trigger"] = {"mode": "delta", "min_refresh_interval_seconds": -5}
+    response = client.post("/v1/mental-models", json=body, headers=juan["headers"])
+    assert response.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # List / get: registry metadata, no project creation on read
 # ---------------------------------------------------------------------------
