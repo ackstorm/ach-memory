@@ -18,6 +18,7 @@ field: one bad item lost, never one bad field silently reshaped into
 something that merely looks safe.
 """
 
+import re
 from typing import Any, get_args
 
 from pydantic import ValidationError
@@ -86,6 +87,58 @@ def _origin_of(tags: Any) -> EvidenceBasis | None:
 
 def _str_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) else None
+
+
+#: The provenance suffix Hindsight appends to an observation's own text
+#: (`... (mentioned_at=2026-09-11 10:14:32.619026+00:00)`). Stripped for the
+#: duplicate comparison only: the hit's text is returned exactly as upstream
+#: sent it, because the suffix is upstream's rendering and not ours to rewrite.
+_MENTIONED_AT_SUFFIX = re.compile(r"\s*\(mentioned_at=[^)]*\)\s*$")
+
+
+def _collapse_duplicate_claims(hits: list[RecallHit]) -> list[RecallHit]:
+    """One claim, one slot. Keeps the most traceable copy of each identical text.
+
+    Two separate mechanisms put the same sentence in a response several times,
+    measured on a 10-claim bank (2026-09-11):
+
+    * Every retained claim exists upstream twice -- once as the `world` fact
+      and once as Hindsight's own `observation` of it, same text -- and
+      `resolve_filters` asks for both types, so a bank nothing was ever
+      re-retained into already answered every query at 2x.
+    * A re-retain of identical content is a NEW claim: `accept_retain`
+      compares `payload_hash` only against a row it already found by
+      `operation_id`, and nothing indexes or queries that hash alone. The
+      same sentence sent four times is four facts and eight upstream entries.
+
+    Together they cost 7 of 8 slots on the worst measured query: eight hits,
+    one claim. Neither threshold can help -- identical text scores
+    identically, so the floor and the relative cut keep or drop all copies
+    alike.
+
+    Which copy survives is decided by `document_id`, not by rank. Upstream
+    orders by `final` and the `world` fact outranks its observation almost
+    always, so first-wins would usually pick it anyway -- but the floor runs
+    BEFORE this and judges each copy separately, and the twins' scores sit
+    within 0.002% of each other (1.0997851 vs 1.0997698, measured), so a fact
+    can be withheld while its observation passes. First-wins then returned
+    the observation: on one measured query that was 3 of 3 hits, each
+    carrying no `document_id` and a `(mentioned_at=...)` suffix upstream
+    renders into the text. Preferring the traceable copy costs a score
+    difference in that fifth decimal and buys provenance the caller can
+    follow.
+
+    Nothing is merged: the hit returned is one upstream record, exactly as it
+    arrived. A genuine consolidation is never dropped -- it summarises several
+    facts, so its text differs from any of them.
+    """
+    groups: dict[str, RecallHit] = {}
+    for hit in hits:
+        key = _MENTIONED_AT_SUFFIX.sub("", hit.text).strip()
+        kept = groups.get(key)
+        if kept is None or (kept.document_id is None and hit.document_id is not None):
+            groups[key] = hit
+    return list(groups.values())
 
 
 def _apply_relative_cut(hits: list[RecallHit], ratio: float) -> list[RecallHit]:
@@ -290,7 +343,7 @@ def _recall_hits(
         hit = _normalize_hit(item)
         if hit is not None:
             hits.append(hit)
-    return _apply_relative_cut(hits, ratio)
+    return _apply_relative_cut(_collapse_duplicate_claims(hits), ratio)
 
 
 def recall(
