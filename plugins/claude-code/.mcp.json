@@ -12,7 +12,8 @@
         "${ACH_MEMORY_URL:-http://localhost:8000/mcp/}"
       ],
       "env": {
-        "ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}"
+        "ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}",
+        "ACH_MEMORY_HEADER": "${ACH_MEMORY_HEADER:-Authorization}"
       }
     }
   }

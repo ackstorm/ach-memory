@@ -84,6 +84,16 @@ def test_claude_mcp_config_is_static_and_takes_both_values_from_the_environment(
     key would make the bundle unsafe to commit. The key must never move
     into `args` -- argv is world-readable.
 
+    ACH_MEMORY_HEADER rides along for the same reason opencode's block
+    carries it: claude sanitizes a stdio child's environment, so a variable
+    the user exported in their shell but this block does not name never
+    reaches the proxy. Measured 2026-09-11 -- with it absent the proxy fell
+    back to `Authorization`, which the ACH gateway consumes for its own auth
+    and does not forward, and every tool call failed UNAUTHORIZED while the
+    export looked correct. The `:-Authorization` default keeps an unset
+    variable from arriving as a literal `${ACH_MEMORY_HEADER}` and being used
+    as the outgoing header's name.
+
     The pinned tag must equal this checkout's version, or a release ships a
     plugin that installs the previous release's proxy; `make release-bump`
     rewrites it and asserts the result.
@@ -101,7 +111,10 @@ def test_claude_mcp_config_is_static_and_takes_both_values_from_the_environment(
             "--url",
             "${ACH_MEMORY_URL:-http://localhost:8000/mcp/}",
         ],
-        "env": {"ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}"},
+        "env": {
+            "ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY}",
+            "ACH_MEMORY_HEADER": "${ACH_MEMORY_HEADER:-Authorization}",
+        },
     }
 
 
