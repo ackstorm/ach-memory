@@ -144,7 +144,17 @@ def resolve_principal(
             "no credentials of its own: the token must come from the "
             "configured JWT issuer or the platform that issued your key"
         )
-    raise Unauthorized("missing or malformed credential: send Authorization: Bearer")
+    accepted = []
+    if settings.auth_jwt_enabled:
+        accepted.append("Authorization: Bearer <token>")
+    if settings.auth_platform_enabled:
+        accepted.extend(f"{header}: <key>" for header in settings.incoming_headers)
+    # Names the header(s) THIS deployment reads: a fixed "Authorization:
+    # Bearer" hint sent platform-only callers down a path that 401s (QA F-27).
+    raise Unauthorized(
+        "missing or malformed credential: send "
+        + (" or ".join(accepted) or "a configured credential header")
+    )
 
 
 def _bearer_token(authorization: str | None) -> str | None:

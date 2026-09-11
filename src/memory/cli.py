@@ -782,18 +782,6 @@ def _serve_mcp(url_argument: str | None = None) -> int:
     return 0
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def _context_load() -> int:
     """Print only context text; diagnostics never become agent context."""
     from memory.mcp import proxy

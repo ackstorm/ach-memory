@@ -241,6 +241,32 @@ def test_non_bearer_authorization_is_unauthorized(session):
         resolve_principal("Basic abc", session)
 
 
+def test_a_missing_credential_names_the_platform_header_this_deployment_reads(
+    session, platform, monkeypatch
+):
+    """QA F-27: production runs platform-only on `x-litellm-api-key`, where
+    `Authorization: Bearer` is refused -- so a fixed hint naming it sent the
+    caller down the one path that 401s."""
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "x-litellm-api-key")
+    get_settings.cache_clear()
+
+    with pytest.raises(Unauthorized) as exc:
+        resolve_principal(None, session)
+
+    assert "x-litellm-api-key" in exc.value.message
+    assert "Authorization: Bearer" not in exc.value.message
+
+
+def test_a_missing_credential_names_bearer_when_only_jwt_is_enabled(session, jwt_enabled):
+    with pytest.raises(Unauthorized) as exc:
+        resolve_principal(None, session)
+
+    assert "Authorization: Bearer" in exc.value.message
+    assert "x-litellm-api-key" not in exc.value.message
+
+
 def test_a_token_with_no_provider_enabled_says_this_service_mints_none(session):
     """The only refusal left, so it has to be the one that explains the new
     model: there is no key to be missing, only a provider to configure."""

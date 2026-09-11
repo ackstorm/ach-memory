@@ -34,7 +34,7 @@ def resolve_user_bank(
             # operator with a typo hunting a permissions problem that does not
             # exist. From tenant A's view a user living only in tenant B does
             # not exist either, so this still discloses nothing cross-tenant.
-            raise UserNotFound(user_id=target_id)
+            raise UserNotFound("no such user in this tenant", user_id=target_id)
         # For everyone else the shape stays: same as a cross-tenant miss, no
         # existence signal either way.
         raise Forbidden("no accessible memory for the requested user")

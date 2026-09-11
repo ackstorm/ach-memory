@@ -68,6 +68,9 @@ def test_a_master_key_naming_an_unknown_user_gets_user_not_found(
     )
     assert response.status_code == 404, response.text
     assert response.json()["error"]["code"] == "USER_NOT_FOUND", response.text
+    # A message-less raise defaulted the message to the code, so the wire
+    # read `USER_NOT_FOUND: USER_NOT_FOUND` (QA TR-01).
+    assert "USER_NOT_FOUND" not in response.json()["error"]["message"], response.text
 
 
 def test_an_ordinary_caller_addressing_someone_else_still_gets_forbidden(

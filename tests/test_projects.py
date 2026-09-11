@@ -458,19 +458,22 @@ def test_create_rejects_a_nonexistent_user_owner(session, tenant, operator):
     and permanently orphan the project: authorize() then denies everyone,
     since no real user ever matches owner_id, and only an operator could
     even attempt a transfer to fix it."""
-    with pytest.raises(UserNotFound):
+    with pytest.raises(UserNotFound) as exc:
         projects.create(session, operator, "payments-api", "user", "usr_ghost")
 
     assert session.query(Project).count() == 0
+    # Not the code echoed back as the message (QA TR-01).
+    assert "USER_NOT_FOUND" not in exc.value.message
 
 
 def test_create_rejects_a_nonexistent_group_owner(session, tenant, operator):
     from memory.errors import GroupNotFound
 
-    with pytest.raises(GroupNotFound):
+    with pytest.raises(GroupNotFound) as exc:
         projects.create(session, operator, "payments-api", "group", "grp_ghost")
 
     assert session.query(Project).count() == 0
+    assert "GROUP_NOT_FOUND" not in exc.value.message
 
 
 def test_transfer_rejects_a_nonexistent_owner(session, tenant):

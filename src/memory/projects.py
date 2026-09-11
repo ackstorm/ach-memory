@@ -82,7 +82,7 @@ def _validate_owner(
         reject_control_characters(owner_id, UserNotFound)
         owner = db.get(User, owner_id)
         if owner is None or owner.tenant_id != principal.tenant_id:
-            raise UserNotFound(user_id=owner_id)
+            raise UserNotFound("no such user in this tenant", user_id=owner_id)
     elif owner_type == "group":
         reject_control_characters(owner_id, GroupNotFound)
         owner = db.get(Group, owner_id)
@@ -95,7 +95,7 @@ def _validate_owner(
             # on every authenticated request instead would write rows for
             # groups nobody ever uses.
             if owner_id not in principal.groups:
-                raise GroupNotFound(group_id=owner_id)
+                raise GroupNotFound("no such group in this tenant", group_id=owner_id)
             try:
                 with db.begin_nested():
                     db.add(Group(id=owner_id, tenant_id=principal.tenant_id))
@@ -103,7 +103,7 @@ def _validate_owner(
                 # Lost the race; the row exists, which is all we needed.
                 pass
         elif owner.tenant_id != principal.tenant_id:
-            raise GroupNotFound(group_id=owner_id)
+            raise GroupNotFound("no such group in this tenant", group_id=owner_id)
     else:
         # Guarded here and not only at the API edge: a bad owner_type would
         # make authorize() fall through to a denial for everyone, silently
