@@ -7,7 +7,7 @@
 # YAGNI) -- a locally built image should still be reproducible.
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 ARG GIT_SHA
-RUN pip install --no-cache-dir "hindsight-api==0.9.1"
+RUN pip install --no-cache-dir "hindsight-api==0.9.2"
 
 # hindsight-api is the server entry point. NOT hindsight-local-mcp, which
 # embeds its own Postgres and ignores HINDSIGHT_API_DATABASE_URL — in compose
@@ -22,7 +22,7 @@ RUN useradd --system --uid 10001 --create-home --home-dir /home/app \
     --shell /usr/sbin/nologin app
 USER 10001
 LABEL org.opencontainers.image.title="ach-memory-hindsight" \
-      org.opencontainers.image.description="Hindsight memory engine (hindsight-api==0.9.1), wrapped for ach-memory's compose stack" \
+      org.opencontainers.image.description="Hindsight memory engine (hindsight-api==0.9.2), wrapped for ach-memory's compose stack" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="https://github.com/ackstorm/ach-memory" \
       org.opencontainers.image.revision="${GIT_SHA:-unknown}"

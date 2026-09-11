@@ -19,7 +19,7 @@ a shape that changed upstream — is a no-op, never an error.
 exactly as before, so nothing here is load-bearing for correctness.
 
 Field-by-field reasoning lives next to each set below. Shapes were read from
-the pinned `hindsight-api==0.9.1` (`Dockerfile.hindsight`): `RecallResult` and
+the pinned `hindsight-api==0.9.2` (`Dockerfile.hindsight`): `RecallResult` and
 `ReflectResponse` in `hindsight_api/api/http.py`, and the memory-unit row built
 in `hindsight_api/engine/memories/pg/curation.py`.
 """
