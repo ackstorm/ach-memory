@@ -206,6 +206,13 @@ def test_recall_collapses_before_the_relative_cut(spy):
     assert [hit.memory_id for hit in hits] == ["fact-1", "other-1"]
 
 
+def test_recall_sends_the_source_facts_switch(spy):
+    """The collapse cannot see a parent link nobody asked for."""
+    read_service._recall_hits("bank-1", "q", "current", None)
+
+    assert spy.kwargs["with_source_facts"] is True
+
+
 def test_the_worst_measured_query_returns_one_hit(spy):
     """The 2026-09-11 measurement, end to end: 8 hits, 1 claim. Four retains
     of one sentence, each with its observation twin."""

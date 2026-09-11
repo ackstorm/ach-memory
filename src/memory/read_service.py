@@ -134,8 +134,14 @@ def _str_or_none(value: Any) -> str | None:
 _MENTIONED_AT_SUFFIX = re.compile(r"\s*\(mentioned_at=[^)]*\)\s*$")
 
 
-def _collapse_duplicate_claims(hits: list[RecallHit]) -> list[RecallHit]:
+def _collapse_duplicate_claims(
+    hits: list[RecallHit],
+    sources: dict[str, tuple[str, ...]] | None = None,
+) -> list[RecallHit]:
     """One claim, one slot. Keeps the most traceable copy of each identical text.
+
+    `sources` maps a hit's memory_id to the `source_fact_ids` upstream reported
+    for it; it is not yet consulted here.
 
     Two separate mechanisms put the same sentence in a response several times,
     measured on a 10-claim bank (2026-09-11):
@@ -412,6 +418,11 @@ def _recall_hits(
         # query. See `read_models.resolve_filters`.
         tag_groups=list(filters.tag_groups),
         max_tokens=_RECALL_MAX_TOKENS,
+        # An observation carries no `document_id` of its own; its
+        # `source_fact_ids` are the only link back to the `world` fact it
+        # was derived from, and `_collapse_duplicate_claims` needs that link
+        # to recognize a paraphrased twin. See Task 4.
+        with_source_facts=True,
     )
     raw_results = raw.get("results") if isinstance(raw, dict) else None
     if not isinstance(raw_results, list):
@@ -422,6 +433,10 @@ def _recall_hits(
     # it entirely and the filter would mean something different depending on
     # which arm found the hit.
     hits: list[RecallHit] = []
+    # Keyed by memory_id rather than carried on RecallHit: the ids are only
+    # for this module's own collapse, and RecallHit is `extra="forbid"` on
+    # purpose (see `read_models`).
+    sources: dict[str, tuple[str, ...]] = {}
     for item in raw_results[:_MAX_RAW_RESULTS_SCANNED]:
         if not _passes_semantic_floor(
             item, floor, keyword_only_min_reranker=settings.recall_keyword_only_min_reranker
@@ -430,9 +445,12 @@ def _recall_hits(
         hit = _normalize_hit(item)
         if hit is not None:
             hits.append(hit)
+            raw_ids = item.get("source_fact_ids")
+            if isinstance(raw_ids, list):
+                sources[hit.memory_id] = tuple(i for i in raw_ids if isinstance(i, str))
         if len(hits) >= _MAX_HITS_NORMALIZED:
             break
-    return _apply_relative_cut(_collapse_duplicate_claims(hits), ratio)
+    return _apply_relative_cut(_collapse_duplicate_claims(hits, sources), ratio)
 
 
 def recall(

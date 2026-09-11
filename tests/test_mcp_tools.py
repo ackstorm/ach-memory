@@ -2204,10 +2204,10 @@ def test_recall_asks_hindsight_not_to_build_the_entity_map(call_tool):
     key = call_tool.make_user()
 
     call_tool("recall", key, scope="user", query="deps")
-    assert json.loads(route.calls.last.request.content)["include"] == {"entities": None}
+    assert json.loads(route.calls.last.request.content)["include"]["entities"] is None
 
     call_tool("recall", key, scope="user", query="deps", verbose=True)
-    assert json.loads(route.calls.last.request.content)["include"] == {"entities": None}
+    assert json.loads(route.calls.last.request.content)["include"]["entities"] is None
 
 
 @respx.mock
