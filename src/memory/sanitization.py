@@ -34,6 +34,14 @@ _SECRET_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
     re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@\S+"),
     re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+@\S+"),
+    # QA 2026-09-11 (F-06/F-26): the shapes an agent is most likely to paste.
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),  # AWS access key id
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),  # Google API key
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),  # JWT
+    re.compile(r"\b[sr]k[-_](?:live|test)[-_][A-Za-z0-9]{8,}\b"),  # Stripe sk_/rk_ live|test
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),  # GitLab PAT
+    re.compile(r"\bxapp-[0-9]-[A-Z0-9]+-[A-Za-z0-9-]+\b"),  # Slack app token
+    re.compile(r"hooks\.slack\.com/services/[A-Za-z0-9/_-]+"),  # Slack webhook
     re.compile(r"(?i)\b\w*(?:secret|password|passwd|token|api[_-]?key)\w*\s*[=:]\s*\S+"),
 ]
 
@@ -98,7 +106,14 @@ def normalize_claim(content: str) -> str:
     normalized = "\n".join(
         _HORIZONTAL_WS.sub(" ", line).rstrip() for line in normalized.split("\n")
     )
-    if not normalized.strip() or contains_secret(normalized):
+    if not normalized.strip():
+        raise ContentRejectedBySanitizer("content is empty after normalization")
+    # Newline is the one control character a claim may carry; tabs were already
+    # folded into spaces above. Anything else (BEL, ESC, NUL, DEL) would flow
+    # verbatim into load_context and model prompts (QA F-07).
+    if has_control_character(normalized.replace("\n", "")):
+        raise ContentRejectedBySanitizer("content contains control characters")
+    if contains_secret(normalized):
         raise ContentRejectedBySanitizer("canonical content cannot be stored safely")
     if len(normalized.encode("utf-8")) > _MAX_BYTES:
         raise ContentTooLarge(f"content exceeds {_MAX_BYTES} bytes")
