@@ -598,6 +598,27 @@ def test_history_carries_the_retained_record_provenance_and_curation(
     ]
 
 
+def test_history_of_a_forgotten_memory_still_serves_ach_provenance(session, owner, hindsight):
+    """Hindsight's history route 404s once a memory is invalidated although
+    get_memory still returns it. A forget is exactly when the reason is
+    wanted, so the upstream 404 means "no revisions", not "no memory"."""
+    from memory import read_service
+    from memory.errors import MemoryNotFound
+
+    memory_id = "55555555-5555-5555-5555-555555555555"
+    _seed_record(session, owner, memory_id)
+    hindsight.get_memory.return_value = {"text": "current", "state": "invalidated"}
+    hindsight.get_memory_history.side_effect = MemoryNotFound("no such object in this memory")
+
+    response = read_service.history(
+        session, owner, None, HistoryRequest(scope="user", memory_id=memory_id)
+    )
+
+    assert response.current.state == "invalidated"
+    assert response.changes == ()
+    assert [(c.action, c.reason) for c in response.curation] == [("forget", "stale")]
+
+
 def test_history_of_an_untracked_memory_has_no_provenance(session, owner, hindsight):
     """A memory Hindsight derived on its own, or one retained before typed
     retain, has no ACH row: absent provenance, not an invented one."""

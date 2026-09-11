@@ -700,7 +700,15 @@ def history(
         # way, under the same typed error a caller already has to handle.
         raise MemoryNotFound(memory_id=request.memory_id)
 
-    history_raw = client.get_memory_history(read_bank.bank_id, request.memory_id)
+    try:
+        history_raw = client.get_memory_history(read_bank.bank_id, request.memory_id)
+    except MemoryNotFound:
+        # Hindsight serves revision history for current memories only: once a
+        # memory is invalidated the history route 404s although get_memory
+        # above still returned it. After a forget, ACH's own provenance and
+        # curation below are what the caller came for, so serve them with no
+        # upstream revisions rather than fail the whole read (0.7.3 retest).
+        history_raw = []
     changes = _normalize_changes(history_raw)
 
     # The half Hindsight cannot tell (QA F-13/F-14): what ACH recorded at
