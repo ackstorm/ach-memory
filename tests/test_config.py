@@ -305,6 +305,22 @@ def test_a_plaintext_resolver_url_is_accepted(monkeypatch):
     assert Settings().auth_platform_enabled is True
 
 
+def test_incoming_headers_splits_lowercases_and_keeps_order(monkeypatch):
+    """Order is priority (gateway header first), duplicates and blanks dropped,
+    lower-cased because HTTP header lookup is case-insensitive."""
+    monkeypatch.setenv(
+        "MEMORY_AUTH_PLATFORM_INCOMING_HEADER", " X-LiteLLM-Api-Key , authorization , ,x-litellm-api-key"
+    )
+    assert Settings().incoming_headers == ("x-litellm-api-key", "authorization")
+
+
+def test_incoming_headers_is_empty_when_unset(monkeypatch):
+    """Unset parses to no headers, which the enabled-config check rejects --
+    never a tuple with an empty string that would match a missing header."""
+    monkeypatch.delenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", raising=False)
+    assert Settings().incoming_headers == ()
+
+
 def test_platform_requires_every_var(monkeypatch):
     import pytest
 

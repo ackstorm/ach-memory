@@ -40,6 +40,27 @@ from memory.slugs import canonical_locator, slug_from_locator
 CONTEXT_TIMEOUT_SECONDS = 2.0
 
 
+def auth_headers(api_key: str) -> dict[str, str]:
+    """The outgoing header that carries the credential to the service.
+
+    `ACH_MEMORY_HEADER` names it, default `Authorization`. Configurable
+    because a proxy in front of the service (toolhive, stacklok/toolhive#6394)
+    can strip or block `Authorization` as a passthrough header while a custom
+    one such as `x-litellm-api-key` passes untouched. The service accepts the
+    key from any header its `MEMORY_AUTH_PLATFORM_INCOMING_HEADER` lists, so
+    the two only have to agree on a name.
+
+    `Authorization` gets the conventional `Bearer ` prefix; any other header
+    carries the bare key. The service strips a `bearer ` prefix off whichever
+    header it reads, so the bare key is always accepted -- the prefix is only
+    what an `Authorization` consumer expects to see.
+    """
+    header = (os.environ.get("ACH_MEMORY_HEADER") or "Authorization").strip() or "Authorization"
+    if header.lower() == "authorization":
+        return {"Authorization": f"Bearer {api_key}"}
+    return {header: api_key}
+
+
 def resolve_project_context(cwd: str | None = None) -> tuple[str | None, str | None]:
     """SPEC §8 order: MEMORY_PROJECT, else the repo's origin URL, else nothing.
 
@@ -96,7 +117,7 @@ def bootstrap(base_url: str, api_key: str, project_slug: str | None) -> str | No
         response = httpx.post(
             f"{base_url.rstrip('/')}/v1/bootstrap",
             json={"project_slug": project_slug} if project_slug else {},
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=auth_headers(api_key),
             timeout=10.0,
         )
     except httpx.HTTPError:
@@ -297,7 +318,7 @@ class StdioHttpBridge:
                     return
 
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
+            **auth_headers(self._api_key),
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
         }
@@ -685,7 +706,7 @@ def fetch_context(
         response = httpx.post(
             f"{base_url.rstrip('/')}/v1/context/load",
             json={"project_slug": slug, "workspace_id": workspace_id},
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=auth_headers(api_key),
             timeout=timeout,
         )
         if response.status_code != 200:

@@ -144,6 +144,62 @@ def test_a_bearer_prefixed_platform_token_is_stripped(client, monkeypatch):
     assert seen["token"] == "sk-abc"
 
 
+def test_a_list_of_incoming_headers_tries_each_in_order(client, monkeypatch):
+    """One deployment serves a gateway (x-litellm-api-key) and a local stdio
+    client (Authorization) at once. First header present wins."""
+    _enable_platform(monkeypatch)
+    monkeypatch.setenv(
+        "MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "x-litellm-api-key,authorization"
+    )
+    from memory.config import get_settings
+
+    get_settings.cache_clear()
+    seen = _capture_platform_calls(monkeypatch)
+
+    client.get("/v1/projects", headers={"Authorization": "Bearer sk-fallback"})
+
+    assert seen["token"] == "sk-fallback"
+
+
+def test_the_first_listed_header_wins_when_both_are_present(client, monkeypatch):
+    """Order is priority: the gateway's own header is listed first so a stray
+    Authorization cannot override it."""
+    _enable_platform(monkeypatch)
+    monkeypatch.setenv(
+        "MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "x-litellm-api-key,authorization"
+    )
+    from memory.config import get_settings
+
+    get_settings.cache_clear()
+    seen = _capture_platform_calls(monkeypatch)
+
+    client.get(
+        "/v1/projects",
+        headers={"x-litellm-api-key": "sk-gateway", "Authorization": "Bearer sk-local"},
+    )
+
+    assert seen["token"] == "sk-gateway"
+
+
+def test_a_non_jwt_bearer_on_authorization_reaches_the_platform_resolver(
+    client, monkeypatch
+):
+    """The motivating case: a LiteLLM key sent on Authorization used to 401,
+    because the platform provider never read Authorization. With it listed,
+    an opaque bearer there resolves -- while a JWT still routes to provider 1
+    by shape (it never reaches the platform resolver)."""
+    _enable_platform(monkeypatch)
+    monkeypatch.setenv("MEMORY_AUTH_PLATFORM_INCOMING_HEADER", "authorization")
+    from memory.config import get_settings
+
+    get_settings.cache_clear()
+    seen = _capture_platform_calls(monkeypatch)
+
+    client.get("/v1/projects", headers={"Authorization": "Bearer sk-opaque"})
+
+    assert seen["token"] == "sk-opaque"
+
+
 def test_the_platform_header_is_ignored_when_the_provider_is_off(client, monkeypatch):
     """A stray header on a deployment that never enabled the provider is not a
     credential -- it must not reach the resolver at all.

@@ -471,7 +471,10 @@ def test_preflight_names_the_identity_provider_when_a_token_is_refused(
                     "--url",
                     "https://host/next",
                 ],
-                "environment": {"ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}"},
+                "environment": {
+                    "ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}",
+                    "ACH_MEMORY_HEADER": "{env:ACH_MEMORY_HEADER}",
+                },
                 "enabled": True,
             },
             [
@@ -1391,7 +1394,10 @@ def test_register_codex_server_stdio_whitelists_key_name_without_storing_secret(
     parsed = tomllib.loads(text)
     assert parsed["model"] == "keep"
     assert parsed["mcp_servers"]["other"] == {"command": "other"}
-    assert parsed["mcp_servers"]["ach-memory"]["env_vars"] == ["ACH_MEMORY_API_KEY"]
+    assert parsed["mcp_servers"]["ach-memory"]["env_vars"] == [
+        "ACH_MEMORY_API_KEY",
+        "ACH_MEMORY_HEADER",
+    ]
     assert secret not in text
     assert all(secret not in " ".join(command) for command in commands)
 

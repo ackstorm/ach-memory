@@ -87,15 +87,21 @@ def _platform_token(request: Request) -> str | None:
     settings = get_settings()
     if not settings.auth_platform_enabled:
         return None
-    raw = request.headers.get(settings.auth_platform_incoming_header)
-    if raw is None:
-        return None
-    value = raw.strip()
-    # LiteLLM's own header carries the prefix; the resolver must receive the
-    # bare key.
-    if value.lower().startswith("bearer "):
-        value = value[len("bearer ") :].strip()
-    return value or None
+    # First configured header present on the request wins (order is priority):
+    # the ACH gateway sends `x-litellm-api-key`, a local stdio client sends
+    # `Authorization` -- one deployment serves both by listing both.
+    for header in settings.incoming_headers:
+        raw = request.headers.get(header)
+        if raw is None:
+            continue
+        value = raw.strip()
+        # LiteLLM's own header carries the prefix, and so does Authorization;
+        # the resolver must receive the bare key.
+        if value.lower().startswith("bearer "):
+            value = value[len("bearer ") :].strip()
+        if value:
+            return value
+    return None
 
 
 def current_principal(

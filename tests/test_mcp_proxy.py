@@ -9,11 +9,32 @@ import pytest
 
 from memory.mcp.proxy import (
     StdioHttpBridge,
+    auth_headers,
     fill_project_arguments,
     fill_working_state_arguments,
     resolve_project_context,
     resolve_workspace_context,
 )
+
+
+def test_auth_headers_defaults_to_authorization_bearer(monkeypatch):
+    monkeypatch.delenv("ACH_MEMORY_HEADER", raising=False)
+    assert auth_headers("sk-1") == {"Authorization": "Bearer sk-1"}
+
+
+def test_auth_headers_blank_falls_back_to_authorization(monkeypatch):
+    """opencode's {env:ACH_MEMORY_HEADER} writes "" when the var is unset;
+    that must read as the Authorization default, not a header named ""."""
+    monkeypatch.setenv("ACH_MEMORY_HEADER", "  ")
+    assert auth_headers("sk-1") == {"Authorization": "Bearer sk-1"}
+
+
+def test_auth_headers_custom_header_sends_the_bare_key(monkeypatch):
+    """A proxy that blocks Authorization (stacklok/toolhive#6394) needs the
+    key on a header it passes. No Bearer prefix: the service strips one off
+    whichever header it reads, and a bare key is what the gateway path uses."""
+    monkeypatch.setenv("ACH_MEMORY_HEADER", "x-litellm-api-key")
+    assert auth_headers("sk-1") == {"x-litellm-api-key": "sk-1"}
 
 
 def _git_repo(tmp_path, origin: str | None):

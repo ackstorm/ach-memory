@@ -110,6 +110,12 @@ config:
       # token we can verify offline, so identity needs a round trip.
       enabled: false
       # MEMORY_AUTH_PLATFORM_INCOMING_HEADER / _RESOLVER_HEADER / _RESOLVER_URL.
+      # incomingHeader accepts a comma-separated list, tried in order, first
+      # present on a request wins: `x-litellm-api-key,authorization` lets the
+      # ACH gateway (which forwards `x-litellm-api-key`) and a local stdio
+      # client (which sends `Authorization: Bearer`) both authenticate against
+      # one deployment. `authorization` matches only a NON-JWT bearer -- a JWT
+      # there still routes to the JWT provider.
       incomingHeader: ""
       resolverHeader: ""
       resolverUrl: ""

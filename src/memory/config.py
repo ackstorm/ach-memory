@@ -100,6 +100,15 @@ class Settings(BaseSettings):
     auth_jwt_groups_claim: str = "groups"
 
     auth_platform_enabled: bool = False
+    #: Which request header(s) carry the platform API key, comma-separated and
+    #: tried in order -- the first one present on a request wins (see
+    #: `incoming_headers`). One deployment serves two callers at once: the ACH
+    #: gateway forwards the key as `x-litellm-api-key`, while a local stdio MCP
+    #: client sends it as `Authorization: Bearer`. Listing both
+    #: (`x-litellm-api-key,authorization`) lets the same service authenticate
+    #: each without the caller having to know which header the other uses.
+    #: `authorization` is matched only for a NON-JWT bearer: `resolve_principal`
+    #: routes on shape first, so a JWT there still goes to the JWT provider.
     auth_platform_incoming_header: str = ""
     auth_platform_resolver_header: str = ""
     auth_platform_resolver_url: str = ""
@@ -307,6 +316,22 @@ class Settings(BaseSettings):
     @property
     def master_issuer_value(self) -> str:
         return self.master_issuer.strip()
+
+    @property
+    def incoming_headers(self) -> tuple[str, ...]:
+        """The platform incoming headers, lower-cased and in priority order.
+
+        Not a set: order is priority, so the gateway's `x-litellm-api-key` can
+        be listed ahead of `authorization` and win when a request carries both.
+        `_id_set` would dedupe but also drop order, so this splits directly and
+        only discards empties (an unset var is "", which parses to no headers
+        and the enabled-config check below rejects)."""
+        seen: list[str] = []
+        for part in self.auth_platform_incoming_header.split(","):
+            header = part.strip().lower()
+            if header and header not in seen:
+                seen.append(header)
+        return tuple(seen)
 
     @property
     def master_user_ids(self) -> frozenset[str]:

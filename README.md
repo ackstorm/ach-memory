@@ -339,7 +339,13 @@ rejected credential is never retried as something else.
 2. **A platform API key** on a header you name. Use it when callers arrive
    through a platform that forwards its own key rather than a token this
    service could verify offline (LiteLLM). Identity comes from an HTTP round
-   trip to that platform, cached on success only.
+   trip to that platform, cached on success only. `_INCOMING_HEADER` accepts
+   a comma-separated list tried in order (first present wins), so one
+   deployment can accept the key from more than one header -- e.g.
+   `x-litellm-api-key,authorization`, where a gateway forwards
+   `x-litellm-api-key` and a local stdio client sends `Authorization: Bearer`.
+   `authorization` matches only a non-JWT bearer; a JWT there still routes to
+   provider 1.
 
 Both can run together: the JWT is primary, the platform header is the
 fallback. Both can also assert group membership, which authorizes projects
@@ -467,7 +473,12 @@ A resolver that is unreachable or failing returns `AUTH_BACKEND_UNAVAILABLE`
 
 Behind a gateway that forwards headers selectively, the incoming header has to
 be on its allow-list. LiteLLM's MCP gateway forwards only the headers named in
-its server registration's `extra_headers`.
+its server registration's `extra_headers`, and some proxies (e.g.
+stacklok/toolhive) block `Authorization` as a passthrough outright. When a
+local stdio client sits behind such a proxy, set `ACH_MEMORY_HEADER` to a
+header the proxy does pass (e.g. `x-litellm-api-key`); the client then sends
+the key there instead of on `Authorization`, and the service must list that
+header in `_INCOMING_HEADER`. The two only have to agree on the name.
 
 ## Configuration
 

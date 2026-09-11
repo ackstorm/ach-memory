@@ -49,13 +49,20 @@ def tool_session(ctx: HasHeaders) -> Iterator[ToolContext]:
 
     settings = get_settings()
     platform_token = None
-    if settings.auth_platform_enabled and settings.auth_platform_incoming_header:
-        raw = headers.get(settings.auth_platform_incoming_header.lower())
-        if raw:
+    if settings.auth_platform_enabled:
+        # First configured header present wins (order is priority), mirroring
+        # the REST `_platform_token`: the ACH gateway sends `x-litellm-api-key`,
+        # a local stdio client sends `Authorization` -- one service accepts both.
+        for header in settings.incoming_headers:
+            raw = headers.get(header)
+            if not raw:
+                continue
             value = raw.strip()
             if value.lower().startswith("bearer "):
                 value = value[len("bearer ") :].strip()
-            platform_token = value or None
+            if value:
+                platform_token = value
+                break
 
     with session_scope() as db:
         principal = resolve_principal(

@@ -79,7 +79,9 @@ async def _preflight(url: str, api_key: str) -> None:
         raise CLIError("ACH_MEMORY_API_KEY is required")
 
     try:
-        client = create_mcp_http_client({"Authorization": f"Bearer {api_key}"})
+        from memory.mcp.proxy import auth_headers
+
+        client = create_mcp_http_client(auth_headers(api_key))
         async with (
             client,
             streamable_http_client(url, http_client=client) as (read, write),
@@ -365,7 +367,7 @@ def _whitelist_codex_api_key() -> None:
     except StopIteration as exc:
         raise CLIError("codex did not write the ach-memory MCP configuration") from exc
 
-    lines.insert(section + 1, 'env_vars = ["ACH_MEMORY_API_KEY"]\n')
+    lines.insert(section + 1, 'env_vars = ["ACH_MEMORY_API_KEY", "ACH_MEMORY_HEADER"]\n')
     try:
         _write_text_atomic(path, "".join(lines))
     except OSError as exc:
@@ -400,8 +402,14 @@ def _config_plan(
                 "command": _proxy_command(mode, url),
                 # The key by NAME through opencode's own {env:...} form: the
                 # proxy inherits it as ACH_MEMORY_API_KEY, and no secret is
-                # written into a config file or into argv.
-                "environment": {"ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}"},
+                # written into a config file or into argv. ACH_MEMORY_HEADER
+                # rides along so a custom outgoing header survives opencode's
+                # explicit env block (unset resolves empty, which the proxy
+                # reads as the Authorization default).
+                "environment": {
+                    "ACH_MEMORY_API_KEY": "{env:ACH_MEMORY_API_KEY}",
+                    "ACH_MEMORY_HEADER": "{env:ACH_MEMORY_HEADER}",
+                },
                 "enabled": True,
             }
         paths = (
@@ -730,7 +738,9 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="memory service base URL (default: $ACH_MEMORY_URL). The token "
         "your identity provider issued is read from $ACH_MEMORY_API_KEY and "
-        "never taken as an argument, because argv is world-readable",
+        "never taken as an argument, because argv is world-readable. It is "
+        "sent on $ACH_MEMORY_HEADER (default Authorization as a Bearer token; "
+        "set e.g. x-litellm-api-key when a proxy blocks Authorization)",
     )
     context = commands.add_parser("context", help="load bounded standing context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
