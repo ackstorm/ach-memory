@@ -961,6 +961,11 @@ async def test_load_context_is_called_with_the_resolved_project_and_workspace():
 
         async def call_tool(self, name, arguments):
             calls.append((name, arguments))
+            # The real 0.7.2 envelope (`ToolResult` -> structuredContent
+            # {"result": payload}). A 0.7.1 server never produced it, and this
+            # mock kept the suite green while every session started without
+            # context (QA F-24); tests/test_load_context_wire.py now proves the
+            # server emits this shape.
             return SimpleNamespace(
                 is_error=False,
                 structured_content={"result": {"text": "ctx"}},

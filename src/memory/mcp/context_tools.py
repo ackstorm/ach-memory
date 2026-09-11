@@ -5,7 +5,7 @@ from mcp_types import ToolAnnotations
 
 from memory.context_service import load_context as load_context_service
 from memory.mcp.server import tool_session
-from memory.mcp.tools import REGISTRY
+from memory.mcp.tools import REGISTRY, ToolResult
 from memory.v040_contracts import LoadContextRequest
 
 
@@ -21,7 +21,7 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         workspace_id: str | None = None,
         scope: Literal["user", "project", "both"] = "both",
-    ):
+    ) -> ToolResult:
         with tool_session(ctx) as tc:
             result = load_context_service(
                 tc.db,
@@ -29,6 +29,11 @@ def register(mcp: MCPServer) -> None:
                 LoadContextRequest(project_slug=project_slug, workspace_id=workspace_id, scope=scope),
             )
             tc.db.commit()
-            return result.model_dump()
+            # ToolResult, and annotated as such above: the SDK derives
+            # outputSchema from the return annotation and emits
+            # structuredContent only when one exists. The bare, unannotated
+            # dict went out as a text block the proxy never read, so every
+            # session started without standing context (QA F-24).
+            return ToolResult(result=result.model_dump(mode="json"))
 
     REGISTRY["load_context"] = load_context

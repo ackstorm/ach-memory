@@ -702,7 +702,35 @@ async def call_load_context(
         result = await session.call_tool("load_context", arguments)
     if result.is_error:
         return None
+    return _unwrap_load_context(result)
+
+
+def _unwrap_load_context(result) -> dict | None:
+    """The service's own payload out of a `tools/call` reply, whatever wrapper
+    the server put around it.
+
+    0.7.2+ returns `ToolResult`, so `structured_content == {"result": payload}`.
+    A 0.7.1 server returned a bare dict, which the SDK serialises as JSON text
+    in `content[0]` with NO structured_content -- the shape that left every
+    session without standing context (QA F-24). A client must read both, or
+    a client/server version skew during a rollout silently loses context again.
+    """
     structured = result.structured_content
     if isinstance(structured, dict):
-        return structured.get("result")
+        inner = structured.get("result")
+        if isinstance(inner, dict):
+            return inner
+        if isinstance(structured.get("text"), str):
+            return structured
+    for block in getattr(result, "content", None) or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return None
+            if isinstance(parsed, dict):
+                inner = parsed.get("result")
+                return inner if isinstance(inner, dict) else parsed
+            return None
     return None
