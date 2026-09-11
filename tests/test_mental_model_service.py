@@ -26,6 +26,7 @@ from memory.mental_model_service import (
     effective_source_tags,
     get_model,
     list_models,
+    read_model,
     reconcile_builtin,
     refresh_model,
     resume_model_mutation,
@@ -468,6 +469,76 @@ def test_list_models_reports_unknown_upstream_count_without_adopting_it(
 def test_get_model_raises_for_unknown_key(session, bank):
     with pytest.raises(MentalModelNotFound):
         get_model(session, bank, "mm_does_not_exist")
+
+
+def test_read_model_returns_content_once_ready(session, bank, hindsight, five_custom_models):
+    """QA F-18: a custom model could be created, refreshed, listed and
+    deleted but its text could never be read by anyone."""
+    hindsight.get_mental_model.return_value = {"id": "mm-x", "content": "## Review conventions\n- squash"}
+    row = model_registry.list_registered_models(session, bank)[0]
+    row.upstream_model_id = "mm-x"
+    session.commit()
+
+    view = read_model(session, bank, row.model_key, client=hindsight)
+
+    assert view.delivery_state == "ready"
+    assert view.content == "## Review conventions\n- squash"
+    hindsight.get_mental_model.assert_called_once_with(bank.bank_id, "mm-x")
+
+
+def test_read_model_still_returns_metadata_when_the_upstream_model_is_gone(
+    session, bank, hindsight, five_custom_models
+):
+    """Upstream deleted after the row went ready: the registry row is still
+    readable metadata, not a 404 -- the same shape as a row with no upstream
+    id yet."""
+    hindsight.get_mental_model.side_effect = MentalModelNotFound("gone")
+    row = model_registry.list_registered_models(session, bank)[0]
+    row.upstream_model_id = "mm-gone"
+    session.commit()
+
+    view = read_model(session, bank, row.model_key, client=hindsight)
+
+    assert view.delivery_state == "ready"
+    assert view.content is None
+
+
+def test_read_model_withholds_content_while_a_refresh_is_pending(session, bank, hindsight):
+    # An active row mid-refresh: `pending_registration` is a *creating* row,
+    # which is the resume path, not the observe path exercised here.
+    operation_id = str(uuid4())
+    row = model_registry.register_model(
+        session,
+        bank,
+        origin="user",
+        model_key=ids.new_model_key(),
+        name="refreshing",
+        source_query="Summarize.",
+        source_tags=list(REQUIRED_TAGS),
+        tags_match="all",
+        max_tokens=256,
+        trigger=TRIGGER,
+        upstream_model_id="mm-refreshing",
+        delivery_state="withheld",
+        refresh_operation_id=operation_id,
+        refresh_status="pending",
+    )
+    session.commit()
+    hindsight.get_operation.return_value = {"operation_id": operation_id, "status": "pending"}
+
+    view = read_model(session, bank, row.model_key, client=hindsight)
+
+    assert view.delivery_state == "withheld"
+    assert view.content is None
+    hindsight.get_operation.assert_called_once_with(bank.bank_id, operation_id)
+    hindsight.get_mental_model.assert_not_called()
+
+
+def test_list_models_never_fetches_content(session, bank, hindsight, five_custom_models):
+    hindsight.list_mental_models.return_value = {"items": []}
+    result = list_models(session, bank, client=hindsight)
+    assert all(model.content is None for model in result.models)
+    hindsight.get_mental_model.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

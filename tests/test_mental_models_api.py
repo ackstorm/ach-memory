@@ -190,7 +190,16 @@ def test_create_then_get_round_trips_by_model_key(client, juan):
     created = client.post("/v1/mental-models", json=_create_body(), headers=juan["headers"]).json()
     respx.get(
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{CREATE_OPERATION_ID}$"
-    ).mock(return_value=httpx.Response(200, json={"status": "completed"}))
+    ).mock(
+        return_value=httpx.Response(
+            200, json={"operation_id": CREATE_OPERATION_ID, "status": "completed"}
+        )
+    )
+    # Registered before the broad list mock below: respx matches in
+    # registration order.
+    model_get = respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1$"
+    ).mock(return_value=httpx.Response(200, json={"id": "mm-upstream-1", "content": "ready text"}))
     respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models(\?|$)").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
@@ -202,6 +211,35 @@ def test_create_then_get_round_trips_by_model_key(client, juan):
     assert response.status_code == 200
     assert response.json()["model_key"] == created["model_key"]
     assert response.json()["name"] == created["name"]
+    # QA F-18: the get delivers the text once the observed refresh has landed.
+    assert response.json()["delivery_state"] == "ready"
+    assert response.json()["content"] == "ready text"
+    assert model_get.call_count == 1
+
+
+@respx.mock
+def test_get_withholds_content_while_the_refresh_is_still_pending(client, juan):
+    _mock_create()
+    created = client.post("/v1/mental-models", json=_create_body(), headers=juan["headers"]).json()
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations/{CREATE_OPERATION_ID}$"
+    ).mock(
+        return_value=httpx.Response(
+            200, json={"operation_id": CREATE_OPERATION_ID, "status": "pending"}
+        )
+    )
+    model_get = respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/mental-models/mm-upstream-1$"
+    ).mock(return_value=httpx.Response(200, json={"id": "mm-upstream-1", "content": "not yet"}))
+
+    response = client.get(
+        f"/v1/mental-models/{created['model_key']}", params={"scope": "user"}, headers=juan["headers"]
+    )
+
+    assert response.status_code == 200
+    assert response.json()["delivery_state"] == "withheld"
+    assert response.json()["content"] is None
+    assert model_get.called is False
 
 
 def test_get_an_unregistered_key_is_a_404(client, juan):

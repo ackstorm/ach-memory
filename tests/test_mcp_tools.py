@@ -732,8 +732,8 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == "RATE_LIMITED", name
         elif name in ("memory_history", "get_mental_model", "transfer"):
-            # get_mental_model is a pure registry read with no Hindsight call
-            # to mock success from -- a ghost model_key genuinely 404s.
+            # get_mental_model 404s on the registry lookup before it would
+            # reach Hindsight for content -- a ghost model_key genuinely 404s.
             # transfer's own ceiling lives in the domain, after resolution, so
             # a ghost slug reaches PROJECT_NOT_FOUND first; the code is
             # asserted directly rather than by absence.
@@ -1830,7 +1830,9 @@ EXPECTED_TOOLS = {
 # already advertised, so the SDK emits structuredContent for it -- and the
 # trigger description on create/update_mental_model (QA F-19/F-22), which
 # callers had been guessing at.
-TOOL_CONTRACT_SHA256 = "efe31c0a0fdbdc0e6702f22ee67f8d6bc9bc9cf3678dfe98497c81ba6622a9fc"
+# Then by the get_mental_model description (F-18): the tool now delivers
+# content once the refresh has landed, and said only "metadata" before.
+TOOL_CONTRACT_SHA256 = "6bc48ff3a94cf5cf57f62a9f45fc2d22b16f8cc87785c2212845a1cd27de7550"
 
 
 def test_tool_registration_is_stable_after_module_split():

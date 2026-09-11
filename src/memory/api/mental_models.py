@@ -188,13 +188,9 @@ def get_mental_model(
         scoped, db, principal, on_behalf_of, "mental_models.get", is_write=False
     )
     db.commit()
-    view = mental_model_service.get_model(db, bank, model_key)
-    if view.delivery_state == "withheld":
-        # Exact refresh-completion check (SPEC §6.4), never a new mutation:
-        # this only observes the already-recorded operation, so it stays
-        # inside "ordinary get never provisions or reconciles a definition".
-        view = mental_model_service.observe_model_refresh(db, bank, model_key, client=get_client())
-    return view
+    # Observation stays an exact refresh-completion check (SPEC §6.4), never
+    # a new mutation; content is delivered only once that check says ready.
+    return mental_model_service.read_model(db, bank, model_key, client=get_client())
 
 
 @router.patch("/{model_key}", response_model=MentalModelView)

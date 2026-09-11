@@ -188,6 +188,10 @@ class MentalModelView(BaseModel):
     delivery_state: Literal["ready", "withheld"]
     refresh_status: Literal["required", "pending", "failed", "succeeded"] | None
     last_refreshed_at: datetime | None
+    #: The synthesized text, only when `delivery_state == "ready"` and only
+    #: from `read_model` (list never fetches it -- one upstream call per model
+    #: would make list O(n) round trips).
+    content: str | None = None
 
 
 class ModelListResult(BaseModel):
@@ -507,6 +511,29 @@ def get_model(db: Session, bank: LogicalBankRef, model_key: str) -> MentalModelV
     if row is None or row.lifecycle_state == "deleted":
         raise MentalModelNotFound("no registered model with that logical key")
     return _to_view(row)
+
+
+def read_model(db: Session, bank: LogicalBankRef, model_key: str, *, client) -> MentalModelView:
+    """`get_model`, plus the two things an ordinary get owes the caller:
+    observe a pending refresh, and deliver the content when it is ready
+    (SPEC currentness barrier: "ordinary model get returns content only when
+    ready"). Never provisions or reconciles a definition."""
+    view = get_model(db, bank, model_key)
+    if view.delivery_state == "withheld":
+        view = observe_model_refresh(db, bank, model_key, client=client)
+    if view.delivery_state != "ready":
+        return view
+    row = model_registry.get_registered_model(db, bank, model_key)
+    if row is None or not row.upstream_model_id:
+        return view
+    try:
+        upstream = client.get_mental_model(bank.bank_id, row.upstream_model_id)
+    except MentalModelNotFound:
+        # A stale row (upstream deleted after it went ready) is still readable
+        # metadata; the next refresh/observe is what repairs it, not a get.
+        return view
+    content = upstream.get("content") if isinstance(upstream, dict) else None
+    return view.model_copy(update={"content": content if isinstance(content, str) else None})
 
 
 def update_model(

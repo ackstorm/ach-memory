@@ -200,7 +200,7 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Fetch one registered mental model's governance metadata by its logical key."
+            "Fetch one registered mental model's governance metadata and, once its refresh has landed, its content, by its logical key."
             " Nothing there is an error with a code, never an empty result: MENTAL_MODEL_NOT_FOUND for an unknown id, PROJECT_NOT_FOUND for an unknown project."
         ),
         annotations=ToolAnnotations(readOnlyHint=True),
@@ -216,12 +216,9 @@ def register(mcp: MCPServer) -> None:
             return ScopedRequest(scope=scope, project_slug=project_slug, git_locator=git_locator)
 
         def call(bank, db, body):
-            view = mental_model_service.get_model(db, bank, model_key)
-            if view.delivery_state == "withheld":
-                view = mental_model_service.observe_model_refresh(
-                    db, bank, model_key, client=get_client()
-                )
-            return view.model_dump(mode="json")
+            return mental_model_service.read_model(
+                db, bank, model_key, client=get_client()
+            ).model_dump(mode="json")
 
         return _model_run(
             ctx,
