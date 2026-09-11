@@ -1819,12 +1819,13 @@ EXPECTED_TOOLS = {
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
-# moved by the five get-by-id reads (memory_history, get_memory,
-# get_document, get_operation, get_mental_model) stating in their
-# descriptions that nothing-there is a coded error, never an empty result --
-# the same commit stopped them softening an absent project to a bare `{}`.
-# Descriptions only; no schema changed.
-TOOL_CONTRACT_SHA256 = "951585301aa8c965fd1fe45045cbfe07e5e6f5326e7768770d41bdd1f9991991"
+# moved by `workspace_id` gaining a description on the three Working State
+# tools. It is the one field a caller cannot author -- it is derived from the
+# filesystem -- and it carried a bare `^ws_[0-9a-f]{32}$` with no account of
+# where such a value comes from. Measured 2026-09-11: a caller that was not
+# our own stdio proxy had no way to satisfy it.
+# One field's description; no validation changed.
+TOOL_CONTRACT_SHA256 = "dcb2dcef19491c3dd9c44a603cfc50caeeda150f08ee1da5b9899e46084c2a74"
 
 
 def test_tool_registration_is_stable_after_module_split():
