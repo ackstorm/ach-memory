@@ -37,10 +37,20 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
   still pending) and a `notice`: `PROJECT_CREATED` when the write minted the
   project, `DUPLICATE_CLAIM` when identical content already existed in the
   bank and the existing record was returned instead of a second one.
+- One name per thing across every read surface: a field is named after the
+  parameter that accepts it. A memory id is always `memory_id`, a document id
+  `document_id`, an operation id `operation_id`; the fact kind (world,
+  experience, observation) is `fact_type`, the claim type `memory_type` and
+  the evidence basis `basis` — the same names `retain` takes. Every list is
+  wrapped in `items` and carries `total`/`limit`/`offset`, even when empty.
 - Reversible memory curation (`forget`, `restore`, `correct`), each proving
   its Hindsight outcome before ACH's own record changes. `correct` uses a
   caller-visible operation ID so exact retries deduplicate without collapsing
-  separate corrections that happen to return to an earlier value.
+  separate corrections that happen to return to an earlier value. It changes
+  the memory unit only: the retain document keeps its original text, so
+  `reflect` may still quote it — a full rewrite is `forget` then `retain`.
+  `restore` brings the claim back; the observation Hindsight derived from it
+  returns with the next consolidation rather than with the restore.
   `memory_history` returns the claim's ACH `provenance` (basis, trigger,
   evidence, validity, tags) and its `curation` events (forget/correct/restore
   with `reason`) alongside Hindsight's revision history.
