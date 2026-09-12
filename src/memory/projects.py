@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import timedelta
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -10,16 +11,31 @@ from memory.auth.principal import Principal
 from memory.config import get_settings
 from memory.errors import (
     GroupNotFound,
+    HindsightError,
     InvalidOwnerType,
     ProjectAccessDenied,
     ProjectLocatorMismatch,
+    ProjectNotEmpty,
     ProjectNotFound,
     ProjectSlugConflict,
     RateLimited,
     UserNotFound,
 )
 from memory.identifiers import reject_control_characters
-from memory.models import AuditEvent, Group, Project, ProjectSlug, User
+from memory.models import (
+    AuditEvent,
+    BankCurrentness,
+    CurationOperation,
+    Group,
+    MentalModelMutation,
+    MentalModelRegistration,
+    Project,
+    ProjectSlug,
+    RetainedRecord,
+    User,
+    WorkingSession,
+    WorkingState,
+)
 from memory.slugs import canonical_locator, normalize_slug
 
 
@@ -431,3 +447,85 @@ def transfer(
         on_behalf_of=on_behalf_of,
     )
     return project
+
+
+def delete(
+    db: Session,
+    principal: Principal,
+    project: Project,
+    *,
+    client,
+    on_behalf_of: str | None = None,
+) -> str:
+    """Erase an EMPTY project: its bank, its ACH bookkeeping and its slugs,
+    rename tombstones included. Audit events stay. Returns the canonical slug.
+
+    Owner-level, unlike admin.delete_bank, which is why it refuses a bank
+    that still holds memories: a caller who wants those gone says so by
+    forgetting or deleting them first, so a slip of the slug cannot take a
+    live bank with it. "Empty" is Hindsight-empty. Its list omits `state`
+    here and so counts live facts only -- invalidated ones sit in a separate
+    archive table -- which is the intended meaning: a forgotten claim is
+    gone for this purpose.
+
+    Rate-limited here for the same reason as `transfer`: no bank is resolved
+    on the way in, so `_resolve_bank` never applies the ceiling.
+    """
+    ratelimit.check(principal, on_behalf_of)
+    authorize(db, principal, project)
+    slug = canonical_slug(db, project)
+
+    # An absent or malformed count is a reason to refuse, not a zero: the
+    # erase below is irreversible, so only a count Hindsight actually
+    # reported may open the gate. `bool` is excluded because it is an int.
+    total = client.list_memories(project.bank_id, limit=1).get("total")
+    if not isinstance(total, int) or isinstance(total, bool):
+        raise HindsightError("memory backend did not report a memory count")
+    if total > 0:
+        raise ProjectNotEmpty(
+            "project still holds memories; forget or delete them first",
+            project_slug=slug,
+            memories=total,
+        )
+
+    # The upstream erase goes FIRST, and the caller commits only after this
+    # returns: the audit row below is the claim that the bank is gone, so a
+    # failed DELETE must leave no row saying it happened (same rule as
+    # admin.delete_bank). Hindsight never 404s an absent bank, so a project
+    # whose bank was never materialized deletes like any other.
+    #
+    # Known window: a retain that lands between the count above and this
+    # DELETE is erased with the bank. Accepted -- the delete is owner-
+    # initiated on a bank they just declared empty, and Hindsight offers no
+    # atomic "delete if empty".
+    client.delete_bank(project.bank_id)
+
+    # Explicit statements rather than ON DELETE CASCADE: none of these FKs
+    # declares one, and a migration to add seven is a larger change than
+    # seven deletes. Order follows the FKs -- a curation operation points at
+    # its retained record (whose revisions DO cascade at the DB). Working
+    # sessions and states do not reference each other.
+    #
+    # If one of these fails after the bank is already gone, the route raises
+    # and the transaction rolls back: the project row survives over an empty
+    # upstream bank, and nothing claims success. A retry then counts 0 (the
+    # list is a plain filter on bank_id, so an absent bank reads as empty),
+    # DELETEs a bank that is not there (tolerated upstream) and finishes the
+    # local half -- recoverable, and honest about the failure.
+    for model in (
+        MentalModelMutation,
+        MentalModelRegistration,
+        BankCurrentness,
+        CurationOperation,
+        RetainedRecord,
+        WorkingState,
+        WorkingSession,
+    ):
+        db.execute(
+            sql_delete(model).where(model.project_internal_id == project.internal_id)
+        )
+    # ProjectSlug rows, tombstones included, go through the ORM cascade.
+    db.delete(project)
+
+    audit.record(db, principal, "project.delete", slug, on_behalf_of=on_behalf_of)
+    return slug

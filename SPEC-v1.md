@@ -1335,8 +1335,14 @@ GET   /v1/projects
 GET   /v1/projects/{project_slug}
 PATCH /v1/projects/{project_slug}
 PATCH /v1/projects/{project_slug}/owner
+DELETE /v1/projects/{project_slug}
 POST  /v1/projects
 ```
+
+`DELETE /v1/projects/{project_slug}` is owner-level and only for an empty
+project (`PROJECT_NOT_EMPTY` otherwise); it erases the bank, the bookkeeping
+rows and every slug, tombstones included, and keeps the audit events. The MCP
+tool `delete_project` is the same operation.
 
 `POST /v1/projects` is required for provisioning and automation even though
 normal use may lazily create a project on first touch.
@@ -1538,6 +1544,7 @@ FORBIDDEN
 PROJECT_NOT_FOUND
 PROJECT_CONTEXT_UNAVAILABLE
 PROJECT_SLUG_CONFLICT
+PROJECT_NOT_EMPTY
 PROJECT_INVALID_SLUG
 PROJECT_ACCESS_DENIED
 PROJECT_LOCATOR_MISMATCH
@@ -1582,6 +1589,11 @@ malformed, over-long, over-numerous, or in a server-owned namespace (`type:`,
 `basis:`, `schema:`, `validity:`) -- rejected rather than merged, since those
 namespaces are derived server-side and a caller value there would corrupt
 typed curation or the mental-model source filter.
+
+`PROJECT_NOT_EMPTY` (409): the owner-level `DELETE /v1/projects/{slug}` and
+MCP `delete_project` refuse a project whose bank still holds live memories;
+`details.memories` carries the count. Forget or delete them first. Invalidated
+memories do not count.
 
 `INVALID_OWNER_TYPE` (400): `projects.py` rejects an owner type that is
 neither `user` nor `group` before any lookup happens.

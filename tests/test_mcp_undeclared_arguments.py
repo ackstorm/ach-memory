@@ -44,8 +44,8 @@ def test_the_declared_name_still_works(tools):
 
 
 def test_every_tool_is_hardened_not_just_recall(tools):
-    """The defect is every optional parameter of all 27 tools, not `tags`."""
-    assert len(tools) == 27
+    """The defect is every optional parameter of all 28 tools, not `tags`."""
+    assert len(tools) == 28
     for name, tool in tools.items():
         assert tool.fn_metadata.arg_model.model_config.get("extra") == "forbid", name
 

@@ -11,7 +11,10 @@ control, and a small REST/MCP surface that agents can use safely. Hindsight
 ## What it provides
 
 - User-scoped and project-scoped memory with project ownership and forwarding
-  after renames.
+  after renames. An owner can delete an empty project (`DELETE
+  /v1/projects/{slug}`, MCP `delete_project`); one whose bank still holds
+  memories is refused with `PROJECT_NOT_EMPTY` until they are forgotten or
+  deleted.
 - Identity entirely from outside: a JWKS-verified JWT or a platform key
   resolved over HTTP. This service mints no credential and stores none.
 - Operator authority as configuration (`MEMORY_MASTER_USERS`,

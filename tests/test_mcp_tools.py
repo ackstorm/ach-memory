@@ -604,6 +604,8 @@ MCP_IS_WRITE_TABLE: dict[str, bool] = {
     # is_write flag -- `projects.transfer` applies the ceiling in the domain
     # instead, which is what makes this True on REST and MCP alike.
     "transfer": True,
+    # Same placement as transfer: `projects.delete` meters itself.
+    "delete_project": True,
 }
 
 MCP_CREATE_TABLE: dict[str, bool] = {
@@ -639,6 +641,7 @@ MCP_CREATE_TABLE: dict[str, bool] = {
     "refresh_mental_model": False,
     "delete_mental_model": False,
     "transfer": False,
+    "delete_project": False,
 }
 
 # The COLLECTION reads that map an absent project to their own empty shape
@@ -694,6 +697,7 @@ CONTEXT_KWARGS = {
 # never user/project-scoped, only addressed directly by slug.
 PROJECT_KWARGS = {
     "transfer": {"owner_type": "user", "owner_id": "usr_ghost"},
+    "delete_project": {},
 }
 
 
@@ -739,9 +743,10 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
         if name in WORKING_STATE_KWARGS or name in CONTEXT_KWARGS or name in PROJECT_KWARGS:
             # project_slug need not exist: ratelimit.check() runs before any
             # project resolution, so RATE_LIMITED fires first regardless.
-            # transfer is the exception in placement, not in effect: its
-            # check lives in `projects.transfer`, AFTER resolution, so a ghost
-            # slug raises PROJECT_NOT_FOUND before the ceiling is reached.
+            # The project tools are the exception in placement, not in
+            # effect: their check lives in the domain (`projects.transfer`,
+            # `projects.delete`), AFTER resolution, so a ghost slug raises
+            # PROJECT_NOT_FOUND before the ceiling is reached.
             kwargs = {
                 "project_slug": "wst-ratelimit",
                 **(
@@ -752,19 +757,19 @@ def test_mcp_is_write_flags_match_the_security_table(call_tool, monkeypatch):
             }
         else:
             kwargs = {"scope": "user", **GHOST_EXTRA_KWARGS.get(name, {})}
-        if expect_write and name != "transfer":
+        if expect_write and name not in PROJECT_KWARGS:
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
             assert exc_info.value.code == "RATE_LIMITED", name
-        elif name in ("memory_history", "get_mental_model", "transfer"):
+        elif name in ("memory_history", "get_mental_model") or name in PROJECT_KWARGS:
             # get_mental_model 404s on the registry lookup before it would
             # reach Hindsight for content -- a ghost model_key genuinely 404s.
-            # transfer's own ceiling lives in the domain, after resolution, so
-            # a ghost slug reaches PROJECT_NOT_FOUND first; the code is
-            # asserted directly rather than by absence.
+            # A project tool's own ceiling lives in the domain, after
+            # resolution, so a ghost slug reaches PROJECT_NOT_FOUND first;
+            # the code is asserted directly rather than by absence.
             with pytest.raises(MCPToolError) as exc_info:
                 call_tool(name, key, **kwargs)
-            if name == "transfer":
+            if name in PROJECT_KWARGS:
                 assert exc_info.value.code == "PROJECT_NOT_FOUND", name
             else:
                 # The point of these two is that they raise for their OWN
@@ -973,6 +978,59 @@ def test_transfer_on_a_foreign_project_is_indistinguishable_from_absent(call_too
     # different ones) -- the invariant is that neither error leaks anything
     # ProjectAccessDenied would carry (owner_type, most of all).
     assert set(foreign.value.details) == set(absent.value.details) == {"project_slug"}
+
+
+def _mock_bank_for_delete(total: int = 0):
+    """Hindsight as delete_project sees it: the emptiness probe answers
+    `total`, and the returned route is the whole-bank erase."""
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": total})
+    )
+    return respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
+        return_value=httpx.Response(200, json={"success": True, "deleted_count": 0})
+    )
+
+
+def test_delete_project_is_advertised_as_destructive():
+    from memory.mcp.server import build_mcp
+    from memory.mcp.tools import register
+
+    mcp = build_mcp()
+    register(mcp)
+    tool = mcp._tool_manager.get_tool("delete_project")
+
+    assert tool.annotations.destructive_hint is True
+    assert not tool.annotations.read_only_hint
+
+
+@respx.mock
+def test_delete_project_erases_an_empty_project(call_tool):
+    erase = _mock_bank_for_delete()
+    juan = call_tool.make_user()
+    call_tool.seed_project(juan, "payments")
+
+    result = call_tool("delete_project", juan, project_slug="payments")
+
+    assert result.result == {"project_slug": "payments", "deleted": True}
+    assert result.notice is None
+    assert erase.call_count == 1
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("delete_project", juan, project_slug="payments")
+    assert exc_info.value.code == "PROJECT_NOT_FOUND"
+
+
+@respx.mock
+def test_delete_project_refuses_a_bank_that_holds_memories(call_tool):
+    erase = _mock_bank_for_delete(total=81)
+    juan = call_tool.make_user()
+    call_tool.seed_project(juan, "payments")
+
+    with pytest.raises(MCPToolError) as exc_info:
+        call_tool("delete_project", juan, project_slug="payments")
+
+    assert exc_info.value.code == "PROJECT_NOT_EMPTY"
+    assert exc_info.value.details["memories"] == 81
+    assert not erase.called
 
 
 @respx.mock
@@ -1985,6 +2043,7 @@ EXPECTED_TOOLS = {
     "refresh_mental_model",
     "delete_mental_model",
     "transfer",
+    "delete_project",
 }
 
 # Moves whenever a tool's description, schema or annotations change. Last
@@ -2015,7 +2074,9 @@ EXPECTED_TOOLS = {
 # `fact_type` (the names a hit and a row read back); list_documents says
 # what `q` matches, correct says the retain document keeps its text (F-25),
 # restore says the derived observation is not restored (F-16).
-TOOL_CONTRACT_SHA256 = "947a83f41d3454fb49242120129045aa780df189463f40a296ca658c2be60c41"
+# Then by delete_project landing (QA F-01): a 28th tool, destructiveHint,
+# owner-level delete of an empty project.
+TOOL_CONTRACT_SHA256 = "bab15a238c66341622b35b7250e341c0a39f9d5a6099b8ab1d98a2bd50d0d86b"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -2027,7 +2088,7 @@ def test_tool_registration_is_stable_after_module_split():
     tools = mcp._tool_manager.list_tools()
     names = {tool.name for tool in tools}
 
-    assert len(tools) == 27
+    assert len(tools) == 28
     assert {
         "retain",
         "sync_retain",
@@ -2063,7 +2124,7 @@ async def test_serialized_tool_contract_is_stable_after_module_split():
         contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode()
 
-    assert len(tools) == 27
+    assert len(tools) == 28
     assert hashlib.sha256(serialized).hexdigest() == TOOL_CONTRACT_SHA256
 
 

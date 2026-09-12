@@ -42,7 +42,7 @@ READONLY = {
     "clear_working_state": False, "load_context": True,
     "create_mental_model": False, "list_mental_models": True, "get_mental_model": True,
     "update_mental_model": False, "refresh_mental_model": False, "delete_mental_model": False,
-    "transfer": False,
+    "transfer": False, "delete_project": False,
 }
 
 WORKING_STATE_TOOLS = {"start_working_session", "set_working_state", "clear_working_state"}
@@ -50,7 +50,7 @@ MODEL_TOOLS = {
     "create_mental_model", "list_mental_models", "get_mental_model",
     "update_mental_model", "refresh_mental_model", "delete_mental_model",
 }
-PROJECT_TOOLS = {"transfer"}
+PROJECT_TOOLS = {"transfer", "delete_project"}
 
 
 def test_product_registrars_own_disjoint_tool_sets():

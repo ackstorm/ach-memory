@@ -31,6 +31,7 @@ EXPECTED_ROUTES = {
     ("GET", "/v1/projects"),
     ("GET", "/v1/projects/{project_slug}"),
     ("PATCH", "/v1/projects/{project_slug}"),
+    ("DELETE", "/v1/projects/{project_slug}"),
     ("PATCH", "/v1/projects/{project_slug}/owner"),
     ("POST", "/v1/memory/retain"),
     ("POST", "/v1/memory/sync_retain"),

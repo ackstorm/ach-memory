@@ -16,6 +16,7 @@ from memory.errors import (
     ProjectAccessDenied,
     ProjectInvalidSlug,
     ProjectLocatorMismatch,
+    ProjectNotEmpty,
     ProjectNotFound,
     ProjectSlugConflict,
     RateLimited,
@@ -557,6 +558,104 @@ def test_transfer_denies_an_unauthorized_caller(session, tenant):
         )
 
     assert result.project.owner_id == "usr_juan"
+
+
+def test_delete_erases_the_bank_then_the_project(session, tenant):
+    """The bank goes first: it is the irreversible half, and the local rows
+    only commit once it is gone (the route commits after `delete` returns).
+    `delete_bank`'s side effect proves the order directly: every local row
+    is still there at the moment the upstream erase runs. Both slug rows --
+    the live one and the rename tombstone -- go with it."""
+    from unittest.mock import MagicMock
+
+    from memory.models import RetainedRecord
+
+    _user(session, tenant, "usr_juan")
+    juan = _principal(tenant, "usr_juan")
+    result = projects.resolve(session, juan, "old-name")
+    projects.rename(session, juan, result.project, "payments-api")
+    bank_id = result.project.bank_id
+    internal_id = result.project.internal_id
+    session.add(
+        RetainedRecord(
+            tenant_id=tenant,
+            scope="project",
+            project_internal_id=internal_id,
+            operation_id=str(uuid4()),
+            payload_hash="h" * 64,
+            document_id=f"ach-retain-{uuid4().hex}",
+            canonical_content="Deploys need two approvals.",
+            memory_type="constraint",
+            basis="human_explicit",
+            trigger="user_requested",
+            sanitized_evidence=[],
+            lifecycle="forgotten",
+            upstream_state="completed",
+        )
+    )
+    session.flush()
+
+    def _rows_still_present(_bank_id):
+        records = session.query(RetainedRecord).filter_by(project_internal_id=internal_id)
+        slugs = session.query(ProjectSlug).filter_by(project_internal_id=internal_id)
+        assert records.count() == 1, "retained record erased before the bank"
+        assert slugs.count() == 2, "slug rows erased before the bank"
+        return {}
+
+    client = MagicMock()
+    client.list_memories.return_value = {"items": [], "total": 0}
+    client.delete_bank.side_effect = _rows_still_present
+
+    slug = projects.delete(session, juan, result.project, client=client)
+    session.flush()
+
+    assert slug == "payments-api"
+    client.list_memories.assert_called_once_with(bank_id, limit=1)
+    client.delete_bank.assert_called_once_with(bank_id)
+    assert session.query(Project).count() == 0
+    assert session.query(ProjectSlug).count() == 0
+    assert session.query(RetainedRecord).filter_by(project_internal_id=internal_id).count() == 0
+    with pytest.raises(ProjectNotFound):
+        projects.resolve(session, juan, "payments-api", create=False)
+    assert [e.resource for e in session.query(AuditEvent).filter_by(action="project.delete")] == [
+        "payments-api"
+    ]
+
+
+def test_delete_refuses_a_bank_that_still_holds_memories(session, tenant):
+    from unittest.mock import MagicMock
+
+    _user(session, tenant, "usr_juan")
+    juan = _principal(tenant, "usr_juan")
+    result = projects.resolve(session, juan, "payments-api")
+    client = MagicMock()
+    client.list_memories.return_value = {"items": [], "total": 81}
+
+    with pytest.raises(ProjectNotEmpty) as exc_info:
+        projects.delete(session, juan, result.project, client=client)
+
+    assert exc_info.value.details == {"project_slug": "payments-api", "memories": 81}
+    client.delete_bank.assert_not_called()
+    assert session.query(Project).count() == 1
+
+
+def test_delete_denies_an_unauthorized_caller(session, tenant):
+    """Same reasoning as test_transfer_denies_an_unauthorized_caller: the
+    domain call authorizes on its own, and does so before touching Hindsight."""
+    from unittest.mock import MagicMock
+
+    _user(session, tenant, "usr_juan")
+    _user(session, tenant, "usr_alice")
+    juan = _principal(tenant, "usr_juan")
+    result = projects.resolve(session, juan, "payments-api")
+    client = MagicMock()
+
+    with pytest.raises(ProjectAccessDenied):
+        projects.delete(session, _principal(tenant, "usr_alice"), result.project, client=client)
+
+    client.list_memories.assert_not_called()
+    client.delete_bank.assert_not_called()
+    assert session.query(Project).count() == 1
 
 
 def _force_race(

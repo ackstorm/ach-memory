@@ -1,6 +1,11 @@
+import httpx
 import pytest
+import respx
+from sqlalchemy import select
 
 from tests.conftest import create_user
+
+BASE = "http://hindsight.test"
 
 
 @pytest.fixture
@@ -849,3 +854,326 @@ def test_an_external_caller_may_create_a_project_owned_by_an_asserted_group(
 
     assert response.status_code == 201, response.text
     assert response.json()["owner"]["id"] == "grp_platform"
+
+
+def _mock_bank_for_delete(total: int = 0):
+    """Hindsight as the delete route sees it: the emptiness probe answers
+    `total`, and the returned route is the whole-bank erase."""
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?|$)").mock(
+        return_value=httpx.Response(
+            200, json={"items": [], "total": total, "limit": 1, "offset": 0}
+        )
+    )
+    return respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
+        return_value=httpx.Response(200, json={"success": True, "deleted_count": 0})
+    )
+
+
+def _bank_id(session, slug: str) -> str:
+    from memory.models import Project, ProjectSlug
+
+    return session.execute(
+        select(Project.bank_id).join(ProjectSlug).where(ProjectSlug.slug == slug)
+    ).scalar_one()
+
+
+@respx.mock
+def test_an_owner_deletes_an_empty_project(client, juan, tenant, session):
+    from memory.models import AuditEvent, ProjectSlug
+
+    erase = _mock_bank_for_delete()
+    client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+    bank_id = _bank_id(session, "payments-api")
+
+    response = client.delete("/v1/projects/payments-api", headers=juan["headers"])
+
+    assert response.status_code == 204, response.text
+    assert client.get("/v1/projects/payments-api", headers=juan["headers"]).status_code == 404
+    listed = client.get("/v1/projects", headers=juan["headers"]).json()
+    assert "payments-api" not in [p["project_slug"] for p in listed]
+    assert session.query(ProjectSlug).filter_by(slug="payments-api").count() == 0
+    assert erase.call_count == 1
+    assert str(erase.calls.last.request.url).endswith(f"/banks/{bank_id}")
+    deletes = [
+        e.resource for e in session.query(AuditEvent).filter_by(action="project.delete")
+    ]
+    assert deletes == ["payments-api"]
+
+
+@respx.mock
+def test_a_project_that_still_holds_memories_is_not_deleted(client, juan, tenant, session):
+    from memory.models import AuditEvent
+
+    erase = _mock_bank_for_delete(total=3)
+    client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+
+    response = client.delete("/v1/projects/payments-api", headers=juan["headers"])
+
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["code"] == "PROJECT_NOT_EMPTY"
+    assert error["details"]["memories"] == 3
+    assert not erase.called
+    assert client.get("/v1/projects/payments-api", headers=juan["headers"]).status_code == 200
+    assert session.query(AuditEvent).filter_by(action="project.delete").count() == 0
+
+
+@respx.mock
+def test_an_outsider_cannot_delete_a_project(client, juan, new_user, tenant):
+    bob = new_user()
+    erase = _mock_bank_for_delete()
+    client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+
+    response = client.delete("/v1/projects/payments-api", headers=bob["headers"])
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
+    assert "owner_type" not in str(response.json())
+    assert not erase.called
+    assert client.get("/v1/projects/payments-api", headers=juan["headers"]).status_code == 200
+
+
+@respx.mock
+def test_a_group_member_deletes_a_group_owned_project(
+    client, juan, new_user, tenant, session
+):
+    from memory.models import Group
+
+    _mock_bank_for_delete()
+    alice = new_user(groups=("grp_payments",))
+    session.add(Group(id="grp_payments", tenant_id=tenant))
+    session.flush()
+    client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+    client.patch(
+        "/v1/projects/payments-api/owner",
+        json={"type": "group", "id": "grp_payments"},
+        headers=juan["headers"],
+    )
+
+    response = client.delete("/v1/projects/payments-api", headers=alice["headers"])
+
+    assert response.status_code == 204, response.text
+    assert client.get("/v1/projects/payments-api", headers=alice["headers"]).status_code == 404
+
+
+@respx.mock
+def test_delete_through_a_retired_slug_removes_the_tombstone_too(
+    client, juan, tenant, session
+):
+    from memory.models import ProjectSlug
+
+    _mock_bank_for_delete()
+    client.post(
+        "/v1/projects", json={"project_slug": "old-name"}, headers=juan["headers"]
+    )
+    client.patch(
+        "/v1/projects/old-name", json={"project_slug": "new-name"}, headers=juan["headers"]
+    )
+
+    response = client.delete("/v1/projects/old-name", headers=juan["headers"])
+
+    assert response.status_code == 204, response.text
+    slugs = session.query(ProjectSlug).filter(ProjectSlug.slug.in_(["old-name", "new-name"]))
+    assert slugs.count() == 0
+    assert client.get("/v1/projects/new-name", headers=juan["headers"]).status_code == 404
+
+
+@respx.mock
+def test_an_upstream_failure_on_erase_leaves_the_project_and_no_audit_row(
+    client, juan, tenant, session
+):
+    """Same rule as admin.delete_bank: the audit row is the claim that the
+    bank is gone, so a failed erase must commit nothing."""
+    from memory.models import AuditEvent
+
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
+    )
+    respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
+        return_value=httpx.Response(500, json={"error": "boom"})
+    )
+    client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+
+    response = client.delete("/v1/projects/payments-api", headers=juan["headers"])
+
+    assert response.status_code == 502, response.text
+    assert response.json()["error"]["code"] == "HINDSIGHT_ERROR"
+    assert client.get("/v1/projects/payments-api", headers=juan["headers"]).status_code == 200
+    assert session.query(AuditEvent).filter_by(action="project.delete").count() == 0
+
+
+@respx.mock
+def test_a_missing_memory_count_refuses_the_delete(client, juan, tenant, session):
+    """A listing without `total` is not an empty bank. The gate opens only on
+    a count Hindsight actually reported, so this must fail closed."""
+    from memory.models import AuditEvent
+
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    erase = respx.delete(url__regex=rf"{BASE}/v1/default/banks/[^/]+$").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+    client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+
+    response = client.delete("/v1/projects/payments-api", headers=juan["headers"])
+
+    assert response.status_code == 502, response.text
+    assert response.json()["error"]["code"] == "HINDSIGHT_ERROR"
+    assert not erase.called
+    assert client.get("/v1/projects/payments-api", headers=juan["headers"]).status_code == 200
+    assert session.query(AuditEvent).filter_by(action="project.delete").count() == 0
+
+
+@respx.mock
+def test_delete_removes_every_ach_row_that_references_the_project(
+    client, juan, tenant, session
+):
+    """The bookkeeping tables FK `projects.internal_id` without ON DELETE, so
+    the delete has to clear them itself, in an order the FKs accept: a
+    curation operation points at its retained record, which points at the
+    project. A forgotten claim is the shape that exercises all of it."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from memory.models import (
+        BankCurrentness,
+        CurationOperation,
+        MentalModelMutation,
+        MentalModelRegistration,
+        Project,
+        ProjectSlug,
+        RetainedRecord,
+        WorkingSession,
+        WorkingState,
+    )
+
+    _mock_bank_for_delete()
+    client.post(
+        "/v1/projects", json={"project_slug": "payments-api"}, headers=juan["headers"]
+    )
+    internal_id = session.execute(
+        select(Project.internal_id).join(ProjectSlug).where(ProjectSlug.slug == "payments-api")
+    ).scalar_one()
+    record = RetainedRecord(
+        tenant_id=tenant,
+        scope="project",
+        user_id=None,
+        project_internal_id=internal_id,
+        operation_id=str(uuid4()),
+        payload_hash="h" * 64,
+        document_id=f"ach-retain-{uuid4().hex}",
+        source_memory_id=str(uuid4()),
+        canonical_content="Deploys need two approvals.",
+        memory_type="constraint",
+        basis="human_explicit",
+        trigger="user_requested",
+        sanitized_evidence=[],
+        lifecycle="forgotten",
+        upstream_state="completed",
+    )
+    session.add(record)
+    session.flush()
+    session.add_all(
+        [
+            CurationOperation(
+                operation_id="ach-curate-delete-fk",
+                retained_record_id=record.id,
+                tenant_id=tenant,
+                scope="project",
+                user_id=None,
+                project_internal_id=internal_id,
+                action="forget",
+                state="completed",
+                reason="stale",
+            ),
+            WorkingSession(
+                tenant_id=tenant,
+                user_id=juan["user_id"],
+                project_internal_id=internal_id,
+                workspace_id="ws_" + "0" * 32,
+                session_id="s1",
+            ),
+            WorkingState(
+                tenant_id=tenant,
+                user_id=juan["user_id"],
+                project_internal_id=internal_id,
+                workspace_id="ws_" + "0" * 32,
+                objective="ship it",
+                recent_decisions=[],
+                open_questions=[],
+                next_steps=[],
+                updated_at=datetime.now(UTC),
+                session_id="s1",
+                session_epoch=0,
+                checkpoint_seq=0,
+            ),
+            MentalModelRegistration(
+                tenant_id=tenant,
+                scope="project",
+                user_id=None,
+                project_internal_id=internal_id,
+                model_key="project_context",
+                upstream_model_id="mm-" + "0" * 32,
+                name="project_context",
+                source_query="known context",
+                source_tags=[],
+                tags_match="all",
+                max_tokens=256,
+                trigger={},
+                origin="builtin",
+                builtin_key="project_context",
+                definition_version=1,
+                lifecycle_state="active",
+                delivery_state="ready",
+            ),
+            MentalModelMutation(
+                tenant_id=tenant,
+                scope="project",
+                user_id=None,
+                project_internal_id=internal_id,
+                model_key="project_context",
+                operation_id="ach-mm-delete-fk",
+                action="refresh",
+                payload_hash="h" * 64,
+                state="completed",
+            ),
+            BankCurrentness(
+                tenant_id=tenant,
+                scope="project",
+                user_id=None,
+                project_internal_id=internal_id,
+                state="current",
+            ),
+        ]
+    )
+    session.commit()
+
+    response = client.delete("/v1/projects/payments-api", headers=juan["headers"])
+
+    assert response.status_code == 204, response.text
+    for model in (
+        RetainedRecord,
+        CurationOperation,
+        WorkingSession,
+        WorkingState,
+        MentalModelRegistration,
+        MentalModelMutation,
+        BankCurrentness,
+        ProjectSlug,
+    ):
+        left = session.query(model).filter_by(project_internal_id=internal_id).count()
+        assert left == 0, model.__name__
+    assert session.query(Project).filter_by(internal_id=internal_id).count() == 0

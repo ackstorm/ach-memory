@@ -78,6 +78,11 @@ class ProjectSlugConflict(DomainError):
     status = 409
 
 
+class ProjectNotEmpty(DomainError):
+    code = "PROJECT_NOT_EMPTY"
+    status = 409
+
+
 class ProjectLocatorMismatch(DomainError):
     code = "PROJECT_LOCATOR_MISMATCH"
     status = 409

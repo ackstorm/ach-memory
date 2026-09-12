@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -291,3 +291,30 @@ def transfer_project(
     db.commit()
     # Same SPEC §8.6 forwarding annotation as update_project above.
     return _response(project, result.current_slug, result.resolved_from)
+
+
+@router.delete("/{project_slug}", status_code=204)
+def delete_project(
+    project_slug: str,
+    principal: Annotated[Principal, Depends(current_principal)],
+    on_behalf_of: Annotated[str | None, Depends(current_on_behalf_of)],
+    db: Session = Depends(get_session),
+) -> Response:
+    """Owner-level delete of an EMPTY project (QA F-01). Irreversible.
+
+    Erases the Hindsight bank, the ACH bookkeeping rows that reference the
+    project (provenance, curation, currentness, mental-model registrations,
+    Working State) and every slug -- rename tombstones included, so the names
+    become free again. Audit events stay. A bank that still holds memories
+    is refused with PROJECT_NOT_EMPTY; forget or delete them first.
+
+    Commit AFTER the domain call, which itself calls Hindsight before it
+    touches a row: the audit event is the erasure claim, and a 502 must not
+    leave one behind (the admin delete_bank route reasons the same way).
+    """
+    result = domain.resolve(db, principal, project_slug, create=False)
+    domain.delete(
+        db, principal, result.project, client=get_client(), on_behalf_of=on_behalf_of
+    )
+    db.commit()
+    return Response(status_code=204)

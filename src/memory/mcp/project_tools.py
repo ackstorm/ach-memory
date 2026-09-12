@@ -1,5 +1,6 @@
-"""Project ownership MCP tools. `projects.transfer` (projects.py) already
-implements the domain operation; this is only its MCP exposure."""
+"""Project ownership MCP tools. `projects.transfer` and `projects.delete`
+(projects.py) already implement the domain operations; this is only their
+MCP exposure."""
 
 import logging
 
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 
 from memory import activity, metrics, projects
 from memory.errors import DomainError
+from memory.hindsight.client import get_client
 from memory.mcp.server import tool_session
 from memory.mcp.tools import (
     REGISTRY,
@@ -102,3 +104,63 @@ def register(mcp: MCPServer) -> None:
             activity.finish("mcp")
 
     REGISTRY["transfer"] = transfer
+
+    @mcp.tool(
+        description=(
+            "Delete a project you own. Refused while its bank still holds "
+            "memories (PROJECT_NOT_EMPTY): forget or delete them first. "
+            "Irreversible -- the bank, its curation history and the "
+            "project's slugs (rename tombstones included) are erased."
+        ),
+        annotations=ToolAnnotations(destructiveHint=True),
+    )
+    def delete_project(project_slug: str, ctx: Context) -> ToolResult:
+        activity.new_call()
+        try:
+            with tool_session(ctx) as tc:
+                # Resolve, then let the domain authorize -- same order and
+                # for the same reason as `transfer` above: a foreign slug
+                # must read as PROJECT_NOT_FOUND, never as a denial that
+                # names the owner kind.
+                result = projects.resolve(
+                    tc.db, tc.principal, project_slug, create=False
+                )
+                projects.delete(
+                    tc.db, tc.principal, result.project, client=get_client()
+                )
+                activity.describe(
+                    action="projects.delete",
+                    scope="project",
+                    tenant_id=tc.principal.tenant_id,
+                    credential_id=tc.principal.credential_id,
+                    project_slug=result.current_slug,
+                    bank_fingerprint=activity.fingerprint(result.project.bank_id),
+                )
+                # Commit only now: the domain has already erased the bank,
+                # and the audit row it wrote is the claim that it did.
+                tc.db.commit()
+                return ToolResult(
+                    result={"project_slug": result.current_slug, "deleted": True},
+                    resolved_from=result.resolved_from,
+                    notice="PROJECT_RENAMED" if result.resolved_from else None,
+                )
+        except DomainError as exc:
+            metrics.ERRORS.labels(code=exc.code).inc()
+            activity.set_error(exc.code)
+            raise MCPToolError(exc.code, exc.message, exc.details) from None
+        except ValidationError as exc:
+            metrics.ERRORS.labels(code="INVALID_REQUEST").inc()
+            activity.set_error("INVALID_REQUEST")
+            raise _invalid_request(exc) from None
+        except MCPToolError as exc:
+            activity.set_error(getattr(exc, "code", "INTERNAL_ERROR"))
+            raise
+        except Exception as exc:
+            logger.error("unhandled MCP tool error", exc_info=exc)
+            metrics.ERRORS.labels(code="INTERNAL_ERROR").inc()
+            activity.set_error("INTERNAL_ERROR")
+            raise _internal_error() from None
+        finally:
+            activity.finish("mcp")
+
+    REGISTRY["delete_project"] = delete_project
