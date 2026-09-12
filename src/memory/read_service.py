@@ -283,10 +283,10 @@ def _caller_tags_of(tags: Any) -> tuple[str, ...]:
     would have produced.
 
     Server-derived tags are dropped rather than forwarded: `type:`/`basis:`
-    already reach the caller as `kind`/`origin`, and `schema:`/`validity:` are
-    internal bookkeeping that the read surface has never exposed. So this
-    returns what the caller itself wrote and nothing of Hindsight's own
-    vocabulary.
+    already reach the caller as `memory_type`/`basis`, and `schema:`/
+    `validity:` are internal bookkeeping that the read surface has never
+    exposed. So this returns what the caller itself wrote and nothing of
+    Hindsight's own vocabulary.
     """
     if not isinstance(tags, list):
         return ()
@@ -321,8 +321,8 @@ def _normalize_hit(raw: Any) -> RecallHit | None:
             # surfaces an invalidated memory, so every hit is current by
             # construction.
             state="valid",
-            kind=_kind_of(tags),
-            origin=_origin_of(tags),
+            memory_type=_kind_of(tags),
+            basis=_origin_of(tags),
             mentioned_at=_str_or_none(raw.get("mentioned_at")),
             document_id=_str_or_none(raw.get("document_id")),
             tags=_caller_tags_of(tags),
@@ -336,9 +336,10 @@ def whitelist_reflect_evidence(result: Any) -> Any:
     """Reduce upstream's `based_on` to what a caller may see: the memories.
 
     Requested with `include_facts=True`, upstream returns three lists. Only
-    `memories` survives, and each entry only as `id`/`text`/`type` -- the same
-    identity class `RecallHit.memory_id` already exposes, so nothing new
-    crosses the boundary. `mental_models` carries upstream's own model ids,
+    `memories` survives, and each entry only as `memory_id`/`text`/`fact_type`
+    -- upstream's `id`/`type` under the names a recall hit carries (QA F-17),
+    the same identity class `RecallHit.memory_id` already exposes, so nothing
+    new crosses the boundary. `mental_models` carries upstream's own model ids,
     which every surface here keeps internal (`upstream_model_id`) behind a
     caller-facing `model_key`; `directives` is not a surface this service
     exposes at all. An upstream `context`/`occurred_*` on a memory is dropped
@@ -367,9 +368,9 @@ def whitelist_reflect_evidence(result: Any) -> Any:
                 continue
             kept.append(
                 {
-                    "id": _str_or_none(item.get("id")),
+                    "memory_id": _str_or_none(item.get("id")),
                     "text": text,
-                    "type": _str_or_none(item.get("type")),
+                    "fact_type": _str_or_none(item.get("type")),
                 }
             )
     return {**result, "based_on": {"memories": kept}}
@@ -511,7 +512,7 @@ def recall(
     run_access_maintenance(db, ref)
 
     hits = _recall_hits(
-        read_bank.bank_id, request.query, request.view, request.kinds,
+        read_bank.bank_id, request.query, request.view, request.memory_types,
         request.tags_filter,
     )
     capped = hits[: request.max_results]
@@ -536,7 +537,7 @@ def _normalize_current(raw: Any) -> CurrentFact | None:
     if text is None or state not in _STATES:
         return None
     try:
-        return CurrentFact(text=text, state=state, kind=_kind_of(raw.get("tags")))
+        return CurrentFact(text=text, state=state, memory_type=_kind_of(raw.get("tags")))
     except ValidationError:
         return None
 
@@ -552,7 +553,7 @@ def _normalize_source_fact(raw: Any) -> SourceFact | None:
         return SourceFact(
             memory_id=memory_id,
             text=text,
-            origin=_origin_of(raw.get("tags")),
+            basis=_origin_of(raw.get("tags")),
         )
     except ValidationError:
         return None

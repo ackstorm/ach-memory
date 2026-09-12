@@ -78,14 +78,16 @@ def test_the_client_sends_no_include_key_by_default(client):
 def test_only_the_memories_reach_the_caller_and_only_three_fields_of_each():
     result = whitelist_reflect_evidence(UPSTREAM)
 
+    # `memory_id`/`fact_type`, the names a recall hit carries (QA F-17), not
+    # upstream's `id`/`type`.
     assert result["based_on"] == {
         "memories": [
             {
-                "id": "mem-1",
+                "memory_id": "mem-1",
                 "text": "This project pins its Python dependencies with uv, never with pip.",
-                "type": "world",
+                "fact_type": "world",
             },
-            {"id": "mem-2", "text": "All log lines are JSON.", "type": "observation"},
+            {"memory_id": "mem-2", "text": "All log lines are JSON.", "fact_type": "observation"},
         ]
     }
     assert "mm-0123abcd" not in str(result)
@@ -119,6 +121,8 @@ def test_upstream_shape_is_not_trusted():
         }
     )
 
-    assert result["based_on"] == {"memories": [{"id": None, "text": "ok", "type": None}]}
+    assert result["based_on"] == {
+        "memories": [{"memory_id": None, "text": "ok", "fact_type": None}]
+    }
     # Present but not the documented shape: nothing in it is known to be safe.
     assert whitelist_reflect_evidence({"text": "x", "based_on": "junk"}) == {"text": "x"}

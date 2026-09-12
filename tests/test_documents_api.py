@@ -64,6 +64,24 @@ def test_a_document_id_is_not_namespaced_by_the_caller(client, juan, tenant):
     assert route.calls.last.request.url.path.endswith(
         "/documents/github:acme/api:pr:382"
     )
+    # `document_id`, the name this route accepts, not Hindsight's `id`
+    # (QA F-17).
+    assert response.json()["result"] == {"document_id": "github:acme/api:pr:382"}
+
+
+@respx.mock
+def test_listed_documents_are_named_after_the_parameter_get_takes(client, juan, tenant):
+    _mock_bank()
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents(\?|$)").mock(
+        return_value=httpx.Response(200, json={"items": [{"id": "doc_1"}], "total": 1})
+    )
+
+    response = client.post(
+        "/v1/memory/documents/list", json={"scope": "user"}, headers=juan["headers"]
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {"items": [{"document_id": "doc_1"}], "total": 1}
 
 
 @respx.mock

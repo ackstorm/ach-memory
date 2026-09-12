@@ -18,6 +18,7 @@ from memory.api.memory import (
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.hindsight.client import get_client
+from memory.mcp.compact import unify
 from memory.retained_records import get_by_source_memory_id
 from memory.retention import resolve_bank_ref
 from memory.sanitization import normalize_claim
@@ -28,13 +29,15 @@ router = APIRouter(prefix="/v1/memory", tags=["curation"])
 
 class ListMemoriesRequest(ScopedRequest):
     q: str | None = None
+    # `fact_type`, the name every listed row and recall hit carries (QA
+    # F-17); it goes to Hindsight as its `type` query parameter.
     # Bound to Hindsight's own type enum, same reasoning as `state` below --
     # a bogus value forwarded the caller's typo upstream instead of a
     # boundary 422 (review finding 4, 2026-08-23). mcp/tools.py already
     # has this same Literal as FactType, but mcp/tools.py imports FROM this
     # module (ListMemoriesRequest), so importing it back here would be
     # circular; restated rather than sharing.
-    type: Literal["world", "experience", "observation"] | None = None
+    fact_type: Literal["world", "experience", "observation"] | None = None
     # Bound to Hindsight's own enum (measured against a live server: any
     # other value 400s with "Invalid state '...': expected 'valid' or
     # 'invalidated'.") so a bogus value is a typed 422 at the boundary
@@ -131,7 +134,7 @@ def list_memories(
     result = get_client().list_memories(
         bank_id,
         q=body.q,
-        type=body.type,
+        type=body.fact_type,
         state=body.state,
         document_id=body.document_id,
         limit=body.limit,
@@ -142,7 +145,7 @@ def list_memories(
         tags_match="all" if body.tags_filter else None,
     )
     return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
+        result=unify("memory.list", _strip_bank_id(result, bank_id)),
         resolved_from=resolved_from,
         project_slug=project_slug,
     )
@@ -161,7 +164,7 @@ def get_memory(
     read_service.ensure_current_read_allowed(db, resolve_bank_ref(db, principal, body))
     result = get_client().get_memory(bank_id, body.memory_id)
     return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
+        result=unify("memory.get", _strip_bank_id(result, bank_id)),
         resolved_from=resolved_from,
         project_slug=project_slug,
     )
@@ -205,14 +208,16 @@ def forget(
         )
         # `operation_id` is what `get_operation` answers for (QA F-15).
         result: dict = {
-            "id": body.memory_id, "state": "invalidated", "operation_id": outcome.operation_id
+            "memory_id": body.memory_id,
+            "state": "invalidated",
+            "operation_id": outcome.operation_id,
         }
     else:
         result = get_client().curate(
             bank_id, body.memory_id, state="invalidated", reason=body.reason
         )
     return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
+        result=unify("memory.forget", _strip_bank_id(result, bank_id)),
         resolved_from=resolved_from,
         project_slug=project_slug,
     )
@@ -234,12 +239,12 @@ def restore(
             db, retained, client=get_client(), bank_id=bank_id
         )
         result: dict = {
-            "id": body.memory_id, "state": "valid", "operation_id": outcome.operation_id
+            "memory_id": body.memory_id, "state": "valid", "operation_id": outcome.operation_id
         }
     else:
         result = get_client().curate(bank_id, body.memory_id, state="valid")
     return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
+        result=unify("memory.restore", _strip_bank_id(result, bank_id)),
         resolved_from=resolved_from,
         project_slug=project_slug,
     )
@@ -279,7 +284,7 @@ def correct(
         # the caller's raw input (SPEC: a public response includes text only
         # in its canonical form).
         result: dict = {
-            "id": body.memory_id,
+            "memory_id": body.memory_id,
             "text": retained.canonical_content,
             "operation_id": outcome.operation_id,
         }
@@ -287,7 +292,7 @@ def correct(
         canonical_content = normalize_claim(body.content)
         result = get_client().curate(bank_id, body.memory_id, text=canonical_content)
     return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
+        result=unify("memory.correct", _strip_bank_id(result, bank_id)),
         resolved_from=resolved_from,
         project_slug=project_slug,
     )

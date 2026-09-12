@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+from memory.mcp.memory_tools import DEFAULT_PAGE_SIZE
 from memory.mcp.tools import MCPToolError
 from tests.conftest import IDENTITY_HEADER, create_user
 
@@ -651,12 +652,16 @@ MCP_CREATE_TABLE: dict[str, bool] = {
 # `{}` -- the one shape a caller cannot branch on -- and now raise
 # PROJECT_NOT_FOUND like every other create=False tool, which is what the
 # `else` branch of test_mcp_create_flags_match_the_security_table asserts.
+# The three list tools answer an absent project with the same paging
+# envelope a real empty page carries (QA F-17): `limit` is the reduced-shape
+# default these calls send, `offset` the 0 they did not name.
+EMPTY_PAGE = {"items": [], "total": 0, "offset": 0, "limit": DEFAULT_PAGE_SIZE}
 READ_TOOLS_EMPTY_RESULT: dict[str, dict] = {
     "recall": {"hits": [], "truncated": False},
-    "list_memories": {"items": []},
+    "list_memories": EMPTY_PAGE,
     "reflect": {"text": "", "usage": {}},
-    "list_documents": {"items": []},
-    "list_operations": {"items": []},
+    "list_documents": EMPTY_PAGE,
+    "list_operations": EMPTY_PAGE,
     "list_mental_models": {"models": [], "unknown_upstream_count": 0},
 }
 READ_TOOLS = tuple(READ_TOOLS_EMPTY_RESULT)
@@ -1376,6 +1381,82 @@ def test_list_memories_reaches_the_list_endpoint(call_tool):
 
 
 @respx.mock
+def test_an_absent_project_answers_the_page_a_verbose_call_would(call_tool):
+    """`verbose` sends no limit, so the empty page carries none either --
+    the envelope mirrors what the call asked for, not a constant."""
+    _mock_bank()
+    key = call_tool.make_user()
+
+    result = call_tool(
+        "list_memories", key, scope="project", project_slug="never-seen", verbose=True, offset=40
+    )
+
+    assert result.result == {"items": [], "total": 0, "offset": 40}
+
+
+@respx.mock
+@pytest.mark.parametrize("verbose", [False, True])
+def test_listed_memories_are_named_after_the_parameter_get_memory_takes(call_tool, verbose):
+    """QA F-17: `memory_id`, whether or not the payload is reduced -- the
+    names are the contract, `verbose` only skips the reduction."""
+    _mock_bank()
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list.*").mock(
+        return_value=httpx.Response(
+            200, json={"items": [{"id": GHOST, "text": "t", "chunk_id": None}], "total": 1}
+        )
+    )
+    key = call_tool.make_user()
+
+    result = call_tool("list_memories", key, scope="user", verbose=verbose)
+
+    row = result.result["items"][0]
+    assert row["memory_id"] == GHOST
+    assert "id" not in row
+
+
+@respx.mock
+def test_a_fetched_memory_names_its_id_and_fact_type_like_list_memories(call_tool):
+    _mock_bank()
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{GHOST}$").mock(
+        return_value=httpx.Response(200, json={"id": GHOST, "type": "world", "text": "t"})
+    )
+    key = call_tool.make_user()
+
+    result = call_tool("get_memory", key, scope="user", memory_id=GHOST)
+
+    assert result.result == {"memory_id": GHOST, "fact_type": "world", "text": "t"}
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("tool", "kwargs"),
+    [
+        ("forget", {"reason": "wrong"}),
+        ("restore", {}),
+        ("correct", {"content": "fixed"}),
+    ],
+)
+def test_curation_replies_say_memory_id_tracked_or_not(call_tool, tool, kwargs):
+    """QA F-17: an ACH-built reply (tracked record) and Hindsight's own
+    (untracked memory) name the memory the same way."""
+    _mock_bank()
+    respx.patch(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/.*").mock(
+        return_value=httpx.Response(200, json={"id": GHOST, "type": "world"})
+    )
+    key = call_tool.make_user()
+
+    untracked = call_tool(tool, key, scope="user", memory_id=GHOST, **kwargs)
+    assert untracked.result == {"memory_id": GHOST, "fact_type": "world"}
+
+    tracked_id = "33333333-3333-3333-3333-333333333333"
+    _seed_tracked_memory(call_tool, key, tracked_id)
+    tracked = call_tool(tool, key, scope="user", memory_id=tracked_id, **kwargs)
+    assert tracked.result["memory_id"] == tracked_id
+    assert tracked.result["operation_id"]
+    assert "id" not in tracked.result
+
+
+@respx.mock
 def test_list_memories_forwards_a_tag_filter_as_an_and_over_mcp(call_tool):
     """QA F-09, MCP twin of the REST test: the tag reaches Hindsight as a
     `tags=` param ANDed via `tags_match=all`."""
@@ -1428,7 +1509,7 @@ def test_a_read_tool_does_not_create_a_project(call_tool, session):
 
     result = call_tool("list_memories", key, scope="project", project_slug="never-seen")
 
-    assert result.result == {"items": []}
+    assert result.result == EMPTY_PAGE
     assert session.query(ProjectSlug).filter_by(slug="never-seen").count() == 0
     assert session.query(Project).count() == 0
 
@@ -1489,6 +1570,25 @@ def test_list_documents_reaches_the_documents_endpoint(call_tool):
     call_tool("list_documents", key, scope="user")
 
     assert route.call_count == 1
+
+
+@respx.mock
+def test_documents_are_named_after_the_parameter_get_document_takes(call_tool):
+    """QA F-17: `document_id` on a listed row and on a fetched document."""
+    _mock_bank()
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents(\?.*)?$").mock(
+        return_value=httpx.Response(200, json={"items": [{"id": "doc_1"}], "total": 1})
+    )
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/documents/doc_1$").mock(
+        return_value=httpx.Response(200, json={"id": "doc_1", "content_hash": "h"})
+    )
+    key = call_tool.make_user()
+
+    listed = call_tool("list_documents", key, scope="user")
+    fetched = call_tool("get_document", key, scope="user", document_id="doc_1")
+
+    assert listed.result == {"items": [{"document_id": "doc_1"}], "total": 1}
+    assert fetched.result == {"document_id": "doc_1"}
 
 
 @respx.mock
@@ -1596,6 +1696,27 @@ def test_list_operations_reaches_the_operations_endpoint(call_tool):
     call_tool("list_operations", key, scope="user")
 
     assert route.call_count == 1
+
+
+@respx.mock
+def test_listed_operations_are_wrapped_in_items_and_named_operation_id(call_tool):
+    """QA F-17: Hindsight's `operations` wrapper was the one list not under
+    `items`, which also meant the `_OPERATION` drops never reached its rows."""
+    _mock_bank()
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "operations": [{"id": GHOST, "status": "pending", "retry_count": 0}],
+                "total": 1,
+            },
+        )
+    )
+    key = call_tool.make_user()
+
+    result = call_tool("list_operations", key, scope="user")
+
+    assert result.result == {"items": [{"operation_id": GHOST, "status": "pending"}], "total": 1}
 
 
 @respx.mock
@@ -1889,7 +2010,12 @@ EXPECTED_TOOLS = {
 # `verbose` parameter (QA F-08), list_memories' description names
 # `tags_filter` (QA F-09), and get_operation's description covers curation
 # operation ids (QA F-15).
-TOOL_CONTRACT_SHA256 = "494e7971385cb732f91705840232ec2aa839d9f832a1ede39d2bfe2791ec3a9e"
+# Then by the F-17 rename landing with three descriptions: recall's `kinds`
+# parameter becomes `memory_types` and list_memories' `type` becomes
+# `fact_type` (the names a hit and a row read back); list_documents says
+# what `q` matches, correct says the retain document keeps its text (F-25),
+# restore says the derived observation is not restored (F-16).
+TOOL_CONTRACT_SHA256 = "947a83f41d3454fb49242120129045aa780df189463f40a296ca658c2be60c41"
 
 
 def test_tool_registration_is_stable_after_module_split():
@@ -2206,6 +2332,37 @@ def test_recall_asks_hindsight_not_to_build_the_entity_map(call_tool):
 
     call_tool("recall", key, scope="user", query="deps")
     assert json.loads(route.calls.last.request.content)["include"]["entities"] is None
+
+
+@respx.mock
+def test_recall_narrows_by_memory_types_under_the_name_a_hit_reads_back(call_tool):
+    """QA F-17: the request filter is `memory_types`, the plural of the
+    `memory_type` every hit carries and `retain` takes."""
+    _mock_bank()
+    route = respx.post(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/recall").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    key = call_tool.make_user()
+
+    call_tool("recall", key, scope="user", query="deps", memory_types=["decision"])
+
+    sent = json.loads(route.calls.last.request.content)
+    assert {"tags": ["type:decision"], "match": "any_strict"} in sent["tag_groups"]
+
+
+@respx.mock
+def test_list_memories_filters_by_fact_type_under_the_name_a_row_reads_back(call_tool):
+    """QA F-17: `fact_type` in, `fact_type` out; Hindsight's own `type` query
+    parameter is where the value goes, not what the caller says."""
+    _mock_bank()
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list.*").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    key = call_tool.make_user()
+
+    call_tool("list_memories", key, scope="user", fact_type="world")
+
+    assert route.calls.last.request.url.params["type"] == "world"
 
 
 @respx.mock

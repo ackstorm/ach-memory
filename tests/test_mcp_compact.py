@@ -4,7 +4,9 @@ The wiring — which tool passes `verbose`, what goes on the wire — is covered
 test_mcp_tools.py. This file pins the rules themselves.
 """
 
-from memory.mcp.compact import compact
+import pytest
+
+from memory.mcp.compact import compact, unify
 
 # One recall hit carrying every field hindsight-api 0.9.1 puts on a fact.
 FACT = {
@@ -205,3 +207,81 @@ def test_operations_keep_the_status_an_agent_polls_for():
         "status": "failed",
         "error_message": "extraction timed out",
     }
+
+
+# -- unify: one name per thing, on every read and curation reply (QA F-17)
+
+
+def test_unify_names_a_listed_memory_after_the_parameter_that_accepts_it():
+    payload = unify("memory.list", {"items": [{"id": "m1", "text": "t"}], "total": 1})
+
+    assert payload["items"] == [{"memory_id": "m1", "text": "t"}]
+
+
+def test_unify_names_a_fetched_memory_and_its_fact_type():
+    payload = unify("memory.get", {"id": "m1", "type": "world", "text": "t"})
+
+    assert payload == {"memory_id": "m1", "fact_type": "world", "text": "t"}
+
+
+@pytest.mark.parametrize("action", ["memory.forget", "memory.restore", "memory.correct"])
+def test_unify_names_a_hindsight_curation_reply_like_a_fetched_memory(action):
+    payload = unify(action, {"id": "m1", "type": "world", "state": "valid"})
+
+    assert payload == {"memory_id": "m1", "fact_type": "world", "state": "valid"}
+
+
+def test_unify_names_a_listed_document():
+    payload = unify("memory.documents.list", {"items": [{"id": "d1"}], "total": 1})
+
+    assert payload["items"] == [{"document_id": "d1"}]
+
+
+def test_unify_names_a_fetched_document():
+    assert unify("memory.documents.get", {"id": "d1"}) == {"document_id": "d1"}
+
+
+def test_unify_wraps_operations_in_items_like_every_other_list():
+    payload = unify(
+        "memory.operations.list",
+        {"operations": [{"id": "op1", "status": "pending"}], "total": 1},
+    )
+
+    assert payload == {"items": [{"operation_id": "op1", "status": "pending"}], "total": 1}
+
+
+def test_unify_names_a_fetched_operation():
+    assert unify("memory.operations.get", {"id": "op1"}) == {"operation_id": "op1"}
+
+
+def test_unify_never_clobbers_a_key_already_present():
+    """An ACH-built curation reply already says `operation_id`; a stray `id`
+    next to it must not overwrite the one that means something."""
+    payload = unify("memory.operations.get", {"id": "stray", "operation_id": "ours"})
+
+    assert payload == {"id": "stray", "operation_id": "ours"}
+
+
+def test_unify_leaves_an_unknown_action_and_a_non_object_alone():
+    assert unify("memory.retain", {"id": "x"}) == {"id": "x"}
+    assert unify("memory.get", ["not", "a", "dict"]) == ["not", "a", "dict"]
+
+
+def test_operations_compaction_reaches_the_rows_once_they_live_under_items():
+    """The `memory.operations.list` rule always said `items`, but Hindsight
+    sends `operations`, so the per-row drops never fired. After unify the rows
+    are where the rule looks."""
+    payload = compact(
+        "memory.operations.list",
+        unify(
+            "memory.operations.list",
+            {
+                "operations": [
+                    {"id": "op1", "status": "completed", "retry_count": 0, "items_count": 1}
+                ],
+                "total": 1,
+            },
+        ),
+    )
+
+    assert payload == {"items": [{"operation_id": "op1", "status": "completed"}], "total": 1}

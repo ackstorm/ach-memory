@@ -35,12 +35,13 @@ def test_a_hit_carries_the_callers_own_tags():
 
 
 def test_server_derived_tags_are_not_forwarded():
-    """type:/basis: already reach the caller as kind/origin; schema:/validity:
-    are internal bookkeeping this surface has never exposed."""
+    """type:/basis: already reach the caller as memory_type/basis;
+    schema:/validity: are internal bookkeeping this surface has never
+    exposed."""
     hit = _normalize_hit(_raw())
 
-    assert hit.kind == "convention"
-    assert hit.origin == "agent_verified"
+    assert hit.memory_type == "convention"
+    assert hit.basis == "agent_verified"
     for tag in hit.tags:
         assert not tag.startswith(("type:", "basis:", "schema:", "validity:"))
 

@@ -16,6 +16,7 @@ from memory.api.memory import (
 from memory.auth.principal import Principal
 from memory.db import get_session
 from memory.hindsight.client import get_client
+from memory.mcp.compact import unify
 from memory.retention import resolve_bank_ref
 
 router = APIRouter(prefix="/v1/memory/operations", tags=["operations"])
@@ -65,7 +66,7 @@ def list_operations(
         offset=body.offset,
     )
     return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
+        result=unify("memory.operations.list", _strip_bank_id(result, bank_id)),
         resolved_from=resolved_from,
         project_slug=project_slug,
     )
@@ -88,7 +89,7 @@ def get_operation(
     )
     result = described or get_client().get_operation(bank_id, body.operation_id)
     return MemoryResponse(
-        result=_strip_bank_id(result, bank_id),
+        result=unify("memory.operations.get", _strip_bank_id(result, bank_id)),
         resolved_from=resolved_from,
         project_slug=project_slug,
     )

@@ -24,7 +24,7 @@ never a raw Hindsight tag expression, and it carries no match mode: the group
 is always `all_strict` (see `memory.tags` for why the `any` mode was removed).
 
 This module also owns the one piece of caller-controllable Hindsight
-behavior a read exposes: mapping `view`/`kinds`/`tags_filter` to fixed
+behavior a read exposes: mapping `view`/`memory_types`/`tags_filter` to fixed
 upstream filters (`resolve_filters`). The caller chooses from closed enums
 plus its own normalised tags; the actual Hindsight
 `types`/`prefer_observations`/`tag_groups` values are server-owned and never
@@ -60,8 +60,8 @@ View = Literal["current", "evidence", "all"]
 
 MAX_QUERY_LENGTH = 2048
 MAX_PROJECT_SLUG_LENGTH = 128  # matches models.ProjectSlug.slug's column
-MAX_KINDS = 6  # len(get_args(MemoryType)) -- a caller can never usefully
-# repeat itself past naming every kind there is.
+MAX_MEMORY_TYPES = 6  # len(get_args(MemoryType)) -- a caller can never
+# usefully repeat itself past naming every type there is.
 MIN_MAX_RESULTS = 1
 MAX_RESULTS_CEILING = 20
 DEFAULT_MAX_RESULTS = 10
@@ -118,7 +118,11 @@ class _ReadRequest(BaseModel):
 class RecallRequest(_ReadRequest):
     query: str = Field(min_length=1, max_length=MAX_QUERY_LENGTH)
     view: View = "current"
-    kinds: tuple[MemoryType, ...] | None = Field(default=None, max_length=MAX_KINDS)
+    #: Named after the `memory_type` a caller wrote at retain time and reads
+    #: back on every hit (QA F-17).
+    memory_types: tuple[MemoryType, ...] | None = Field(
+        default=None, max_length=MAX_MEMORY_TYPES
+    )
     max_results: int = Field(
         default=DEFAULT_MAX_RESULTS, ge=MIN_MAX_RESULTS, le=MAX_RESULTS_CEILING
     )
@@ -165,9 +169,11 @@ class RecallHit(BaseModel):
     text: str = Field(max_length=MAX_HIT_TEXT_LENGTH)
     fact_type: FactType
     state: MemoryState
-    # Keep released response names; their values follow the v0.4 contracts.
-    kind: MemoryType | None = None
-    origin: EvidenceBasis | None = None
+    # The same names `retain` takes them under (QA F-17): what a caller wrote
+    # as `memory_type`/`basis` reads back as `memory_type`/`basis`. Values
+    # follow the v0.4 contracts.
+    memory_type: MemoryType | None = None
+    basis: EvidenceBasis | None = None
     #: When this fact was retained -- upstream's `mentioned_at`. It was named
     #: `occurred_at` and filled from `occurred_start or mentioned_at`, and for
     #: every fact this service writes that is always the second: retain takes
@@ -180,11 +186,12 @@ class RecallHit(BaseModel):
     document_id: str | None = None
     #: The caller's OWN tags on this fact (e.g. `repo:group/app`), so a caller
     #: that filtered by one can see which value a hit carries. Server-derived
-    #: tags are excluded: `type:`/`basis:` are already surfaced as `kind` and
-    #: `origin`, and `schema:`/`validity:` are internal bookkeeping. Filtering
-    #: by a tag you can never read back is what made this field necessary --
-    #: unstripping tags in mcp/compact.py does nothing here, because this
-    #: model is `extra="forbid"` and drops anything with no field to land in.
+    #: tags are excluded: `type:`/`basis:` are already surfaced as
+    #: `memory_type` and `basis`, and `schema:`/`validity:` are internal
+    #: bookkeeping. Filtering by a tag you can never read back is what made
+    #: this field necessary -- unstripping tags in mcp/compact.py does nothing
+    #: here, because this model is `extra="forbid"` and drops anything with no
+    #: field to land in.
     tags: tuple[str, ...] = ()
     #: Upstream's `final` ranking score: the value the hits are ordered by,
     #: blending reranker relevance with recency/temporal/proof boosts.
@@ -219,7 +226,7 @@ class SourceFact(BaseModel):
 
     memory_id: str
     text: str = Field(max_length=MAX_HIT_TEXT_LENGTH)
-    origin: EvidenceBasis | None = None
+    basis: EvidenceBasis | None = None
 
 
 class HistoryChange(BaseModel):
@@ -239,7 +246,7 @@ class CurrentFact(BaseModel):
 
     text: str = Field(max_length=MAX_HIT_TEXT_LENGTH)
     state: MemoryState
-    kind: MemoryType | None = None
+    memory_type: MemoryType | None = None
 
 
 class ProvenanceEvidence(BaseModel):

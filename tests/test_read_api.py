@@ -46,8 +46,10 @@ def test_read_recall_returns_a_closed_bounded_hit(client, two_users):
                 "text": "Production deployment is disabled.",
                 "fact_type": "observation",
                 "state": "valid",
-                "kind": None,
-                "origin": None,
+                # The same names `retain` takes (QA F-17): a hit answers
+                # `memory_type`/`basis`, never `kind`/`origin`.
+                "memory_type": None,
+                "basis": None,
                 "mentioned_at": None,
                 # Empty, not absent: the field is the caller's own tags, and a
                 # hit retained without any still has to say so -- a missing key
@@ -78,7 +80,7 @@ def test_read_recall_sends_v040_schema_and_type_tags(client, two_users):
     headers = two_users[0]["headers"]
     response = client.post(
         "/v1/read/recall",
-        json={"scope": "user", "query": "database", "kinds": ["decision"]},
+        json={"scope": "user", "query": "database", "memory_types": ["decision"]},
         headers=headers,
     )
 
@@ -196,6 +198,49 @@ def test_read_history_is_scoped_to_the_resolved_bank(client, two_users):
     assert response.json()["memory_id"] == memory_id
     assert response.json()["changes"] == []
     assert history_route.called
+
+
+@respx.mock
+def test_read_history_names_the_claim_type_and_basis_like_retain(client, two_users):
+    """QA F-17: `current.memory_type` and `source_facts[].basis`, the names
+    the caller wrote them under -- not `kind`/`origin`."""
+    memory_id = "22222222-2222-2222-2222-222222222222"
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{memory_id}$"
+    ).mock(
+        return_value=httpx.Response(
+            200, json={"text": "current", "state": "valid", "tags": ["type:decision"]}
+        )
+    )
+    respx.get(
+        url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{memory_id}/history$"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "previous_text": "older",
+                    "changed_at": "2026-01-02T00:00:00Z",
+                    "source_facts": [
+                        {"id": "src-1", "text": "s", "tags": ["basis:agent_verified"]}
+                    ],
+                }
+            ],
+        )
+    )
+
+    response = client.post(
+        "/v1/read/history",
+        json={"scope": "user", "memory_id": memory_id},
+        headers=two_users[0]["headers"],
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["current"] == {"text": "current", "state": "valid", "memory_type": "decision"}
+    assert body["changes"][0]["source_facts"] == [
+        {"memory_id": "src-1", "text": "s", "basis": "agent_verified"}
+    ]
 
 
 @respx.mock

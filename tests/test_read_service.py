@@ -1,5 +1,5 @@
 """Contract tests for `read_models.py`: the closed request/response schemas
-and the deterministic view/kinds -> Hindsight-filter mapping. No Hindsight
+and the deterministic view/memory_types -> Hindsight-filter mapping. No Hindsight
 client and no `read_context` resolver are exercised here -- this file is
 schema-and-pure-function only, matching Task 2's scope. The FastAPI boundary
 (Task 4) and the extended Hindsight client (Task 3) get their own files.
@@ -142,7 +142,7 @@ def test_user_id_is_accepted_at_the_schema_layer_for_delegated_master_reads():
     assert request.user_id == "usr_target"
 
 
-# -- RecallRequest: view and kinds are closed enums
+# -- RecallRequest: view and memory_types are closed enums
 
 
 def test_view_defaults_to_current():
@@ -163,9 +163,9 @@ def test_every_memory_type_is_an_accepted_recall_kind():
     request = RecallRequest(
         scope="user",
         query="q",
-        kinds=["preference", "constraint", "decision", "convention", "fact", "gotcha"],
+        memory_types=["preference", "constraint", "decision", "convention", "fact", "gotcha"],
     )
-    assert set(request.kinds) == {
+    assert set(request.memory_types) == {
         "preference",
         "constraint",
         "decision",
@@ -177,15 +177,15 @@ def test_every_memory_type_is_an_accepted_recall_kind():
 
 def test_an_undocumented_kind_is_rejected():
     with pytest.raises(ValidationError):
-        RecallRequest(scope="user", query="q", kinds=["urgent"])
+        RecallRequest(scope="user", query="q", memory_types=["urgent"])
 
 
-def test_more_kinds_than_exist_is_rejected():
+def test_more_memory_types_than_exist_is_rejected():
     with pytest.raises(ValidationError):
         RecallRequest(
             scope="user",
             query="q",
-            kinds=[
+            memory_types=[
                 "preference",
                 "constraint",
                 "decision",
@@ -201,8 +201,17 @@ def test_more_kinds_than_exist_is_rejected():
 
 
 def test_a_hit_with_only_whitelisted_fields_constructs():
-    hit = _hit(kind="decision", origin="agent_verified")
-    assert hit.kind == "decision"
+    hit = _hit(memory_type="decision", basis="agent_verified")
+    assert hit.memory_type == "decision"
+    assert hit.basis == "agent_verified"
+
+
+@pytest.mark.parametrize("old_name", ["kind", "origin"])
+def test_a_hit_no_longer_answers_to_the_pre_release_names(old_name):
+    """QA F-17: the response names are `retain`'s input names. The old ones
+    are gone, not aliased, so a caller cannot keep reading them by accident."""
+    with pytest.raises(ValidationError):
+        _hit(**{old_name: "decision"})
 
 
 @pytest.mark.parametrize(

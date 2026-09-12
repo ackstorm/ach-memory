@@ -417,7 +417,7 @@ class HindsightClient:
 
         None of these is caller-supplied Hindsight syntax on any surface that
         reaches this method: the read-only recall surface only ever offers a
-        closed `view`/`kinds` choice, mapped to these upstream fields by
+        closed `view`/`memory_types` choice, mapped to these upstream fields by
         `read_models.resolve_filters` server-side.
         """
         body: dict[str, Any] = {"query": query}

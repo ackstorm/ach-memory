@@ -26,6 +26,15 @@ in `hindsight_api/engine/memories/pg/curation.py`.
 
 from typing import Any, NamedTuple
 
+# `unify` below: the wire names that differ from the parameter names the
+# surface accepts. A NamedTuple default is one shared object, so the empty
+# mapping is a module constant nothing may mutate.
+_NO_RENAMES: dict[str, str] = {}
+# Hindsight names every record `id`; the tool that takes it back says which
+# id it is. `type` on a memory unit is the world/experience/observation kind
+# that `list_memories` filters on as `type` but recall returns as `fact_type`.
+_MEMORY_NAMES = {"id": "memory_id", "type": "fact_type"}
+
 # Facts, as recall returns them. `tags` is deliberately NOT here: retain has
 # written caller tags (e.g. `repo:group/app`) since v0.4.x, and a caller
 # filtering recall/reflect by one needs to see it on the result to tell
@@ -90,12 +99,15 @@ _OPERATION = frozenset(
 
 
 class _Rule(NamedTuple):
-    """How one action's payload is reduced.
+    """How one action's payload is reduced, and how its keys are named.
 
     `item_field` names the list the payload carries (`results` for recall,
     `items` for the list tools); None means the payload IS the single item, as
     it is for the three get_* tools. `date_anchor` is the key whose timestamp
     the other timestamps are compared against; None disables the collapse.
+    `rename_top`/`rename_item` are `unify`'s old-name -> new-name maps for the
+    envelope and for each item; `item_field` is read AFTER `rename_top`, so a
+    rule that renames its own wrapper names the wrapper's NEW key.
     """
 
     top: frozenset[str] = frozenset()
@@ -103,6 +115,8 @@ class _Rule(NamedTuple):
     item: frozenset[str] = frozenset()
     date_anchor: str | None = None
     scores: bool = False
+    rename_top: dict[str, str] = _NO_RENAMES
+    rename_item: dict[str, str] = _NO_RENAMES
 
 
 # Keyed by the `action` string `_run` already threads through the pipeline.
@@ -131,7 +145,7 @@ _RULES: dict[str, _Rule] = {
     "memory.reflect": _Rule(
         # Token accounting for the service, not for the agent reading the
         # answer. `based_on` is requested and arrives already reduced to
-        # {memories: [{id, text, type}]} by `read_service.
+        # {memories: [{memory_id, text, fact_type}]} by `read_service.
         # whitelist_reflect_evidence`, so there is nothing left to prune in it;
         # `trace` stays behind an `include` this service never sends.
         top=frozenset({"usage"}),
@@ -140,15 +154,35 @@ _RULES: dict[str, _Rule] = {
         item_field="items",
         item=_MEMORY_UNIT,
         date_anchor="date",
+        rename_item=_MEMORY_NAMES,
     ),
     "memory.get": _Rule(
         item=_MEMORY_UNIT,
         date_anchor="date",
+        rename_top=_MEMORY_NAMES,
     ),
-    "memory.documents.list": _Rule(item_field="items", item=_DOCUMENT),
-    "memory.documents.get": _Rule(item=_DOCUMENT),
-    "memory.operations.list": _Rule(item_field="items", item=_OPERATION),
-    "memory.operations.get": _Rule(item=_OPERATION),
+    # Rename-only rules: the three curation tools never compact (they run
+    # `_run` with its default `verbose=True`), but Hindsight's untracked
+    # reply to them is a memory unit and has to say `memory_id` like the
+    # ACH-built one does.
+    "memory.forget": _Rule(rename_top=_MEMORY_NAMES),
+    "memory.restore": _Rule(rename_top=_MEMORY_NAMES),
+    "memory.correct": _Rule(rename_top=_MEMORY_NAMES),
+    "memory.documents.list": _Rule(
+        item_field="items", item=_DOCUMENT, rename_item={"id": "document_id"}
+    ),
+    "memory.documents.get": _Rule(item=_DOCUMENT, rename_top={"id": "document_id"}),
+    # Hindsight wraps this one list in `operations`, not `items`. Until
+    # `unify` renamed the wrapper, `item_field="items"` here found nothing and
+    # the `_OPERATION` drops silently never applied to a listed row; they do
+    # now, because compaction runs after the rename.
+    "memory.operations.list": _Rule(
+        item_field="items",
+        item=_OPERATION,
+        rename_top={"operations": "items"},
+        rename_item={"id": "operation_id"},
+    ),
+    "memory.operations.get": _Rule(item=_OPERATION, rename_top={"id": "operation_id"}),
 }
 
 # The timestamps that collapse into `date_anchor` when they carry the same
@@ -217,6 +251,43 @@ def _drop_nulls(value: Any) -> Any:
     if isinstance(value, list):
         return [_drop_nulls(v) for v in value]
     return value
+
+
+def _rename(item: Any, names: dict[str, str]) -> None:
+    """Move each old key to its new name. Only when the old one is present and
+    the new one is absent: a payload that already says `operation_id` (an
+    ACH-built curation reply, a ledger-described operation) keeps it, and a
+    stray `id` beside it is left where it was rather than overwriting it."""
+    if not isinstance(item, dict):
+        return
+    for old, new in names.items():
+        if old in item and new not in item:
+            item[new] = item.pop(old)
+
+
+def unify(action: str, payload: Any) -> Any:
+    """Name every key of one upstream payload after the parameter that
+    accepts it (QA F-17): `memory_id`, `document_id`, `operation_id`,
+    `fact_type`, and `items` for every list.
+
+    Runs on every read and curation reply, reduced or not -- the names are
+    the contract, not a reduction, so `verbose` does not skip this the way it
+    skips `compact`. No aliases: the old name goes away. An action with no
+    rule, or a payload that is not an object, is returned untouched. Mutates
+    in place, on the same grounds as `compact`.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    rule = _RULES.get(action)
+    if rule is None:
+        return payload
+    _rename(payload, rule.rename_top)
+    if rule.rename_item and rule.item_field is not None:
+        items = payload.get(rule.item_field)
+        if isinstance(items, list):
+            for item in items:
+                _rename(item, rule.rename_item)
+    return payload
 
 
 def compact(action: str, payload: Any) -> Any:

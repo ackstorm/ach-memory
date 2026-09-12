@@ -45,6 +45,29 @@ def test_list_operations_filters_by_status(client, juan, tenant):
 
 
 @respx.mock
+def test_list_operations_is_wrapped_in_items_like_every_other_list(client, juan, tenant):
+    """QA F-17: Hindsight answers `operations`, the only list on this surface
+    not under `items`, and names each row `id` where get_operation takes
+    `operation_id`."""
+    _mock_bank()
+    respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/operations(\?|$)").mock(
+        return_value=httpx.Response(
+            200, json={"operations": [{"id": "op1", "status": "pending"}], "total": 1}
+        )
+    )
+
+    response = client.post(
+        "/v1/memory/operations/list", json={"scope": "user"}, headers=juan["headers"]
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {
+        "items": [{"operation_id": "op1", "status": "pending"}],
+        "total": 1,
+    }
+
+
+@respx.mock
 def test_get_operation_returns_its_status(client, juan, tenant):
     # operation_id must be a syntactically valid UUID: the client rejects a
     # non-UUID operation_id locally, so a bare "op_1" would never reach the
@@ -61,7 +84,7 @@ def test_get_operation_returns_its_status(client, juan, tenant):
         headers=juan["headers"],
     )
 
-    assert response.json()["result"]["status"] == "completed"
+    assert response.json()["result"] == {"operation_id": op_id, "status": "completed"}
 
 
 @respx.mock

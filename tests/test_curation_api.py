@@ -81,8 +81,26 @@ def test_list_memories_reaches_the_list_subpath(client, juan, tenant):
     )
 
     assert response.status_code == 200
-    assert response.json()["result"]["items"] == [{"id": "mem_1"}]
+    # `memory_id`, not Hindsight's `id`: the name of the parameter every
+    # curation route accepts (QA F-17).
+    assert response.json()["result"]["items"] == [{"memory_id": "mem_1"}]
     assert dict(route.calls.last.request.url.params) == {"q": "alembic", "limit": "5"}
+
+
+@respx.mock
+def test_list_memories_filters_by_fact_type_under_the_name_it_reads_back(client, juan, tenant):
+    """QA F-17: the filter is `fact_type`, the name every row carries; the
+    outgoing Hindsight query parameter stays `type`."""
+    route = respx.get(url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/list.*").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0, "limit": 20, "offset": 0})
+    )
+
+    response = client.post(
+        "/v1/memory/list", json={"scope": "user", "fact_type": "world"}, headers=juan["headers"]
+    )
+
+    assert response.status_code == 200, response.text
+    assert dict(route.calls.last.request.url.params)["type"] == "world"
 
 
 @respx.mock
@@ -141,6 +159,8 @@ def test_forget_invalidates_rather_than_deleting(client, juan, tenant):
     assert response.status_code == 200
     assert route.calls.last.request.method == "PATCH"
     assert b'"state":"invalidated"' in route.calls.last.request.read()
+    # The untracked reply is Hindsight's, renamed on the way out (QA F-17).
+    assert response.json()["result"] == {"memory_id": mem_id}
 
 
 @respx.mock
@@ -150,13 +170,14 @@ def test_restore_reverts_an_invalidated_memory(client, juan, tenant):
         url__regex=rf"{BASE}/v1/default/banks/[^/]+/memories/{mem_id}"
     ).mock(return_value=httpx.Response(200, json={"id": mem_id}))
 
-    client.post(
+    response = client.post(
         "/v1/memory/restore",
         json={"scope": "user", "memory_id": mem_id},
         headers=juan["headers"],
     )
 
     assert b'"state":"valid"' in route.calls.last.request.read()
+    assert response.json()["result"] == {"memory_id": mem_id}
 
 
 @respx.mock
@@ -522,14 +543,14 @@ def test_list_memories_rejects_a_negative_offset(client, juan, tenant):
 def test_list_memories_rejects_a_bogus_type_not_blamed_on_hindsight(
     client, juan, tenant
 ):
-    """2026-08-23 review, finding 4: REST's `type` was bare `str | None`
-    while its MCP twin (`list_memories`) already typed it as
-    Literal["world", "experience", "observation"] -- and `state`, right
-    below, got the same Literal treatment in this very branch. A typo here
-    forwarded upstream instead of a boundary 422."""
+    """2026-08-23 review, finding 4: REST's `type` (now `fact_type`, QA
+    F-17) was bare `str | None` while its MCP twin (`list_memories`) already
+    typed it as Literal["world", "experience", "observation"] -- and `state`,
+    right below, got the same Literal treatment in this very branch. A typo
+    here forwarded upstream instead of a boundary 422."""
     response = client.post(
         "/v1/memory/list",
-        json={"scope": "user", "type": "nonsence"},
+        json={"scope": "user", "fact_type": "nonsence"},
         headers=juan["headers"],
     )
 
@@ -771,6 +792,9 @@ def test_correct_uses_normalized_claim(client, juan, tenant):
     )
     assert canonical in tracked_route.calls.last.request.read()
     assert response.json()["result"]["operation_id"] == CORRECT_OPERATION_ID
+    # The ACH-built reply uses the same name as the untracked one (QA F-17).
+    assert response.json()["result"]["memory_id"] == tracked_id
+    assert "id" not in response.json()["result"]
 
 
 @respx.mock

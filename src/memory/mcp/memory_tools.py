@@ -53,6 +53,7 @@ from memory.bootstrap import provision_before_retain
 from memory.errors import DomainError, ProjectNotFound
 from memory.hindsight.client import get_client
 from memory.mcp.compact import compact as compact_payload
+from memory.mcp.compact import unify
 from memory.mcp.server import tool_session
 from memory.mcp.tools import (
     ABSENT_PROJECT_STILL_RAISES,
@@ -136,6 +137,15 @@ def _default_limit(limit: int | None, verbose: bool) -> int | None:
     if limit is not None or verbose:
         return limit
     return DEFAULT_PAGE_SIZE
+
+
+def _empty_page(limit: int | None, offset: int | None) -> dict[str, Any]:
+    """The page an absent project answers with: the same envelope a real
+    empty page carries, so a caller never special-cases the missing keys."""
+    page: dict[str, Any] = {"items": [], "total": 0, "offset": offset or 0}
+    if limit is not None:
+        page["limit"] = limit
+    return page
 
 
 def _run(
@@ -269,8 +279,12 @@ def _run(
                 # in `compact` happen to drop today (`chunk_id` is both the
                 # first thing recall discards and the field a bank id hides
                 # inside). `_strip_bank_id` has already rebuilt the structure,
-                # so `compact` is free to mutate it.
-                payload = _strip_bank_id(result, bank_id)
+                # so `unify` and `compact` are free to mutate it.
+                #
+                # `unify` runs on every read and curation reply, verbose or
+                # not: the names are the contract (QA F-17), not a
+                # reduction, so `verbose` does not switch them off.
+                payload = unify(action, _strip_bank_id(result, bank_id))
                 if not verbose:
                     payload = compact_payload(action, payload)
                 # A rename and a creation are exclusive: a retired slug
@@ -498,7 +512,7 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         project_slug: str | None = None,
         view: read_models.View = "current",
-        kinds: list[MemoryType] | None = None,
+        memory_types: list[MemoryType] | None = None,
         max_results: MaxResults = read_models.DEFAULT_MAX_RESULTS,
         tags_filter: Tags = None,
     ) -> ToolResult:
@@ -509,7 +523,7 @@ def register(mcp: MCPServer) -> None:
                 project_slug=project_slug,
                 query=query,
                 view=view,
-                kinds=tuple(kinds) if kinds else None,
+                memory_types=tuple(memory_types) if memory_types else None,
                 max_results=max_results,
                 tags_filter=tags_filter,
             )
@@ -522,7 +536,7 @@ def register(mcp: MCPServer) -> None:
                 resolved.bank_id,
                 body.query,
                 body.view,
-                body.kinds,
+                body.memory_types,
                 body.tags_filter,
             )
             return read_models.build_recall_response(
@@ -648,7 +662,7 @@ def register(mcp: MCPServer) -> None:
         project_slug: str | None = None,
         git_locator: str | None = None,
         q: str | None = None,
-        type: FactType | None = None,
+        fact_type: FactType | None = None,
         state: MemoryState | None = None,
         document_id: str | None = None,
         limit: PageLimit = None,
@@ -674,7 +688,7 @@ def register(mcp: MCPServer) -> None:
                 project_slug=project_slug,
                 git_locator=git_locator,
                 q=q,
-                type=type,
+                fact_type=fact_type,
                 state=state,
                 document_id=document_id,
                 limit=page,
@@ -694,10 +708,12 @@ def register(mcp: MCPServer) -> None:
             )
             # The body's normalised tuple, not the raw list: the same tags
             # the REST twin forwards, lower-cased and deduped once.
+            # `fact_type` is the caller's name; `type` is Hindsight's query
+            # parameter for the same value.
             return get_client().list_memories(
                 bank,
                 q=q,
-                type=type,
+                type=fact_type,
                 state=state,
                 document_id=document_id,
                 limit=page,
@@ -713,7 +729,7 @@ def register(mcp: MCPServer) -> None:
             call,
             create=False,
             verbose=verbose,
-            empty_result={"items": []},
+            empty_result=_empty_page(page, offset),
         )
 
     @mcp.tool(
@@ -785,14 +801,21 @@ def register(mcp: MCPServer) -> None:
                 )
                 # `operation_id` is what `get_operation` answers for (QA F-15).
                 return {
-                    "id": memory_id, "state": "invalidated", "operation_id": outcome.operation_id
+                    "memory_id": memory_id,
+                    "state": "invalidated",
+                    "operation_id": outcome.operation_id,
                 }
             return get_client().curate(bank, memory_id, state="invalidated", reason=reason)
 
         return _run(ctx, body_factory, "memory.forget", call, create=False, is_write=True)
 
     @mcp.tool(
-        description="Replace the text of an existing memory.",
+        description=(
+            "Replace the text of an existing memory. Rewrites the memory unit "
+            "only: the retain document keeps its original text, so `reflect` "
+            "can still quote the old wording. For a full rewrite use `forget` "
+            "then `retain`."
+        ),
         # The one memory operation that irreversibly overwrites caller text,
         # and it carried no annotations at all.
         annotations=ToolAnnotations(destructiveHint=True),
@@ -847,7 +870,7 @@ def register(mcp: MCPServer) -> None:
                 # Canonical text `correct_record` actually stored, never the
                 # caller's raw input.
                 return {
-                    "id": memory_id,
+                    "memory_id": memory_id,
                     "text": retained.canonical_content,
                     "operation_id": outcome.operation_id,
                 }
@@ -860,7 +883,11 @@ def register(mcp: MCPServer) -> None:
         return _run(ctx, body_factory, "memory.correct", call, create=False, is_write=True)
 
     @mcp.tool(
-        description="Bring back a memory that forget retired.",
+        description=(
+            "Bring back a memory that forget retired. The observation Hindsight "
+            "derived from it is not restored; it is regenerated on the next "
+            "consolidation."
+        ),
         # destructiveHint=False stated explicitly: the MCP spec DEFAULTS it to
         # true, so a purely additive operation was advertised as destructive.
         annotations=ToolAnnotations(idempotentHint=True, destructiveHint=False),
@@ -883,7 +910,9 @@ def register(mcp: MCPServer) -> None:
                 outcome = curation_service.restore_record(
                     db, retained, client=get_client(), bank_id=bank
                 )
-                return {"id": memory_id, "state": "valid", "operation_id": outcome.operation_id}
+                return {
+                    "memory_id": memory_id, "state": "valid", "operation_id": outcome.operation_id
+                }
             return get_client().curate(bank, memory_id, state="valid")
 
         return _run(ctx, body_factory, "memory.restore", call, create=False, is_write=True)
@@ -892,7 +921,8 @@ def register(mcp: MCPServer) -> None:
         description=(
             "List the documents memories were derived from. A document id is "
             "yours to choose — a PR, a file, a session — and is shared by "
-            "everyone authorized for this memory."
+            "everyone authorized for this memory. `q` matches document IDs — "
+            "Hindsight searches ids, not text; search text with `list_memories`."
         ),
         annotations=ToolAnnotations(readOnlyHint=True),
     )
@@ -1159,7 +1189,7 @@ def _list_documents(
         call,
         create=False,
         verbose=verbose,
-        empty_result={"items": []},
+        empty_result=_empty_page(page, offset),
     )
 
 
@@ -1195,5 +1225,5 @@ def _list_operations(
         call,
         create=False,
         verbose=verbose,
-        empty_result={"items": []},
+        empty_result=_empty_page(page, offset),
     )
