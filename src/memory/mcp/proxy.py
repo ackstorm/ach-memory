@@ -155,7 +155,6 @@ async def call_load_context(url: str, project_slug: str | None, workspace_id: st
         result = await session.call_tool("load_context", arguments)
     if result.is_error:
         raise RuntimeError("load_context failed")
-    for block in result.content:
-        if isinstance(block, types.TextContent):
-            return block.text
-    return ""
+    # The tool answers {"result": {"text": ...}}; the hook prints only the standing context.
+    structured = result.structured_content or {}
+    return str(structured.get("result", {}).get("text") or "")

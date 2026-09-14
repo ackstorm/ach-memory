@@ -232,7 +232,8 @@ def _stub_transport(monkeypatch, remote: Server, captured_headers: dict):
 def test_call_load_context_fills_arguments_and_sends_the_auth_header(monkeypatch):
     async def _remote_call_tool(ctx, params):
         assert params.arguments == {"project_slug": "acme-1", "workspace_id": "ws_abc"}
-        return types.CallToolResult(content=[types.TextContent(text="standing context")])
+        return types.CallToolResult(content=[types.TextContent(text="{}")],
+                                    structured_content={"result": {"text": "standing context"}})
 
     remote = Server(
         "fake-remote", on_list_tools=_remote_list_tools, on_call_tool=_remote_call_tool
