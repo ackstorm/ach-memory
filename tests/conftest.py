@@ -5,12 +5,18 @@ from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
-os.environ.setdefault("MEMORY_BACKEND", "fake")
-
 TEST_DATABASE_URL = os.environ.get(
     "MEMORY_TEST_DATABASE_URL",
     "postgresql+psycopg://memory:memory@localhost:5434/memory_test",
 )
+
+# A bare `Settings()` 422s without these two required vars; every test session gets them
+# unconditionally so it never has to know that. Carries no live Hindsight -- test_contract.py's
+# integration param treats this exact placeholder the same as "unset" and skips.
+PLACEHOLDER_HINDSIGHT_URL = "http://hindsight.test"
+os.environ.setdefault("MEMORY_BACKEND", "fake")
+os.environ.setdefault("MEMORY_DATABASE_URL", TEST_DATABASE_URL)
+os.environ.setdefault("MEMORY_HINDSIGHT_URL", PLACEHOLDER_HINDSIGHT_URL)
 
 
 def _ensure_database_exists(url: str) -> None:
@@ -60,12 +66,10 @@ def db(engine):
 
 @pytest.fixture(autouse=True)
 def _isolated_fake_backend():
-    # filled by Task 1.2
-    try:
-        from memory.backend import get_backend
-    except ImportError:
-        yield
-        return
+    from memory.backend import get_backend
+    from memory.backend.fake import fake_backend
+
     get_backend.cache_clear()
+    fake_backend.reset()
     yield
     get_backend.cache_clear()
