@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+# Least privilege: repository-controlled code (ruff, pytest, docker build) never holds write.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv run --frozen ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: memory
+          POSTGRES_PASSWORD: memory
+          POSTGRES_DB: memory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U memory"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      MEMORY_TEST_DATABASE_URL: postgresql+psycopg://memory:memory@localhost:5432/memory_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv run --frozen pytest -q
+
+  # Builds the actual production image and proves the production entry point imports
+  # with no dev dependency group installed -- catches a mis-grouped dependency.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the production image
+        run: docker build -t ach-memory:ci .
+      - name: Import guard -- production entry point must import cleanly
+        run: docker run --rm ach-memory:ci python -c "import memory"
+
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/ach-memory
+      - name: helm template renders
+        run: |
+          helm template ach-memory deploy/helm/ach-memory \
+            --set config.databaseUrl=postgresql+psycopg://u:p@h:5432/m \
+            --set config.hindsight.url=http://hindsight:8888 > /dev/null
+
+  # A `needs:` dependency IS the gate: this job cannot start unless every one of
+  # them succeeded on this commit, so a red CI can never publish a tag.
+  publish:
+    needs: [lint, chart, test, image]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: azure/setup-helm@v4
+      - name: Derive the release version from the tag
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # Helm's OCI client keeps its own credential store, separate from docker's.
+          printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push the service image
+        run: |
+          image="ghcr.io/ackstorm/ach-memory"
+          docker build --build-arg GIT_SHA="${GITHUB_SHA}" -t "${image}:${VERSION}" -t "${image}:latest" .
+          docker push "${image}:${VERSION}"
+          docker push "${image}:latest"
+      - name: Push the Helm chart as an OCI artifact
+        run: |
+          helm package deploy/helm/ach-memory --version "${VERSION}" --app-version "${VERSION}"
+          helm push "ach-memory-${VERSION}.tgz" "oci://ghcr.io/ackstorm/charts"
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="docs/releases/${VERSION}.md"
+          if [ -f "$notes" ]; then
+            gh release create "v${VERSION}" --title "v${VERSION}" --notes-file "$notes"
+          else
+            gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes
+          fi

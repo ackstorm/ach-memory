@@ -1,0 +1,122 @@
+# Default values for ach-memory. Ships the service only: Postgres and
+# Hindsight are dependencies you point it at (config.databaseUrl / config.hindsight.url).
+
+image:
+  # Must include the registry host, or the migration Job's ImagePullBackOff blocks install.
+  repository: ghcr.io/ackstorm/ach-memory
+  tag: ""    # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+config:
+  # MEMORY_DATABASE_URL. Required. Points at a Postgres this chart does not run.
+  databaseUrl: ""
+  # MEMORY_MAX_CONTENT_BYTES.
+  maxContentBytes: 256000
+
+  # MEMORY_HINDSIGHT_TIMEOUT_SECONDS / MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS.
+  # The LLM one covers sync_retain/reflect, which block on the configured model.
+  timeoutSeconds: 30
+  llmTimeoutSeconds: 180
+
+  hindsight:
+    # MEMORY_HINDSIGHT_URL. Required. Points at a Hindsight instance this chart does not run.
+    url: ""
+    apiKeySecret:
+      name: ""
+      key: "api-key"
+
+  # MEMORY_MCP_ALLOWED_HOSTS. The SDK's DNS-rebinding guard matches Host
+  # including port. Empty defaults from ingress.host, else the service default.
+  mcpAllowedHosts: []
+
+  # External identity providers. Both may be enabled at once: JWT primary,
+  # platform header fallback. With both off the service accepts nothing.
+  auth:
+    jwt:
+      enabled: false
+      # Must match the token's `iss` claim exactly.
+      issuer: ""
+      # Derived from issuer when empty; override for Dex (/keys, not jwks.json).
+      jwksUri: ""
+      # Comma-separated: one token may name this service under more than one aud.
+      audience: ""
+      verifyAudience: true
+      groupsClaim: "groups"
+    platform:
+      # Resolves a platform API key to an identity over HTTP.
+      enabled: false
+      # Comma-separated, tried in order, first header present on the request wins.
+      incomingHeader: ""
+      resolverHeader: ""
+      resolverUrl: ""
+      # Successes only; a rejection is never cached.
+      cacheTtl: 300
+      # Dotted paths into the resolver's JSON. Both required when platform auth is on.
+      userField: ""
+      groupsField: ""
+
+# MEMORY_MASTER_USERS / MEMORY_MASTER_GROUPS. Who holds operator authority.
+# Not credentials: names identities the IdP already asserts. Comma-separated,
+# empty by default -- the service refuses to start rather than grant by accident.
+master:
+  users: ""
+  groups: ""
+  # Which provider may grant the authority above. Required once more than one is enabled.
+  issuer: ""
+
+migration:
+  # Runs alembic upgrade head as a pre-install/pre-upgrade Helm hook Job.
+  enabled: true
+  backoffLimit: 2
+
+# startupProbe gates liveness/readiness until the container has answered once,
+# so a cold image or slow DB DNS cannot trip liveness's own budget.
+probes:
+  # Liveness/startup answer from the process alone; readiness touches the database.
+  livenessPath: /health
+  startupPath: /health
+  readinessPath: /ready
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  startupPeriodSeconds: 5
+  startupFailureThreshold: 30
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls: []
+
+# Both images run as uid 10001. These four are what Pod Security Admission's
+# `restricted` profile requires; override runAsUser only if the image changes too.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# readOnlyRootFilesystem deliberately absent: uvicorn/psycopg want a writable /tmp.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# Unset (resources: {}) makes every pod BestEffort QoS, evicted first under
+# memory pressure. No limits.cpu: a CPU limit only adds throttling here.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+nodeSelector: {}
+tolerations: []
+affinity: {}
