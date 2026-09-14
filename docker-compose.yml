@@ -1,0 +1,123 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: memory
+      POSTGRES_PASSWORD: memory
+      POSTGRES_DB: memory
+    ports:
+      # Loopback only: this stack's credentials are memory/memory.
+      - "127.0.0.1:${MEMORY_POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - memory-pgdata:/var/lib/postgresql/data
+
+  hindsight-db:
+    # pgvector, not plain postgres: Hindsight stores embeddings in a vector column.
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: hindsight
+      POSTGRES_PASSWORD: hindsight
+      POSTGRES_DB: hindsight
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hindsight"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - hindsight-pgdata:/var/lib/postgresql/data
+
+  hindsight:
+    build:
+      context: .
+      dockerfile: Dockerfile.hindsight
+    depends_on:
+      hindsight-db:
+        condition: service_healthy
+    environment:
+      HINDSIGHT_API_DATABASE_URL: postgresql://hindsight:hindsight@hindsight-db:5432/hindsight
+      # Explicit LLM wiring, not OPENAI_BASE_URL/OPENAI_API_KEY: those are read
+      # implicitly by the OpenAI SDK and silently divert this stack's calls.
+      HINDSIGHT_API_LLM_PROVIDER: ${HINDSIGHT_LLM_PROVIDER:-openai}
+      HINDSIGHT_API_LLM_BASE_URL: ${HINDSIGHT_LLM_BASE_URL:?set HINDSIGHT_LLM_BASE_URL}/v1
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_LLM_API_KEY:?set HINDSIGHT_LLM_API_KEY}
+      # One model for both retain (prose) and reflect (tool calls); see docs/lessons.md.
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-gemini.gemini-3.8-flash}
+      HINDSIGHT_API_REFLECT_LLM_MODEL: ${HINDSIGHT_REFLECT_LLM_MODEL:-gemini.gemini-3.8-flash}
+    ports:
+      # Loopback only, for scripts that reach Hindsight directly; `api` uses the in-network name.
+      - "127.0.0.1:${MEMORY_HINDSIGHT_PORT:-8888}:8888"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8888/openapi.json').status==200 else 1)"
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  # Runs to completion before `api` starts, against an empty schema otherwise.
+  migrate:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MEMORY_DATABASE_URL: postgresql+psycopg://memory:memory@postgres:5432/memory
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+
+  # The stack's identity source; NEVER run anywhere real (see deploy/dev-identity/whoami.py).
+  dev-identity:
+    image: python:3.12-alpine
+    command: ["python", "/app/whoami.py"]
+    volumes:
+      - ./deploy/dev-identity/whoami.py:/app/whoami.py:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; r=urllib.request.Request('http://localhost:8080', headers={'authorization':'probe'}); sys.exit(0 if urllib.request.urlopen(r).status==200 else 1)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      hindsight:
+        condition: service_healthy
+      dev-identity:
+        condition: service_healthy
+    environment:
+      MEMORY_DATABASE_URL: postgresql+psycopg://memory:memory@postgres:5432/memory
+      MEMORY_HINDSIGHT_URL: http://hindsight:8888
+      MEMORY_HINDSIGHT_API_KEY: ${MEMORY_HINDSIGHT_API_KEY:-}
+      # Matches Host including port, so both a direct loopback call and a portless ingress work.
+      MEMORY_MCP_ALLOWED_HOSTS: ${MEMORY_MCP_ALLOWED_HOSTS:-127.0.0.1,localhost,127.0.0.1:*,localhost:*}
+      MEMORY_AUTH_PLATFORM_ENABLED: "${MEMORY_AUTH_PLATFORM_ENABLED:-true}"
+      MEMORY_AUTH_PLATFORM_INCOMING_HEADER: ${MEMORY_AUTH_PLATFORM_INCOMING_HEADER:-authorization}
+      MEMORY_AUTH_PLATFORM_RESOLVER_HEADER: ${MEMORY_AUTH_PLATFORM_RESOLVER_HEADER:-authorization}
+      MEMORY_AUTH_PLATFORM_RESOLVER_URL: ${MEMORY_AUTH_PLATFORM_RESOLVER_URL:-http://dev-identity:8080/whoami}
+      MEMORY_AUTH_PLATFORM_USER_FIELD: ${MEMORY_AUTH_PLATFORM_USER_FIELD:-user_id}
+      MEMORY_AUTH_PLATFORM_GROUPS_FIELD: ${MEMORY_AUTH_PLATFORM_GROUPS_FIELD:-groups}
+      MEMORY_AUTH_JWT_ENABLED: "${MEMORY_AUTH_JWT_ENABLED:-false}"
+      MEMORY_AUTH_JWT_ISSUER: ${MEMORY_AUTH_JWT_ISSUER:-}
+      MEMORY_AUTH_JWT_AUDIENCE: ${MEMORY_AUTH_JWT_AUDIENCE:-}
+      MEMORY_AUTH_JWT_JWKS_URI: ${MEMORY_AUTH_JWT_JWKS_URI:-}
+      # 0: the sidecar derives identity from the token itself; a cache only hides that in dev.
+      MEMORY_AUTH_PLATFORM_CACHE_TTL: "0"
+      MEMORY_MASTER_USERS: ${MEMORY_MASTER_USERS:-}
+      MEMORY_MASTER_GROUPS: ${MEMORY_MASTER_GROUPS:-}
+      MEMORY_MASTER_ISSUER: ${MEMORY_MASTER_ISSUER:-}
+    ports:
+      - "127.0.0.1:${MEMORY_API_PORT:-8000}:8000"
+
+volumes:
+  memory-pgdata:
+  hindsight-pgdata:
