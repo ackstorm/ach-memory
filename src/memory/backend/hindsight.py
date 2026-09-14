@@ -248,7 +248,7 @@ class HindsightBackend(Backend):
             memory_id=memory_id, text=unit.get("text", ""), state=state,
             tags=tuple(unit.get("tags") or ()),
             metadata=_public_metadata(unit.get("metadata") or {}),
-            created_at=unit.get("created_at"),
+            created_at=unit.get("mentioned_at") or unit.get("date"),
         )
 
     def list(self, bank_id: str, *, tag_groups: tuple[TagGroup, ...], state: MemoryState | None,
@@ -279,7 +279,7 @@ class HindsightBackend(Backend):
             items.append(MemoryView(
                 memory_id=memory_id, text=raw.get("text", ""),
                 state=raw.get("state") or (state or "valid"), tags=tags,
-                metadata=_public_metadata(metadata), created_at=raw.get("created_at"),
+                metadata=_public_metadata(metadata), created_at=raw.get("mentioned_at") or raw.get("date"),
             ))
         return Page(items=tuple(items), total=(response or {}).get("total") or 0)
 

@@ -338,7 +338,7 @@ def test_get_returns_the_valid_unit(make_backend, recorder):
     backend = make_backend({
         ("GET", f"{_bank(BANK)}/memories/list"): _units_responder(valid=[
             {"id": UNIT_1, "text": "t", "tags": ["a"], "metadata": {"k": "v"},
-             "created_at": "2026-01-01"}
+             "mentioned_at": "2026-01-01"}
         ]),
     })
 
