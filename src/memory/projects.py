@@ -54,7 +54,7 @@ def resolve(db: Session, principal: Principal, slug: str, *, create: bool) -> Re
 
     if mapping is None:
         if not create:
-            raise ProjectNotFound(project_slug=slug)
+            raise ProjectNotFound(f"no project for slug {slug}; a first retain creates it", project_slug=slug)
         # Two first retains for one slug (parallel subagents) must not race the insert.
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"project:{slug}"})
         if (mapping := db.get(ProjectSlug, slug)) is None:

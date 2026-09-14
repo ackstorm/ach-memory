@@ -94,3 +94,12 @@ def test_reflect_raises_unsupported_when_the_backend_lacks_synthesis(db, princip
 
     with pytest.raises(UnsupportedCapability):
         read.reflect(db, principal, read.ReflectRequest(scope="user", query="anything"), backend=backend)
+
+
+def test_reads_on_a_project_nobody_retained_into_are_empty(db, principal):
+    from memory.backend.fake import fake_backend
+
+    empty = read.recall(db, principal, read.RecallRequest(scope="project", project_slug="github.com-x-never", query="anything"), backend=fake_backend)
+    assert empty.items == () and empty.total == 0
+    listed = read.list_memories(db, principal, read.ListRequest(scope="project", project_slug="github.com-x-never"), backend=fake_backend)
+    assert listed.items == () and listed.total == 0

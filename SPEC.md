@@ -50,13 +50,13 @@ Version: 0.1.0
 | Intention | Required/optional | Semantics | Journaled? |
 |---|---|---|---|
 | `retain` | required | remember one claim, returns the memory id | yes |
-| `recall` | required | ranked hits for a query, scope-bounded, floor applied | no |
+| `recall` | required | ranked hits for a query, scope-bounded, floor applied; empty for a project nobody retained into | no |
 | `reflect` | optional (`synthesis`) | one synthesized answer over scoped memories | no |
 | `forget` | required | soft-invalidate one memory | yes |
 | `restore` | required | reverse a `forget` | yes |
 | `correct` | required | replace a memory's text, same memory id | yes (before/after) |
 | `delete` | required | hard-erase one memory and anything derived from it | yes |
-| `list` | required | page memories, newest first | no |
+| `list` | required | page memories, newest first; empty for a project nobody retained into | no |
 | `get` | required | fetch one memory by id | no |
 | `history` | ACH-owned | current view plus journal entries for one memory | no |
 | `working_state get` | ACH-owned | read this workspace's checkpoint | no |

@@ -15,7 +15,7 @@ from memory.auth.principal import Principal
 from memory.backend.base import Backend, Hit, MemoryView, TagGroup
 from memory.bank_ref import resolve_bank
 from memory.config import get_settings
-from memory.errors import MemoryNotFound, UnsupportedCapability
+from memory.errors import MemoryNotFound, ProjectNotFound, UnsupportedCapability
 from memory.models import AuditEvent
 from memory.tags import SCHEMA_TAG
 
@@ -106,7 +106,10 @@ def _to_item(view: MemoryView) -> MemoryItem:
     return MemoryItem(memory_id=view.memory_id, content=view.text, memory_type=memory_type, basis=basis, tags=tags, state=_STATE_FROM_BACKEND[view.state], created_at=view.created_at)
 
 def recall(db: Session, principal: Principal, request: RecallRequest, *, backend: Backend) -> RecallResponse:
-    ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
+    try:
+        ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
+    except ProjectNotFound:  # a project nobody has retained into yet simply has nothing to recall
+        return RecallResponse(items=(), total=0, truncated=False)
     tag_groups = _tag_groups(request.memory_types, request.basis)
     # Ask for one more than requested: a full page signals there may be more.
     raw = backend.recall(ref.bank_id, request.query, tag_groups=tag_groups, limit=request.max_results + 1)
@@ -123,7 +126,10 @@ def reflect(db: Session, principal: Principal, request: ReflectRequest, *, backe
     return ReflectResponse(answer=answer)
 
 def list_memories(db: Session, principal: Principal, request: ListRequest, *, backend: Backend) -> ListResponse:
-    ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
+    try:
+        ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
+    except ProjectNotFound:
+        return ListResponse(items=(), total=0, limit=request.limit, offset=request.offset)
     tag_groups = _tag_groups(request.memory_types, request.basis)
     state = _STATE_TO_BACKEND[request.state] if request.state else None
     page = backend.list(ref.bank_id, tag_groups=tag_groups, state=state, limit=request.limit, offset=request.offset)
