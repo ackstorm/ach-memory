@@ -25,4 +25,4 @@ LABEL org.opencontainers.image.title="ach-memory" \
       org.opencontainers.image.source="https://github.com/ackstorm/ach-memory" \
       org.opencontainers.image.revision="${GIT_SHA:-unknown}"
 EXPOSE 8000
-CMD ["python", "-m", "memory.cli"]
+CMD ["python", "-m", "memory.mcp.server"]

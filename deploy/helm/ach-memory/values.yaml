@@ -77,7 +77,7 @@ probes:
   # Liveness/startup answer from the process alone; readiness touches the database.
   livenessPath: /health
   startupPath: /health
-  readinessPath: /ready
+  readinessPath: /health
   initialDelaySeconds: 5
   periodSeconds: 10
   startupPeriodSeconds: 5
