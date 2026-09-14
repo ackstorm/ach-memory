@@ -188,6 +188,10 @@ plane.
 
 No tenants table.
 
+Bank ids are deterministic and readable: `user_<user_id>` for a user scope, `project_<slug>` for a
+project scope. The row stores it; nothing needs the row to recompute it. Banks created by the
+predecessor (`project_<uuid>`) stay in the engine untouched and unmounted.
+
 ## 8. Non-goals
 
 REST data plane; tenants; metrics/observability; rate limiting; dashboard; expiry/`valid_until`;
