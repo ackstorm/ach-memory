@@ -54,8 +54,22 @@ chart: # helm lint + render, and pyproject/package/Chart.yaml versions agree (wi
 		&& grep -qx "version = \"$$v\"" uv.lock \
 		|| { echo "FAIL: release metadata does not agree on $$v." >&2; exit 1; }
 
+PLUGIN_HOSTS = plugins/claude-code plugins/codex
+.PHONY: plugins plugins-check
+plugins: # Sync plugins/shared/* into each host plugin (idempotent)
+	@for h in $(PLUGIN_HOSTS); do \
+		mkdir -p $$h/skills/ach-memory $$h/scripts; \
+		cp plugins/shared/ach-memory/SKILL.md $$h/skills/ach-memory/SKILL.md; \
+		cp plugins/shared/activation.txt plugins/shared/activation.subagent.json $$h/; \
+		cp plugins/shared/scripts/session-start.sh plugins/shared/scripts/subagent-start.sh $$h/scripts/; \
+	done
+	cp plugins/shared/scripts/pre-compact.sh plugins/claude-code/scripts/pre-compact.sh
+plugins-check: plugins # Fail if a committed plugin copy drifted from plugins/shared
+	@git diff --quiet -- $(PLUGIN_HOSTS) \
+		|| { echo "FAIL: plugin copies differ from plugins/shared -- run 'make plugins' and commit." >&2; exit 1; }
+
 .PHONY: verify
-verify: lint test secrets chart # The full local gate -- run this before pushing
+verify: lint test secrets chart plugins-check # The full local gate -- run this before pushing
 
 .PHONY: release-bump
 release-bump: # Update release metadata (VERSION=X.Y.Z)
