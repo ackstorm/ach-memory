@@ -1,2 +1,6 @@
 [extend]
 useDefault = true
+
+[[allowlists]]
+description = "sanitizer fixtures are secret-shaped by design"
+paths = ['''tests/test_sanitization\.py''', '''tests/test_sanitization_shapes\.py''']
