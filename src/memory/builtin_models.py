@@ -7,6 +7,7 @@ class BuiltinModel:
     name: str
     prompt: str
     version: int
+    scope: str  # "user" | "project"
     source_tags: tuple[str, ...] = ("schema:ach-retain-v1",)
     tags_match: str = "all"
 
@@ -15,6 +16,7 @@ USER_CONTEXT = BuiltinModel(
     key="user-context",
     name="User Context",
     version=4,
+    scope="user",
     prompt=(
         "Summarize durable user context that an authorized agent should always know. "
         "Include explicitly retained identity, relationships, preferences, constraints, "
@@ -30,6 +32,7 @@ PROJECT_CONTEXT = BuiltinModel(
     key="project-context",
     name="Project Context",
     version=4,
+    scope="project",
     prompt=(
         "Summarize durable, impersonal project context that is not cheaply rediscoverable "
         "from the repository: accepted decisions and useful rationale, constraints, "

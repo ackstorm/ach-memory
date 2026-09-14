@@ -12,3 +12,8 @@ def test_builtin_keys_are_distinct():
 def test_builtins_carry_the_schema_source_tag():
     for model in BUILTIN_MODELS:
         assert "schema:ach-retain-v1" in model.source_tags
+
+
+def test_builtin_scopes_match_their_purpose():
+    assert USER_CONTEXT.scope == "user"
+    assert PROJECT_CONTEXT.scope == "project"

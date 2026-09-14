@@ -276,7 +276,7 @@ def test_provision_mental_models_is_idempotent(backend):
     if "mental_models" not in backend.capabilities():
         pytest.skip("backend does not declare mental_models")
     builtins = (BuiltinModel(key="k1", name=f"Contract Model {uuid.uuid4().hex[:8]}",
-                              prompt="summarize things", version=1),)
+                              prompt="summarize things", version=1, scope="user"),)
 
     backend.provision_mental_models(BANK, builtins)
     backend.provision_mental_models(BANK, builtins)  # must not raise, must not duplicate

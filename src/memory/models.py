@@ -59,9 +59,6 @@ class Project(Base):
     internal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     # Metadata, never identity and never authorization evidence.
     git_locator: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    canonical_spec: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    purpose: Mapped[str | None] = mapped_column(String(256), nullable=True)
     owner_type: Mapped[str] = mapped_column(String(8))
     owner_id: Mapped[str] = mapped_column(String(128))
     bank_id: Mapped[str] = mapped_column(String(64), unique=True)

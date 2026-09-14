@@ -1,8 +1,8 @@
 """initial
 
 Revision ID: 0001
-Revises:
-Create Date: 2026-09-14 22:14:31.805892
+Revises: 
+Create Date: 2026-09-14 22:38:00.857853
 
 """
 import sqlalchemy as sa
@@ -41,9 +41,6 @@ def upgrade() -> None:
     op.create_table('projects',
     sa.Column('internal_id', sa.String(length=64), nullable=False),
     sa.Column('git_locator', sa.String(length=512), nullable=True),
-    sa.Column('name', sa.String(length=128), nullable=True),
-    sa.Column('canonical_spec', sa.String(length=512), nullable=True),
-    sa.Column('purpose', sa.String(length=256), nullable=True),
     sa.Column('owner_type', sa.String(length=8), nullable=False),
     sa.Column('owner_id', sa.String(length=128), nullable=False),
     sa.Column('bank_id', sa.String(length=64), nullable=False),

@@ -518,7 +518,8 @@ def test_provision_mental_models_creates_a_missing_model(make_backend, recorder)
         ("POST", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={"id": "mm-1"}),
     })
     builtin = BuiltinModel(key="user-context", name="User Context", prompt="summarize",
-                            version=1, source_tags=("schema:ach-retain-v1",), tags_match="all")
+                            version=1, scope="user",
+                            source_tags=("schema:ach-retain-v1",), tags_match="all")
 
     backend.provision_mental_models(BANK, (builtin,))
 
@@ -537,7 +538,7 @@ def test_provision_mental_models_updates_a_model_with_a_changed_prompt(make_back
         ("PATCH", f"{_bank(BANK)}/mental-models/mm-1"): httpx.Response(200, json={}),
     })
     builtin = BuiltinModel(key="user-context", name="User Context", prompt="new prompt",
-                            version=2)
+                            version=2, scope="user")
 
     backend.provision_mental_models(BANK, (builtin,))
 
@@ -550,7 +551,7 @@ def test_provision_mental_models_is_a_noop_when_the_prompt_is_unchanged(make_bac
             "items": [{"id": "mm-1", "name": "User Context", "source_query": "same"}]
         }),
     })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", version=1)
+    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", version=1, scope="user")
 
     backend.provision_mental_models(BANK, (builtin,))
 
