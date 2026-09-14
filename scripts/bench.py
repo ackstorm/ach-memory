@@ -167,6 +167,9 @@ def build_report(*, label: str, url: str, n_facts: int, cleaned: bool, latencies
 
 async def run(args: argparse.Namespace) -> None:
     facts, questions = load_corpus()
+    if args.project_only:  # a real user bank must not be seeded with the corpus personas
+        facts = [f for f in facts if f["scope"] == "project"]
+        questions = [q for q in questions if q["scope"] == "project"]
     value = f"Bearer {args.key}" if args.header.lower() == "authorization" else args.key
     latencies: dict[str, list[float]] = {"retain(wait)": [], "recall": [], "list": [], "get": []}
 
@@ -219,5 +222,6 @@ if __name__ == "__main__":
     parser.add_argument("--project", default=f"github.com-ackstorm-bench-{uuid.uuid4().hex[:8]}")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--keep", action="store_true", help="skip cleanup")
+    parser.add_argument("--project-only", action="store_true", help="skip user-scope rows (safe against a real user bank)")
     parser.add_argument("--label", default="", help="free text for the report header")
     asyncio.run(run(parser.parse_args()))
