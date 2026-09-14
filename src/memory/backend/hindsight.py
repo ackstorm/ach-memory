@@ -18,12 +18,13 @@ from memory.backend.base import (
     Hit,
     MemoryState,
     MemoryView,
+    MentalModelView,
     Page,
     TagGroup,
     WriteAck,
     matches_tag_groups,
 )
-from memory.builtin_models import BuiltinModel
+from memory.builtin_models import BUILTIN_MODELS, BuiltinModel
 from memory.config import get_settings
 from memory.errors import InvalidRequest, MemoryNotFound, NotFound, UpstreamError
 
@@ -326,3 +327,17 @@ class HindsightBackend(Backend):
                 self._request("POST", path, body)
             elif current.get("source_query") != builtin.prompt:
                 self._request("PATCH", f"{path}/{current['id']}", body)
+
+    def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
+        """Hindsight indexes by name, not `key` -- resolved via BUILTIN_MODELS, the only keys ACH passes."""
+        name = next((m.name for m in BUILTIN_MODELS if m.key == key), None)
+        if name is None:
+            return None
+        path = f"{_bank(bank_id)}/mental-models"
+        existing = {i.get("name"): i for i in (self._request("GET", path) or {}).get("items") or []}
+        item = existing.get(name)
+        if item is None:
+            return None
+        content = (self._request("GET", f"{path}/{item['id']}") or {}).get("content")
+        return MentalModelView(key=key, name=name, content=content if isinstance(content, str) else None,
+                                updated_at=item.get("updated_at"))

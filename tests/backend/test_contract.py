@@ -286,6 +286,26 @@ def test_provision_mental_models_is_idempotent(backend):
         assert len(stored[BANK]) == 1
 
 
+def test_get_mental_model_returns_a_view_for_a_provisioned_builtin(backend):
+    if "mental_models" not in backend.capabilities():
+        pytest.skip("backend does not declare mental_models")
+    from memory.builtin_models import USER_CONTEXT
+
+    backend.provision_mental_models(BANK, (USER_CONTEXT,))
+
+    view = backend.get_mental_model(BANK, USER_CONTEXT.key)
+
+    assert view is not None
+    assert view.name == USER_CONTEXT.name
+
+
+def test_get_mental_model_unknown_key_returns_none(backend):
+    if "mental_models" not in backend.capabilities():
+        pytest.skip("backend does not declare mental_models")
+
+    assert backend.get_mental_model(BANK, "no-such-key") is None
+
+
 def test_incomplete_backend_subclass_cannot_be_instantiated():
     class _Incomplete(Backend):
         def capabilities(self):

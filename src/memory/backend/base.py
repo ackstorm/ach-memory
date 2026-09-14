@@ -70,6 +70,14 @@ class Page:
     total: int
 
 
+@dataclass(frozen=True)
+class MentalModelView:
+    key: str
+    name: str
+    content: str | None
+    updated_at: str | None = None
+
+
 class Backend(ABC):
     @abstractmethod
     def capabilities(self) -> frozenset[Capability]:
@@ -142,4 +150,8 @@ class Backend(ABC):
     def provision_mental_models(self, bank_id: str, builtins: Sequence[BuiltinModel]) -> None:
         """Ensure each of `builtins` exists in `bank_id`, created or updated to its current
         prompt; idempotent (capability `mental_models`)."""
+        raise UnsupportedCapability("mental_models")
+
+    def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
+        """Current content of one mental model, or `None` if absent (capability `mental_models`)."""
         raise UnsupportedCapability("mental_models")

@@ -15,6 +15,7 @@ from memory.backend.base import (
     Hit,
     MemoryState,
     MemoryView,
+    MentalModelView,
     Page,
     TagGroup,
     WriteAck,
@@ -45,10 +46,13 @@ class FakeBackend(Backend):
     def __init__(self) -> None:
         self._data: dict[str, dict[str, _Record]] = {}
         self.mental_models: dict[str, dict[str, BuiltinModel]] = {}
+        #: content a test wants `get_mental_model` to return; unset means None.
+        self.mental_model_content: dict[str, dict[str, str | None]] = {}
 
     def reset(self) -> None:
         self._data = {}
         self.mental_models = {}
+        self.mental_model_content = {}
 
     def capabilities(self) -> frozenset[Capability]:
         return frozenset({"mental_models"})
@@ -146,6 +150,13 @@ class FakeBackend(Backend):
         models = self.mental_models.setdefault(bank_id, {})
         for builtin in builtins:
             models[builtin.key] = builtin
+
+    def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
+        builtin = self.mental_models.get(bank_id, {}).get(key)
+        if builtin is None:
+            return None
+        content = self.mental_model_content.get(bank_id, {}).get(key)
+        return MentalModelView(key=key, name=builtin.name, content=content)
 
 
 #: `get_backend()`'s "fake" registration: one process-wide instance, reset between tests
