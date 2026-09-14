@@ -1,0 +1,59 @@
+{"kind": "fact", "id": "u01", "owner": "alice", "scope": "user", "text": "Alice pins Python dependencies with uv and never uses pip directly.", "match": ["uv"]}
+{"kind": "fact", "id": "u02", "owner": "alice", "scope": "user", "text": "Alice prefers Neovim over graphical editors for all editing work.", "match": ["neovim"]}
+{"kind": "fact", "id": "u03", "owner": "alice", "scope": "user", "text": "Alice wants all code comments and commit messages written in English.", "match": ["english"]}
+{"kind": "fact", "id": "u04", "owner": "alice", "scope": "user", "text": "Alice reviews plans in a conversation before any code is written.", "match": ["plan"]}
+{"kind": "fact", "id": "u05", "owner": "alice", "scope": "user", "text": "Alice runs every Python project inside a virtual environment, never system-wide.", "match": ["virtual"]}
+{"kind": "fact", "id": "u06", "owner": "alice", "scope": "user", "text": "Alice's preferred commit subject style is short imperative mood under 72 characters.", "match": ["72"]}
+{"kind": "fact", "id": "u07", "owner": "alice", "scope": "user", "text": "Alice keeps Docker images multi-stage with a builder and a runtime layer.", "match": ["multi-stage"]}
+{"kind": "fact", "id": "u08", "owner": "alice", "scope": "user", "text": "Alice refuses COPY dot dot in Dockerfiles because it ships git history and secrets.", "match": ["copy"]}
+{"kind": "fact", "id": "u09", "owner": "alice", "scope": "user", "text": "Alice reads documentation through Context7 and DeepWiki before trusting project docs.", "match": ["context7"]}
+{"kind": "fact", "id": "u10", "owner": "alice", "scope": "user", "text": "Alice wants unrelated dead code mentioned but never deleted without asking.", "match": ["dead code"]}
+{"kind": "fact", "id": "b01", "owner": "bob", "scope": "user", "text": "Bob pins Python dependencies with Poetry and distrusts newer resolvers.", "match": ["poetry"]}
+{"kind": "fact", "id": "b02", "owner": "bob", "scope": "user", "text": "Bob uses VS Code with the Vim extension and dislikes terminal editors.", "match": ["vs code"]}
+{"kind": "fact", "id": "b03", "owner": "bob", "scope": "user", "text": "Bob writes commit messages in Spanish for his internal projects.", "match": ["spanish"]}
+{"kind": "fact", "id": "b04", "owner": "bob", "scope": "user", "text": "Bob prefers single-stage Dockerfiles for speed on his laptop.", "match": ["single-stage"]}
+{"kind": "fact", "id": "b05", "owner": "bob", "scope": "user", "text": "Bob installs Python packages globally with pip on his development machine.", "match": ["globally"]}
+{"kind": "fact", "id": "b06", "owner": "bob", "scope": "user", "text": "Bob skips the design discussion and asks for code immediately.", "match": ["immediately"]}
+{"kind": "fact", "id": "b07", "owner": "bob", "scope": "user", "text": "Bob deletes unreferenced code on sight without flagging it first.", "match": ["unreferenced"]}
+{"kind": "fact", "id": "b08", "owner": "bob", "scope": "user", "text": "Bob keeps long descriptive commit subjects well over a hundred characters.", "match": ["hundred"]}
+{"kind": "fact", "id": "p01", "owner": "alice", "scope": "project", "project": "payments", "text": "The payments service stores idempotency keys for exactly 24 hours.", "match": ["idempotency", "24"]}
+{"kind": "fact", "id": "p02", "owner": "alice", "scope": "project", "project": "payments", "text": "The payments service settles in EUR and rejects any other settlement currency.", "match": ["eur"]}
+{"kind": "fact", "id": "p03", "owner": "alice", "scope": "project", "project": "payments", "text": "Payments runs its database migrations as a pre-install hook before the API starts.", "match": ["pre-install"]}
+{"kind": "fact", "id": "p04", "owner": "alice", "scope": "project", "project": "payments", "text": "The payments refund endpoint is asynchronous and returns an operation to poll.", "match": ["refund"]}
+{"kind": "fact", "id": "p05", "owner": "alice", "scope": "project", "project": "payments", "text": "Payments rate limits each API credential to 100 writes per minute.", "match": ["100"]}
+{"kind": "fact", "id": "p06", "owner": "alice", "scope": "project", "project": "payments", "text": "The payments staging cluster runs in eu-west-1 and production runs in eu-central-1.", "match": ["eu-central-1"]}
+{"kind": "fact", "id": "p07", "owner": "alice", "scope": "project", "project": "payments", "text": "Payments never logs the full card number, only the last four digits.", "match": ["card"]}
+{"kind": "fact", "id": "p08", "owner": "alice", "scope": "project", "project": "payments", "text": "The payments team requires two approvals on any merge request touching settlement.", "match": ["two approvals"]}
+{"kind": "fact", "id": "s01", "owner": "alice", "scope": "project", "project": "search", "text": "The search service stores idempotency keys for exactly 7 days.", "match": ["idempotency", "7"]}
+{"kind": "fact", "id": "s02", "owner": "alice", "scope": "project", "project": "search", "text": "The search service indexes documents in USD-denominated catalogues only.", "match": ["usd"]}
+{"kind": "fact", "id": "s03", "owner": "alice", "scope": "project", "project": "search", "text": "Search runs its migrations lazily on first request rather than before startup.", "match": ["lazily"]}
+{"kind": "fact", "id": "s04", "owner": "alice", "scope": "project", "project": "search", "text": "The search reindex endpoint is synchronous and blocks until the index is rebuilt.", "match": ["reindex"]}
+{"kind": "fact", "id": "s05", "owner": "alice", "scope": "project", "project": "search", "text": "Search rate limits each API credential to 1000 reads per minute.", "match": ["1000"]}
+{"kind": "fact", "id": "s06", "owner": "alice", "scope": "project", "project": "search", "text": "The search staging cluster runs in us-east-1 and production runs in us-west-2.", "match": ["us-west-2"]}
+{"kind": "fact", "id": "s07", "owner": "alice", "scope": "project", "project": "search", "text": "Search logs every query in full for relevance tuning.", "match": ["query"]}
+{"kind": "fact", "id": "s08", "owner": "alice", "scope": "project", "project": "search", "text": "The search team requires one approval on any merge request.", "match": ["one approval"]}
+{"kind": "question", "id": "q01", "asker": "alice", "scope": "user", "query": "how does Alice manage Python dependencies", "expect": ["u01"], "must_not": ["b01", "b05"], "keywords": ["uv"]}
+{"kind": "question", "id": "q02", "asker": "alice", "scope": "user", "query": "which editor should I assume Alice uses", "expect": ["u02"], "must_not": ["b02"], "keywords": ["neovim"]}
+{"kind": "question", "id": "q03", "asker": "alice", "scope": "user", "query": "what language should commit messages be written in", "expect": ["u03"], "must_not": ["b03"], "keywords": ["english"]}
+{"kind": "question", "id": "q04", "asker": "alice", "scope": "user", "query": "should I write code before showing a plan", "expect": ["u04"], "must_not": ["b06"], "keywords": ["plan"]}
+{"kind": "question", "id": "q05", "asker": "alice", "scope": "user", "query": "how should Python packages be installed", "expect": ["u05"], "must_not": ["b05"], "keywords": ["virtual"]}
+{"kind": "question", "id": "q06", "asker": "alice", "scope": "user", "query": "how long may a commit subject line be", "expect": ["u06"], "must_not": ["b08"], "keywords": ["72", "short"]}
+{"kind": "question", "id": "q07", "asker": "alice", "scope": "user", "query": "how should Dockerfiles be structured", "expect": ["u07"], "must_not": ["b04"], "keywords": ["multi-stage", "builder"]}
+{"kind": "question", "id": "q08", "asker": "alice", "scope": "user", "query": "is COPY of the whole build context acceptable", "expect": ["u08"], "must_not": [], "keywords": ["secret", "git"]}
+{"kind": "question", "id": "q09", "asker": "alice", "scope": "user", "query": "where should I look up library documentation", "expect": ["u09"], "must_not": [], "keywords": ["context7", "deepwiki"]}
+{"kind": "question", "id": "q10", "asker": "alice", "scope": "user", "query": "what should I do about unrelated dead code I notice", "expect": ["u10"], "must_not": ["b07"], "keywords": ["mention", "ask"]}
+{"kind": "question", "id": "q11", "asker": "alice", "scope": "project", "project": "payments", "query": "how long are idempotency keys kept", "expect": ["p01"], "must_not": ["s01"], "keywords": ["24", "hour"]}
+{"kind": "question", "id": "q12", "asker": "alice", "scope": "project", "project": "payments", "query": "which settlement currency is supported", "expect": ["p02"], "must_not": ["s02"], "keywords": ["eur"]}
+{"kind": "question", "id": "q13", "asker": "alice", "scope": "project", "project": "payments", "query": "when do database migrations run", "expect": ["p03"], "must_not": ["s03"], "keywords": ["pre-install", "before"]}
+{"kind": "question", "id": "q14", "asker": "alice", "scope": "project", "project": "payments", "query": "is the refund endpoint synchronous", "expect": ["p04"], "must_not": ["s04"], "keywords": ["async", "operation", "poll"]}
+{"kind": "question", "id": "q15", "asker": "alice", "scope": "project", "project": "payments", "query": "what is the write rate limit per credential", "expect": ["p05"], "must_not": ["s05"], "keywords": ["100"]}
+{"kind": "question", "id": "q16", "asker": "alice", "scope": "project", "project": "payments", "query": "which region does production run in", "expect": ["p06"], "must_not": ["s06"], "keywords": ["eu-central-1"]}
+{"kind": "question", "id": "q17", "asker": "alice", "scope": "project", "project": "payments", "query": "what card data may be logged", "expect": ["p07"], "must_not": ["s07"], "keywords": ["last four", "four"]}
+{"kind": "question", "id": "q18", "asker": "alice", "scope": "project", "project": "payments", "query": "how many approvals does a merge request need", "expect": ["p08"], "must_not": ["s08"], "keywords": ["two"]}
+{"kind": "question", "id": "q19", "asker": "alice", "scope": "project", "project": "search", "query": "how long are idempotency keys kept", "expect": ["s01"], "must_not": ["p01"], "keywords": ["7", "day"]}
+{"kind": "question", "id": "q20", "asker": "alice", "scope": "project", "project": "search", "query": "when do database migrations run", "expect": ["s03"], "must_not": ["p03"], "keywords": ["lazy", "first request"]}
+{"kind": "question", "id": "q21", "asker": "alice", "scope": "project", "project": "search", "query": "which region does production run in", "expect": ["s06"], "must_not": ["p06"], "keywords": ["us-west-2"]}
+{"kind": "question", "id": "q22", "asker": "alice", "scope": "project", "project": "search", "query": "what is the rate limit per credential", "expect": ["s05"], "must_not": ["p05"], "keywords": ["1000"]}
+{"kind": "question", "id": "q23", "asker": "alice", "scope": "project", "project": "search", "query": "how many approvals does a merge request need", "expect": ["s08"], "must_not": ["p08"], "keywords": ["one"]}
+{"kind": "question", "id": "q24", "asker": "alice", "scope": "project", "project": "search", "query": "is the reindex endpoint asynchronous", "expect": ["s04"], "must_not": ["p04"], "keywords": ["synchronous", "blocks"]}
+{"kind": "question", "id": "q25", "asker": "alice", "scope": "project", "project": "search", "query": "is every query logged", "expect": ["s07"], "must_not": ["p07"], "keywords": ["full", "logs"]}
