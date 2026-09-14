@@ -66,9 +66,17 @@ plugins: # Sync plugins/shared/* into each host plugin (idempotent)
 		cp plugins/shared/scripts/session-start.sh plugins/shared/scripts/subagent-start.sh $$h/scripts/; \
 	done
 	cp plugins/shared/scripts/pre-compact.sh plugins/claude-code/scripts/pre-compact.sh
-plugins-check: plugins # Fail if a committed plugin copy drifted from plugins/shared
-	@git diff --quiet -- $(PLUGIN_HOSTS) \
-		|| { echo "FAIL: plugin copies differ from plugins/shared -- run 'make plugins' and commit." >&2; exit 1; }
+plugins-check: # Fail if a committed plugin copy drifted from plugins/shared
+	@for h in $(PLUGIN_HOSTS); do \
+		cmp -s plugins/shared/ach-memory/SKILL.md $$h/skills/ach-memory/SKILL.md \
+		&& cmp -s plugins/shared/activation.txt $$h/activation.txt \
+		&& cmp -s plugins/shared/activation.subagent.json $$h/activation.subagent.json \
+		&& cmp -s plugins/shared/scripts/session-start.sh $$h/scripts/session-start.sh \
+		&& cmp -s plugins/shared/scripts/subagent-start.sh $$h/scripts/subagent-start.sh \
+		|| { echo "FAIL: $$h drifted from plugins/shared -- run 'make plugins'." >&2; exit 1; }; \
+	done
+	@cmp -s plugins/shared/scripts/pre-compact.sh plugins/claude-code/scripts/pre-compact.sh \
+		|| { echo "FAIL: claude-code pre-compact.sh drifted -- run 'make plugins'." >&2; exit 1; }
 
 .PHONY: verify
 verify: lint test secrets chart plugins-check # The full local gate -- run this before pushing
@@ -80,6 +88,9 @@ release-bump: # Update release metadata (VERSION=X.Y.Z)
 	sed -i -E 's/^__version__ = "[^"]*"$$/__version__ = "$(VERSION)"/' src/memory/__init__.py
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
+	sed -i -E 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json plugins/claude-code/.claude-plugin/plugin.json plugins/codex/.codex-plugin/plugin.json
+	sed -i -E 's/@v[0-9]+\.[0-9]+\.[0-9]+/@v$(VERSION)/g' plugins/claude-code/.mcp.json plugins/codex/.mcp.json plugins/shared/scripts/session-start.sh plugins/shared/scripts/pre-compact.sh docs/hosts.md
+	$(MAKE) plugins
 	uv lock
 	$(MAKE) chart VERSION=$(VERSION)
 
