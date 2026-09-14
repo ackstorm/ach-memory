@@ -52,6 +52,8 @@ chart: # helm lint + render, and pyproject/package/Chart.yaml versions agree (wi
 		&& grep -qx "version: $$v" deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx "appVersion: \"$$v\"" deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx "version = \"$$v\"" uv.lock \
+		&& grep -q "\"version\": \"$$v\"" .claude-plugin/marketplace.json plugins/claude-code/.claude-plugin/plugin.json plugins/codex/.codex-plugin/plugin.json \
+		&& ! grep -rL "@v$$v" plugins/claude-code/.mcp.json plugins/codex/.mcp.json plugins/shared/scripts/session-start.sh plugins/shared/scripts/pre-compact.sh | grep -q . \
 		|| { echo "FAIL: release metadata does not agree on $$v." >&2; exit 1; }
 
 PLUGIN_HOSTS = plugins/claude-code plugins/codex
@@ -91,8 +93,21 @@ release-cut: # Create and push the release marker (VERSION=X.Y.Z)
 	$(MAKE) chart VERSION=$(VERSION)
 	$(MAKE) verify
 	git commit --allow-empty -m "chore(release): v$(VERSION)"
-	git push origin main
+	git tag -a "v$(VERSION)" -m "v$(VERSION)"
+	git push origin main "v$(VERSION)"
 
 .PHONY: up
 up: # Start the local stack (migrations run before the api serves)
 	docker compose up -d --build
+
+.PHONY: e2e
+e2e: # Full local gate: build, wait for health, run the mcp smoke test; always tears the stack down
+	@trap 'docker compose down' EXIT; \
+	docker compose up -d --build; \
+	ok=; \
+	for i in $$(seq 1 60); do \
+	  curl -sf http://localhost:8000/health >/dev/null 2>&1 && { ok=1; break; }; \
+	  sleep 1; \
+	done; \
+	[ -n "$$ok" ] || { echo "FAIL: API never became healthy within 60s." >&2; exit 1; }; \
+	uv run python scripts/mcp-smoke.py --url http://localhost:8000/mcp/ --key alice --header Authorization
