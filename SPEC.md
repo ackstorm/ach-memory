@@ -188,4 +188,4 @@ is a `project_slugs` change and the engine never hears about it. Banks created b
 
 REST data plane; tenants; metrics/observability; rate limiting; dashboard; expiry/`valid_until`;
 evidence/trigger fields; dedup across operation ids; a ledger of engine state owned by ACH;
-directives; a host installer CLI; a documents API.
+directives; a documents API.

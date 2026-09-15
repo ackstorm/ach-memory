@@ -89,7 +89,7 @@ release-bump: # Update release metadata (VERSION=X.Y.Z)
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json plugins/claude-code/.claude-plugin/plugin.json plugins/codex/.codex-plugin/plugin.json
-	sed -i -E 's/@v[0-9]+\.[0-9]+\.[0-9]+/@v$(VERSION)/g' plugins/claude-code/.mcp.json plugins/codex/.mcp.json plugins/shared/scripts/session-start.sh plugins/shared/scripts/pre-compact.sh docs/hosts.md
+	sed -i -E 's/@v[0-9]+\.[0-9]+\.[0-9]+/@v$(VERSION)/g' plugins/claude-code/.mcp.json plugins/codex/.mcp.json plugins/shared/scripts/session-start.sh plugins/shared/scripts/pre-compact.sh docs/hosts.md README.md
 	$(MAKE) plugins
 	uv lock
 	$(MAKE) chart VERSION=$(VERSION)
