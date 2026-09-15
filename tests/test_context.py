@@ -25,9 +25,9 @@ def _seed(backend: FakeBackend, bank_id: str, builtin, content: str | None) -> N
 
 
 def test_user_and_project_entries_both_fit(db, principal, backend):
-    projects.resolve(db, principal, "acme", create=True)
+    bank_id = projects.resolve(db, principal, "acme", create=True).project.bank_id
     _seed(backend, "user_usr_juan", USER_CONTEXT, "user stuff")
-    _seed(backend, "project_acme", PROJECT_CONTEXT, "project stuff")
+    _seed(backend, bank_id, PROJECT_CONTEXT, "project stuff")
 
     result = context.load(
         db, principal, context.LoadContextRequest(project_slug="acme"), backend=backend
@@ -40,9 +40,9 @@ def test_user_and_project_entries_both_fit(db, principal, backend):
 
 
 def test_budget_forces_the_second_entry_into_omitted(db, principal, backend, monkeypatch):
-    projects.resolve(db, principal, "acme", create=True)
+    bank_id = projects.resolve(db, principal, "acme", create=True).project.bank_id
     _seed(backend, "user_usr_juan", USER_CONTEXT, "user stuff")
-    _seed(backend, "project_acme", PROJECT_CONTEXT, "project stuff")
+    _seed(backend, bank_id, PROJECT_CONTEXT, "project stuff")
     first_section_len = len(f"### {USER_CONTEXT.name}\nuser stuff\n\n")
     monkeypatch.setattr(
         context, "get_settings", lambda: SimpleNamespace(context_budget_chars=first_section_len)
