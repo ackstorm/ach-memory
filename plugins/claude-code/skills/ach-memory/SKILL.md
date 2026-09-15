@@ -20,6 +20,9 @@ narrate routine retrieval.
 
 Call `retain` when the user explicitly establishes durable information, or when you preserve the
 final result of an explicit decision. Pass `wait: true` to block until the claim is searchable.
+Retain when the claim lands -- the decision is accepted, the constraint stated -- not at the end
+of the task and not at compaction. Claims that landed while the tools were unavailable are
+retained as soon as they are back.
 One call is one independently correctable claim. Write every memory in English. Do not retain
 transcripts, summaries, files, logs, proposals, quoted or rejected statements, hypotheses, cheap
 repository facts, or transient task progress.
@@ -42,6 +45,9 @@ The response's `memory_id` is the handle for `correct`, `forget`, `restore`, `de
 - `project`: repository-specific decisions, constraints, conventions, facts and gotchas.
 - `user`: explicitly personal facts or preferences stable across projects.
 - If ownership is ambiguous, ask or abstain -- never use `user` as a fallback for project uncertainty.
+- `project_slug` is filled by the proxy from the current repository's `origin` remote (or
+  `MEMORY_PROJECT`); pass it yourself only to address another repository. In a directory with
+  no remote, project memory has no home: ask which project before inventing a slug.
 
 ## Correct, forget, restore, delete
 

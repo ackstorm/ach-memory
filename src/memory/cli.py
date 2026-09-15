@@ -7,6 +7,11 @@ import sys
 
 from memory.mcp import proxy
 
+_NO_PROJECT_NOTICE = (
+    "No project context: this directory has no git origin. Pass project_slug or set "
+    "MEMORY_PROJECT to retain project memory."
+)
+
 _PRE_COMPACT_NUDGE = (
     "Before context is compacted, retain any durable decision, constraint, convention, "
     "fact or verified gotcha that is not yet in ach-memory. If project work is incomplete, "
@@ -43,6 +48,8 @@ def _context_load(project: str | None) -> int:
         return 0
     if text:
         print(text)
+    if slug is None:
+        print(_NO_PROJECT_NOTICE)
     return 0
 
 

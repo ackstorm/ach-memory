@@ -75,6 +75,20 @@ def test_main_context_load_prints_the_text(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "standing context"
 
 
+def test_main_context_load_names_the_missing_project(monkeypatch, capsys):
+    async def fake_call_load_context(url, slug, workspace_id):
+        return "standing context"
+
+    monkeypatch.setattr(cli.proxy, "call_load_context", fake_call_load_context)
+    monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: None)
+    monkeypatch.setattr(cli.proxy, "resolve_workspace_context", lambda: None)
+
+    assert cli.main(["context", "load"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("standing context\n")
+    assert "No project context" in out
+
+
 def test_main_context_load_fails_open_and_prints_nothing(monkeypatch, capsys):
     async def fake_call_load_context(url, slug, workspace_id):
         raise RuntimeError("remote is down")
