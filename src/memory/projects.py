@@ -34,7 +34,7 @@ def _create(db: Session, principal: Principal, slug: str) -> Project:
         internal_id=f"prj_{uuid4().hex}",
         owner_type="user",
         owner_id=principal.user_id,
-        bank_id=f"project_{slug}",
+        bank_id=f"project_{uuid4()}",
         git_locator=None,
     )
     db.add(project)

@@ -188,9 +188,10 @@ plane.
 
 No tenants table.
 
-Bank ids are deterministic and readable: `user_<user_id>` for a user scope, `project_<slug>` for a
-project scope. The row stores it; nothing needs the row to recompute it. Banks created by the
-predecessor (`project_<uuid>`) stay in the engine untouched and unmounted.
+Bank ids are opaque and minted once: `user_<user_id>` for a user scope (the user id is itself a
+hash), `project_<uuid4>` for a project scope. Only the row knows the mapping, so renaming a project
+is a `project_slugs` change and the engine never hears about it. Banks created by the predecessor
+(`project_<uuid>`, same shape) stay in the engine untouched and unmounted.
 
 ## 8. Non-goals
 
