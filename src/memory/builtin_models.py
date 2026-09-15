@@ -45,5 +45,3 @@ PROJECT_CONTEXT = BuiltinModel(
 )
 
 BUILTIN_MODELS = (USER_CONTEXT, PROJECT_CONTEXT)
-
-# TODO(JC): five more built-ins -- name + prompt pending

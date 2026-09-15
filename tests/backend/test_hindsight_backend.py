@@ -527,6 +527,7 @@ def test_provision_mental_models_creates_a_missing_model(make_backend, recorder)
     assert body == {
         "name": "User Context", "source_query": "summarize",
         "tags": ["schema:ach-retain-v1"], "tags_match": "all",
+        "trigger": {"mode": "delta", "refresh_after_consolidation": True},
     }
 
 
@@ -548,7 +549,8 @@ def test_provision_mental_models_updates_a_model_with_a_changed_prompt(make_back
 def test_provision_mental_models_is_a_noop_when_the_prompt_is_unchanged(make_backend, recorder):
     backend = make_backend({
         ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
-            "items": [{"id": "mm-1", "name": "User Context", "source_query": "same"}]
+            "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
+                       "trigger": {"mode": "delta", "refresh_after_consolidation": True}}]
         }),
     })
     builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", version=1, scope="user")
@@ -557,3 +559,19 @@ def test_provision_mental_models_is_a_noop_when_the_prompt_is_unchanged(make_bac
 
     assert ("PATCH", f"{_bank(BANK)}/mental-models/mm-1") not in recorder.calls
     assert ("POST", f"{_bank(BANK)}/mental-models") not in recorder.calls
+
+
+def test_provision_mental_models_turns_on_refresh_for_a_model_created_without_it(make_backend, recorder):
+    backend = make_backend({
+        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
+            "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
+                       "trigger": {"mode": "full", "refresh_after_consolidation": False}}]
+        }),
+        ("PATCH", f"{_bank(BANK)}/mental-models/mm-1"): httpx.Response(200, json={}),
+    })
+    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", version=1, scope="user")
+
+    backend.provision_mental_models(BANK, (builtin,))
+
+    body = json.loads(recorder.calls[("PATCH", f"{_bank(BANK)}/mental-models/mm-1")].read())
+    assert body["trigger"] == {"mode": "delta", "refresh_after_consolidation": True}

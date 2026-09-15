@@ -89,6 +89,18 @@ def _strip_bank_id(value: Any, bank_id: str) -> Any:
     return value
 
 
+# Hindsight defaults `refresh_after_consolidation` to False: a model created without
+# this is generated once at provision and never again (seen in production, 0.1.2).
+_MENTAL_MODEL_TRIGGER = {"mode": "delta", "refresh_after_consolidation": True}
+
+
+def _stale(current: dict, builtin: BuiltinModel) -> bool:
+    trigger = current.get("trigger") or {}
+    return current.get("source_query") != builtin.prompt or any(
+        trigger.get(k) != v for k, v in _MENTAL_MODEL_TRIGGER.items()
+    )
+
+
 class HindsightBackend(Backend):
     """Production `Backend` implementation, talking straight to the Hindsight HTTP API."""
 
@@ -321,11 +333,12 @@ class HindsightBackend(Backend):
                 "source_query": builtin.prompt,
                 "tags": list(builtin.source_tags),
                 "tags_match": builtin.tags_match,
+                "trigger": _MENTAL_MODEL_TRIGGER,
             }
             current = existing.get(builtin.name)
             if current is None:
                 self._request("POST", path, body)
-            elif current.get("source_query") != builtin.prompt:
+            elif _stale(current, builtin):
                 self._request("PATCH", f"{path}/{current['id']}", body)
 
     def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
