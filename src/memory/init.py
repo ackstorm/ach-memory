@@ -26,19 +26,18 @@ def _run(*argv: str) -> bool:
 
 
 def _init_claude(local: bool) -> None:
-    """Native marketplace install; a re-run updates. `local` has no meaning here."""
-    if not _run("claude", "plugin", "marketplace", "add", MARKETPLACE):
-        _run("claude", "plugin", "marketplace", "update", "ach-memory")
-    if not _run("claude", "plugin", "install", PLUGIN):
-        _run("claude", "plugin", "update", PLUGIN)
+    """Marketplace add/install are idempotent but never refresh: update always runs."""
+    _run("claude", "plugin", "marketplace", "add", MARKETPLACE)
+    _run("claude", "plugin", "marketplace", "update", "ach-memory")
+    _run("claude", "plugin", "install", PLUGIN)
+    _run("claude", "plugin", "update", PLUGIN)
 
 
 def _init_codex(local: bool) -> None:
-    """Codex has `marketplace upgrade` and no `plugin update`: re-add is the update path."""
-    if not _run("codex", "plugin", "marketplace", "add", MARKETPLACE):
-        _run("codex", "plugin", "marketplace", "upgrade", "ach-memory")
-    if not _run("codex", "plugin", "add", PLUGIN) and _run("codex", "plugin", "remove", PLUGIN):
-        _run("codex", "plugin", "add", PLUGIN)
+    """Codex has no `plugin update`: re-adding after `marketplace upgrade` picks the new snapshot."""
+    _run("codex", "plugin", "marketplace", "add", MARKETPLACE)
+    _run("codex", "plugin", "marketplace", "upgrade", "ach-memory")
+    _run("codex", "plugin", "add", PLUGIN)
 
 
 def _mcp_command(local: bool) -> list[str]:

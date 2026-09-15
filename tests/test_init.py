@@ -22,23 +22,8 @@ class _Runner:
         return subprocess.CompletedProcess(argv, 1 if list(argv) in self.failing else 0)
 
 
-def test_init_claude_adds_marketplace_then_installs(monkeypatch):
-    runner = _Runner()
-    monkeypatch.setattr(init.subprocess, "run", runner)
-
-    init._init_claude(local=False)
-
-    assert runner.calls == [
-        ["claude", "plugin", "marketplace", "add", "ackstorm/ach-memory"],
-        ["claude", "plugin", "install", "ach-memory@ach-memory"],
-    ]
-
-
-def test_init_claude_rerun_falls_back_to_update(monkeypatch):
-    runner = _Runner(failing=[
-        ["claude", "plugin", "marketplace", "add", "ackstorm/ach-memory"],
-        ["claude", "plugin", "install", "ach-memory@ach-memory"],
-    ])
+def test_init_claude_always_refreshes_marketplace_and_plugin(monkeypatch):
+    runner = _Runner(failing=[["claude", "plugin", "marketplace", "add", "ackstorm/ach-memory"]])
     monkeypatch.setattr(init.subprocess, "run", runner)
 
     init._init_claude(local=False)
@@ -51,11 +36,8 @@ def test_init_claude_rerun_falls_back_to_update(monkeypatch):
     ]
 
 
-def test_init_codex_rerun_upgrades_marketplace_and_readds(monkeypatch):
-    runner = _Runner(failing=[
-        ["codex", "plugin", "marketplace", "add", "ackstorm/ach-memory"],
-        ["codex", "plugin", "add", "ach-memory@ach-memory"],
-    ])
+def test_init_codex_upgrades_marketplace_then_readds(monkeypatch):
+    runner = _Runner()
     monkeypatch.setattr(init.subprocess, "run", runner)
 
     init._init_codex(local=False)
@@ -64,11 +46,7 @@ def test_init_codex_rerun_upgrades_marketplace_and_readds(monkeypatch):
         ["codex", "plugin", "marketplace", "add", "ackstorm/ach-memory"],
         ["codex", "plugin", "marketplace", "upgrade", "ach-memory"],
         ["codex", "plugin", "add", "ach-memory@ach-memory"],
-        ["codex", "plugin", "remove", "ach-memory@ach-memory"],
-        ["codex", "plugin", "add", "ach-memory@ach-memory"],
     ]
-
-
 
 
 def _opencode_home(tmp_path, monkeypatch):

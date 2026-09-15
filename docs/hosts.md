@@ -12,8 +12,8 @@ What it does per host:
 
 | host | mechanism |
 |---|---|
-| claude | `claude plugin marketplace add ackstorm/ach-memory` + `claude plugin install ach-memory@ach-memory` (update on re-run) |
-| codex | `codex plugin marketplace add ackstorm/ach-memory` + `codex plugin add ach-memory@ach-memory` (re-add on re-run) |
+| claude | `claude plugin marketplace add ackstorm/ach-memory` + `claude plugin install ach-memory@ach-memory` (update always runs) |
+| codex | `codex plugin marketplace add ackstorm/ach-memory` + `codex plugin add ach-memory@ach-memory` (`marketplace upgrade` + re-add always run) |
 | opencode | copies `plugins/ach-memory.js` + skill into `$XDG_CONFIG_HOME/opencode`, adds `mcp.ach-memory`, `plugin[]` and `skills.paths[]` to `opencode.json` |
 | pi | copies `extensions/ach-memory.js` + skill into `~/.pi/agent`, adds `mcpServers.ach-memory` to `mcp.json`, installs `npm:pi-mcp-adapter` if missing |
 
