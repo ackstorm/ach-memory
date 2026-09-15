@@ -110,3 +110,15 @@ def test_main_context_load_project_flag_overrides_resolution(monkeypatch):
 
     cli.main(["context", "load", "--project", "explicit-slug"])
     assert seen["slug"] == "explicit-slug"
+
+
+def test_main_init_dispatches_target_and_local(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli.init, "init", lambda target, local: seen.update(target=target, local=local) or 0)
+
+    assert cli.main(["init", "pi", "--local"]) == 0
+    assert seen == {"target": "pi", "local": True}
+
+
+def test_main_init_rejects_unknown_host():
+    assert cli.main(["init", "emacs"]) == 2
