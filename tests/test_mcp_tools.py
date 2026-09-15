@@ -164,30 +164,6 @@ def test_forget_then_list_invalid_memories_shows_it():
     asyncio.run(scenario())
 
 
-def test_working_state_put_get_delete():
-    async def scenario():
-        app = create_app()
-        workspace_id = f"ws_{uuid4().hex}"
-        async with app.router.lifespan_context(app), _session(app, _auth_headers()) as session:
-            put = await session.call_tool(
-                "working_state_put",
-                {"workspace_id": workspace_id, "state": {"objective": "ship the thing"}},
-            )
-            assert not put.is_error
-            assert put.structured_content["result"]["state"] == {"objective": "ship the thing"}
-
-            got = await session.call_tool("working_state_get", {"workspace_id": workspace_id})
-            assert got.structured_content["result"]["state"] == {"objective": "ship the thing"}
-
-            deleted = await session.call_tool("working_state_delete", {"workspace_id": workspace_id})
-            assert not deleted.is_error
-
-            got_again = await session.call_tool("working_state_get", {"workspace_id": workspace_id})
-            assert got_again.structured_content["result"]["state"] is None
-
-    asyncio.run(scenario())
-
-
 def test_load_context_returns_text():
     async def scenario():
         app = create_app()

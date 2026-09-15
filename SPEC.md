@@ -31,11 +31,10 @@ Version: 0.1.0
 | Project resolution from git origin | slug derived from the git remote, no client-supplied project id |
 | External auth | JWT/JWKS plus platform whoami |
 | Automatic bootstrap | users and projects created on first authorized contact |
-| Built-in mental models | provisioned at first retain: `user-context`, `project-context`, plus five more (names TBD) |
+| Built-in mental models | provisioned at first retain: `user-context`, `project-context` |
 | Idempotent retain | same `operation_id` replays to the same memory id, no duplicate |
 | Governance journal | one row per mutation, actor and outcome, survives engine replacement |
 | Secret scrub | content sanitized at the retain boundary before it reaches the engine |
-| Working State | transient per-workspace handoff state, outside the bank |
 | Measured engine profile as adapter defaults | e.g. `verbatim` extraction — config, not code |
 | Adapter contract tests | one suite, fake and real backends parametrised |
 | Fake backend | in-memory adapter double; the core suite runs without an engine |
@@ -59,9 +58,6 @@ Version: 0.1.0
 | `list` | required | page memories, newest first; empty for a project nobody retained into | no |
 | `get` | required | fetch one memory by id | no |
 | `history` | ACH-owned | current view plus journal entries for one memory | no |
-| `working_state get` | ACH-owned | read this workspace's checkpoint | no |
-| `working_state put` | ACH-owned | replace this workspace's checkpoint | no |
-| `working_state delete` | ACH-owned | clear this workspace's checkpoint | no |
 | `context load` | ACH-owned | deliver bounded standing context, creates nothing | no |
 
 ### 3.2 Vocabulary
@@ -152,9 +148,8 @@ engine-specific setting or imports a concrete adapter.
 
 MCP streamable-HTTP server: SDK app, `/health`, header auth resolving to a `Principal`; must accept
 a header-less `initialize` (LiteLLM sends none). Stdio proxy on the SDK, running on the host,
-resolving project from `MEMORY_PROJECT` or the git origin, injecting slug and workspace. Hooks:
-session-start (standing context), pre-compact (Working State nudge), subagent-start. No REST data
-plane.
+resolving project from `MEMORY_PROJECT` or the git origin, injecting the slug. Hooks:
+session-start (standing context), pre-compact (retain nudge), subagent-start. No REST data plane.
 
 | Tool | Intention | One line |
 |---|---|---|
@@ -168,9 +163,6 @@ plane.
 | `list_memories` | list | page memories, newest first |
 | `get_memory` | get | fetch one memory by id |
 | `history` | history | journal entries for one memory |
-| `working_state_get` | working_state get | read this workspace's checkpoint |
-| `working_state_put` | working_state put | replace this workspace's checkpoint |
-| `working_state_delete` | working_state delete | clear this workspace's checkpoint |
 | `load_context` | context load | deliver bounded standing context |
 | `get_operation` | — | engine-side async outcome; only if the adapter declares `operations` |
 
@@ -184,7 +176,6 @@ plane.
 | `projects` | id, slug, bank_id, owner_user_id, owner_group_id (nullable), created_at |
 | `project_slugs` | project_id, slug, retired_at |
 | `audit_events` | actor, on_behalf_of, action, memory_id, operation_id, details, created_at |
-| `working_states` | user_id, workspace_id, state (JSON), updated_at |
 
 No tenants table.
 

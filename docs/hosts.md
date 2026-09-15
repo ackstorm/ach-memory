@@ -39,8 +39,7 @@ your identity provider issues; the service mints none.
 - `subagent-start.sh` (SubagentStart) — announces the ach-memory skill to a
   spawned subagent; makes no network call.
 - `pre-compact.sh` (PreCompact, Claude Code only) — nudges the agent to
-  retain durable claims and update Working State before context is
-  compacted.
+  retain durable claims before context is compacted.
 
 ## Verify
 

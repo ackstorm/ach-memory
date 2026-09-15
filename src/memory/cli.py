@@ -14,8 +14,8 @@ _NO_PROJECT_NOTICE = (
 
 _PRE_COMPACT_NUDGE = (
     "Before context is compacted, retain any durable decision, constraint, convention, "
-    "fact or verified gotcha that is not yet in ach-memory. If project work is incomplete, "
-    "update Working State. Do not retain the transcript or a generic session summary."
+    "fact or verified gotcha that is not yet in ach-memory. Do not retain the transcript "
+    "or a generic session summary."
 )
 
 
@@ -41,9 +41,8 @@ def _context_load(project: str | None) -> int:
     """Print standing context text; any failure prints nothing so a hook never breaks a session."""
     url = os.environ.get("ACH_MEMORY_URL", "")
     slug = project or proxy.resolve_project_context()
-    workspace_id = proxy.resolve_workspace_context()
     try:
-        text = asyncio.run(proxy.call_load_context(url, slug, workspace_id))
+        text = asyncio.run(proxy.call_load_context(url, slug))
     except Exception:  # noqa: BLE001 -- fail open, must never break the session
         return 0
     if text:

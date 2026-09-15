@@ -56,10 +56,9 @@ supersedes the old one, followed by a fresh `retain`; use `restore` to undo a mi
 Use `delete_memory` only to erase for good -- nothing brings it back. `history` shows who changed a
 memory and why, across every `forget`/`restore`/`correct`/`delete_memory`.
 
-## Working state and context
+## Context
 
-Use Working State (`working_state_get`, `working_state_put`, `working_state_delete`), not durable
-memory, for incomplete work: the current objective, decisions and next steps. It ages -- treat it
-as a starting point, not a fact. Load standing context at session start with `load_context`.
+Load standing context at session start with `load_context`. Unfinished work is not memory: do not
+retain task progress, and do not expect the next session to find it here.
 
 The live tool schema is authoritative for fields, authorization and confirmation requirements.

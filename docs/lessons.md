@@ -136,4 +136,5 @@ Security:
 - MCP is the only delivery. No REST mirror of engine operations.
 - Corrections are synchronous and serialised per memory; first retains are
   async with the engine operation ref exposed.
-- Working State is not memory: transient, per workspace, overwritten.
+- Working State is not memory: transient, per workspace, overwritten. Removed in
+  0.2.0 (2026-09-15): nothing ever read it, and the host's compaction summary covers it.

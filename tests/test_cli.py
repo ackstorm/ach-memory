@@ -60,28 +60,26 @@ def test_main_mcp_runs_the_proxy_with_the_resolved_url(monkeypatch):
 def test_main_hook_pre_compact_prints_the_nudge(capsys):
     assert cli.main(["hook", "pre-compact"]) == 0
     out = capsys.readouterr().out
-    assert "Working State" in out
+    assert "retain any durable decision" in out
 
 
 def test_main_context_load_prints_the_text(monkeypatch, capsys):
-    async def fake_call_load_context(url, slug, workspace_id):
+    async def fake_call_load_context(url, slug):
         return "standing context"
 
     monkeypatch.setattr(cli.proxy, "call_load_context", fake_call_load_context)
     monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: "acme-1")
-    monkeypatch.setattr(cli.proxy, "resolve_workspace_context", lambda: "ws_abc")
 
     assert cli.main(["context", "load"]) == 0
     assert capsys.readouterr().out.strip() == "standing context"
 
 
 def test_main_context_load_names_the_missing_project(monkeypatch, capsys):
-    async def fake_call_load_context(url, slug, workspace_id):
+    async def fake_call_load_context(url, slug):
         return "standing context"
 
     monkeypatch.setattr(cli.proxy, "call_load_context", fake_call_load_context)
     monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: None)
-    monkeypatch.setattr(cli.proxy, "resolve_workspace_context", lambda: None)
 
     assert cli.main(["context", "load"]) == 0
     out = capsys.readouterr().out
@@ -90,12 +88,11 @@ def test_main_context_load_names_the_missing_project(monkeypatch, capsys):
 
 
 def test_main_context_load_fails_open_and_prints_nothing(monkeypatch, capsys):
-    async def fake_call_load_context(url, slug, workspace_id):
+    async def fake_call_load_context(url, slug):
         raise RuntimeError("remote is down")
 
     monkeypatch.setattr(cli.proxy, "call_load_context", fake_call_load_context)
     monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: None)
-    monkeypatch.setattr(cli.proxy, "resolve_workspace_context", lambda: None)
 
     assert cli.main(["context", "load"]) == 0
     assert capsys.readouterr().out == ""
@@ -104,13 +101,12 @@ def test_main_context_load_fails_open_and_prints_nothing(monkeypatch, capsys):
 def test_main_context_load_project_flag_overrides_resolution(monkeypatch):
     seen = {}
 
-    async def fake_call_load_context(url, slug, workspace_id):
+    async def fake_call_load_context(url, slug):
         seen["slug"] = slug
         return ""
 
     monkeypatch.setattr(cli.proxy, "call_load_context", fake_call_load_context)
     monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: "from-git")
-    monkeypatch.setattr(cli.proxy, "resolve_workspace_context", lambda: None)
 
     cli.main(["context", "load", "--project", "explicit-slug"])
     assert seen["slug"] == "explicit-slug"

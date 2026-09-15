@@ -38,10 +38,6 @@ from memory.read import reflect as do_reflect
 from memory.retain import RetainRequest
 from memory.retain import submit as do_retain
 from memory.tags import Basis, MemoryType
-from memory.working_state import PutWorkingStateRequest, WorkingStateRequest
-from memory.working_state import delete as do_ws_delete
-from memory.working_state import get as do_ws_get
-from memory.working_state import put as do_ws_put
 
 logger = logging.getLogger("memory.mcp")
 Scope = Literal["user", "project"]
@@ -329,36 +325,6 @@ def register(mcp: MCPServer) -> None:
         with tool_session(ctx) as (principal, db):
             request = HistoryRequest(scope=scope, project_slug=project_slug, memory_id=memory_id)
             return _result(do_history(db, principal, request, backend=get_backend()))
-
-    @mcp.tool(
-        description=(
-            "Read this workspace's Working State checkpoint: where the work was left, not "
-            "what is true. Empty if none was ever set."
-        ),
-        annotations=ToolAnnotations(read_only_hint=True),
-    )
-    def working_state_get(workspace_id: str, ctx: Context) -> ToolResult:
-        with tool_session(ctx) as (principal, db):
-            request = WorkingStateRequest(workspace_id=workspace_id)
-            return _result(do_ws_get(db, principal, request))
-
-    @mcp.tool(
-        description=(
-            "Replace this workspace's Working State checkpoint in full. Ephemeral handoff "
-            "state, never durable memory -- creates no memory or claim; use retain for "
-            "anything that should outlive this session."
-        ),
-    )
-    def working_state_put(workspace_id: str, state: dict[str, str], ctx: Context) -> ToolResult:
-        with tool_session(ctx) as (principal, db):
-            request = PutWorkingStateRequest(workspace_id=workspace_id, state=state)
-            return _result(do_ws_put(db, principal, request))
-
-    @mcp.tool(description="Clear this workspace's Working State checkpoint. No-op if none exists.")
-    def working_state_delete(workspace_id: str, ctx: Context) -> ToolResult:
-        with tool_session(ctx) as (principal, db):
-            do_ws_delete(db, principal, WorkingStateRequest(workspace_id=workspace_id))
-            return ToolResult(result={"workspace_id": workspace_id})
 
     @mcp.tool(
         description=(

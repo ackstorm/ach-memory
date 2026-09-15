@@ -21,9 +21,6 @@ _EXPECTED_TOOLS = [
     "reflect",
     "restore",
     "retain",
-    "working_state_delete",
-    "working_state_get",
-    "working_state_put",
 ]
 
 

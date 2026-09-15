@@ -108,17 +108,3 @@ class AuditEvent(Base):
         server_default=func.now(),
         index=True,
     )
-
-
-class WorkingState(Base):
-    """The one live checkpoint per (user, workspace). Total replacement, no
-    history."""
-
-    __tablename__ = "working_states"
-
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    workspace_id: Mapped[str] = mapped_column(String(35), primary_key=True)
-    state: Mapped[dict] = mapped_column(JSON)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
-    )

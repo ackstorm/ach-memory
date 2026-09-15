@@ -21,8 +21,7 @@ from leakscan import find as leak_find
 
 EXPECTED_TOOLS = {
     "retain", "recall", "reflect", "correct", "forget", "restore", "delete_memory",
-    "list_memories", "get_memory", "history", "working_state_get", "working_state_put",
-    "working_state_delete", "load_context", "get_operation",
+    "list_memories", "get_memory", "history", "load_context", "get_operation",
 }
 MEMORY_ID_RE = re.compile(r"^mem_[0-9a-f]{32}$")
 _log: list[str] = []
@@ -125,12 +124,6 @@ async def check_reflect(t, s) -> None:
 async def check_load_context(t, s) -> None:
     body = unwrap(await s.call_tool("load_context", {"project_slug": t["project"]}))
     assert "text" in body and "entries" in body, body
-async def check_working_state(t, s) -> None:
-    ws, state = f"ws_smoke_{secrets.token_hex(4)}", {"objective": "run the mcp smoke test"}
-    unwrap(await s.call_tool("working_state_put", {"workspace_id": ws, "state": state}))
-    assert unwrap(await s.call_tool("working_state_get", {"workspace_id": ws}))["state"] == state
-    unwrap(await s.call_tool("working_state_delete", {"workspace_id": ws}))
-    assert unwrap(await s.call_tool("working_state_get", {"workspace_id": ws}))["state"] is None
 async def check_secret_rejection(t, s) -> None:
     content = "AWS key AKIAIOSFODNN7EXAMPLE secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     res = await s.call_tool("retain", retain_args("project", content, project=t["project"], memory_type="fact"))
@@ -168,7 +161,7 @@ CHECKS = [
     ("recall", check_recall), ("list/get/history", check_list_get_history),
     ("correct", check_correct), ("forget/restore", check_forget_restore),
     ("reflect", check_reflect), ("load_context", check_load_context),
-    ("working_state", check_working_state), ("secret rejection", check_secret_rejection),
+    ("secret rejection", check_secret_rejection),
     ("unauthenticated", check_unauthenticated), ("leak scan", check_leak_scan),
 ]
 

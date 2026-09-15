@@ -14,7 +14,7 @@ agent host (Claude Code, Codex)
   ▼                             │ ach-memory (this service)   │
 ach-memory mcp  ── HTTPS/MCP ──▶│  auth → scope → service     │──▶ Postgres
   (proxy: git origin → slug,    │  retain · recall · curation │    users, projects,
-   workspace id, auth header)   │  working state · context    │    journal, working state
+   auth header)                 │  standing context           │    journal
                                 │  Backend ABC ─ Hindsight    │──▶ Hindsight (banks,
                                 └────────────────────────────┘    mental models)
 ```
@@ -23,7 +23,7 @@ ach-memory mcp  ── HTTPS/MCP ──▶│  auth → scope → service     �
 
 `retain` · `recall` · `reflect` · `forget` · `restore` · `correct` ·
 `delete_memory` · `list_memories` · `get_memory` · `history` ·
-`working_state_get|put|delete` · `load_context` · `get_operation`.
+`load_context` · `get_operation`.
 One MCP endpoint (`/mcp/`), one health route (`/health`). No REST data plane.
 
 ## Install on a host
@@ -40,7 +40,7 @@ claude plugin marketplace add ackstorm/ach-memory && claude plugin install ach-m
 
 ```bash
 make up          # Postgres + Hindsight (mock LLM) + migrations + API on :8000
-make e2e         # the same stack, then scripts/mcp-smoke.py over all fifteen tools
+make e2e         # the same stack, then scripts/mcp-smoke.py over all twelve tools
 make test        # unit + contract tests against the fake engine (Postgres on :5434)
 MEMORY_HINDSIGHT_URL=http://localhost:8888 uv run pytest -m integration tests/backend
 ```

@@ -16,7 +16,6 @@ from memory.mcp.proxy import (
     call_load_context,
     fill_arguments,
     resolve_project_context,
-    resolve_workspace_context,
 )
 
 
@@ -76,56 +75,31 @@ def test_no_repo_resolves_nothing(tmp_path, monkeypatch):
     assert resolve_project_context(str(tmp_path)) is None
 
 
-def _committed_repo(path):
-    path.mkdir(exist_ok=True)
-    subprocess.run(["git", "init", "-q", str(path)], check=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t.invalid"], check=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.name", "t"], check=True)
-    (path / "README.md").write_text("x")
-    subprocess.run(["git", "-C", str(path), "add", "README.md"], check=True)
-    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "initial"], check=True)
-    return path
-
-
-def test_repeated_resolution_of_one_worktree_is_stable(tmp_path):
-    repo = _committed_repo(tmp_path / "repo")
-    assert resolve_workspace_context(str(repo)) == resolve_workspace_context(str(repo))
-
-
-def test_workspace_context_outside_a_repo_is_none(tmp_path):
-    assert resolve_workspace_context(str(tmp_path)) is None
-
-
 def test_fill_arguments_injects_project_slug_when_scope_is_project():
-    filled = fill_arguments("recall", {"scope": "project"}, "acme-1", "ws_abc")
+    filled = fill_arguments("recall", {"scope": "project"}, "acme-1")
     assert filled == {"scope": "project", "project_slug": "acme-1"}
 
 
 def test_fill_arguments_never_overwrites_a_caller_supplied_slug():
     filled = fill_arguments(
-        "recall", {"scope": "project", "project_slug": "other"}, "acme-1", "ws_abc"
+        "recall", {"scope": "project", "project_slug": "other"}, "acme-1"
     )
     assert filled["project_slug"] == "other"
 
 
 def test_fill_arguments_ignores_non_project_scope():
-    filled = fill_arguments("recall", {"scope": "user"}, "acme-1", "ws_abc")
+    filled = fill_arguments("recall", {"scope": "user"}, "acme-1")
     assert "project_slug" not in filled
 
 
-def test_fill_arguments_fills_workspace_tools_with_no_scope_gate():
-    filled = fill_arguments("working_state_get", {}, "acme-1", "ws_abc")
-    assert filled == {"project_slug": "acme-1", "workspace_id": "ws_abc"}
-
-
 def test_fill_arguments_fills_load_context():
-    filled = fill_arguments("load_context", {}, "acme-1", "ws_abc")
-    assert filled == {"project_slug": "acme-1", "workspace_id": "ws_abc"}
+    filled = fill_arguments("load_context", {}, "acme-1")
+    assert filled == {"project_slug": "acme-1"}
 
 
 def test_fill_arguments_does_not_mutate_the_caller_dict():
     original = {"scope": "project"}
-    fill_arguments("recall", original, "acme-1", None)
+    fill_arguments("recall", original, "acme-1")
     assert original == {"scope": "project"}
 
 
@@ -154,7 +128,7 @@ def test_bridge_lists_and_forwards_tool_calls_with_filled_project_slug():
             ClientSession(read, write) as session,
         ):
             await session.discover()
-            bridge = _build_bridge(session, "acme-1", "ws_abc")
+            bridge = _build_bridge(session, "acme-1")
 
             async with (
                 InMemoryTransport(bridge) as (h_read, h_write),
@@ -186,7 +160,7 @@ def test_bridge_turns_a_remote_failure_into_a_tool_error_not_a_crash():
             ClientSession(read, write) as session,
         ):
             await session.discover()
-            bridge = _build_bridge(session, None, None)
+            bridge = _build_bridge(session, None)
 
             async with (
                 InMemoryTransport(bridge) as (h_read, h_write),
@@ -231,7 +205,7 @@ def _stub_transport(monkeypatch, remote: Server, captured_headers: dict):
 
 def test_call_load_context_fills_arguments_and_sends_the_auth_header(monkeypatch):
     async def _remote_call_tool(ctx, params):
-        assert params.arguments == {"project_slug": "acme-1", "workspace_id": "ws_abc"}
+        assert params.arguments == {"project_slug": "acme-1"}
         return types.CallToolResult(content=[types.TextContent(text="{}")],
                                     structured_content={"result": {"text": "standing context"}})
 
@@ -243,7 +217,7 @@ def test_call_load_context_fills_arguments_and_sends_the_auth_header(monkeypatch
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "sk-1")
     monkeypatch.delenv("ACH_MEMORY_HEADER", raising=False)
 
-    text = asyncio.run(call_load_context("http://x/mcp", "acme-1", "ws_abc"))
+    text = asyncio.run(call_load_context("http://x/mcp", "acme-1"))
 
     assert text == "standing context"
     assert captured == {"Authorization": "Bearer sk-1"}
@@ -260,4 +234,4 @@ def test_call_load_context_raises_on_a_remote_error(monkeypatch):
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "sk-1")
 
     with pytest.raises(RuntimeError):
-        asyncio.run(call_load_context("http://x/mcp", None, None))
+        asyncio.run(call_load_context("http://x/mcp", None))
