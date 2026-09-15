@@ -54,5 +54,5 @@ claude mcp list          # ach-memory should show as connected
 ```
 
 Then ask the agent to recall something (or run
-`uvx --from git+https://github.com/ackstorm/ach-memory@v0.2.0 ach-memory context load`
+`uvx --from git+https://github.com/ackstorm/ach-memory@v0.3.0 ach-memory context load`
 directly) and confirm it returns without error.
