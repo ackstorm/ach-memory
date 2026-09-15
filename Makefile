@@ -56,7 +56,7 @@ chart: # helm lint + render, and pyproject/package/Chart.yaml versions agree (wi
 		&& ! grep -rL "@v$$v" plugins/claude-code/.mcp.json plugins/codex/.mcp.json plugins/shared/scripts/session-start.sh plugins/shared/scripts/pre-compact.sh | grep -q . \
 		|| { echo "FAIL: release metadata does not agree on $$v." >&2; exit 1; }
 
-PLUGIN_HOSTS = plugins/claude-code plugins/codex
+PLUGIN_HOSTS = plugins/claude-code plugins/codex plugins/opencode plugins/pi
 .PHONY: plugins plugins-check
 plugins: # Sync plugins/shared/* into each host plugin (idempotent)
 	@for h in $(PLUGIN_HOSTS); do \
