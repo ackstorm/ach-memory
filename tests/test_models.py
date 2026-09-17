@@ -8,7 +8,7 @@ from memory import models as m
 
 
 def test_one_row_per_table_round_trips(db):
-    db.add(m.User(id="usr_1", bank_id="user_1"))
+    db.add(m.User(id="usr_1"))
     db.flush()
     db.add(m.ExternalIdentity(issuer="dex", subject="s_1", user_id="usr_1"))
     db.add(m.Group(id="grp_1", name="team"))
@@ -18,7 +18,6 @@ def test_one_row_per_table_round_trips(db):
     db.add(m.AuditEvent(id="aud_1", action="retain", resource="mem_1", operation_id="op_1"))
     db.flush()
 
-    assert db.get(m.User, "usr_1").bank_id == "user_1"
     assert db.get(m.ExternalIdentity, ("dex", "s_1")).user_id == "usr_1"
     assert db.get(m.Group, "grp_1").name == "team"
     assert db.get(m.Project, "prj_1").bank_id == "proj_1"

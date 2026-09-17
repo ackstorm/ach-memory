@@ -171,7 +171,7 @@ session-start (standing context), pre-compact (retain nudge), subagent-start. No
 
 | Table | Key columns |
 |---|---|
-| `users` | id, bank_id, created_at |
+| `users` | id, created_at — the bank is `user_<id>`, derived, never stored |
 | `external_identities` | user_id, provider, subject |
 | `groups` | id, name — membership comes from the auth provider at request time |
 | `projects` | id, slug, bank_id, owner_user_id, owner_group_id (nullable), created_at |

@@ -23,8 +23,9 @@ class Base(DeclarativeBase):
 class User(Base):
     __tablename__ = "users"
 
+    # No bank_id column: a user's bank is `user_<id>`, derived in `resolve_bank`.
+    # Only a project needs the mapping stored, its bank id being a random uuid4.
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    bank_id: Mapped[str] = mapped_column(String(64), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -16,7 +16,7 @@ def test_an_existing_identity_is_looked_up_never_rehashed(db):
     """The hash only mints; `(issuer, subject)` is the lookup key. A user whose
     id does not match today's hash must still resolve to itself -- this is what
     makes changing how the id is minted safe for users already provisioned."""
-    db.add(User(id="usr_minted_by_an_older_rule", bank_id="user_usr_minted_by_an_older_rule"))
+    db.add(User(id="usr_minted_by_an_older_rule"))
     db.flush()
     db.add(ExternalIdentity(issuer="https://idp.test", subject="alice",
                             user_id="usr_minted_by_an_older_rule"))
@@ -33,7 +33,6 @@ def test_first_sight_creates_a_user_with_its_own_deterministic_bank(db):
         db, issuer="https://ach.example.com", subject="alice@example.com"
     )
     assert user.id.startswith("usr_")
-    assert user.bank_id == f"user_{user.id}"
 
     identity = db.get(ExternalIdentity, ("https://ach.example.com", "alice@example.com"))
     assert identity is not None

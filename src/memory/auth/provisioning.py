@@ -48,7 +48,7 @@ def link_identity(db: Session, *, issuer: str, subject: str) -> User:
         return _user_for(db, row)
 
     user_id = _user_id_for(issuer, subject)
-    user = User(id=user_id, bank_id=f"user_{user_id}")
+    user = User(id=user_id)
     try:
         with db.begin_nested():
             db.add(user)
