@@ -59,10 +59,11 @@ def resolve_project_context(cwd: str | None = None) -> str | None:
 
 def fill_arguments(tool_name: str, arguments: dict, project_slug: str | None) -> dict:
     """Inject the resolved project where the caller left it out; never overwrite.
-    `load_context` carries no `scope`, so it is filled unconditionally."""
+    `load_context` carries no `scope`, so it is filled unconditionally; recall's
+    `scope="all"` needs the slug for the project half of its search."""
     filled = dict(arguments)
     if project_slug and not filled.get("project_slug") and (
-        tool_name == "load_context" or filled.get("scope") == "project"
+        tool_name == "load_context" or filled.get("scope") in ("project", "all")
     ):
         filled["project_slug"] = project_slug
     return filled

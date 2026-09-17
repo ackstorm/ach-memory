@@ -49,7 +49,7 @@ Version: 0.1.0
 | Intention | Required/optional | Semantics | Journaled? |
 |---|---|---|---|
 | `retain` | required | remember one claim, returns the memory id | yes |
-| `recall` | required | ranked hits for a query, scope-bounded, floor applied; empty for a project nobody retained into | no |
+| `recall` | required | ranked hits for a query, scope-bounded, floor applied; `scope="all"` merges the user and project banks by score, project first on a tie; empty for a project nobody retained into | no |
 | `reflect` | optional (`synthesis`) | one synthesized answer over scoped memories | no |
 | `forget` | required | soft-invalidate one memory | yes |
 | `restore` | required | reverse a `forget` | yes |
@@ -130,6 +130,12 @@ Adding an engine = one module `backend/<name>.py` subclassing `Backend`, one lin
 and the contract suite green (fake and real, parametrised). Core code never reads an
 engine-specific setting or imports a concrete adapter.
 
+Retrieval changes are gated on a reproduced failure, in this order: adapter configuration
+first, then ingestion, then candidate width, and a second index or reranker last. Reproduce it
+with `scripts/probe-recall.py` against production before writing anything -- on 2026-09-17 that
+probe returned 20/23 with every hit at rank 1, which retired "the right memory ranks outside
+the top candidates" as a premise, and found the real failure instead (§5, Spanish queries).
+
 ## 5. Hindsight profile
 
 | Setting/gotcha | Value |
@@ -143,6 +149,7 @@ engine-specific setting or imports a concrete adapter.
 | `PATCH /config` body | `{"updates": {...}}`, not the bare dict |
 | local LLM | mock: verbatim extraction works, consolidation and model refresh do not |
 | `history` | not declared; the ACH journal is the history |
+| semantic floor | `0.60`, calibrated on an English corpus. A Spanish query against an English claim scores under it and returns nothing where the English form ranks the target first at ~0.72 (measured 2026-09-17, `scripts/probe-recall.py`). Agents query in English; the floor itself moves only with a probe run behind it |
 
 ## 6. Delivery
 
@@ -154,7 +161,7 @@ session-start (standing context), pre-compact (retain nudge), subagent-start. No
 | Tool | Intention | One line |
 |---|---|---|
 | `retain` | retain | store one claim; `wait: bool = false` blocks until searchable — one tool, one intention, not two near-duplicate tools |
-| `recall` | recall | ranked, floor-filtered hits for a query |
+| `recall` | recall | ranked, floor-filtered hits for a query; `scope="all"` spans both banks |
 | `reflect` | reflect | one synthesized answer; same `memory_types`/`basis` filter as recall |
 | `forget` | forget | soft-invalidate one memory |
 | `restore` | restore | reverse a forget |
@@ -190,3 +197,18 @@ is a `project_slugs` change and the engine never hears about it. Banks created b
 REST data plane; tenants; metrics/observability; rate limiting; dashboard; expiry/`valid_until`;
 evidence/trigger fields; dedup across operation ids; a ledger of engine state owned by ACH;
 directives; a documents API.
+
+**Automatic capture.** No conversation observer, transcript reader, continuous tool inspection,
+candidate extraction or background distillation. A memory exists because an agent decided it was
+worth one and asked; processing all activity to guess is not worth its cost, and it is not what
+this service is for.
+
+**Transient task state.** Checkpoints, resume summaries and "where the work was left" are not
+memory. Working State shipped in 0.1.x and was removed in 0.2.0 (`56bce30`): nothing ever read
+it, the schema needed a task identifier no agent could compute, and the host's own compaction
+summary already carries it. A durable conclusion found mid-task is a `retain`, not a checkpoint.
+
+**A second presentation of a memory.** No compact/extract view, no batch read, no per-response
+token budget beyond the standing-context harness. Measured 2026-09-17: a recall delivers 0-1330
+tokens and a whole project bank is ~1.9k, so the budget such a layer would enforce never binds.
+Revisit at ~200 memories per bank and recalls measured above ~3k tokens, not before.

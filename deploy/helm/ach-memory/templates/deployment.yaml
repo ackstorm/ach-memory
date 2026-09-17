@@ -54,6 +54,8 @@ spec:
               value: {{ .Values.config.llmTimeoutSeconds | quote }}
             - name: MEMORY_MAX_CONTENT_BYTES
               value: {{ .Values.config.maxContentBytes | quote }}
+            - name: MEMORY_RECALL_MIN_SEMANTIC
+              value: {{ .Values.config.recallMinSemantic | quote }}
             {{- $hosts := .Values.config.mcpAllowedHosts }}
             {{- if and (not $hosts) .Values.ingress.enabled .Values.ingress.host }}
             {{- $hosts = list .Values.ingress.host }}

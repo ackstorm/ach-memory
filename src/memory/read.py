@@ -28,7 +28,9 @@ class _Base(BaseModel):
 class _ScopedRequest(_Base):
     scope: Literal["user", "project"]; project_slug: str | None = None
 
-class RecallRequest(_ScopedRequest):
+class RecallRequest(_Base):
+    # Not a `_ScopedRequest`: recall is the only intention that spans both banks.
+    scope: Literal["user", "project", "all"]; project_slug: str | None = None
     query: str = Field(min_length=1)
     max_results: int = Field(default=10, ge=1, le=50)
     memory_types: list[str] = Field(default_factory=list); basis: list[str] = Field(default_factory=list)
@@ -104,18 +106,37 @@ def _to_item(view: MemoryView) -> MemoryItem:
     memory_type, basis, tags = _split_tags(view.tags)
     return MemoryItem(memory_id=view.memory_id, content=view.text, memory_type=memory_type, basis=basis, tags=tags, state=_STATE_FROM_BACKEND[view.state], created_at=view.created_at)
 
+def _recall_banks(db: Session, principal: Principal, request: RecallRequest) -> list[str]:
+    """The banks one recall covers. `scope="all"` is project then user, so a
+    project-specific claim wins a tie against a general user one; a project that is
+    unnamed or that nobody retained into drops out instead of failing the whole call."""
+    scopes = ("project", "user") if request.scope == "all" else (request.scope,)
+    banks = []
+    for scope in scopes:
+        if scope == "project" and request.scope == "all" and not request.project_slug:
+            continue
+        try:
+            ref, _ = resolve_bank(db, principal, scope, request.project_slug, create=False)
+        except ProjectNotFound:  # nobody has retained into it yet; nothing to recall
+            continue
+        banks.append(ref.bank_id)
+    return banks
+
 def recall(db: Session, principal: Principal, request: RecallRequest, *, backend: Backend) -> RecallResponse:
-    try:
-        ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
-    except ProjectNotFound:  # a project nobody has retained into yet simply has nothing to recall
-        return RecallResponse(items=(), total=0, truncated=False)
     tag_groups = _tag_groups(request.memory_types, request.basis)
-    # Ask for one more than requested: a full page signals there may be more.
-    raw = backend.recall(ref.bank_id, request.query, tag_groups=tag_groups, limit=request.max_results + 1)
+    # Ask each bank for one more than requested: a full page signals there may be more.
+    batches = [backend.recall(bank_id, request.query, tag_groups=tag_groups,
+                               limit=request.max_results + 1)
+               for bank_id in _recall_banks(db, principal, request)]
     floor = get_settings().recall_min_semantic
-    kept = [hit for hit in raw if hit.score is None or hit.score >= floor]
+    kept = [hit for batch in batches for hit in batch if hit.score is None or hit.score >= floor]
+    # One engine and one embedding model back every bank, and the floor is already one
+    # constant across them, so scores are comparable; the sort is stable, which is what
+    # keeps the bank order above as the tie-break.
+    kept.sort(key=lambda hit: -(hit.score or 0.0))
     items = tuple(_to_hit(hit) for hit in kept[: request.max_results])
-    return RecallResponse(items=items, total=len(items), truncated=len(raw) > request.max_results)
+    return RecallResponse(items=items, total=len(items),
+                          truncated=any(len(batch) > request.max_results for batch in batches))
 
 def reflect(db: Session, principal: Principal, request: ReflectRequest, *, backend: Backend) -> ReflectResponse:
     if "synthesis" not in backend.capabilities():
