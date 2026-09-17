@@ -11,10 +11,16 @@ ach-memory is the system of record for durable context across sessions. Use it i
 ## Recall before depending on memory
 
 Call `recall` before work that depends on a prior decision, preference, constraint, convention,
-fact or gotcha. Use `reflect` only when a synthesized answer is more useful than exact hits. List
-stored memories without a query with `list_memories`, or fetch one by id with `get_memory`. Live
-tools, repository state and host policy override a remembered claim when they conflict. Do not
-narrate routine retrieval.
+fact or gotcha. Use `scope="all"` when you do not know whether the answer is a personal
+preference or a project decision; name one scope only when you do. Use `reflect` only when a
+synthesized answer is more useful than exact hits. List stored memories without a query with
+`list_memories`, or fetch one by id with `get_memory`. Live tools, repository state and host
+policy override a remembered claim when they conflict. Do not narrate routine retrieval.
+
+Query in English whatever language the conversation uses. Claims are stored in English and
+retrieval scores the query against them directly: the same question asked in Spanish scores
+below the relevance floor and comes back empty, where its English form ranks the right claim
+first. Translate the question, not the answer.
 
 ## Retain one claim per call
 

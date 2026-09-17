@@ -14,6 +14,10 @@ config:
   databaseUrl: ""
   # MEMORY_MAX_CONTENT_BYTES.
   maxContentBytes: 256000
+  # MEMORY_RECALL_MIN_SEMANTIC. Cosine floor a recall hit must clear, calibrated
+  # on an English corpus. Move it only with a `scripts/probe-recall.py` run behind
+  # the new value; 0 disables the floor, which is how the probe reads raw scores.
+  recallMinSemantic: 0.60
 
   # MEMORY_HINDSIGHT_TIMEOUT_SECONDS / MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS.
   # The LLM one covers sync_retain/reflect, which block on the configured model.

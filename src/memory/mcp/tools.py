@@ -205,13 +205,16 @@ def register(mcp: MCPServer) -> None:
             "Search memory and return bounded, grounded matching facts, most relevant first. "
             "Results below a relevance floor are withheld rather than returned as padding, so "
             "a query with no good answer returns nothing instead of a confident-looking list; "
-            "each hit carries the `score` it was ranked by. Filter with `memory_types`/`basis`; "
-            "scope='project' needs `project_slug`."
+            "each hit carries the `score` it was ranked by. Filter with `memory_types`/`basis`. "
+            "scope='all' searches your own memories and the project's together -- use it when "
+            "you do not know which of the two holds the answer; scope='project' needs "
+            "`project_slug`. Query in English whatever language the conversation uses: a "
+            "translated query scores well above a Spanish one against the same claim."
         ),
         annotations=ToolAnnotations(read_only_hint=True),
     )
     def recall(
-        scope: Scope,
+        scope: Literal["user", "project", "all"],
         query: str,
         ctx: Context,
         project_slug: str | None = None,

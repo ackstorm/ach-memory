@@ -5,7 +5,7 @@ import pytest
 from memory import read, retain
 from memory.auth.principal import Principal
 from memory.backend.fake import FakeBackend
-from memory.errors import MemoryNotFound, UnsupportedCapability
+from memory.errors import InvalidRequest, MemoryNotFound, UnsupportedCapability
 
 
 @pytest.fixture
@@ -126,3 +126,80 @@ def test_reads_on_a_project_nobody_retained_into_are_empty(db, principal):
     assert empty.items == () and empty.total == 0
     listed = read.list_memories(db, principal, read.ListRequest(scope="project", project_slug="github.com-x-never"), backend=fake_backend)
     assert listed.items == () and listed.total == 0
+
+
+def _seed_project(db, principal, backend, slug: str, content: str) -> str:
+    result = retain.submit(
+        db, principal,
+        retain.RetainRequest(scope="project", project_slug=slug, content=content,
+                              memory_type="decision", basis="human_explicit",
+                              operation_id=uuid4(), wait=True),
+        backend=backend,
+    )
+    return result.memory_id
+
+
+def test_recall_scope_all_merges_both_banks_project_first_on_a_tie(db, principal, backend):
+    """scope="all" is the whole point: the agent no longer has to guess which bank holds
+    the answer. Equal scores keep the documented order, so the project-specific claim
+    outranks the general user one."""
+    user_id = _seed(db, principal, backend, "alpine images")
+    project_id = _seed_project(db, principal, backend, "github.com-x-alpine", "alpine images")
+
+    result = read.recall(
+        db, principal,
+        read.RecallRequest(scope="all", project_slug="github.com-x-alpine",
+                            query="alpine images"),
+        backend=backend,
+    )
+
+    assert [hit.memory_id for hit in result.items] == [project_id, user_id]
+    assert [hit.memory_type for hit in result.items] == ["decision", "fact"]
+
+
+def test_recall_scope_all_orders_both_banks_by_score(db, principal, backend):
+    user_id = _seed(db, principal, backend, "alpine images")
+    project_id = _seed_project(db, principal, backend, "github.com-x-alpine",
+                                "alpine images pinned")
+
+    result = read.recall(
+        db, principal,
+        read.RecallRequest(scope="all", project_slug="github.com-x-alpine",
+                            query="alpine images"),
+        backend=backend,
+    )
+
+    assert [hit.memory_id for hit in result.items] == [user_id, project_id]
+    scores = [hit.score for hit in result.items]
+    assert scores == sorted(scores, reverse=True), scores
+
+
+def test_recall_scope_all_survives_a_project_nobody_retained_into(db, principal, backend):
+    """The user half must still answer; an unknown project drops out silently."""
+    user_id = _seed(db, principal, backend, "alpine images")
+
+    result = read.recall(
+        db, principal,
+        read.RecallRequest(scope="all", project_slug="github.com-x-never",
+                            query="alpine images"),
+        backend=backend,
+    )
+
+    assert [hit.memory_id for hit in result.items] == [user_id]
+
+
+def test_recall_scope_all_without_a_slug_searches_the_user_bank(db, principal, backend):
+    """scope="project" without a slug is still an error; scope="all" just skips it."""
+    user_id = _seed(db, principal, backend, "alpine images")
+
+    result = read.recall(
+        db, principal, read.RecallRequest(scope="all", query="alpine images"), backend=backend
+    )
+
+    assert [hit.memory_id for hit in result.items] == [user_id]
+
+
+def test_recall_scope_project_without_a_slug_is_still_an_error(db, principal, backend):
+    with pytest.raises(InvalidRequest):
+        read.recall(db, principal, read.RecallRequest(scope="project", query="alpine images"),
+                     backend=backend)
