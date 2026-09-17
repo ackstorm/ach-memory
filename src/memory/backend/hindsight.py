@@ -220,7 +220,7 @@ class HindsightBackend(Backend):
         if not valid:
             if self._units(bank_id, memory_id, state="invalidated"):
                 return
-            raise MemoryNotFound(memory_id=memory_id)
+            raise MemoryNotFound()
         # One PATCH per unit: a failure partway through leaves the memory half-switched, but
         # the outcome lands in the ACH journal either way, and retrying is safe.
         for unit in valid:
@@ -233,7 +233,7 @@ class HindsightBackend(Backend):
         if not invalidated:
             if self._units(bank_id, memory_id):
                 return
-            raise MemoryNotFound(memory_id=memory_id)
+            raise MemoryNotFound()
         for unit in invalidated:
             self._request("PATCH", f"{_bank(bank_id)}/memories/{unit['id']}",
                            {"state": "valid"}, not_found=MemoryNotFound)
@@ -308,18 +308,6 @@ class HindsightBackend(Backend):
         result = self._request("GET", f"{_bank(bank_id)}/operations/{operation_ref}",
                                 not_found=NotFound)
         return _strip_bank_id(_derive_failed(result), bank_id)
-
-    def list_operations(self, bank_id: str, *, status: str | None, limit: int,
-                         offset: int) -> dict:
-        response = self._request("GET", f"{_bank(bank_id)}/operations",
-                                  params=_present({"status": status, "limit": limit,
-                                                    "offset": offset}))
-        return _strip_bank_id(response, bank_id)
-
-    def cancel_operation(self, bank_id: str, operation_ref: str) -> dict:
-        result = self._request("DELETE", f"{_bank(bank_id)}/operations/{operation_ref}",
-                                not_found=NotFound)
-        return _strip_bank_id(result, bank_id)
 
     def provision_mental_models(self, bank_id: str, builtins: Sequence[BuiltinModel]) -> None:
         path = f"{_bank(bank_id)}/mental-models"

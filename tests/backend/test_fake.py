@@ -73,8 +73,8 @@ def test_tag_group_with_empty_tags_raises_value_error(backend):
 
 def test_provision_mental_models_creates_one_entry_per_key(backend):
     builtins = (
-        BuiltinModel(key="user-context", name="User Context", prompt="p1", version=1, scope="user"),
-        BuiltinModel(key="project-context", name="Project Context", prompt="p2", version=1, scope="project"),
+        BuiltinModel(key="user-context", name="User Context", prompt="p1", scope="user"),
+        BuiltinModel(key="project-context", name="Project Context", prompt="p2", scope="project"),
     )
 
     backend.provision_mental_models(BANK, builtins)
@@ -85,10 +85,10 @@ def test_provision_mental_models_creates_one_entry_per_key(backend):
 
 def test_provision_mental_models_overwrites_on_repeat_call(backend):
     backend.provision_mental_models(
-        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="old", version=1, scope="user"),)
+        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="old", scope="user"),)
     )
     backend.provision_mental_models(
-        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="new", version=2, scope="user"),)
+        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="new", scope="user"),)
     )
 
     assert len(backend.mental_models[BANK]) == 1
@@ -98,7 +98,7 @@ def test_provision_mental_models_overwrites_on_repeat_call(backend):
 def test_reset_clears_memories_and_mental_models(backend):
     backend.retain(BANK, "mem_1", "text", tags=(), metadata={}, wait=True)
     backend.provision_mental_models(
-        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="p", version=1, scope="user"),)
+        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="p", scope="user"),)
     )
 
     backend.reset()

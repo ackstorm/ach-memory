@@ -96,6 +96,29 @@ def test_reflect_raises_unsupported_when_the_backend_lacks_synthesis(db, princip
         read.reflect(db, principal, read.ReflectRequest(scope="user", query="anything"), backend=backend)
 
 
+def test_reflect_passes_the_type_and_basis_filter_to_the_backend(db, principal, backend, monkeypatch):
+    seen = {}
+
+    def fake_reflect(bank_id, query, *, tag_groups):
+        seen["groups"] = tag_groups
+        return "an answer"
+
+    monkeypatch.setattr(backend, "capabilities", lambda: frozenset({"synthesis"}))
+    monkeypatch.setattr(backend, "reflect", fake_reflect, raising=False)
+
+    read.reflect(
+        db, principal,
+        read.ReflectRequest(scope="user", query="what do we do about retries",
+                             memory_types=["convention"], basis=["human_explicit"]),
+        backend=backend,
+    )
+
+    assert seen["groups"] == (
+        {"tags": ["type:convention"], "match": "any"},
+        {"tags": ["basis:human_explicit"], "match": "any"},
+    )
+
+
 def test_reads_on_a_project_nobody_retained_into_are_empty(db, principal):
     from memory.backend.fake import fake_backend
 

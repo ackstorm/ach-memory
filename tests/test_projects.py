@@ -2,7 +2,7 @@ import pytest
 
 from memory import projects
 from memory.auth.principal import Principal
-from memory.errors import Forbidden, ProjectNotFound
+from memory.errors import Forbidden, InvalidRequest, ProjectNotFound
 
 
 def _principal(user_id: str, **kw) -> Principal:
@@ -14,7 +14,6 @@ def test_first_toucher_creates_and_owns_the_project(db):
 
     result = projects.resolve(db, juan, "github.com-acme-payments-api", create=True)
 
-    assert result.created is True
     assert result.notice == "PROJECT_CREATED"
     assert result.project.owner_type == "user"
     assert result.project.owner_id == "usr_juan"
@@ -28,7 +27,6 @@ def test_second_resolution_reuses_the_same_project(db):
     second = projects.resolve(db, juan, "payments-api", create=False)
 
     assert second.project.internal_id == first.project.internal_id
-    assert second.created is False
     assert second.notice is None
 
 
@@ -91,3 +89,34 @@ def test_rename_denies_an_unauthorized_caller(db):
 
     with pytest.raises(Forbidden):
         projects.rename(db, alice, result.project, "new-slug")
+
+
+def test_rename_back_to_a_retired_slug_flips_the_tombstone(db):
+    juan = _principal("usr_juan")
+    result = projects.resolve(db, juan, "old-slug", create=True)
+    projects.rename(db, juan, result.project, "new-slug")
+
+    retired = projects.rename(db, juan, result.project, "old-slug")
+
+    assert retired == "new-slug"
+    assert projects.resolve(db, juan, "old-slug", create=False).notice is None
+    assert projects.resolve(db, juan, "new-slug", create=False).notice == "PROJECT_RENAMED"
+
+
+def test_rename_onto_another_projects_slug_is_rejected(db):
+    juan = _principal("usr_juan")
+    mine = projects.resolve(db, juan, "mine", create=True)
+    projects.resolve(db, juan, "theirs", create=True)
+
+    with pytest.raises(InvalidRequest):
+        projects.rename(db, juan, mine.project, "theirs")
+
+    assert projects.resolve(db, juan, "mine", create=False).notice is None
+
+
+def test_rename_to_the_current_slug_is_rejected(db):
+    juan = _principal("usr_juan")
+    result = projects.resolve(db, juan, "payments-api", create=True)
+
+    with pytest.raises(InvalidRequest):
+        projects.rename(db, juan, result.project, "payments-api")

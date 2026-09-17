@@ -67,7 +67,7 @@ def correct(db: Session, principal: Principal, request: CorrectRequest, *, backe
     lock_bank(db, ref.bank_id)
     before = backend.get(ref.bank_id, request.memory_id)
     if before is None:
-        raise MemoryNotFound(memory_id=request.memory_id)
+        raise MemoryNotFound()
     if len(request.content.encode()) > get_settings().max_content_bytes:
         raise InvalidRequest("content exceeds the maximum size")
     content = normalize_claim(request.content)

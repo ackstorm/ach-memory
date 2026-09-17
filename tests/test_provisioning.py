@@ -1,21 +1,31 @@
 from memory.auth import provisioning
-from memory.models import ExternalIdentity
+from memory.models import ExternalIdentity, User
 
 
-def test_credential_id_is_stable_bounded_and_prefixed():
-    a = provisioning.credential_id_for("https://ach.example.com", "alice@example.com")
-    b = provisioning.credential_id_for("https://ach.example.com", "alice@example.com")
-    assert a == b
-    assert a.startswith("ext_")
-    assert len(a) <= 64
-
-
-def test_credential_id_cannot_be_confused_across_the_separator():
-    """Concatenating issuer+subject without a separator would make ("ab", "c")
-    and ("a", "bc") the same credential."""
-    assert provisioning.credential_id_for("ab", "c") != provisioning.credential_id_for(
-        "a", "bc"
+def test_two_identities_never_share_a_minted_user_id():
+    """An issuer URL is full of colons, so a ":" join would make ("a:b", "c")
+    and ("a", "b:c") one user id -- and the loser would then fail the users PK
+    on every provisioning attempt, forever."""
+    assert provisioning._user_id_for("a:b", "c") != provisioning._user_id_for("a", "b:c")
+    assert provisioning._user_id_for("https://idp.test", "bob:alice") != provisioning._user_id_for(
+        "https://idp.test:bob", "alice"
     )
+
+
+def test_an_existing_identity_is_looked_up_never_rehashed(db):
+    """The hash only mints; `(issuer, subject)` is the lookup key. A user whose
+    id does not match today's hash must still resolve to itself -- this is what
+    makes changing how the id is minted safe for users already provisioned."""
+    db.add(User(id="usr_minted_by_an_older_rule", bank_id="user_usr_minted_by_an_older_rule"))
+    db.flush()
+    db.add(ExternalIdentity(issuer="https://idp.test", subject="alice",
+                            user_id="usr_minted_by_an_older_rule"))
+    db.flush()
+
+    user = provisioning.link_identity(db, issuer="https://idp.test", subject="alice")
+
+    assert user.id == "usr_minted_by_an_older_rule"
+    assert user.id != provisioning._user_id_for("https://idp.test", "alice")
 
 
 def test_first_sight_creates_a_user_with_its_own_deterministic_bank(db):
@@ -28,7 +38,6 @@ def test_first_sight_creates_a_user_with_its_own_deterministic_bank(db):
     identity = db.get(ExternalIdentity, ("https://ach.example.com", "alice@example.com"))
     assert identity is not None
     assert identity.user_id == user.id
-    assert identity.credential_id.startswith("ext_")
 
 
 def test_second_sight_returns_the_same_user(db):

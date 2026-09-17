@@ -10,6 +10,7 @@ import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
+from uuid import uuid4
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -17,6 +18,7 @@ from mcp_types import ToolAnnotations
 from pydantic import BaseModel, ValidationError, model_serializer
 from sqlalchemy.orm import Session
 
+from memory import audit, projects
 from memory.auth.principal import Principal, authenticate
 from memory.backend import get_backend
 from memory.bank_ref import resolve_bank
@@ -37,6 +39,7 @@ from memory.read import recall as do_recall
 from memory.read import reflect as do_reflect
 from memory.retain import RetainRequest
 from memory.retain import submit as do_retain
+from memory.slugs import normalize_slug
 from memory.tags import Basis, MemoryType
 
 logger = logging.getLogger("memory.mcp")
@@ -231,7 +234,8 @@ def register(mcp: MCPServer) -> None:
         description=(
             "Ask memory a question and get one synthesized answer rather than a list of "
             "facts. Costs more than recall; only use it when a single answer is worth more "
-            "than the underlying facts. Returns UNSUPPORTED if the backend has no synthesis "
+            "than the underlying facts. Narrow it with `memory_types`/`basis`, same filter "
+            "as recall. Returns UNSUPPORTED if the backend has no synthesis "
             "capability."
         ),
         annotations=ToolAnnotations(read_only_hint=True),
@@ -241,9 +245,17 @@ def register(mcp: MCPServer) -> None:
         query: str,
         ctx: Context,
         project_slug: str | None = None,
+        memory_types: list[str] = [],  # noqa: B006
+        basis: list[str] = [],  # noqa: B006
     ) -> ToolResult:
         with tool_session(ctx) as (principal, db):
-            request = ReflectRequest(scope=scope, project_slug=project_slug, query=query)
+            request = ReflectRequest(
+                scope=scope,
+                project_slug=project_slug,
+                query=query,
+                memory_types=memory_types,
+                basis=basis,
+            )
             return _result(do_reflect(db, principal, request, backend=get_backend()))
 
     @mcp.tool(
@@ -355,3 +367,29 @@ def register(mcp: MCPServer) -> None:
         with tool_session(ctx) as (principal, db):
             ref, _ = resolve_bank(db, principal, scope, project_slug, create=False)
             return ToolResult(result=get_backend().get_operation(ref.bank_id, operation_ref))
+
+    @mcp.tool(
+        description=(
+            "Point a project's memory at a new slug after its git remote moved or was "
+            "renamed. Without this a moved repository resolves to a brand-new empty "
+            "project and its memory is silently orphaned. The old slug keeps resolving "
+            "to the same memory (a retain through it returns a PROJECT_RENAMED notice), "
+            "so nothing breaks mid-flight and renaming back undoes it. Only the "
+            "project's owner (or an operator) may call it."
+        ),
+    )
+    def rename_project(
+        project_slug: str,
+        new_slug: str,
+        ctx: Context,
+    ) -> ToolResult:
+        with tool_session(ctx) as (principal, db):
+            target = normalize_slug(new_slug)
+            resolved = projects.resolve(db, principal, project_slug, create=False)
+            retired = projects.rename(db, principal, resolved.project, target)
+            audit.record(
+                db, principal=principal, action="project.rename",
+                resource=resolved.project.internal_id, operation_id=str(uuid4()),
+                details={"from": retired, "to": target},
+            )
+            return ToolResult(result={"project_slug": target, "previous_slug": retired})

@@ -36,7 +36,6 @@ class ExternalIdentity(Base):
     issuer: Mapped[str] = mapped_column(String(256), primary_key=True)
     subject: Mapped[str] = mapped_column(String(256), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    credential_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -57,8 +56,6 @@ class Project(Base):
 
     # Internal. Public identity lives in ProjectSlug.
     internal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    # Metadata, never identity and never authorization evidence.
-    git_locator: Mapped[str | None] = mapped_column(String(512), nullable=True)
     owner_type: Mapped[str] = mapped_column(String(8))
     owner_id: Mapped[str] = mapped_column(String(128))
     bank_id: Mapped[str] = mapped_column(String(64), unique=True)

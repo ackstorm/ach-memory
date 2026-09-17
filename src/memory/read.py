@@ -46,7 +46,7 @@ class RecallResponse(_Base):
 
 class ReflectRequest(_ScopedRequest):
     query: str = Field(min_length=1)
-    budget: int | None = None  # accepted for the wire contract; no adapter takes it yet
+    memory_types: list[str] = Field(default_factory=list); basis: list[str] = Field(default_factory=list)
 
 class ReflectResponse(_Base):
     answer: str
@@ -66,8 +66,7 @@ class ListResponse(_Base):
 class GetRequest(_ScopedRequest):
     memory_id: str = Field(min_length=1, max_length=128)
 
-class HistoryRequest(GetRequest):
-    pass
+HistoryRequest = GetRequest
 
 class JournalEntry(_Base):
     action: str; actor: str | None = None
@@ -122,7 +121,8 @@ def reflect(db: Session, principal: Principal, request: ReflectRequest, *, backe
     if "synthesis" not in backend.capabilities():
         raise UnsupportedCapability("synthesis")
     ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
-    answer = backend.reflect(ref.bank_id, request.query, tag_groups=())
+    answer = backend.reflect(ref.bank_id, request.query,
+                             tag_groups=_tag_groups(request.memory_types, request.basis))
     return ReflectResponse(answer=answer)
 
 def list_memories(db: Session, principal: Principal, request: ListRequest, *, backend: Backend) -> ListResponse:
@@ -140,7 +140,7 @@ def get_memory(db: Session, principal: Principal, request: GetRequest, *, backen
     ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
     view = backend.get(ref.bank_id, request.memory_id)
     if view is None:
-        raise MemoryNotFound(memory_id=request.memory_id)
+        raise MemoryNotFound()
     return _to_item(view)
 
 def history(db: Session, principal: Principal, request: HistoryRequest, *, backend: Backend) -> HistoryResponse:

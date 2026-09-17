@@ -137,16 +137,6 @@ class Backend(ABC):
         (capability `operations`)."""
         raise UnsupportedCapability("operations")
 
-    def list_operations(self, bank_id: str, *, status: str | None, limit: int, offset: int) -> dict:
-        """Engine-shaped dict with bank ids redacted; ACH passes it through unchanged
-        (capability `operations`)."""
-        raise UnsupportedCapability("operations")
-
-    def cancel_operation(self, bank_id: str, operation_ref: str) -> dict:
-        """Engine-shaped dict with bank ids redacted; ACH passes it through unchanged
-        (capability `operations`)."""
-        raise UnsupportedCapability("operations")
-
     def provision_mental_models(self, bank_id: str, builtins: Sequence[BuiltinModel]) -> None:
         """Ensure each of `builtins` exists in `bank_id`, created or updated to its current
         prompt; idempotent (capability `mental_models`)."""

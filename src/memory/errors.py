@@ -4,10 +4,9 @@ class DomainError(Exception):
     code = "INTERNAL_ERROR"
     status = 500
 
-    def __init__(self, message: str = "", **details: object) -> None:
+    def __init__(self, message: str = "") -> None:
         super().__init__(message or self.code)
         self.message = message or self.code
-        self.details = details
 
 
 class InvalidRequest(DomainError):

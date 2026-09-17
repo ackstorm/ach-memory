@@ -107,9 +107,9 @@ Notices (not errors): `PROJECT_CREATED`, `PROJECT_RENAMED`.
 |---|---|
 | `capabilities` | `reflect` |
 | `provision(bank_id)` | `get_operation` |
-| `retain` | `list_operations` |
-| `recall` | `cancel_operation` |
-| `invalidate` | `provision_mental_models(bank_id, builtins)` |
+| `retain` | `provision_mental_models(bank_id, builtins)` |
+| `recall` | |
+| `invalidate` | |
 | `revalidate` | |
 | `delete` | |
 | `list` | |
@@ -155,7 +155,7 @@ session-start (standing context), pre-compact (retain nudge), subagent-start. No
 |---|---|---|
 | `retain` | retain | store one claim; `wait: bool = false` blocks until searchable — one tool, one intention, not two near-duplicate tools |
 | `recall` | recall | ranked, floor-filtered hits for a query |
-| `reflect` | reflect | one synthesized answer |
+| `reflect` | reflect | one synthesized answer; same `memory_types`/`basis` filter as recall |
 | `forget` | forget | soft-invalidate one memory |
 | `restore` | restore | reverse a forget |
 | `correct` | correct | replace a memory's text, same id |
@@ -165,6 +165,7 @@ session-start (standing context), pre-compact (retain nudge), subagent-start. No
 | `history` | history | journal entries for one memory |
 | `load_context` | context load | deliver bounded standing context |
 | `get_operation` | — | engine-side async outcome; only if the adapter declares `operations` |
+| `rename_project` | — | move a project to a new slug after its git remote moved; the old slug keeps forwarding |
 
 ## 7. Storage
 

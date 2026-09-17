@@ -105,13 +105,13 @@ class FakeBackend(Backend):
     def invalidate(self, bank_id: str, memory_id: str, *, reason: str | None) -> None:
         record = self._data.get(bank_id, {}).get(memory_id)
         if record is None:
-            raise MemoryNotFound(memory_id=memory_id)
+            raise MemoryNotFound()
         record.state = "invalidated"
 
     def revalidate(self, bank_id: str, memory_id: str) -> None:
         record = self._data.get(bank_id, {}).get(memory_id)
         if record is None:
-            raise MemoryNotFound(memory_id=memory_id)
+            raise MemoryNotFound()
         record.state = "valid"
 
     def delete(self, bank_id: str, memory_id: str) -> None:

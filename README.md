@@ -23,7 +23,7 @@ ach-memory mcp  ── HTTPS/MCP ──▶│  auth → scope → service     �
 
 `retain` · `recall` · `reflect` · `forget` · `restore` · `correct` ·
 `delete_memory` · `list_memories` · `get_memory` · `history` ·
-`load_context` · `get_operation`.
+`load_context` · `get_operation` · `rename_project`.
 One MCP endpoint (`/mcp/`), one health route (`/health`). No REST data plane.
 
 ## Install on a host

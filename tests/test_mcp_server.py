@@ -19,6 +19,7 @@ _EXPECTED_TOOLS = [
     "load_context",
     "recall",
     "reflect",
+    "rename_project",
     "restore",
     "retain",
 ]

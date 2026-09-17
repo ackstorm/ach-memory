@@ -7,23 +7,21 @@ from sqlalchemy.orm import Session
 
 from memory.models import ExternalIdentity, User
 
-CREDENTIAL_PREFIX = "ext_"
 USER_PREFIX = "usr_"
 
 
-def credential_id_for(issuer: str, subject: str) -> str:
-    """A stable, opaque credential identity.
+def _user_id_for(issuer: str, subject: str) -> str:
+    """Mint the id for an identity seen for the first time.
 
-    Hashed, and separated by a newline neither an issuer URL nor a subject
-    can contain: plain concatenation would make ("ab", "c") and ("a", "bc")
-    collide onto one credential.
+    Separated by a newline, which neither an issuer URL nor a subject can
+    contain. A ":" separator does not survive an issuer URL, which is full of
+    them: ("a:b", "c") and ("a", "b:c") both join to "a:b:c" and would mint one
+    user id for two identities -- the second then dies on the users PK forever.
+
+    Only ever called for an identity with no `external_identities` row, so
+    changing how it joins cannot move a user that already exists.
     """
     digest = hashlib.sha256(f"{issuer}\n{subject}".encode()).hexdigest()
-    return f"{CREDENTIAL_PREFIX}{digest[:32]}"
-
-
-def _user_id_for(issuer: str, subject: str) -> str:
-    digest = hashlib.sha256(f"{issuer}:{subject}".encode()).hexdigest()
     return f"{USER_PREFIX}{digest[:32]}"
 
 
@@ -58,12 +56,7 @@ def link_identity(db: Session, *, issuer: str, subject: str) -> User:
             # flush user first or the FK insert races ahead of it.
             db.flush()
             db.add(
-                ExternalIdentity(
-                    issuer=issuer,
-                    subject=subject,
-                    user_id=user_id,
-                    credential_id=credential_id_for(issuer, subject),
-                )
+                ExternalIdentity(issuer=issuer, subject=subject, user_id=user_id)
             )
     except IntegrityError:
         row = db.get(ExternalIdentity, (issuer, subject))

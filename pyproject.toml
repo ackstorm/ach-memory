@@ -47,10 +47,7 @@ markers = [
 line-length = 100
 
 [tool.ruff.lint]
-ignore = [
-    # `Depends(...)` as an argument default is FastAPI's own idiomatic
-    # dependency-injection pattern (every route in src/memory/api/* uses it),
-    # not the accidental-mutable-default bug this bugbear rule exists to
-    # catch. FastAPI's own docs recommend it; see astral-sh/ruff#4429.
-    "B008",
-]
+# Ruff's defaults are E4/E7/E9 + F only. B (bugbear) is selected because the
+# codebase already carries `# noqa: B006` markers that were silently inert
+# without it -- a suppression for a rule that never ran.
+extend-select = ["B"]

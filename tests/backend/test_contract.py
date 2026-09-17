@@ -264,8 +264,6 @@ def test_capabilities_are_honest(backend):
     for name, call in (
         ("synthesis", lambda: backend.reflect(BANK, "q", tag_groups=())),
         ("operations", lambda: backend.get_operation(BANK, "op_1")),
-        ("operations", lambda: backend.list_operations(BANK, status=None, limit=10, offset=0)),
-        ("operations", lambda: backend.cancel_operation(BANK, "op_1")),
     ):
         if name not in capabilities:
             with pytest.raises(UnsupportedCapability):
@@ -276,7 +274,7 @@ def test_provision_mental_models_is_idempotent(backend):
     if "mental_models" not in backend.capabilities():
         pytest.skip("backend does not declare mental_models")
     builtins = (BuiltinModel(key="k1", name=f"Contract Model {uuid.uuid4().hex[:8]}",
-                              prompt="summarize things", version=1, scope="user"),)
+                              prompt="summarize things", scope="user"),)
 
     backend.provision_mental_models(BANK, builtins)
     backend.provision_mental_models(BANK, builtins)  # must not raise, must not duplicate

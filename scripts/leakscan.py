@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 """The one definition of "a bank id leaked".
 
-There used to be three copies -- scripts/smoke.sh, scripts/e2e.py and
-scripts/mcp-smoke.py -- and they had diverged. e2e.py's was \\b-anchored, so
-it could not match a bank id embedded inside a chunk_id
-(f"{bank_id}_{document_id}_{n}"), which is the exact shape of the leak
-measured live against hindsight-api 0.9.1 on 2026-08-22 and the reason
-`_strip_bank_id` redacts substrings at all. e2e.py is the broadest scanner in
-the project (~70 scenarios, all 15 tools), so that anchor made the widest
-gate the blindest.
-
 Deliberately UNANCHORED: a bank id is a leak wherever it appears, including
 in the middle of another field's value. That is the whole point.
 

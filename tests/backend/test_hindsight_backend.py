@@ -481,32 +481,6 @@ def test_get_operation_strips_the_bank_id(make_backend):
     assert BANK not in result["note"]
 
 
-def test_list_operations_passes_through_with_filters_and_strips_bank_id(make_backend, recorder):
-    backend = make_backend({
-        ("GET", f"{_bank(BANK)}/operations"): httpx.Response(
-            200, json={"items": [{"operation_id": OP_ID, "bank_id": BANK}], "total": 1}
-        ),
-    })
-
-    result = backend.list_operations(BANK, status="pending", limit=5, offset=0)
-
-    params = recorder.calls[("GET", f"{_bank(BANK)}/operations")].url.params
-    assert params["status"] == "pending"
-    assert "bank_id" not in result["items"][0]
-
-
-def test_cancel_operation_passes_through_and_strips_bank_id(make_backend):
-    backend = make_backend({
-        ("DELETE", f"{_bank(BANK)}/operations/{OP_ID}"): httpx.Response(
-            200, json={"status": "cancelled", "bank_id": BANK}
-        ),
-    })
-
-    result = backend.cancel_operation(BANK, OP_ID)
-
-    assert "bank_id" not in result
-
-
 # ---------------------------------------------------------------------------
 # mental models
 # ---------------------------------------------------------------------------
@@ -518,7 +492,7 @@ def test_provision_mental_models_creates_a_missing_model(make_backend, recorder)
         ("POST", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={"id": "mm-1"}),
     })
     builtin = BuiltinModel(key="user-context", name="User Context", prompt="summarize",
-                            version=1, scope="user",
+                            scope="user",
                             source_tags=("schema:ach-retain-v1",), tags_match="all")
 
     backend.provision_mental_models(BANK, (builtin,))
@@ -539,7 +513,7 @@ def test_provision_mental_models_updates_a_model_with_a_changed_prompt(make_back
         ("PATCH", f"{_bank(BANK)}/mental-models/mm-1"): httpx.Response(200, json={}),
     })
     builtin = BuiltinModel(key="user-context", name="User Context", prompt="new prompt",
-                            version=2, scope="user")
+                            scope="user")
 
     backend.provision_mental_models(BANK, (builtin,))
 
@@ -553,7 +527,7 @@ def test_provision_mental_models_is_a_noop_when_the_prompt_is_unchanged(make_bac
                        "trigger": {"mode": "delta", "refresh_after_consolidation": True}}]
         }),
     })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", version=1, scope="user")
+    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
 
     backend.provision_mental_models(BANK, (builtin,))
 
@@ -569,7 +543,7 @@ def test_provision_mental_models_turns_on_refresh_for_a_model_created_without_it
         }),
         ("PATCH", f"{_bank(BANK)}/mental-models/mm-1"): httpx.Response(200, json={}),
     })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", version=1, scope="user")
+    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
 
     backend.provision_mental_models(BANK, (builtin,))
 
