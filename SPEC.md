@@ -149,7 +149,8 @@ the top candidates" as a premise, and found the real failure instead (§5, Spani
 | `PATCH /config` body | `{"updates": {...}}`, not the bare dict |
 | local LLM | mock: verbatim extraction works, consolidation and model refresh do not |
 | `history` | not declared; the ACH journal is the history |
-| semantic floor | `0.60`, calibrated on an English corpus. A Spanish query against an English claim scores under it and returns nothing where the English form ranks the target first at ~0.72 (measured 2026-09-17, `scripts/probe-recall.py`). Agents query in English; the floor itself moves only with a probe run behind it |
+| semantic floor | `0.60`, calibrated on an English corpus and measured against lowering it on 2026-09-17 (`scripts/probe-recall.py`, floor temporarily 0 in production): Spanish probes that fail score 0.536 and 0.595 where their English form scores ~0.72 at rank 1, and catching both needs 0.53, which takes irrelevant hits per query from 2.6 to 6.3 (0.58 catches one, for 3.3). Agents query in English instead; the floor stays. Re-measure the same way before reopening |
+| identifier recall | a technical identifier that appears only inside a code span is not retrievable by it: with no floor at all, the image-digest claim stayed outside the top 10 under two phrasings while every other probe hit rank 1. Not a floor problem -- an ingestion question, and the one retrieval failure still open |
 
 ## 6. Delivery
 
