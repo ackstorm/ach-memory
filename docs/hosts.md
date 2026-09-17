@@ -5,7 +5,7 @@ the plugin (skill, session-start context, MCP stdio proxy) into any of them;
 re-running it is the update path.
 
 ```bash
-uvx --from git+https://github.com/ackstorm/ach-memory@v0.3.1 ach-memory init all   # or: claude | codex | opencode | pi
+uvx --from git+https://github.com/ackstorm/ach-memory@v0.4.0 ach-memory init all   # or: claude | codex | opencode | pi
 ```
 
 What it does per host:
@@ -54,5 +54,5 @@ claude mcp list          # ach-memory should show as connected
 ```
 
 Then ask the agent to recall something (or run
-`uvx --from git+https://github.com/ackstorm/ach-memory@v0.3.1 ach-memory context load`
+`uvx --from git+https://github.com/ackstorm/ach-memory@v0.4.0 ach-memory context load`
 directly) and confirm it returns without error.

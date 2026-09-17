@@ -33,7 +33,7 @@ See [`docs/hosts.md`](docs/hosts.md). Short version:
 ```bash
 export ACH_MEMORY_URL=https://api.<domain>/memory/mcp/
 export ACH_MEMORY_API_KEY=<your platform key>
-uvx --from git+https://github.com/ackstorm/ach-memory@v0.3.1 ach-memory init all   # claude, codex, opencode, pi
+uvx --from git+https://github.com/ackstorm/ach-memory@v0.4.0 ach-memory init all   # claude, codex, opencode, pi
 ```
 
 ## Run it
