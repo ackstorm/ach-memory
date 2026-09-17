@@ -1,12 +1,15 @@
 // opencode plugin: injects the ach-memory session-start output (activation
 // policy + standing context) into the system prompt. Same script the Claude
 // and Codex hooks run; `init` copies it next to this file under ./ach-memory/.
-const { execFileSync } = require("child_process");
-const path = require("path");
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 function sessionStart() {
   try {
-    return execFileSync(path.join(__dirname, "ach-memory", "scripts", "session-start.sh"), {
+    return execFileSync(path.join(here, "ach-memory", "scripts", "session-start.sh"), {
       encoding: "utf8",
       timeout: 6000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -16,7 +19,7 @@ function sessionStart() {
   }
 }
 
-module.exports = async function () {
+export const AchMemoryPlugin = async () => {
   const context = sessionStart();
   if (!context) return {};
   return {
