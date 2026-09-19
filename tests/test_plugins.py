@@ -115,3 +115,14 @@ def test_the_skill_has_exactly_one_copy():
     assert [p.relative_to(ROOT) for p in ROOT.glob("**/SKILL.md") if ".venv" not in p.parts] == [
         Path("skills/ach-memory/SKILL.md")
     ]
+
+
+def test_package_json_ships_the_whole_tree():
+    """`files` would strip `pyproject.toml` and `src/`, and the proxy is built from this tree.
+
+    opencode and pi install the npm package, then run
+    `uvx --from <package dir> ach-memory mcp`. A `files` allowlist that leaves
+    the Python project out packs a bundle whose MCP server cannot start at all:
+    `MCP error -32000: Connection closed`, with nothing to say why.
+    """
+    assert "files" not in load("package.json")
