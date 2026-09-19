@@ -35,14 +35,15 @@ export const AchMemoryPlugin = async () => {
       if (!config.skills.paths.includes(skills)) config.skills.paths.push(skills);
 
       config.mcp = config.mcp || {};
+      // No `environment`: opencode interpolates `{env:VAR}` only in the config
+      // file, so a placeholder set from here reaches the proxy as a literal --
+      // `Illegal header name b'{env:ACH_MEMORY_HEADER}'`, and the server dies
+      // on startup as `MCP error -32000: Connection closed`. The spawned proxy
+      // inherits opencode's own environment, which is where the credential is.
       config.mcp["ach-memory"] = {
         type: "local",
         command: ["uvx", "--from", root, "ach-memory", "mcp", "--url",
                   process.env.ACH_MEMORY_URL || "http://localhost:8000/mcp/"],
-        environment: {
-          ACH_MEMORY_API_KEY: "{env:ACH_MEMORY_API_KEY}",
-          ACH_MEMORY_HEADER: "{env:ACH_MEMORY_HEADER}",
-        },
         enabled: true,
       };
     },
