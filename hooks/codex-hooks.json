@@ -1,0 +1,42 @@
+{
+  "description": "ach-memory lifecycle for Codex. Codex expands ${PLUGIN_ROOT}; it aliases ${CLAUDE_PLUGIN_ROOT} for compatibility, but the native name is the one this file relies on.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/scripts/session-start.sh\"",
+            "timeout": 6,
+            "statusMessage": "Loading ach-memory..."
+          }
+        ],
+        "matcher": "startup|resume|clear|compact"
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/scripts/subagent-start.sh\"",
+            "timeout": 5,
+            "statusMessage": "Loading ach-memory..."
+          }
+        ],
+        "matcher": "startup"
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/scripts/pre-compact.sh\"",
+            "timeout": 9
+          }
+        ]
+      }
+    ]
+  }
+}

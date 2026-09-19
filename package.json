@@ -1,0 +1,16 @@
+{
+  "name": "ach-memory",
+  "version": "0.5.0",
+  "description": "Durable user and project memory for coding agents, through the ach-memory service.",
+  "license": "MIT",
+  "type": "module",
+  "repository": "https://github.com/ackstorm/ach-memory",
+  "homepage": "https://github.com/ackstorm/ach-memory",
+  "main": ".opencode/plugins/ach-memory.js",
+  "keywords": ["pi-package", "opencode-plugin", "memory", "skills", "mcp"],
+  "pi": {
+    "extensions": ["./.pi/extensions/ach-memory.js"],
+    "skills": ["./skills"]
+  },
+  "files": [".opencode", ".pi", "hooks", "skills", "package.json"]
+}

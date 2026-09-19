@@ -33,8 +33,17 @@ See [`docs/hosts.md`](docs/hosts.md). Short version:
 ```bash
 export ACH_MEMORY_URL=https://api.<domain>/memory/mcp/
 export ACH_MEMORY_API_KEY=<your platform key>
-uvx --from git+https://github.com/ackstorm/ach-memory@v0.4.0 ach-memory init all   # claude, codex, opencode, pi
+
+claude   plugin marketplace add ackstorm/ach-memory && claude plugin install ach-memory@ach-memory
+codex    plugin marketplace add ackstorm/ach-memory && codex  plugin add     ach-memory@ach-memory
+opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global
+pi       install git:github.com/ackstorm/ach-memory
 ```
+
+This repository is the plugin bundle: each host reads its own root manifest
+(`.claude-plugin/`, `.codex-plugin/`, `package.json`) and gets the one skill,
+the one set of hook scripts, and a stdio proxy built from the checkout it just
+installed -- so there is no version to pin and nothing of ours to run first.
 
 ## Run it
 

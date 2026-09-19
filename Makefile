@@ -52,34 +52,11 @@ chart: # helm lint + render, and pyproject/package/Chart.yaml versions agree (wi
 		&& grep -qx "version: $$v" deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx "appVersion: \"$$v\"" deploy/helm/ach-memory/Chart.yaml \
 		&& grep -qx "version = \"$$v\"" uv.lock \
-		&& grep -q "\"version\": \"$$v\"" .claude-plugin/marketplace.json plugins/claude-code/.claude-plugin/plugin.json plugins/codex/.codex-plugin/plugin.json \
-		&& ! grep -rL "@v$$v" plugins/claude-code/.mcp.json plugins/codex/.mcp.json plugins/shared/scripts/session-start.sh plugins/shared/scripts/pre-compact.sh | grep -q . \
+		&& grep -q "\"version\": \"$$v\"" .claude-plugin/marketplace.json .claude-plugin/plugin.json .codex-plugin/plugin.json package.json \
 		|| { echo "FAIL: release metadata does not agree on $$v." >&2; exit 1; }
 
-PLUGIN_HOSTS = plugins/claude-code plugins/codex plugins/opencode plugins/pi
-.PHONY: plugins plugins-check
-plugins: # Sync plugins/shared/* into each host plugin (idempotent)
-	@for h in $(PLUGIN_HOSTS); do \
-		mkdir -p $$h/skills/ach-memory $$h/scripts; \
-		cp plugins/shared/ach-memory/SKILL.md $$h/skills/ach-memory/SKILL.md; \
-		cp plugins/shared/activation.txt plugins/shared/activation.subagent.json $$h/; \
-		cp plugins/shared/scripts/session-start.sh plugins/shared/scripts/subagent-start.sh $$h/scripts/; \
-	done
-	cp plugins/shared/scripts/pre-compact.sh plugins/claude-code/scripts/pre-compact.sh
-plugins-check: # Fail if a committed plugin copy drifted from plugins/shared
-	@for h in $(PLUGIN_HOSTS); do \
-		cmp -s plugins/shared/ach-memory/SKILL.md $$h/skills/ach-memory/SKILL.md \
-		&& cmp -s plugins/shared/activation.txt $$h/activation.txt \
-		&& cmp -s plugins/shared/activation.subagent.json $$h/activation.subagent.json \
-		&& cmp -s plugins/shared/scripts/session-start.sh $$h/scripts/session-start.sh \
-		&& cmp -s plugins/shared/scripts/subagent-start.sh $$h/scripts/subagent-start.sh \
-		|| { echo "FAIL: $$h drifted from plugins/shared -- run 'make plugins'." >&2; exit 1; }; \
-	done
-	@cmp -s plugins/shared/scripts/pre-compact.sh plugins/claude-code/scripts/pre-compact.sh \
-		|| { echo "FAIL: claude-code pre-compact.sh drifted -- run 'make plugins'." >&2; exit 1; }
-
 .PHONY: verify
-verify: lint test secrets chart plugins-check # The full local gate -- run this before pushing
+verify: lint test secrets chart # The full local gate -- run this before pushing
 
 .PHONY: release-bump
 release-bump: # Update release metadata (VERSION=X.Y.Z)
@@ -88,9 +65,8 @@ release-bump: # Update release metadata (VERSION=X.Y.Z)
 	sed -i -E 's/^__version__ = "[^"]*"$$/__version__ = "$(VERSION)"/' src/memory/__init__.py
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
-	sed -i -E 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json plugins/claude-code/.claude-plugin/plugin.json plugins/codex/.codex-plugin/plugin.json
-	sed -i -E 's/@v[0-9]+\.[0-9]+\.[0-9]+/@v$(VERSION)/g' plugins/claude-code/.mcp.json plugins/codex/.mcp.json plugins/shared/scripts/session-start.sh plugins/shared/scripts/pre-compact.sh docs/hosts.md README.md
-	$(MAKE) plugins
+	sed -i -E '0,/"version": "[^"]*"/s//"version": "$(VERSION)"/' package.json
+	sed -i -E 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json .claude-plugin/plugin.json .codex-plugin/plugin.json
 	uv lock
 	$(MAKE) chart VERSION=$(VERSION)
 

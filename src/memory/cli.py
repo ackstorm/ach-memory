@@ -1,11 +1,14 @@
-"""CLI: `ach-memory init`, `ach-memory mcp`, `ach-memory context load`, `ach-memory hook pre-compact`."""
+"""CLI: `ach-memory mcp`, `ach-memory context load`, `ach-memory hook pre-compact`.
+
+Installing is the host's own job -- `claude plugin install`, `codex plugin add`,
+`opencode plugin`, `pi install`; see docs/hosts.md.
+"""
 
 import argparse
 import asyncio
 import os
 import sys
 
-from memory import init
 from memory.mcp import proxy
 
 _NO_PROJECT_NOTICE = (
@@ -23,15 +26,6 @@ _PRE_COMPACT_NUDGE = (
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ach-memory")
     commands = parser.add_subparsers(dest="command", required=True)
-
-    init_cmd = commands.add_parser("init", help="install the plugin into a coding-agent host")
-    init_cmd.add_argument("target", choices=(*init.HOSTS, "all"))
-    init_cmd.add_argument(
-        "--local",
-        action="store_true",
-        help="opencode/pi: run the MCP proxy from this environment's ach-memory script "
-        "instead of uvx, to test unreleased code",
-    )
 
     mcp_cmd = commands.add_parser("mcp", help="run the stdio MCP proxy")
     mcp_cmd.add_argument("--url", default=os.environ.get("ACH_MEMORY_URL"))
@@ -67,9 +61,6 @@ def main(argv: list[str] | None = None) -> int:
         args = _parser().parse_args(argv)
     except SystemExit as exc:
         return int(exc.code)
-
-    if args.command == "init":
-        return init.init(args.target, args.local)
 
     if args.command == "mcp":
         if not args.url:
