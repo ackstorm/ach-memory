@@ -9,6 +9,7 @@ nobody installed; nothing failed, because nothing asserted the wiring.
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ MANIFESTS = (
     "package.json",
 )
 
-HOOK_SCRIPTS = ("session-start.sh", "subagent-start.sh", "pre-compact.sh")
+HOOK_SCRIPTS = ("session-start.sh", "subagent-start.sh", "pre-compact.sh", "retain-nudge.sh", "stop.sh")
 
 # Claude Code and Codex both expand their own plugin-root variable and nothing
 # else. A hook that names the wrong one resolves to an empty path and dies.
@@ -80,8 +81,33 @@ def test_hooks_name_their_own_plugin_root_and_point_at_real_scripts(relative, va
             assert (ROOT / "hooks" / "scripts" / script).exists()
 
 
-def test_both_hosts_get_the_same_three_events():
+def test_both_hosts_get_the_same_events():
     assert load("hooks/hooks.json")["hooks"].keys() == load("hooks/codex-hooks.json")["hooks"].keys()
+
+
+def stop(payload: str, tmp_path: Path, interval: str = "900") -> str:
+    # A failing `uvx` shadow makes the script wrap its own fallback text, deterministically.
+    (tmp_path / "uvx").write_text("#!/bin/sh\nexit 1\n")
+    (tmp_path / "uvx").chmod(0o755)
+    env = {
+        **os.environ,
+        "TMPDIR": str(tmp_path),
+        "ACH_MEMORY_NUDGE_INTERVAL": interval,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+    }
+    return subprocess.run(
+        [str(ROOT / "hooks" / "scripts" / "stop.sh")], input=payload, capture_output=True, text=True, env=env, check=True
+    ).stdout
+
+
+def test_stop_hook_blocks_once_per_interval_and_never_loops(tmp_path):
+    """Stop stdout never reaches the model: only a `block` decision does, and each costs a turn."""
+    first = json.loads(stop('{"session_id": "s1", "stop_hook_active": false}', tmp_path))
+    assert first["decision"] == "block" and "Retain ONLY" in first["reason"]
+    assert stop('{"session_id": "s1"}', tmp_path) == ""  # inside the window
+    assert stop('{"session_id": "s2"}', tmp_path) != ""  # another session has its own window
+    assert stop('{"session_id": "s3", "stop_hook_active": true}', tmp_path) == ""  # already continuing
+    assert stop("not json", tmp_path, interval="0") != ""  # garbage input still fails open, not loud
 
 
 @pytest.mark.parametrize("script", HOOK_SCRIPTS)

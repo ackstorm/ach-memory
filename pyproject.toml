@@ -1,6 +1,6 @@
 [project]
 name = "ach-memory"
-version = "0.5.2"
+version = "0.6.0"
 description = "Governed, engine-neutral memory harness for coding agents"
 requires-python = ">=3.12"
 dependencies = [

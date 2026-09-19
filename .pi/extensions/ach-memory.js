@@ -7,9 +7,8 @@
 // entry into pi's own mcp.json once, pointing at this checkout -- the same
 // no-pin arrangement the other three hosts get from their plugin root.
 //
-// pi has no compaction event (before_agent_start, before_provider_request,
-// before_provider_headers, after_provider_response), so there is no PreCompact
-// equivalent here; see docs/hosts.md.
+// `before_agent_start` carries the standing context and `agent_settled` is
+// pi's Stop. No PreCompact equivalent is wired here; see docs/hosts.md.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -18,9 +17,9 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-function sessionStart() {
+function hook(script, ...args) {
   try {
-    return execFileSync(path.join(root, "hooks", "scripts", "session-start.sh"), {
+    return execFileSync(path.join(root, "hooks", "scripts", script), args, {
       encoding: "utf8",
       timeout: 10000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -53,10 +52,30 @@ function ensureMcpServer() {
 
 export default function (pi) {
   ensureMcpServer();
-  const context = sessionStart();
-  if (!context || typeof pi?.on !== "function") return;
-  pi.on("before_agent_start", async (event) => {
-    if (typeof event?.systemPrompt !== "string" || event.systemPrompt.includes(context)) return;
-    return { systemPrompt: `${event.systemPrompt}\n\n${context}` };
+  if (typeof pi?.on !== "function") return;
+  const context = hook("session-start.sh");
+  if (context) {
+    pi.on("before_agent_start", async (event) => {
+      if (typeof event?.systemPrompt !== "string" || event.systemPrompt.includes(context)) return;
+      return { systemPrompt: `${event.systemPrompt}\n\n${context}` };
+    });
+  }
+  // pi's Stop: `agent_settled` fires once the run is fully over (no retry,
+  // compaction or queued continuation pending). The throttled nudge goes in as
+  // a message that starts one more turn. That turn settles too: `nudging` is
+  // the `stop_hook_active` of this host, so it ends there instead of looping.
+  let nudging = false;
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (nudging) {
+      nudging = false;
+      return;
+    }
+    const nudge = hook("retain-nudge.sh", ctx?.sessionManager?.getSessionId?.() || "unknown");
+    if (!nudge) return;
+    nudging = true;
+    await pi.sendMessage(
+      { customType: "ach-memory-nudge", content: nudge, display: false },
+      { triggerTurn: true },
+    );
   });
 }

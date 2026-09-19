@@ -6,16 +6,16 @@
 // point opencode at the skill and at the stdio proxy built from that same
 // checkout -- no version pin to go stale. The two experimental hooks are
 // opencode's equivalents of the Claude Code SessionStart and PreCompact hooks,
-// and run the same shell scripts.
+// and the `event` hook is its Stop; all run the same shell scripts.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-function hook(script) {
+function hook(script, ...args) {
   try {
-    return execFileSync(path.join(root, "hooks", "scripts", script), {
+    return execFileSync(path.join(root, "hooks", "scripts", script), args, {
       encoding: "utf8",
       timeout: 10000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -25,8 +25,9 @@ function hook(script) {
   }
 }
 
-export const AchMemoryPlugin = async () => {
+export const AchMemoryPlugin = async ({ client }) => {
   const context = hook("session-start.sh");
+  const nudging = new Set();
   return {
     config: async (config) => {
       config.skills = config.skills || {};
@@ -60,6 +61,25 @@ export const AchMemoryPlugin = async () => {
     "experimental.session.compacting": async (_input, output) => {
       const nudge = hook("pre-compact.sh");
       if (nudge && Array.isArray(output?.context)) output.context.push(nudge);
+    },
+
+    // opencode's Stop: there is no "turn finished" hook that can reach the
+    // model, so on `session.idle` the throttled nudge goes in as a synthetic
+    // user message that starts one more turn. That turn goes idle too:
+    // `nudging` is the `stop_hook_active` of this host, so it ends there
+    // instead of looping.
+    event: async ({ event }) => {
+      if (event?.type !== "session.idle") return;
+      const sessionID = event.properties?.sessionID;
+      if (!sessionID) return;
+      if (nudging.delete(sessionID)) return;
+      const nudge = hook("retain-nudge.sh", sessionID);
+      if (!nudge) return;
+      nudging.add(sessionID);
+      await client.session.promptAsync({
+        path: { id: sessionID },
+        body: { parts: [{ type: "text", text: nudge, synthetic: true }] },
+      });
     },
   };
 };

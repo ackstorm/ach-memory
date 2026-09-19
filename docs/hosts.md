@@ -48,6 +48,9 @@ export ACH_MEMORY_API_KEY=<token from your identity provider>
 `ach-memory context load`. `ACH_MEMORY_API_KEY` is whatever credential your
 identity provider issues; the service mints none.
 
+Optional: `ACH_MEMORY_NUDGE_INTERVAL` is how often, in seconds, the periodic
+retain nudge may fire per session. Unset means `900` (15 minutes).
+
 ## What each host gets
 
 | | Claude Code | Codex | opencode | pi |
@@ -56,12 +59,11 @@ identity provider issues; the service mints none.
 | Skill | `skills/` | `skills/` | plugin `config` hook | `package.json` `pi.skills` |
 | Standing context at start | `SessionStart` | `SessionStart` | `chat.system.transform` | `before_agent_start` |
 | Subagent activation | `SubagentStart` | `SubagentStart` | ❌ no subagent event | ❌ no subagent event |
-| Retain nudge before compaction | `PreCompact` | `PreCompact` | `session.compacting` | ❌ no compaction event |
+| Retain nudge before compaction | `PreCompact` | `PreCompact` | `session.compacting` | ❌ not wired |
+| Periodic retain nudge | `Stop` | `Stop` | `session.idle` → `promptAsync` | `agent_settled` → `sendMessage` |
 
-Both ❌ for pi are host limitations, not omissions: pi exposes
-`before_agent_start`, `before_provider_request`, `before_provider_headers` and
-`after_provider_response`, and none of them fires on compaction. opencode has no
-subagent lifecycle event.
+opencode has no subagent lifecycle event; pi has none either, and its
+`session_before_compact` is not wired yet.
 
 Claude Code and Codex share the three hook scripts under `hooks/scripts/` but
 need separate hook files, because each expands only its own plugin-root
@@ -77,6 +79,14 @@ declared manifest path.
   makes no network call.
 - `pre-compact.sh` — nudges the agent to retain durable claims before context is
   compacted.
+- `retain-nudge.sh <session-id>` — the periodic nudge, throttled: prints the
+  text at most once per `ACH_MEMORY_NUDGE_INTERVAL` per session, else nothing.
+  `/clear` has no hook that gives the agent a turn, so this is what keeps a
+  long session from losing what it learned when the context goes.
+- `stop.sh` — Claude Code and Codex `Stop`. Their stdout never reaches the
+  model, so it wraps `retain-nudge.sh` as `{"decision": "block", "reason"}`,
+  which makes the agent take one more turn. opencode and pi have no Stop; they
+  call `retain-nudge.sh` themselves and inject the text as a synthetic message.
 
 ## Verify
 
