@@ -79,9 +79,7 @@ export ACH_MEMORY_API_KEY=<token from your identity provider>
 `ach-memory context load`. `ACH_MEMORY_API_KEY` is whatever credential your
 identity provider issues; the service mints none.
 
-Optional: `ACH_MEMORY_NUDGE_INTERVAL` is how often, in seconds, the periodic
-retain nudge may fire per session. Unset means `900` (15 minutes).
-`ACH_MEMORY_IDLE_INTERVAL` is how long, in seconds, a checkout may go without
+Optional: `ACH_MEMORY_IDLE_INTERVAL` is how long, in seconds, a checkout may go without
 a retain before the next prompt carries a reminder, and how long that reminder
 then stays quiet. Unset means `1800` (30 minutes).
 
@@ -94,7 +92,6 @@ then stays quiet. Unset means `1800` (30 minutes).
 | Standing context at start | `SessionStart` | `SessionStart` | `chat.system.transform` | `before_agent_start` |
 | Subagent activation | `SubagentStart` | `SubagentStart` | ❌ no subagent event | ❌ no subagent event |
 | Retain nudge before compaction | `PreCompact` | `PreCompact` | `session.compacting` | ❌ not wired |
-| Periodic retain nudge | `Stop` | `Stop` | `session.idle` → `promptAsync` | `agent_settled` → `sendMessage` |
 | Idle retain nudge | `UserPromptSubmit` | `UserPromptSubmit` | `chat.message` | `before_agent_start` → `message` |
 
 opencode has no subagent lifecycle event; pi has none either. pi's
@@ -116,20 +113,19 @@ declared manifest path.
   makes no network call.
 - `pre-compact.sh` — nudges the agent to retain durable claims before context is
   compacted.
-- `retain-nudge.sh <session-id>` — the periodic nudge, throttled: prints the
-  text at most once per `ACH_MEMORY_NUDGE_INTERVAL` per session, else nothing.
-  `/clear` has no hook that gives the agent a turn, so this is what keeps a
-  long session from losing what it learned when the context goes.
-- `idle-nudge.sh <session-id>` — the idle nudge, for the host's "user submitted
+- `idle-nudge.sh <session-id>` — the retain nudge, for the host's "user submitted
   a prompt" event: prints its text only when nothing has been retained for this
   checkout in `ACH_MEMORY_IDLE_INTERVAL`, then not again for that long in the
   same session. The stdio proxy stamps every successful `retain` under the same
   key, so an agent that saves on its own never sees it. Free: it rides into the
-  turn the user just started. Independent of the `Stop` clock.
-- `stop.sh` — Claude Code and Codex `Stop`. Their stdout never reaches the
-  model, so it wraps `retain-nudge.sh` as `{"decision": "block", "reason"}`,
-  which makes the agent take one more turn. opencode and pi have no Stop; they
-  call `retain-nudge.sh` themselves and inject the text as a synthetic message.
+  turn the user just started.
+
+Nothing hooks the host's "turn finished" event. Until 0.7.1 a `Stop` hook
+nudged there, but `Stop` has no way to reach the model except a blocking
+decision, which the host then reports as a hook error — and the three
+emulations for hosts without `Stop` each cost a whole extra turn. The idle
+nudge covers the same ground on a supported path and costs nothing, so the
+turn-finished nudge is gone rather than reworked.
 
 ## Verify
 

@@ -6,7 +6,7 @@
 // point opencode at the skill and at the stdio proxy built from that same
 // checkout -- no version pin to go stale. The two experimental hooks are
 // opencode's equivalents of the Claude Code SessionStart and PreCompact hooks,
-// and the `event` hook is its Stop; all run the same shell scripts.
+// and `chat.message` is its UserPromptSubmit; all run the same shell scripts.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,9 +25,8 @@ function hook(script, ...args) {
   }
 }
 
-export const AchMemoryPlugin = async ({ client }) => {
+export const AchMemoryPlugin = async () => {
   const context = hook("session-start.sh");
-  const nudging = new Set();
   return {
     config: async (config) => {
       config.skills = config.skills || {};
@@ -69,25 +68,6 @@ export const AchMemoryPlugin = async ({ client }) => {
     "chat.message": async (input, output) => {
       const nudge = input?.sessionID && hook("idle-nudge.sh", input.sessionID);
       if (nudge && Array.isArray(output?.parts)) output.parts.push({ type: "text", text: nudge, synthetic: true });
-    },
-
-    // opencode's Stop: there is no "turn finished" hook that can reach the
-    // model, so on `session.idle` the throttled nudge goes in as a synthetic
-    // user message that starts one more turn. That turn goes idle too:
-    // `nudging` is the `stop_hook_active` of this host, so it ends there
-    // instead of looping.
-    event: async ({ event }) => {
-      if (event?.type !== "session.idle") return;
-      const sessionID = event.properties?.sessionID;
-      if (!sessionID) return;
-      if (nudging.delete(sessionID)) return;
-      const nudge = hook("retain-nudge.sh", sessionID);
-      if (!nudge) return;
-      nudging.add(sessionID);
-      await client.session.promptAsync({
-        path: { id: sessionID },
-        body: { parts: [{ type: "text", text: nudge, synthetic: true }] },
-      });
     },
   };
 };

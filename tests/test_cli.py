@@ -70,14 +70,6 @@ def test_main_hook_idle_nudge_prints_the_clock(capsys):
     assert '"' not in out and "\\" not in out
 
 
-def test_main_hook_retain_nudge_prints_the_bar(capsys):
-    assert cli.main(["hook", "retain-nudge"]) == 0
-    out = capsys.readouterr().out
-    assert "Retain ONLY what a future session would need" in out
-    # stop.sh embeds this text in JSON with printf; no escaping happens there.
-    assert '"' not in out and "\\" not in out
-
-
 def test_main_context_load_prints_the_text(monkeypatch, capsys):
     async def fake_call_load_context(url, slug):
         return "standing context"

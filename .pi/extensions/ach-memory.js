@@ -67,22 +67,4 @@ export default function (pi) {
     if (nudge) result.message = { customType: "ach-memory-nudge", content: nudge, display: false };
     return Object.keys(result).length ? result : undefined;
   });
-  // pi's Stop: `agent_settled` fires once the run is fully over (no retry,
-  // compaction or queued continuation pending). The throttled nudge goes in as
-  // a message that starts one more turn. That turn settles too: `nudging` is
-  // the `stop_hook_active` of this host, so it ends there instead of looping.
-  let nudging = false;
-  pi.on("agent_settled", async (_event, ctx) => {
-    if (nudging) {
-      nudging = false;
-      return;
-    }
-    const nudge = hook("retain-nudge.sh", ctx?.sessionManager?.getSessionId?.() || "unknown");
-    if (!nudge) return;
-    nudging = true;
-    await pi.sendMessage(
-      { customType: "ach-memory-nudge", content: nudge, display: false },
-      { triggerTurn: true },
-    );
-  });
 }

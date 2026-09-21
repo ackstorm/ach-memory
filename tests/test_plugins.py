@@ -29,7 +29,7 @@ MANIFESTS = (
     "package.json",
 )
 
-HOOK_SCRIPTS = ("session-start.sh", "subagent-start.sh", "pre-compact.sh", "retain-nudge.sh", "stop.sh", "idle-nudge.sh")
+HOOK_SCRIPTS = ("session-start.sh", "subagent-start.sh", "pre-compact.sh", "idle-nudge.sh")
 
 # Claude Code and Codex both expand their own plugin-root variable and nothing
 # else. A hook that names the wrong one resolves to an empty path and dies.
@@ -101,10 +101,6 @@ def run_hook(script: str, payload: str, tmp_path: Path, **env: str) -> str:
     ).stdout
 
 
-def stop(payload: str, tmp_path: Path, interval: str = "900") -> str:
-    return run_hook("stop.sh", payload, tmp_path, ACH_MEMORY_NUDGE_INTERVAL=interval)
-
-
 def test_idle_nudge_fires_only_when_nothing_was_retained_and_once_per_window(tmp_path):
     """The proxy stamps retains under the same key; a fresh checkout starts the clock instead of nagging."""
     def idle(payload: str) -> str:
@@ -126,16 +122,6 @@ def test_subagent_activation_is_the_session_activation():
     """One text, two carriers: the JSON is generated from the txt and must not drift."""
     text = (ROOT / "hooks" / "activation.txt").read_text().rstrip("\n")
     assert load("hooks/activation.subagent.json")["hookSpecificOutput"]["additionalContext"] == text
-
-
-def test_stop_hook_blocks_once_per_interval_and_never_loops(tmp_path):
-    """Stop stdout never reaches the model: only a `block` decision does, and each costs a turn."""
-    first = json.loads(stop('{"session_id": "s1", "stop_hook_active": false}', tmp_path))
-    assert first["decision"] == "block" and "Retain ONLY" in first["reason"]
-    assert stop('{"session_id": "s1"}', tmp_path) == ""  # inside the window
-    assert stop('{"session_id": "s2"}', tmp_path) != ""  # another session has its own window
-    assert stop('{"session_id": "s3", "stop_hook_active": true}', tmp_path) == ""  # already continuing
-    assert stop("not json", tmp_path, interval="0") != ""  # garbage input still fails open, not loud
 
 
 @pytest.mark.parametrize("script", HOOK_SCRIPTS)

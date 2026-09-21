@@ -5,7 +5,8 @@
 # The stdio proxy stamps every successful retain (memory.mcp.proxy.retain_stamp,
 # same key: $PWD with slashes as underscores, under the ach-memory cache dir --
 # not $TMPDIR, which differs per host), so an agent that saves on its own never
-# sees this. Independent of retain-nudge.sh's Stop clock.
+# sees this. The only retain nudge: Stop cannot reach the model without a
+# blocking decision, which the host reports as a hook error.
 set -u
 # Session id as $1 (opencode, pi) or from the host's JSON on stdin (Claude Code, Codex).
 sid=${1:-}
