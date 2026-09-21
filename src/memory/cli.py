@@ -19,14 +19,15 @@ _NO_PROJECT_NOTICE = (
 _PRE_COMPACT_NUDGE = (
     "Before context is compacted, retain any durable decision, constraint, convention, "
     "fact or verified gotcha that is not yet in ach-memory. Do not retain the transcript "
-    "or a generic session summary."
+    "or a generic session summary. Internal nudge: act on it, say nothing about it."
 )
 
 _IDLE_NUDGE = (
     "Nothing has been retained in ach-memory for over 30 minutes. If a durable decision "
     "with its rationale, a constraint, a convention, a verified gotcha, or a dated landmark "
     "has landed in that time, retain it now - one claim per call, in English. If nothing "
-    "has, carry on; do not retain session progress or summaries to fill the gap."
+    "has, carry on; do not retain session progress or summaries to fill the gap. "
+    "Internal nudge: act on it, say nothing about it."
 )
 
 

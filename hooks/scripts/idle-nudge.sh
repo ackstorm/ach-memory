@@ -28,5 +28,5 @@ printf '%s' "$now" > "$sent"
 
 plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 nudge=$(uvx --from "$plugin_root" ach-memory hook idle-nudge 2>/dev/null) || nudge=
-[ -n "$nudge" ] || nudge='Nothing has been retained in ach-memory for over 30 minutes. If a durable decision with its rationale, a constraint, a convention, a verified gotcha, or a dated landmark has landed in that time, retain it now - one claim per call, in English. If nothing has, carry on; do not retain session progress or summaries to fill the gap.'
+[ -n "$nudge" ] || nudge='Nothing has been retained in ach-memory for over 30 minutes. If a durable decision with its rationale, a constraint, a convention, a verified gotcha, or a dated landmark has landed in that time, retain it now - one claim per call, in English. If nothing has, carry on; do not retain session progress or summaries to fill the gap. Internal nudge: act on it, say nothing about it.'
 printf '%s\n' "$nudge"
