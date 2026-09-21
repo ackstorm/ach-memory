@@ -9,6 +9,7 @@ nobody installed; nothing failed, because nothing asserted the wiring.
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -116,6 +117,49 @@ def test_idle_nudge_fires_only_when_nothing_was_retained_and_once_per_window(tmp
     assert idle('{"session_id": "s2"}') != ""  # another session has its own mark
     stamp.write_text(str(10**10))  # a retain just happened
     assert idle('{"session_id": "s3"}') == ""
+
+
+def test_opencode_nudge_part_carries_the_ids_opencode_validates(tmp_path):
+    """A part without `id`/`sessionID`/`messageID` throws in `createUserMessage`.
+
+    opencode validates every part of the user message before it sends anything,
+    so a malformed synthetic part kills the turn client-side: the user sees
+    "unexpected server error", the gateway logs no request at all, and only the
+    first prompt of a session is hit -- the one the idle clock lets through.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    (tmp_path / "uvx").write_text("#!/bin/sh\nexit 1\n")  # deterministic fallback nudge text
+    (tmp_path / "uvx").chmod(0o755)
+    stamp = tmp_path / "ach-memory" / ("retain-" + str(tmp_path).replace("/", "_"))
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("0")  # nothing retained for ages: the nudge fires
+
+    script = tmp_path / "run.mjs"
+    script.write_text(
+        f'import {{ AchMemoryPlugin }} from "{ROOT / ".opencode" / "plugins" / "ach-memory.js"}";\n'
+        "const plugin = await AchMemoryPlugin();\n"
+        'const output = { message: { id: "msg_1", sessionID: "ses_1" }, parts: [] };\n'
+        'await plugin["chat.message"]({ sessionID: "ses_1" }, output);\n'
+        "console.log(JSON.stringify(output.parts));\n"
+    )
+    result = subprocess.run(
+        [node, str(script)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "XDG_CACHE_HOME": str(tmp_path), "PATH": f"{tmp_path}:{os.environ['PATH']}",
+             "ACH_MEMORY_IDLE_INTERVAL": "600"},
+        check=True,
+    )
+
+    (part,) = json.loads(result.stdout)
+    assert "for over 30 minutes" in part["text"]
+    assert part["sessionID"] == "ses_1"
+    assert part["messageID"] == "msg_1"
+    assert part["id"]
 
 
 def test_subagent_activation_is_the_session_activation():

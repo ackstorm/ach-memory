@@ -65,9 +65,23 @@ export const AchMemoryPlugin = async () => {
     // opencode's UserPromptSubmit: the idle nudge rides into the user's own
     // message as one more text part. idle-nudge.sh prints nothing unless
     // nothing was retained for this checkout in the last 30 minutes.
+    //
+    // A part missing `id`/`sessionID`/`messageID` fails opencode's schema check
+    // inside `SessionPrompt.createUserMessage`, which throws before the request
+    // leaves the client: the user sees "unexpected server error", the gateway
+    // logs nothing, and the turn never runs. It hit the first prompt of a
+    // session -- the only one the idle clock lets the nudge through.
     "chat.message": async (input, output) => {
       const nudge = input?.sessionID && hook("idle-nudge.sh", input.sessionID);
-      if (nudge && Array.isArray(output?.parts)) output.parts.push({ type: "text", text: nudge, synthetic: true });
+      if (!nudge || !Array.isArray(output?.parts) || !output?.message) return;
+      output.parts.push({
+        id: `prt_${crypto.randomUUID().replaceAll("-", "")}`,
+        sessionID: output.message.sessionID,
+        messageID: output.message.id,
+        type: "text",
+        text: nudge,
+        synthetic: true,
+      });
     },
   };
 };
