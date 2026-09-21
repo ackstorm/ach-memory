@@ -19,6 +19,8 @@ from memory.sanitization import contains_secret, normalize_claim
         "gitlab glpat-abcdefghijklmnopqrst",
         "slack app token xapp-1-A0123456789-abcdefghij",
         "hook https://hooks.slack.com/services/TQA0FIXTURE/BQA0FIXTURE/qa-fixture-not-a-token",
+        "db postgresql://memory:qafixturepassword@localhost:5432/memory",  # userinfo WITH a password
+        "clone https://ghp_qa0fixturenotarealtoken@github.com/o/r.git",  # token as the username
     ],
 )
 def test_common_credential_shapes_are_rejected(text):
@@ -34,6 +36,10 @@ def test_common_credential_shapes_are_rejected(text):
         "Use uv, not pip, for Python installs.",
         "Release v0.7.1 shipped on 2026-09-11.",
         "The digest 5f4dcc3b5aa765d61d8327deb882cf99 names the image.",  # 32 hex, not a key shape
+        # Userinfo with no password is not a secret, and a deployment note has
+        # every reason to name a clone URL.
+        "Cloned from ssh://git@git-ssh.example.com:2222/group/project.git",
+        "Mirror of https://someone@github.com/org/repo.git",
     ],
 )
 def test_ordinary_prose_still_passes(text):
