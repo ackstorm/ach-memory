@@ -31,13 +31,20 @@ One MCP endpoint (`/mcp/`), one health route (`/health`). No REST data plane.
 See [`docs/hosts.md`](docs/hosts.md). Short version:
 
 ```bash
-export ACH_MEMORY_URL=https://api.<domain>/memory/mcp/
+export ACH_MEMORY_URL=https://api.<domain>/ach-memory/mcp/
 export ACH_MEMORY_API_KEY=<your platform key>
 
 claude   plugin marketplace add ackstorm/ach-memory && claude plugin install ach-memory@ach-memory
 codex    plugin marketplace add ackstorm/ach-memory && codex  plugin add     ach-memory@ach-memory
 opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global
 pi       install git:github.com/ackstorm/ach-memory
+```
+
+opencode also installs straight from the service, with no git and no registry —
+the endpoint serves the running release's own bundle:
+
+```bash
+opencode plugin https://api.<domain>/ach-memory/plugin --global
 ```
 
 This repository is the plugin bundle: each host reads its own root manifest

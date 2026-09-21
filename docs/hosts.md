@@ -28,6 +28,29 @@ opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --glob
 To pin a version, append `#v0.5.0` to the opencode git spec; the other three
 follow their marketplace or package source.
 
+## Installing opencode from the service
+
+opencode accepts a URL as a plugin entry and hands it to bun, which expects an
+`npm pack` tarball — the same mechanism as a git spec, over plain HTTPS. The
+service serves its own bundle at `/plugin`:
+
+```bash
+opencode plugin https://api.<domain>/ach-memory/plugin --global
+```
+
+No git, no registry, and no way for the bundle to disagree with the service it
+talks to: the tarball is packed from the tree the running image was built from.
+Caching works exactly as it does for the git spec, so the update path is the
+same shape:
+
+```bash
+rm -rf "$HOME/.cache/opencode/packages/https:/api.<domain>/ach-memory/plugin"
+opencode plugin https://api.<domain>/ach-memory/plugin --global
+```
+
+There is no version in the URL: the endpoint always serves whatever release is
+deployed. Pin by installing the git spec with a tag instead.
+
 ## No version pin, anywhere
 
 Every host hands its plugin an absolute path to the checkout it installed: the
@@ -47,7 +70,7 @@ host then froze at install time; that is how installs ended up stranded on
 Set these in your shell profile so every agent process inherits them:
 
 ```bash
-export ACH_MEMORY_URL=https://api.<domain>/memory/mcp/
+export ACH_MEMORY_URL=https://api.<domain>/ach-memory/mcp/
 export ACH_MEMORY_API_KEY=<token from your identity provider>
 # export ACH_MEMORY_HEADER=Authorization   # only if a proxy blocks the default header
 ```
