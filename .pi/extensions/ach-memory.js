@@ -8,7 +8,8 @@
 // no-pin arrangement the other three hosts get from their plugin root.
 //
 // `before_agent_start` carries the standing context and `agent_settled` is
-// pi's Stop. No PreCompact equivalent is wired here; see docs/hosts.md.
+// pi's Stop. There is no PreCompact equivalent: `session_before_compact` can
+// cancel or replace a compaction, not add to its prompt; see docs/hosts.md.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";

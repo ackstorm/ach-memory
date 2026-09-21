@@ -16,9 +16,17 @@ opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --glob
 pi       install git:github.com/ackstorm/ach-memory
 ```
 
-Re-running the same command is the update path. To pin a version, append
-`#v0.5.0` to the opencode git spec; the other three follow their marketplace or
-package source.
+Re-running the same command is the update path for Claude Code, Codex and pi.
+opencode caches the git spec as an npm dependency and never re-resolves it, so
+its update is:
+
+```bash
+rm -rf ~/.cache/opencode/packages/ach-memory@git+https:
+opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global
+```
+
+To pin a version, append `#v0.5.0` to the opencode git spec; the other three
+follow their marketplace or package source.
 
 ## No version pin, anywhere
 
@@ -62,8 +70,10 @@ retain nudge may fire per session. Unset means `900` (15 minutes).
 | Retain nudge before compaction | `PreCompact` | `PreCompact` | `session.compacting` | ❌ not wired |
 | Periodic retain nudge | `Stop` | `Stop` | `session.idle` → `promptAsync` | `agent_settled` → `sendMessage` |
 
-opencode has no subagent lifecycle event; pi has none either, and its
-`session_before_compact` is not wired yet.
+opencode has no subagent lifecycle event; pi has none either. pi's
+`session_before_compact` can only cancel or replace the whole compaction (its
+result is `{cancel?, compaction?}`; `customInstructions` is read-only input),
+so there is no way to add the retain nudge to its summarizer.
 
 Claude Code and Codex share the three hook scripts under `hooks/scripts/` but
 need separate hook files, because each expands only its own plugin-root
