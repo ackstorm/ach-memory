@@ -1,4 +1,4 @@
-"""CLI: `ach-memory mcp`, `ach-memory context load`, `ach-memory hook <pre-compact|retain-nudge>`.
+"""CLI: `ach-memory mcp`, `ach-memory context load`, `ach-memory hook <pre-compact|retain-nudge|idle-nudge>`.
 
 Installing is the host's own job -- `claude plugin install`, `codex plugin add`,
 `opencode plugin`, `pi install`; see docs/hosts.md.
@@ -33,6 +33,13 @@ _RETAIN_NUDGE = (
     "nothing, and stop."
 )
 
+_IDLE_NUDGE = (
+    "Nothing has been retained in ach-memory for over 30 minutes. If a durable decision "
+    "with its rationale, a constraint, a convention, a verified gotcha, or a dated landmark "
+    "has landed in that time, retain it now - one claim per call, in English. If nothing "
+    "has, carry on; do not retain session progress or summaries to fill the gap."
+)
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ach-memory")
@@ -50,6 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     hook_sub = hook.add_subparsers(dest="hook_command", required=True)
     hook_sub.add_parser("pre-compact")
     hook_sub.add_parser("retain-nudge")
+    hook_sub.add_parser("idle-nudge")
     return parser
 
 
@@ -90,6 +98,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "hook" and args.hook_command == "retain-nudge":
         print(_RETAIN_NUDGE)
+        return 0
+
+    if args.command == "hook" and args.hook_command == "idle-nudge":
+        print(_IDLE_NUDGE)
         return 0
 
     return 1

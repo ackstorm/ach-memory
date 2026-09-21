@@ -63,6 +63,14 @@ export const AchMemoryPlugin = async ({ client }) => {
       if (nudge && Array.isArray(output?.context)) output.context.push(nudge);
     },
 
+    // opencode's UserPromptSubmit: the idle nudge rides into the user's own
+    // message as one more text part. idle-nudge.sh prints nothing unless
+    // nothing was retained for this checkout in the last 30 minutes.
+    "chat.message": async (input, output) => {
+      const nudge = input?.sessionID && hook("idle-nudge.sh", input.sessionID);
+      if (nudge && Array.isArray(output?.parts)) output.parts.push({ type: "text", text: nudge, synthetic: true });
+    },
+
     // opencode's Stop: there is no "turn finished" hook that can reach the
     // model, so on `session.idle` the throttled nudge goes in as a synthetic
     // user message that starts one more turn. That turn goes idle too:

@@ -8,6 +8,8 @@ the remote unchanged; the `mcp` SDK owns the protocol.
 
 import os
 import subprocess
+import time
+from pathlib import Path
 
 import mcp_types as types
 from mcp.client.session import ClientSession
@@ -69,6 +71,21 @@ def fill_arguments(tool_name: str, arguments: dict, project_slug: str | None) ->
     return filled
 
 
+def retain_stamp(cwd: str | None = None) -> Path:
+    """Where the last successful retain for this checkout is timestamped.
+
+    `hooks/scripts/idle-nudge.sh` reads it with the same key: `$PWD` with slashes
+    as underscores, under `${XDG_CACHE_HOME:-~/.cache}/ach-memory`. Not `$TMPDIR`:
+    each host hands its children a different one (Claude Code sets
+    `~/.claude/tmp`), and the clock has to be one per checkout across hosts --
+    three sessions on one repo share it, which is what "did we save anything
+    lately" means.
+    """
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ach-memory"
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache / ("retain-" + (cwd or os.getcwd()).replace("/", "_"))
+
+
 def _build_bridge(session: ClientSession, slug: str | None) -> Server:
     """The host-facing Server: lists the remote's tools and forwards calls to it."""
 
@@ -78,9 +95,15 @@ def _build_bridge(session: ClientSession, slug: str | None) -> Server:
     async def _call_tool(ctx, params):
         arguments = fill_arguments(params.name, params.arguments or {}, slug)
         try:
-            return await session.call_tool(params.name, arguments)
+            result = await session.call_tool(params.name, arguments)
         except Exception as exc:  # noqa: BLE001 -- any remote/network failure is a tool error
             return types.CallToolResult(isError=True, content=[types.TextContent(text=str(exc))])
+        if params.name == "retain" and not result.is_error:
+            try:
+                retain_stamp().write_text(str(int(time.time())))
+            except OSError:
+                pass  # a read-only tmp must not turn a stored claim into an error
+        return result
 
     return Server("ach-memory", on_list_tools=_list_tools, on_call_tool=_call_tool)
 

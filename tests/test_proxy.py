@@ -16,6 +16,7 @@ from memory.mcp.proxy import (
     call_load_context,
     fill_arguments,
     resolve_project_context,
+    retain_stamp,
 )
 
 
@@ -142,6 +143,45 @@ def test_bridge_lists_and_forwards_tool_calls_with_filled_project_slug():
                 assert result.content[0].text == "hit"
 
         assert calls == [{"query": "x", "scope": "project", "project_slug": "acme-1"}]
+
+    asyncio.run(scenario())
+
+
+def test_bridge_stamps_a_successful_retain_and_nothing_else(tmp_path, monkeypatch):
+    """idle-nudge.sh reads this stamp; a failed retain or a recall must not reset its clock."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    stamp = retain_stamp()
+    assert stamp.parent == tmp_path / "ach-memory"
+    assert stamp.name == "retain-" + str(tmp_path).replace("/", "_")
+
+    async def _remote_call_tool(ctx, params):
+        if params.arguments.get("fail"):
+            return types.CallToolResult(isError=True, content=[types.TextContent(text="no")])
+        return types.CallToolResult(content=[types.TextContent(text="ok")])
+
+    remote = Server(
+        "fake-remote", on_list_tools=_remote_list_tools, on_call_tool=_remote_call_tool
+    )
+
+    async def scenario():
+        async with (
+            InMemoryTransport(remote) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.discover()
+            bridge = _build_bridge(session, None)
+            async with (
+                InMemoryTransport(bridge) as (h_read, h_write),
+                ClientSession(h_read, h_write) as host,
+            ):
+                await host.discover()
+                await host.call_tool("recall", {})
+                assert not stamp.exists()
+                await host.call_tool("retain", {"fail": True})
+                assert not stamp.exists()
+                await host.call_tool("retain", {})
+                assert stamp.read_text().isdigit()
 
     asyncio.run(scenario())
 

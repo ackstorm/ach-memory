@@ -54,13 +54,19 @@ function ensureMcpServer() {
 export default function (pi) {
   ensureMcpServer();
   if (typeof pi?.on !== "function") return;
+  // `before_agent_start` fires per user prompt: the standing context goes into
+  // the system prompt once, and the idle nudge -- printed only when nothing was
+  // retained for this checkout in the last 30 minutes -- rides in as a message.
   const context = hook("session-start.sh");
-  if (context) {
-    pi.on("before_agent_start", async (event) => {
-      if (typeof event?.systemPrompt !== "string" || event.systemPrompt.includes(context)) return;
-      return { systemPrompt: `${event.systemPrompt}\n\n${context}` };
-    });
-  }
+  pi.on("before_agent_start", async (event, ctx) => {
+    const result = {};
+    if (context && typeof event?.systemPrompt === "string" && !event.systemPrompt.includes(context)) {
+      result.systemPrompt = `${event.systemPrompt}\n\n${context}`;
+    }
+    const nudge = hook("idle-nudge.sh", ctx?.sessionManager?.getSessionId?.() || "unknown");
+    if (nudge) result.message = { customType: "ach-memory-nudge", content: nudge, display: false };
+    return Object.keys(result).length ? result : undefined;
+  });
   // pi's Stop: `agent_settled` fires once the run is fully over (no retry,
   // compaction or queued continuation pending). The throttled nudge goes in as
   // a message that starts one more turn. That turn settles too: `nudging` is

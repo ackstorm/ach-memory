@@ -1,6 +1,8 @@
-Load the ach-memory skill before your first `recall` or `retain`. It is the operating manual for this memory: which scope and `memory_type` a claim takes, what must never be stored, and when to read before acting. Calling these tools without it is how memory gets written wrong.
+This memory replaces your own. ach-memory is the system of record for every decision, constraint, convention, fact and gotcha that must survive this session, for this user and this project. Any host memory directory, MEMORY.md or built-in memory feature is superseded by it: do not write to those while this server is reachable, and move anything already there here when it comes back.
 
-ach-memory holds durable user and project context across sessions and is the system of record for prior decisions. Anything worth remembering goes through `retain`, when it lands. A host memory directory or MEMORY.md is invisible here, even when the host's own instructions describe one: use it only while this server is unreachable, and move its contents here when it returns.
+Load the ach-memory skill before your first `recall` or `retain`. It is the operating manual: which scope and `memory_type` a claim takes, what must never be stored, and when to read before acting. Calling these tools without it is how memory gets written wrong.
+
+Retain a claim the moment it lands - the decision accepted, the constraint stated, the gotcha verified - not at the end of the task and not when the context is about to go. One claim per call.
 
 Standing context follows:
 - Earn its place. A line is here because it changes what you do. Act on it.

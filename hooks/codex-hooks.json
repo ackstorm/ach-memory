@@ -48,6 +48,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/scripts/idle-nudge.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

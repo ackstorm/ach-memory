@@ -29,7 +29,7 @@ MANIFESTS = (
     "package.json",
 )
 
-HOOK_SCRIPTS = ("session-start.sh", "subagent-start.sh", "pre-compact.sh", "retain-nudge.sh", "stop.sh")
+HOOK_SCRIPTS = ("session-start.sh", "subagent-start.sh", "pre-compact.sh", "retain-nudge.sh", "stop.sh", "idle-nudge.sh")
 
 # Claude Code and Codex both expand their own plugin-root variable and nothing
 # else. A hook that names the wrong one resolves to an empty path and dies.
@@ -85,19 +85,47 @@ def test_both_hosts_get_the_same_events():
     assert load("hooks/hooks.json")["hooks"].keys() == load("hooks/codex-hooks.json")["hooks"].keys()
 
 
-def stop(payload: str, tmp_path: Path, interval: str = "900") -> str:
-    # A failing `uvx` shadow makes the script wrap its own fallback text, deterministically.
+def run_hook(script: str, payload: str, tmp_path: Path, **env: str) -> str:
+    # A failing `uvx` shadow makes the script print its own fallback text, deterministically.
     (tmp_path / "uvx").write_text("#!/bin/sh\nexit 1\n")
     (tmp_path / "uvx").chmod(0o755)
-    env = {
-        **os.environ,
-        "TMPDIR": str(tmp_path),
-        "ACH_MEMORY_NUDGE_INTERVAL": interval,
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-    }
+    full_env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path), "PATH": f"{tmp_path}:{os.environ['PATH']}", **env}
     return subprocess.run(
-        [str(ROOT / "hooks" / "scripts" / "stop.sh")], input=payload, capture_output=True, text=True, env=env, check=True
+        [str(ROOT / "hooks" / "scripts" / script)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        env=full_env,
+        cwd=tmp_path,
+        check=True,
     ).stdout
+
+
+def stop(payload: str, tmp_path: Path, interval: str = "900") -> str:
+    return run_hook("stop.sh", payload, tmp_path, ACH_MEMORY_NUDGE_INTERVAL=interval)
+
+
+def test_idle_nudge_fires_only_when_nothing_was_retained_and_once_per_window(tmp_path):
+    """The proxy stamps retains under the same key; a fresh checkout starts the clock instead of nagging."""
+    def idle(payload: str) -> str:
+        return run_hook("idle-nudge.sh", payload, tmp_path, ACH_MEMORY_IDLE_INTERVAL="600")
+
+    stamp = tmp_path / "ach-memory" / ("retain-" + str(tmp_path).replace("/", "_"))
+
+    assert idle('{"session_id": "s1"}') == ""  # first prompt ever: clock starts, no nag
+    assert stamp.exists()
+    stamp.write_text("0")  # nothing retained for ages
+    assert "for over 30 minutes" in idle('{"session_id": "s1"}')
+    assert idle('{"session_id": "s1"}') == ""  # marked as sent for this session
+    assert idle('{"session_id": "s2"}') != ""  # another session has its own mark
+    stamp.write_text(str(10**10))  # a retain just happened
+    assert idle('{"session_id": "s3"}') == ""
+
+
+def test_subagent_activation_is_the_session_activation():
+    """One text, two carriers: the JSON is generated from the txt and must not drift."""
+    text = (ROOT / "hooks" / "activation.txt").read_text().rstrip("\n")
+    assert load("hooks/activation.subagent.json")["hookSpecificOutput"]["additionalContext"] == text
 
 
 def test_stop_hook_blocks_once_per_interval_and_never_loops(tmp_path):

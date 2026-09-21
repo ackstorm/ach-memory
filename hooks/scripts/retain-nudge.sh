@@ -8,7 +8,9 @@
 # but a missing uvx must not silence the hook.
 set -u
 sid=${1:-unknown}
-stamp="${TMPDIR:-/tmp}/ach-nudge-$sid"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/ach-memory"
+mkdir -p "$cache" 2>/dev/null || exit 0
+stamp="$cache/nudge-$sid"
 now=$(date +%s)
 last=$(cat "$stamp" 2>/dev/null || echo 0)
 [ $((now - last)) -lt "${ACH_MEMORY_NUDGE_INTERVAL:-900}" ] && exit 0
