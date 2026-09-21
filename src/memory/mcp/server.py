@@ -71,11 +71,20 @@ async def _plugin(request: Request) -> Response:
     can never drift from the service the plugin is configured against. Unauthenticated
     like `/health`: `authenticate()` runs in the MCP tool layer, not as middleware, and
     bun sends no credentials anyway.
+
+    `cache-control: no-cache` is what makes a release reach anyone who already installed.
+    The URL never changes, and with no directive npm's request cache (`~/.npm/_cacache`)
+    falls back to heuristic freshness off `last-modified`: an old tarball is held fresh
+    for long enough that a new release is answered from the client's own cache without
+    the server ever being asked. `no-cache` means revalidate, not "do not store" -- the
+    etag still yields a 304, so an unchanged bundle costs one conditional request.
     """
     if not PLUGIN_TARBALL.is_file():
         # A dev run outside the image has no tarball. 404 beats refusing to start.
         return JSONResponse({"error": "no plugin tarball in this deployment"}, status_code=404)
-    return FileResponse(PLUGIN_TARBALL, media_type="application/gzip")
+    return FileResponse(
+        PLUGIN_TARBALL, media_type="application/gzip", headers={"cache-control": "no-cache"}
+    )
 
 
 def create_app() -> Starlette:

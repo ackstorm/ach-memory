@@ -36,6 +36,29 @@ def test_health_returns_ok():
     asyncio.run(scenario())
 
 
+def test_the_plugin_tarball_is_served_revalidated(tmp_path, monkeypatch):
+    """Without `cache-control`, a release never reaches anyone who already installed.
+
+    The URL is constant, so npm's request cache answers from `~/.npm/_cacache` under
+    heuristic freshness and the new bundle is simply never fetched: the host keeps
+    running the old plugin with nothing to say why. Observed on 0.7.2, where a cleared
+    package directory still reinstalled 0.7.1.
+    """
+    tarball = tmp_path / "plugin.tgz"
+    tarball.write_bytes(b"not really a tarball")
+    monkeypatch.setattr("memory.mcp.server.PLUGIN_TARBALL", tarball)
+
+    async def scenario():
+        transport = httpx2.ASGITransport(app=create_app())
+        async with httpx2.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            response = await client.get("/plugin")
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-cache"
+            assert response.headers["etag"]  # revalidation needs something to revalidate with
+
+    asyncio.run(scenario())
+
+
 def test_initialize_without_a_protocol_version_header_succeeds():
     """LiteLLM's client sends no `mcp-protocol-version` header on `initialize`; a raw
     request omitting it (never setting it, rather than trusting the SDK client not to)
