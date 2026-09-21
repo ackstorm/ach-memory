@@ -1,6 +1,6 @@
 {
   "name": "ach-memory",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Durable user and project memory for coding agents, through the ach-memory service.",
   "license": "MIT",
   "type": "module",
