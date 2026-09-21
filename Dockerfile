@@ -15,6 +15,10 @@ COPY --from=builder /app/deps /app/deps
 COPY src/ /app/src/
 COPY migrations/ /app/migrations/
 COPY alembic.ini /app/alembic.ini
+# The npm bundle served at /plugin, packed by `make plugin-tarball` before the build.
+# Packing outside the image is what keeps it honest: `npm pack` sees the real working
+# tree, so the bundle can never drift from a hand-written list of COPY paths.
+COPY dist/ach-memory.tgz /app/plugin.tgz
 # Non-root, numeric uid/gid so `runAsNonRoot: true` can verify it without running the image.
 RUN addgroup -g 10001 -S app \
     && adduser -S -D -u 10001 -G app -h /home/app -s /sbin/nologin app

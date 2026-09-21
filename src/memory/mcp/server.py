@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from mcp.server.mcpserver import MCPServer
@@ -10,7 +11,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from memory import __version__
@@ -58,6 +59,25 @@ async def _health(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+# The Dockerfile's COPY destination. `tests/test_plugins.py` holds the two ends together.
+PLUGIN_TARBALL = Path("/app/plugin.tgz")
+
+
+async def _plugin(request: Request) -> Response:
+    """Serve the npm bundle so a host can install over plain HTTPS, with no git and no registry.
+
+    opencode accepts a URL as a `plugin` entry and hands it to bun, which expects an
+    `npm pack` tarball. The bytes are the deployed release's own bundle, so the endpoint
+    can never drift from the service the plugin is configured against. Unauthenticated
+    like `/health`: `authenticate()` runs in the MCP tool layer, not as middleware, and
+    bun sends no credentials anyway.
+    """
+    if not PLUGIN_TARBALL.is_file():
+        # A dev run outside the image has no tarball. 404 beats refusing to start.
+        return JSONResponse({"error": "no plugin tarball in this deployment"}, status_code=404)
+    return FileResponse(PLUGIN_TARBALL, media_type="application/gzip")
+
+
 def create_app() -> Starlette:
     settings = get_settings()
     # A Host mismatch answers 421 from inside the SDK with no other trace, and /health is
@@ -80,7 +100,7 @@ def create_app() -> Starlette:
             yield
 
     app = Starlette(
-        routes=[Route("/health", _health)],
+        routes=[Route("/health", _health), Route("/plugin", _plugin)],
         middleware=[Middleware(_BareMcpPath)],
         lifespan=_lifespan,
     )

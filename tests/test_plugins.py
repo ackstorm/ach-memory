@@ -143,6 +143,22 @@ def test_the_skill_has_exactly_one_copy():
     ]
 
 
+def test_the_plugin_endpoint_reads_where_the_image_writes():
+    """The HTTPS install path is a Dockerfile COPY and a route that agree on one filename.
+
+    Nothing else connects them: move either and the endpoint 404s on a healthy service,
+    which reads as "this release has no bundle" rather than as a broken build.
+    """
+    from memory.mcp.server import PLUGIN_TARBALL
+
+    copied = [
+        line.split()[2]
+        for line in (ROOT / "Dockerfile").read_text().splitlines()
+        if line.startswith("COPY ") and line.rstrip().endswith(".tgz")
+    ]
+    assert copied == [str(PLUGIN_TARBALL)]
+
+
 def test_package_json_ships_the_whole_tree():
     """`files` would strip `pyproject.toml` and `src/`, and the proxy is built from this tree.
 

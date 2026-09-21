@@ -83,12 +83,21 @@ release-cut: # Create and push the release marker (VERSION=X.Y.Z)
 	git tag -a "v$(VERSION)" -m "v$(VERSION)"
 	git push origin main "v$(VERSION)"
 
+.PHONY: plugin-tarball
+# `npm pack` does not create --pack-destination; without the mkdir it dies ENOENT.
+# `dist/` is gitignored, and npm falls back to .gitignore when there is no
+# .npmignore, so the bundle never packs its own previous tarball.
+plugin-tarball: # Pack the repository as the npm bundle the image serves at /plugin
+	@mkdir -p dist
+	@npm pack --pack-destination dist/ --loglevel=warn >/dev/null
+	@mv -f dist/ach-memory-*.tgz dist/ach-memory.tgz
+
 .PHONY: up
-up: # Start the local stack (migrations run before the api serves)
+up: plugin-tarball # Start the local stack (migrations run before the api serves)
 	docker compose up -d --build
 
 .PHONY: e2e
-e2e: # Full local gate: build, wait for health, run the mcp smoke test; always tears the stack down
+e2e: plugin-tarball # Full local gate: build, wait for health, run the mcp smoke test; always tears the stack down
 	@trap 'docker compose down' EXIT; \
 	docker compose up -d --build; \
 	ok=; \
