@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -48,7 +48,7 @@ jobs:
       MEMORY_TEST_DATABASE_URL: postgresql+psycopg://memory:memory@localhost:5432/memory_test
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           python-version: "3.12"
