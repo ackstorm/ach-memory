@@ -71,6 +71,46 @@ def fill_arguments(tool_name: str, arguments: dict, project_slug: str | None) ->
     return filled
 
 
+_PERSONAL_DESCRIPTIONS = {
+    "recall": (
+        "Search memory and return bounded, grounded matching facts, most relevant first. "
+        "Results below a relevance floor are withheld rather than returned as padding, so "
+        "a query with no good answer returns nothing instead of a confident-looking list; "
+        "each hit carries the `score` it was ranked by. Filter with `memory_types`/`basis`. "
+        "Query in English whatever language the conversation uses: a translated query "
+        "scores well above a Spanish one against the same claim."
+    ),
+    "load_context": (
+        "Load the bounded standing context for this session from your own memory. "
+        "Creates nothing; call once at session start."
+    ),
+}
+
+
+def personal_tools(tools: list[types.Tool]) -> list[types.Tool]:
+    """Tool list for a session with no project: user memory only, so `scope` and
+    `project_slug` leave the schemas and `rename_project` disappears."""
+    out = []
+    for tool in tools:
+        if tool.name == "rename_project":
+            continue
+        schema = dict(tool.input_schema)
+        schema["properties"] = {
+            k: v for k, v in schema.get("properties", {}).items() if k not in ("scope", "project_slug")
+        }
+        if "required" in schema:
+            schema["required"] = [r for r in schema["required"] if r not in ("scope", "project_slug")]
+        out.append(
+            tool.model_copy(
+                update={
+                    "input_schema": schema,
+                    "description": _PERSONAL_DESCRIPTIONS.get(tool.name, tool.description),
+                }
+            )
+        )
+    return out
+
+
 def retain_stamp(cwd: str | None = None) -> Path:
     """Where the last successful retain for this checkout is timestamped.
 
@@ -90,10 +130,13 @@ def _build_bridge(session: ClientSession, slug: str | None) -> Server:
     """The host-facing Server: lists the remote's tools and forwards calls to it."""
 
     async def _list_tools(ctx, params):
-        return await session.list_tools(params=params)
+        listed = await session.list_tools(params=params)
+        return listed if slug else listed.model_copy(update={"tools": personal_tools(listed.tools)})
 
     async def _call_tool(ctx, params):
         arguments = fill_arguments(params.name, params.arguments or {}, slug)
+        if not slug and params.name != "load_context":
+            arguments["scope"] = "user"
         try:
             result = await session.call_tool(params.name, arguments)
         except Exception as exc:  # noqa: BLE001 -- any remote/network failure is a tool error

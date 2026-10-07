@@ -15,6 +15,7 @@ from memory.mcp.proxy import (
     auth_headers,
     call_load_context,
     fill_arguments,
+    personal_tools,
     resolve_project_context,
     retain_stamp,
 )
@@ -102,6 +103,23 @@ def test_fill_arguments_does_not_mutate_the_caller_dict():
     original = {"scope": "project"}
     fill_arguments("recall", original, "acme-1")
     assert original == {"scope": "project"}
+
+
+def test_personal_tools_drop_scope_project_slug_and_rename_project():
+    schema = {
+        "type": "object",
+        "properties": {"scope": {}, "project_slug": {}, "query": {}},
+        "required": ["scope", "query"],
+    }
+    tools = [
+        types.Tool(name="recall", description="mentions project", inputSchema=schema),
+        types.Tool(name="rename_project", inputSchema=schema),
+    ]
+    (recall,) = personal_tools(tools)
+    assert recall.name == "recall"
+    assert list(recall.input_schema["properties"]) == ["query"]
+    assert recall.input_schema["required"] == ["query"]
+    assert "project" not in recall.description
 
 
 async def _remote_list_tools(ctx, params):
