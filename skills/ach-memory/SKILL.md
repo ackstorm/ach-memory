@@ -1,6 +1,6 @@
 ---
 name: ach-memory
-description: Read this before the first `recall` or `retain` of a session. Durable user and project memory: what to store, which scope and type it takes, what never to store, and when to read before you act.
+description: Read this before the first `recall` or `retain` of a session. Durable user and project memory: what to store, which scope and type it takes, what never to store, and when to read before you act. Also read it to install or configure ach-memory, or when its tools are missing or answer UNAUTHORIZED.
 ---
 
 # ach-memory
@@ -68,3 +68,38 @@ Load standing context at session start with `load_context`. Unfinished work is n
 retain task progress, and do not expect the next session to find it here.
 
 The live tool schema is authoritative for fields, authorization and confirmation requirements.
+
+## Setup
+
+The plugin installs a local stdio proxy that resolves the project and forwards to the remote
+service. Install with the host's own plugin command (re-run it to update):
+
+```bash
+claude plugin marketplace add ackstorm/ach-memory && claude plugin install ach-memory@ach-memory
+codex  plugin marketplace add ackstorm/ach-memory && codex  plugin add ach-memory@ach-memory
+```
+
+The proxy reads its connection from the environment on every request. Put one of these in the
+shell profile (`~/.zshrc`, `~/.bashrc`), open a new terminal, and restart the host:
+
+```bash
+# A. ACH login, through the LiteLLM gateway (short-lived JWT, refreshed per request)
+export ACH_MEMORY_URL=https://api.ackstorm.ai/mcp/ach-memory
+export ACH_MEMORY_TOKEN_COMMAND="/path/to/ach-cli token"   # run by sh: full path, not an alias
+
+# B. Static key
+export ACH_MEMORY_URL=https://<host>/mcp/
+export ACH_MEMORY_API_KEY=<token from your identity provider>
+# export ACH_MEMORY_HEADER=x-litellm-api-key   # only if a proxy blocks Authorization
+```
+
+`ACH_MEMORY_TOKEN_COMMAND` wins over `ACH_MEMORY_API_KEY`. `ACH_MEMORY_HEADER` defaults to
+`Authorization: Bearer <token>`; any other header carries the bare token, so leave it unset for
+option A. Never write a token value into a file the user did not ask for, and never echo one.
+
+Check from a repository: `uvx --from git+https://github.com/ackstorm/ach-memory ach-memory
+context load` prints `### Project Context` when everything works. When the tools
+answer `UNAUTHORIZED: missing or malformed credential`, no credential reached the service: the
+variables are unset in the host's environment, or `ACH_MEMORY_URL` bypasses the gateway that
+accepts the token. In Codex, remove any hand-written `[mcp_servers.ach-memory]` entry
+(`codex mcp remove ach-memory`); the plugin brings its own.
