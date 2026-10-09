@@ -72,11 +72,19 @@ The live tool schema is authoritative for fields, authorization and confirmation
 ## Setup
 
 The plugin installs a local stdio proxy that resolves the project and forwards to the remote
-service. Install with the host's own plugin command (re-run it to update):
+service. Install with the host's own plugin command:
 
 ```bash
 claude plugin marketplace add ackstorm/ach-memory && claude plugin install ach-memory@ach-memory
 codex  plugin marketplace add ackstorm/ach-memory && codex  plugin add ach-memory@ach-memory
+```
+
+Re-running those does not update: both hosts keep the marketplace snapshot they have. Refresh it
+first, then restart the host:
+
+```bash
+claude plugin marketplace update ach-memory && claude plugin update ach-memory@ach-memory
+codex  plugin marketplace upgrade ach-memory && codex  plugin add ach-memory@ach-memory
 ```
 
 The proxy reads its connection from the environment on every request. Put one of these in the

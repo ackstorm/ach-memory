@@ -16,8 +16,15 @@ opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --glob
 pi       install git:github.com/ackstorm/ach-memory
 ```
 
-Re-running the same command is the update path for Claude Code, Codex and pi.
-opencode caches the git spec as an npm dependency and never re-resolves it, so
+Re-running the install command does not update Claude Code or Codex: both keep
+their marketplace snapshot. Refresh it first:
+
+```bash
+claude plugin marketplace update ach-memory && claude plugin update ach-memory@ach-memory
+codex  plugin marketplace upgrade ach-memory && codex  plugin add ach-memory@ach-memory
+```
+
+Re-running the install command is the update path for pi. opencode caches the git spec as an npm dependency and never re-resolves it, so
 its update is:
 
 ```bash
