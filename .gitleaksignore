@@ -1,0 +1,17 @@
+# Exact fingerprints of reviewed false positives in history (commit:file:rule:line).
+# Sanitizer canaries, a tokenizer version string, a test slug, and the CI-job-scoped
+# probe/master-key values that authenticate nothing outside the ephemeral runner.
+# Fingerprints, not regexes: a real secret anywhere else still trips `make secrets`.
+125ca4f739620c1ae50bbc00aeac3e70fae904c6:docs/superpowers/plans/2026-09-04-ach-memory-v0-4-0-context-skill-retirement.md:generic-api-key:109
+125ca4f739620c1ae50bbc00aeac3e70fae904c6:docs/superpowers/plans/2026-09-04-ach-memory-v0-4-0-context-skill-retirement.md:generic-api-key:135
+25d369e17bc7be9d585403d5a0abd96e3e83c079:.github/workflows/ci.yml:curl-auth-header:120
+25d369e17bc7be9d585403d5a0abd96e3e83c079:.github/workflows/ci.yml:generic-api-key:103
+5a4da0b663b6e6ba617eff290ebd7ee2a651d37a:tests/test_capture_e2e.py:generic-api-key:27
+9b8fe684068b78a303bb18fb7de18c861aec8f49:tests/test_phase3_review_closure.py:generic-api-key:433
+9b8fe684068b78a303bb18fb7de18c861aec8f49:tests/test_phase3_review_closure.py:private-key:525
+a997954fcbb11f8f23e7efd0462fda433e13e368:src/memory/delivery.py:generic-api-key:9
+dc64ee7e70a8fcb13c36ce69ca27bfaa3a7873d0:tests/fixtures/claude-transcripts/redaction.jsonl:generic-api-key:4
+dc64ee7e70a8fcb13c36ce69ca27bfaa3a7873d0:tests/fixtures/claude-transcripts/redaction.jsonl:private-key:2
+e0140eef840ed311e39e58c502c11cd6a2ee981e:.github/workflows/ci.yml:curl-auth-header:195
+e4d1adeb920c5c17647efd243d36f182233835ec:tests/test_delivery.py:generic-api-key:5
+ebb59f19fc67c627e03eda1c9473e32b18f3c80f:tests/test_models.py:generic-api-key:126
