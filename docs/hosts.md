@@ -79,6 +79,16 @@ export ACH_MEMORY_API_KEY=<token from your identity provider>
 `ach-memory context load`. `ACH_MEMORY_API_KEY` is whatever credential your
 identity provider issues; the service mints none.
 
+A short-lived token cannot sit in a variable. Name the command that prints it
+instead; the proxy runs it before every request and it wins over
+`ACH_MEMORY_API_KEY`. Through the ACKstorm LiteLLM gateway, with your `ach`
+login:
+
+```bash
+export ACH_MEMORY_URL=https://api.ackstorm.ai/mcp/ach-memory
+export ACH_MEMORY_TOKEN_COMMAND="ach-cli token"   # sh runs it: name the binary, not an alias
+```
+
 Optional: `ACH_MEMORY_IDLE_INTERVAL` is how long, in seconds, a checkout may go without
 a retain before the next prompt carries a reminder, and how long that reminder
 then stays quiet. Unset means `1800` (30 minutes).

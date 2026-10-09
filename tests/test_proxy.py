@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import subprocess
 
+import httpx2
 import mcp_types as types
 import pytest
 from mcp.client._memory import InMemoryTransport
@@ -11,7 +12,10 @@ from mcp.client.session import ClientSession
 from mcp.server.lowlevel import Server
 
 from memory.mcp.proxy import (
+    FreshCredential,
     _build_bridge,
+    _handshake,
+    api_key,
     auth_headers,
     call_load_context,
     fill_arguments,
@@ -37,6 +41,56 @@ def test_auth_headers_custom_header_sends_the_bare_key(monkeypatch):
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "sk-1")
     monkeypatch.setenv("ACH_MEMORY_HEADER", "x-litellm-api-key")
     assert auth_headers() == {"x-litellm-api-key": "sk-1"}
+
+
+def test_api_key_prefers_the_token_command_over_the_static_key(monkeypatch):
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "static")
+    monkeypatch.setenv("ACH_MEMORY_TOKEN_COMMAND", "echo '  fresh-jwt  '")
+    assert api_key() == "fresh-jwt"
+    monkeypatch.setenv("ACH_MEMORY_TOKEN_COMMAND", "  ")
+    assert api_key() == "static"
+
+
+def test_api_key_is_empty_when_the_token_command_fails(monkeypatch):
+    """A failed helper must not fall back to a stale static key."""
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "static")
+    monkeypatch.setenv("ACH_MEMORY_TOKEN_COMMAND", "echo partial; exit 3")
+    assert api_key() == ""
+
+
+def test_fresh_credential_asks_the_helper_on_every_request(tmp_path, monkeypatch):
+    """Short-lived tokens: each request carries what the helper prints now."""
+    counter = tmp_path / "n"
+    counter.write_text("0")
+    monkeypatch.delenv("ACH_MEMORY_HEADER", raising=False)
+    monkeypatch.setenv(
+        "ACH_MEMORY_TOKEN_COMMAND",
+        f"n=$(($(cat {counter}) + 1)); echo $n > {counter}; echo t$n",
+    )
+    auth = FreshCredential()
+    seen = [
+        next(auth.auth_flow(httpx2.Request("POST", "http://x/mcp"))).headers["authorization"]
+        for _ in range(2)
+    ]
+    assert seen == ["Bearer t1", "Bearer t2"]
+
+
+def test_handshake_falls_back_to_initialize_when_discover_is_refused():
+    """LiteLLM's MCP gateway answers `server/discover` with -32603."""
+    from mcp.shared.exceptions import MCPError
+
+    steps = []
+
+    class Session:
+        async def discover(self):
+            steps.append("discover")
+            raise MCPError(code=-32603, message="Server returned an error response")
+
+        async def initialize(self):
+            steps.append("initialize")
+
+    asyncio.run(_handshake(Session()))
+    assert steps == ["discover", "initialize"]
 
 
 def _git_repo(tmp_path, origin: str | None):
@@ -248,8 +302,11 @@ def _stub_transport(monkeypatch, remote: Server, captured_headers: dict):
     streamable_http_client and offers no injection seam of its own."""
     import memory.mcp.proxy as proxy_module
 
-    def fake_create_mcp_http_client(headers):
-        captured_headers.update(headers)
+    def fake_create_mcp_http_client(*, auth):
+        request = next(auth.auth_flow(httpx2.Request("POST", "http://x/mcp")))
+        captured_headers.update(
+            {k: v for k, v in request.headers.items() if k.lower() == "authorization"}
+        )
         return _DummyHttpClient()
 
     @contextlib.asynccontextmanager
@@ -278,7 +335,7 @@ def test_call_load_context_fills_arguments_and_sends_the_auth_header(monkeypatch
     text = asyncio.run(call_load_context("http://x/mcp", "acme-1"))
 
     assert text == "standing context"
-    assert captured == {"Authorization": "Bearer sk-1"}
+    assert captured == {"authorization": "Bearer sk-1"}
 
 
 def test_call_load_context_raises_on_a_remote_error(monkeypatch):

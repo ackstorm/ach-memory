@@ -8,7 +8,7 @@
 set -u
 plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cat "$plugin_root/hooks/activation.txt" 2>/dev/null || exit 0
-if [ -n "${ACH_MEMORY_API_KEY:-}" ] && command -v uvx >/dev/null 2>&1; then
+if [ -n "${ACH_MEMORY_API_KEY:-}${ACH_MEMORY_TOKEN_COMMAND:-}" ] && command -v uvx >/dev/null 2>&1; then
   printf '\n'
   uvx --from "$plugin_root" ach-memory context load 2>/dev/null || true
 fi
