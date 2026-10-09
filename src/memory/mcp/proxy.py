@@ -169,19 +169,56 @@ def retain_stamp(cwd: str | None = None) -> Path:
     return cache / ("retain-" + (cwd or os.getcwd()).replace("/", "_"))
 
 
+#: The tools this release's server registers -- the proxy ships in the same
+#: package, so it knows them; tests/test_proxy.py pins this to the live registry.
+TOOL_NAMES = frozenset({
+    "correct", "delete_memory", "forget", "get_memory", "get_operation", "history",
+    "list_memories", "load_context", "recall", "reflect", "rename_project", "restore",
+    "retain",
+})
+
+
+def canonical_tool_name(listed: str) -> str | None:
+    """Which of our tools a remote-listed name is, whatever a gateway prefixed onto it.
+
+    LiteLLM lists `ach-memory.retain`; other gateways use other separators. Matching
+    against the known names instead of parsing the prefix survives any of them: the
+    name is ours if it IS a tool or ends with one after a non-alphanumeric boundary.
+    """
+    if listed in TOOL_NAMES:
+        return listed
+    matches = [
+        name for name in TOOL_NAMES
+        if listed.endswith(name) and not listed[-len(name) - 1].isalnum()
+    ]
+    return max(matches, key=len, default=None)
+
+
 def _build_bridge(session: ClientSession, slug: str | None) -> Server:
-    """The host-facing Server: lists the remote's tools and forwards calls to it."""
+    """The host-facing Server: lists the remote's tools and forwards calls to it.
+
+    The host sees our canonical tool names; calls go out under the name the remote
+    listed, so a gateway's prefix never reaches the logic keyed on tool names.
+    """
+    remote_names: dict[str, str] = {}
 
     async def _list_tools(ctx, params):
         listed = await session.list_tools(params=params)
-        return listed if slug else listed.model_copy(update={"tools": personal_tools(listed.tools)})
+        tools = []
+        for tool in listed.tools:
+            name = canonical_tool_name(tool.name)
+            if name is not None:
+                remote_names[name] = tool.name
+                tool = tool.model_copy(update={"name": name})
+            tools.append(tool)
+        return listed.model_copy(update={"tools": tools if slug else personal_tools(tools)})
 
     async def _call_tool(ctx, params):
         arguments = fill_arguments(params.name, params.arguments or {}, slug)
         if not slug and params.name != "load_context":
             arguments["scope"] = "user"
         try:
-            result = await session.call_tool(params.name, arguments)
+            result = await session.call_tool(remote_names.get(params.name, params.name), arguments)
         except Exception as exc:  # noqa: BLE001 -- any remote/network failure is a tool error
             return types.CallToolResult(isError=True, content=[types.TextContent(text=str(exc))])
         if params.name == "retain" and not result.is_error:

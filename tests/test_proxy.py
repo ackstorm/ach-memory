@@ -12,17 +12,25 @@ from mcp.client.session import ClientSession
 from mcp.server.lowlevel import Server
 
 from memory.mcp.proxy import (
+    TOOL_NAMES,
     FreshCredential,
     _build_bridge,
     _handshake,
     api_key,
     auth_headers,
     call_load_context,
+    canonical_tool_name,
     fill_arguments,
     personal_tools,
     resolve_project_context,
     retain_stamp,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_token_helper(monkeypatch):
+    """A developer shell running the token-helper setup must not leak into tests."""
+    monkeypatch.delenv("ACH_MEMORY_TOKEN_COMMAND", raising=False)
 
 
 def test_auth_headers_defaults_to_authorization_bearer(monkeypatch):
@@ -350,3 +358,61 @@ def test_call_load_context_raises_on_a_remote_error(monkeypatch):
 
     with pytest.raises(RuntimeError):
         asyncio.run(call_load_context("http://x/mcp", None))
+
+
+def test_tool_names_match_what_the_server_registers():
+    """The proxy's list is only right because it ships with the server: pin that."""
+    from memory.mcp.server import build_mcp
+
+    async def registered():
+        return {tool.name for tool in await build_mcp().list_tools()}
+
+    assert asyncio.run(registered()) == TOOL_NAMES
+
+
+def test_canonical_tool_name_sees_through_any_gateway_prefix():
+    assert canonical_tool_name("retain") == "retain"
+    assert canonical_tool_name("ach-memory.retain") == "retain"
+    assert canonical_tool_name("mem__get_memory") == "get_memory"
+    assert canonical_tool_name("ach-memory.list_memories") == "list_memories"
+    assert canonical_tool_name("other.search") is None
+    assert canonical_tool_name("unretain") is None
+
+
+def test_bridge_unprefixes_gateway_tools_and_calls_them_by_their_remote_name(tmp_path, monkeypatch):
+    """LiteLLM lists `ach-memory.retain`: the host sees `retain`, name-keyed logic
+    (here the retain stamp) fires, and the remote is called by the name it listed."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    called: list[str] = []
+
+    async def _list(ctx, params):
+        return types.ListToolsResult(tools=[
+            types.Tool(name="ach-memory.retain", inputSchema={"type": "object", "properties": {}}),
+            types.Tool(name="other.search", inputSchema={"type": "object", "properties": {}}),
+        ])
+
+    async def _call(ctx, params):
+        called.append(params.name)
+        return types.CallToolResult(content=[types.TextContent(text="ok")])
+
+    remote = Server("fake-gateway", on_list_tools=_list, on_call_tool=_call)
+
+    async def scenario():
+        async with (
+            InMemoryTransport(remote) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.discover()
+            bridge = _build_bridge(session, "acme-1")
+            async with (
+                InMemoryTransport(bridge) as (h_read, h_write),
+                ClientSession(h_read, h_write) as host,
+            ):
+                await host.discover()
+                listed = await host.list_tools()
+                assert [t.name for t in listed.tools] == ["retain", "other.search"]
+                await host.call_tool("retain", {"content": "x"})
+
+    asyncio.run(scenario())
+    assert called == ["ach-memory.retain"]
+    assert retain_stamp().exists()
