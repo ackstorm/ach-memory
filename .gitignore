@@ -11,3 +11,4 @@ dist/
 .opencode/package.json
 .opencode/package-lock.json
 node_modules/
+.claude/

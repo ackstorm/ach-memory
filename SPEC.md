@@ -132,9 +132,9 @@ engine-specific setting or imports a concrete adapter.
 
 Retrieval changes are gated on a reproduced failure, in this order: adapter configuration
 first, then ingestion, then candidate width, and a second index or reranker last. Reproduce it
-with `scripts/probe-recall.py` against production before writing anything -- on 2026-09-17 that
-probe returned 20/23 with every hit at rank 1, which retired "the right memory ranks outside
-the top candidates" as a premise, and found the real failure instead (§5, Spanish queries).
+with `scripts/probe-recall.py` against production before writing anything -- on 2026-11-05 that
+probe found 21/23, 20 of them at rank 1, which retires "the right memory ranks outside the top
+candidates" as a premise; its two misses are the Spanish queries in §5.
 
 ## 5. Hindsight profile
 
@@ -150,7 +150,7 @@ the top candidates" as a premise, and found the real failure instead (§5, Spani
 | local LLM | mock: verbatim extraction works, consolidation and model refresh do not |
 | `history` | not declared; the ACH journal is the history |
 | semantic floor | `0.60`, calibrated on an English corpus and measured against lowering it on 2026-09-17 (`scripts/probe-recall.py`, floor temporarily 0 in production): Spanish probes that fail score 0.536 and 0.595 where their English form scores ~0.72 at rank 1, and catching both needs 0.53, which takes irrelevant hits per query from 2.6 to 6.3 (0.58 catches one, for 3.3). Agents query in English instead; the floor stays. Re-measure the same way before reopening |
-| identifier recall | a technical identifier that appears only inside a code span is not retrievable by it: with no floor at all, the image-digest claim stayed outside the top 10 under two phrasings while every other probe hit rank 1. Not a floor problem -- an ingestion question, and the one retrieval failure still open |
+| identifier recall | Hindsight 0.9.2 fuses BM25 with semantic search and reranks, so identifiers inside code spans are retrievable: of 38 sampled from production banks on 2026-11-05, 35 reached the top 10 and 25 rank 1. The misses were `customInstructions`, `projects` and `basis`. No ACH retrieval layer is needed |
 
 ## 6. Delivery
 
