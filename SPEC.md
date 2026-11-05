@@ -25,7 +25,7 @@ Version: 0.1.0
 
 | Capability | One line |
 |---|---|
-| Bounded standing context | token harness, `len(text) // 4` budget, whole entries only, delivered at session start |
+| Bounded standing context | at session start: project `constraint`, user `constraint`, project `convention` verbatim and newest first, then mental models in what is left of `context_budget_chars` (8,700). Whole items only, with a closing line naming what was left out. Activation text plus context must stay under Claude Code's ~10,000-character inline limit for SessionStart output |
 | Users, groups, `on_behalf_of` | identity model behind every mutation and read |
 | MCP stdio proxy | runs on the SDK, on the host, resolves project and injects identity |
 | Project resolution from git origin | slug derived from the git remote, no client-supplied project id |

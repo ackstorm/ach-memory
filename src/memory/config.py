@@ -52,8 +52,9 @@ class Settings(BaseSettings):
     # Cosine-similarity floor a recall hit must clear (see old config.py for
     # the corpus measurement this default is pinned to).
     recall_min_semantic: float = Field(default=0.60, ge=0, le=1)
-    # Standing-context token budget, approximated as len(text) // 4.
-    context_budget_chars: int = 16000
+    # Standing context plus hooks/activation.txt must stay under Claude Code's ~10,000-character
+    # inline limit for SessionStart output; past it the agent sees a 2KB preview.
+    context_budget_chars: int = 8700
 
     @field_validator("mcp_allowed_hosts", "master_users", "master_groups", mode="before")
     @classmethod

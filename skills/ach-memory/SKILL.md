@@ -106,7 +106,7 @@ export ACH_MEMORY_API_KEY=<token from your identity provider>
 option A. Never write a token value into a file the user did not ask for, and never echo one.
 
 Check from a repository: `uvx --from git+https://github.com/ackstorm/ach-memory ach-memory
-context load` prints `### Project Context` when everything works. When the tools
+context load` prints `###` headings when everything works. When the tools
 answer `UNAUTHORIZED: missing or malformed credential`, no credential reached the service: the
 variables are unset in the host's environment, or `ACH_MEMORY_URL` bypasses the gateway that
 accepts the token. In Codex, remove any hand-written `[mcp_servers.ach-memory]` entry
