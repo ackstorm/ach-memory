@@ -44,6 +44,11 @@ def canonical_locator(remote_url: str) -> str:
     return f"{host}/{path}".lower()
 
 
+def collapse_slug(raw: str) -> str:
+    """`normalize_slug`'s folding alone, for comparing a slug that may not be a valid one."""
+    return _NON_SLUG.sub("-", raw.strip().lower()).strip("-.")
+
+
 def normalize_slug(raw: str) -> str:
     """Lowercase alphanumerics, dots and hyphens. Idempotent.
 
@@ -52,7 +57,7 @@ def normalize_slug(raw: str) -> str:
     A slug DERIVED from a Git remote must carry a digest (SPEC §8.2) precisely because this
     collapsing cannot tell a path separator from a literal hyphen.
     """
-    slug = _NON_SLUG.sub("-", raw.strip().lower()).strip("-.")
+    slug = collapse_slug(raw)
     if not slug or len(slug) > MAX_SLUG_LENGTH or not any(c.isalnum() for c in slug):
         raise InvalidRequest(
             "a project slug must be 1 to "
@@ -70,3 +75,11 @@ def slug_from_locator(remote_url: str) -> str:
     locator = canonical_locator(remote_url)
     digest = hashlib.sha256(locator.encode("utf-8")).hexdigest()[:8]
     return normalize_slug(f"{locator}-{digest}")
+
+
+def repo_spellings(remote_url: str) -> frozenset[str]:
+    """What an agent types by hand for this repository: every trailing part of its locator,
+    folded, so `ach`, `ackstorm/ach` and `github.com/ackstorm/ach` all match. Called by the
+    proxy."""
+    parts = canonical_locator(remote_url).split("/")
+    return frozenset(collapse_slug("-".join(parts[i:])) for i in range(len(parts)))

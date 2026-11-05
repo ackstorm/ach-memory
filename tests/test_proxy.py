@@ -22,6 +22,7 @@ from memory.mcp.proxy import (
     canonical_tool_name,
     fill_arguments,
     personal_tools,
+    repo_slug_spellings,
     resolve_project_context,
     retain_stamp,
 )
@@ -416,3 +417,36 @@ def test_bridge_unprefixes_gateway_tools_and_calls_them_by_their_remote_name(tmp
     asyncio.run(scenario())
     assert called == ["ach-memory.retain"]
     assert retain_stamp().exists()
+
+
+SPELLINGS = frozenset({"ach", "ackstorm-ach", "github.com-ackstorm-ach"})
+
+
+@pytest.mark.parametrize("typed", ["ach", "ackstorm/ach", "Ackstorm-ACH", "github.com/ackstorm/ach"])
+@pytest.mark.parametrize("tool", ["retain", "recall", "reflect", "list_memories", "load_context"])
+def test_fill_arguments_resolves_a_spelling_of_this_repo(tool, typed):
+    filled = fill_arguments(tool, {"scope": "project", "project_slug": typed}, "canon-1", SPELLINGS)
+    assert filled["project_slug"] == "canon-1"
+
+
+def test_fill_arguments_leaves_another_repo_alone():
+    filled = fill_arguments("retain", {"project_slug": "ach-memory"}, "canon-1", SPELLINGS)
+    assert filled["project_slug"] == "ach-memory"
+
+
+@pytest.mark.parametrize("tool", ["forget", "correct", "get_memory", "rename_project"])
+def test_fill_arguments_keeps_the_slug_on_calls_that_address_one_bank(tool):
+    filled = fill_arguments(tool, {"project_slug": "ach"}, "canon-1", SPELLINGS)
+    assert filled["project_slug"] == "ach"
+
+
+def test_repo_slug_spellings_come_from_origin(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path, "git@github.com:acme/payments-api.git")
+    monkeypatch.delenv("MEMORY_PROJECT", raising=False)
+    assert "acme-payments-api" in repo_slug_spellings(str(repo))
+
+
+def test_memory_project_turns_spellings_off(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path, "git@github.com:acme/payments-api.git")
+    monkeypatch.setenv("MEMORY_PROJECT", "payments-api")
+    assert repo_slug_spellings(str(repo)) == frozenset()

@@ -113,3 +113,13 @@ def test_flattening_without_a_digest_would_collide():
     flattened_b = slugs.normalize_slug(slugs.canonical_locator(b))
     assert flattened_a == flattened_b, "premise changed: flattening no longer collides"
     assert slugs.slug_from_locator(a) != slugs.slug_from_locator(b)
+
+
+def test_repo_spellings_cover_every_trailing_part_of_the_locator():
+    assert slugs.repo_spellings("git@github.com:Acme/Payments-API.git") == {
+        "payments-api", "acme-payments-api", "github.com-acme-payments-api",
+    }
+
+
+def test_collapse_slug_never_raises_on_what_normalize_rejects():
+    assert slugs.collapse_slug("///") == ""

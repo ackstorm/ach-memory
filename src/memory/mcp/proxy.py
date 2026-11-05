@@ -20,7 +20,7 @@ from mcp.server.stdio import stdio_server
 from mcp.shared.exceptions import MCPError
 
 from memory.errors import InvalidRequest
-from memory.slugs import slug_from_locator
+from memory.slugs import collapse_slug, repo_spellings, slug_from_locator
 
 
 def api_key() -> str:
@@ -77,11 +77,8 @@ async def _handshake(session: ClientSession) -> None:
         await session.initialize()
 
 
-def resolve_project_context(cwd: str | None = None) -> str | None:
-    """MEMORY_PROJECT, else the repo's origin remote slugged; None outside a repo/origin."""
-    slug = os.environ.get("MEMORY_PROJECT")
-    if slug:
-        return slug
+def _origin_url(cwd: str | None) -> str:
+    """The repo's origin remote; "" outside a repo or without one."""
     try:
         result = subprocess.run(
             ["git", "remote", "get-url", "origin"],
@@ -92,8 +89,16 @@ def resolve_project_context(cwd: str | None = None) -> str | None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
-    locator = result.stdout.strip()
+        return ""
+    return result.stdout.strip()
+
+
+def resolve_project_context(cwd: str | None = None) -> str | None:
+    """MEMORY_PROJECT, else the repo's origin remote slugged; None outside a repo/origin."""
+    slug = os.environ.get("MEMORY_PROJECT")
+    if slug:
+        return slug
+    locator = _origin_url(cwd)
     if not locator:
         return None
     try:
@@ -102,14 +107,35 @@ def resolve_project_context(cwd: str | None = None) -> str | None:
         return None
 
 
-def fill_arguments(tool_name: str, arguments: dict, project_slug: str | None) -> dict:
-    """Inject the resolved project where the caller left it out; never overwrite.
-    `load_context` carries no `scope`, so it is filled unconditionally; recall's
-    `scope="all"` needs the slug for the project half of its search."""
+def repo_slug_spellings(cwd: str | None = None) -> frozenset[str]:
+    """Hand-typed names for this repo; none under MEMORY_PROJECT, which is the way to reach
+    a project split off under such a name."""
+    locator = "" if os.environ.get("MEMORY_PROJECT") else _origin_url(cwd)
+    try:
+        return repo_spellings(locator) if locator else frozenset()
+    except InvalidRequest:
+        return frozenset()
+
+
+# Tools that pick a bank by slug alone. A call with a `memory_id` must keep the slug it was
+# given: the memory may live in a project split off under that spelling.
+_ROUTED_BY_SLUG = frozenset({"retain", "recall", "reflect", "list_memories", "load_context"})
+
+
+def fill_arguments(
+    tool_name: str, arguments: dict, project_slug: str | None,
+    spellings: frozenset[str] = frozenset(),
+) -> dict:
+    """Inject the resolved project where the caller left it out, and where the caller spelled
+    this repository by hand, which would otherwise split it into a second project. Any other
+    slug addresses another repository and stands. `load_context` carries no `scope`, so it
+    is filled unconditionally; recall's `scope="all"` needs the slug for the project half of
+    its search."""
     filled = dict(arguments)
-    if project_slug and not filled.get("project_slug") and (
+    typed = filled.get("project_slug")
+    if project_slug and not typed and (
         tool_name == "load_context" or filled.get("scope") in ("project", "all")
-    ):
+    ) or project_slug and typed and tool_name in _ROUTED_BY_SLUG and collapse_slug(typed) in spellings:
         filled["project_slug"] = project_slug
     return filled
 
@@ -194,7 +220,9 @@ def canonical_tool_name(listed: str) -> str | None:
     return max(matches, key=len, default=None)
 
 
-def _build_bridge(session: ClientSession, slug: str | None) -> Server:
+def _build_bridge(
+    session: ClientSession, slug: str | None, spellings: frozenset[str] = frozenset()
+) -> Server:
     """The host-facing Server: lists the remote's tools and forwards calls to it.
 
     The host sees our canonical tool names; calls go out under the name the remote
@@ -214,7 +242,7 @@ def _build_bridge(session: ClientSession, slug: str | None) -> Server:
         return listed.model_copy(update={"tools": tools if slug else personal_tools(tools)})
 
     async def _call_tool(ctx, params):
-        arguments = fill_arguments(params.name, params.arguments or {}, slug)
+        arguments = fill_arguments(params.name, params.arguments or {}, slug, spellings)
         if not slug and params.name != "load_context":
             arguments["scope"] = "user"
         try:
@@ -241,7 +269,7 @@ async def serve(url: str) -> None:
         ClientSession(read, write) as session,
     ):
         await _handshake(session)
-        bridge = _build_bridge(session, slug)
+        bridge = _build_bridge(session, slug, repo_slug_spellings())
         async with stdio_server() as (in_stream, out_stream):
             await bridge.run(in_stream, out_stream, bridge.create_initialization_options())
 
