@@ -149,10 +149,10 @@ def register(mcp: MCPServer) -> None:
 
         def make_curation_tool(action: Callable = action) -> Callable:
             def call(
-                scope: Scope,
                 memory_id: str,
                 reason: str,
                 ctx: Context,
+                scope: Scope | None = None,
                 project_slug: str | None = None,
             ) -> ToolResult:
                 with tool_session(ctx) as (principal, db):
@@ -172,7 +172,8 @@ def register(mcp: MCPServer) -> None:
             "per call, written in English whatever language the conversation uses: retrieval "
             "reranks in English only. `operation_id` is a UUID you generate; reuse it verbatim "
             "to retry the same claim safely. The response `memory_id` is the stable handle for "
-            "forget, correct, restore, delete_memory and history. `wait=true` blocks until the "
+            "forget, correct, restore, delete_memory, get_memory and history, which infer "
+            "`scope` from it when you leave it out. `wait=true` blocks until the "
             "claim is searchable; leave false to return immediately."
         ),
     )
@@ -268,11 +269,11 @@ def register(mcp: MCPServer) -> None:
         ),
     )
     def correct(
-        scope: Scope,
         memory_id: str,
         content: str,
         reason: str,
         ctx: Context,
+        scope: Scope | None = None,
         project_slug: str | None = None,
     ) -> ToolResult:
         with tool_session(ctx) as (principal, db):
@@ -315,9 +316,9 @@ def register(mcp: MCPServer) -> None:
         annotations=ToolAnnotations(read_only_hint=True),
     )
     def get_memory(
-        scope: Scope,
         memory_id: str,
         ctx: Context,
+        scope: Scope | None = None,
         project_slug: str | None = None,
     ) -> ToolResult:
         with tool_session(ctx) as (principal, db):
@@ -332,9 +333,9 @@ def register(mcp: MCPServer) -> None:
         annotations=ToolAnnotations(read_only_hint=True),
     )
     def history(
-        scope: Scope,
         memory_id: str,
         ctx: Context,
+        scope: Scope | None = None,
         project_slug: str | None = None,
     ) -> ToolResult:
         with tool_session(ctx) as (principal, db):

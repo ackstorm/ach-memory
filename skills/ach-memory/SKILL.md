@@ -43,8 +43,9 @@ Every claim needs:
 - optional `tags` for later filtering, and an `operation_id` UUID per intended claim -- reuse it
   verbatim to retry safely.
 
-The response's `memory_id` is the handle for `correct`, `forget`, `restore`, `delete_memory` and
-`history`.
+The response's `memory_id` is the handle for `correct`, `forget`, `restore`, `delete_memory`,
+`get_memory` and `history`. Those tools infer `scope` from the id, so a `recall` hit is enough to
+act on it: leave `scope` out unless you know it.
 
 ## Scope
 

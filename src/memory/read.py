@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from memory.auth.principal import Principal
 from memory.backend.base import Backend, Hit, MemoryView, TagGroup
-from memory.bank_ref import resolve_bank
+from memory.bank_ref import resolve_bank, resolve_memory_bank
 from memory.config import get_settings
 from memory.errors import MemoryNotFound, ProjectNotFound, UnsupportedCapability
 from memory.models import AuditEvent
@@ -65,7 +65,8 @@ class ListResponse(_Base):
     items: tuple[MemoryItem, ...] = (); total: int = 0
     limit: int = 20; offset: int = 0
 
-class GetRequest(_ScopedRequest):
+class GetRequest(_Base):
+    scope: Literal["user", "project"] | None = None; project_slug: str | None = None
     memory_id: str = Field(min_length=1, max_length=128)
 
 HistoryRequest = GetRequest
@@ -158,14 +159,14 @@ def list_memories(db: Session, principal: Principal, request: ListRequest, *, ba
     return ListResponse(items=items, total=page.total, limit=request.limit, offset=request.offset)
 
 def get_memory(db: Session, principal: Principal, request: GetRequest, *, backend: Backend) -> MemoryItem:
-    ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
+    ref, _ = resolve_memory_bank(db, principal, request.scope, request.project_slug, request.memory_id)
     view = backend.get(ref.bank_id, request.memory_id)
     if view is None:
         raise MemoryNotFound()
     return _to_item(view)
 
 def history(db: Session, principal: Principal, request: HistoryRequest, *, backend: Backend) -> HistoryResponse:
-    ref, _ = resolve_bank(db, principal, request.scope, request.project_slug, create=False)
+    ref, _ = resolve_memory_bank(db, principal, request.scope, request.project_slug, request.memory_id)
     view = backend.get(ref.bank_id, request.memory_id)
     current = _to_item(view) if view is not None else None
     # I1: the journal is read through the caller's own bank, never by memory id alone.

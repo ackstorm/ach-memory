@@ -162,6 +162,15 @@ def test_fill_arguments_fills_load_context():
     assert filled == {"project_slug": "acme-1"}
 
 
+def test_fill_arguments_fills_a_memory_id_call_without_scope():
+    filled = fill_arguments("correct", {"memory_id": "mem_1"}, "acme-1")
+    assert filled == {"memory_id": "mem_1", "project_slug": "acme-1"}
+
+
+def test_fill_arguments_leaves_scopeless_calls_without_memory_id_alone():
+    assert fill_arguments("rename_project", {"new_slug": "b"}, "acme-1") == {"new_slug": "b"}
+
+
 def test_fill_arguments_does_not_mutate_the_caller_dict():
     original = {"scope": "project"}
     fill_arguments("recall", original, "acme-1")

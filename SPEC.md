@@ -175,6 +175,8 @@ session-start (standing context), pre-compact (retain nudge), subagent-start. No
 | `get_operation` | — | engine-side async outcome; only if the adapter declares `operations` |
 | `rename_project` | — | move a project to a new slug after its git remote moved; the old slug keeps forwarding |
 
+The tools that address one memory by id (`forget`, `restore`, `correct`, `delete_memory`, `get_memory`, `history`) take `scope` as optional: left out, it is read from that memory's `memory.retain` journal row, and the bank the caller resolves to must own the row (I1), else `MEMORY_NOT_FOUND`.
+
 ## 7. Storage
 
 | Table | Key columns |

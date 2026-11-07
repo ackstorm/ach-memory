@@ -35,3 +35,12 @@ def find_retain(db: Session, operation_id: str) -> AuditEvent | None:
         .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
         .limit(1)
     ).first()
+
+
+def find_memory_retain(db: Session, memory_id: str) -> AuditEvent | None:
+    """The `memory.retain` journal row that minted this memory id, or None."""
+    return db.scalars(
+        select(AuditEvent)
+        .where(AuditEvent.resource == memory_id, AuditEvent.action == "memory.retain")
+        .limit(1)
+    ).first()

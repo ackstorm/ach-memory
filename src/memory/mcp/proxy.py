@@ -130,11 +130,14 @@ def fill_arguments(
     this repository by hand, which would otherwise split it into a second project. Any other
     slug addresses another repository and stands. `load_context` carries no `scope`, so it
     is filled unconditionally; recall's `scope="all"` needs the slug for the project half of
-    its search."""
+    its search; a call by `memory_id` without `scope` needs it in case the server infers
+    project scope."""
     filled = dict(arguments)
     typed = filled.get("project_slug")
+    scope = filled.get("scope")
     if project_slug and not typed and (
-        tool_name == "load_context" or filled.get("scope") in ("project", "all")
+        tool_name == "load_context" or scope in ("project", "all")
+        or (scope is None and "memory_id" in filled)
     ) or project_slug and typed and tool_name in _ROUTED_BY_SLUG and collapse_slug(typed) in spellings:
         filled["project_slug"] = project_slug
     return filled
