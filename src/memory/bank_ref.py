@@ -6,9 +6,9 @@ from typing import Literal
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from memory import projects
+from memory import audit, projects
 from memory.auth.principal import Principal
-from memory.errors import InvalidRequest
+from memory.errors import InvalidRequest, MemoryNotFound
 
 
 @dataclass(frozen=True)
@@ -39,3 +39,21 @@ def resolve_bank(
 def lock_bank(db: Session, bank_id: str) -> None:
     """Serialize mutations against one logical bank for the rest of this transaction."""
     db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"memory:{bank_id}"})
+
+
+def resolve_memory_bank(
+    db: Session, principal: Principal, scope: str | None, slug: str | None, memory_id: str
+) -> tuple[LogicalBankRef, str | None]:
+    """`resolve_bank(create=False)` for a call that addresses one memory by id.
+    `scope` may be omitted: it is read from the memory's retain journal row, and
+    the bank the caller resolves to must own that row (I1) -- otherwise the
+    memory does not exist for this caller."""
+    if scope is not None:
+        return resolve_bank(db, principal, scope, slug, create=False)
+    row = audit.find_memory_retain(db, memory_id)
+    if row is None:
+        raise MemoryNotFound()
+    ref, notice = resolve_bank(db, principal, row.details["scope"], slug, create=False)
+    if ref.owner_id != row.details["owner"]:
+        raise MemoryNotFound()
+    return ref, notice
