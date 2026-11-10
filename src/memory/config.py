@@ -7,6 +7,18 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 _CsvList = Annotated[list[str], NoDecode]
 
 
+def sqlalchemy_url(url: str) -> str:
+    """Pin libpq-style URLs to psycopg 3.
+
+    CloudNativePG and libpq tools hand out ``postgresql://`` URLs, which SQLAlchemy maps
+    to psycopg2; only psycopg 3 is installed.
+    """
+    for scheme in ("postgresql://", "postgres://"):
+        if url.startswith(scheme):
+            return "postgresql+psycopg://" + url[len(scheme) :]
+    return url
+
+
 class Settings(BaseSettings):
     """Service configuration. All variables use the MEMORY_ prefix."""
 
@@ -55,6 +67,11 @@ class Settings(BaseSettings):
     # Standing context plus hooks/activation.txt must stay under Claude Code's ~10,000-character
     # inline limit for SessionStart output; past it the agent sees a 2KB preview.
     context_budget_chars: int = 8700
+
+    @field_validator("database_url")
+    @classmethod
+    def _pin_psycopg(cls, value: str) -> str:
+        return sqlalchemy_url(value)
 
     @field_validator("mcp_allowed_hosts", "master_users", "master_groups", mode="before")
     @classmethod

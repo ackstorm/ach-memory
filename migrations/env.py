@@ -12,6 +12,7 @@ if config.config_file_name is not None:
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from memory.config import sqlalchemy_url
 from memory.models import Base
 
 target_metadata = Base.metadata
@@ -20,7 +21,7 @@ target_metadata = Base.metadata
 # does not resolve inside a container, where the database is postgres:5432.
 _env_url = os.getenv("MEMORY_DATABASE_URL")
 if _env_url:
-    config.set_main_option("sqlalchemy.url", _env_url)
+    config.set_main_option("sqlalchemy.url", sqlalchemy_url(_env_url))
 
 
 def run_migrations_online() -> None:
