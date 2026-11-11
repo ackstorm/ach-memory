@@ -175,6 +175,18 @@ def test_load_context_returns_text():
     asyncio.run(scenario())
 
 
+def test_load_context_rejects_an_unknown_model():
+    async def scenario():
+        app = create_app()
+        async with app.router.lifespan_context(app), _session(app, _auth_headers()) as session:
+            result = await session.call_tool(
+                "load_context", {"project_slug": "acme", "model": "nope"}
+            )
+            assert result.is_error and "INVALID_REQUEST" in _text(result)
+
+    asyncio.run(scenario())
+
+
 def test_reflect_without_synthesis_is_unsupported():
     async def scenario():
         app = create_app()

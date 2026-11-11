@@ -344,15 +344,18 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Load the bounded standing context for this session: user memory always, plus "
-            "project memory when `project_slug` names a known project. Creates nothing; call "
-            "once at session start."
+            "Load this session's standing context: the project's purpose, its briefing and the "
+            "models you can load on demand. With `model`, load that one model in full instead: "
+            "`briefing` for the rest of a cut briefing, or one listed under 'More context'. "
+            "Creates nothing."
         ),
         annotations=ToolAnnotations(read_only_hint=True),
     )
-    def load_context(ctx: Context, project_slug: str | None = None) -> ToolResult:
+    def load_context(
+        ctx: Context, project_slug: str | None = None, model: str | None = None
+    ) -> ToolResult:
         with tool_session(ctx) as (principal, db):
-            request = LoadContextRequest(project_slug=project_slug)
+            request = LoadContextRequest(project_slug=project_slug, model=model)
             return _result(do_load_context(db, principal, request, backend=get_backend()))
 
     @mcp.tool(

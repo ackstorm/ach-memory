@@ -51,6 +51,8 @@ def load(
     """Project bank only; no project, or an unknown one, loads nothing. With `model`, that one
     model in full. Otherwise purpose, briefing and index within `context_budget_chars`: the
     briefing is cut at a whole line, never mid-sentence, and says how to load the rest."""
+    if request.model and request.model not in {m.key for m in BUILTIN_MODELS}:
+        raise InvalidRequest(f"unknown model; use one of: {', '.join(m.key for m in BUILTIN_MODELS)}")
     if request.model and not request.project_slug:
         raise InvalidRequest("models belong to a project: pass project_slug")
     if not request.project_slug:
@@ -71,9 +73,7 @@ def load(
 
 
 def _model(backend: Backend, bank_id: str, key: str) -> str:
-    builtin = next((m for m in BUILTIN_MODELS if m.key == key), None)
-    if builtin is None:
-        raise InvalidRequest(f"unknown model; use one of: {', '.join(m.key for m in BUILTIN_MODELS)}")
+    builtin = next(m for m in BUILTIN_MODELS if m.key == key)
     view = backend.get_mental_model(bank_id, key)
     return f"### {builtin.name}\n{view.content.strip()}\n" if view and view.content else ""
 
