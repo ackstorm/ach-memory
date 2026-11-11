@@ -421,6 +421,31 @@ def test_list_rejects_an_invalid_further_group_match(make_backend):
 
 
 # ---------------------------------------------------------------------------
+# a bank that does not exist yet (Hindsight 1.x answers 404) reads as empty
+# ---------------------------------------------------------------------------
+
+
+def test_list_on_a_missing_bank_is_an_empty_page(make_backend):
+    backend = make_backend({})  # every route answers 404
+
+    page = backend.list(BANK, tag_groups=(), state=None, limit=10, offset=0)
+
+    assert page.items == () and page.total == 0
+
+
+def test_get_mental_model_on_a_missing_bank_is_none(make_backend):
+    assert make_backend({}).get_mental_model(BANK, "user-context") is None
+
+
+def test_recall_on_a_missing_bank_is_empty(make_backend):
+    assert make_backend({}).recall(BANK, "q", tag_groups=(), limit=5) == []
+
+
+def test_reflect_on_a_missing_bank_is_empty(make_backend):
+    assert make_backend({}).reflect(BANK, "q", tag_groups=()) == ""
+
+
+# ---------------------------------------------------------------------------
 # reflect
 # ---------------------------------------------------------------------------
 
