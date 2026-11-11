@@ -91,7 +91,12 @@ def _strip_bank_id(value: Any, bank_id: str) -> Any:
 
 # Hindsight defaults `refresh_after_consolidation` to False: a model created without
 # this is generated once at provision and never again (seen in production, 0.1.2).
-_MENTAL_MODEL_TRIGGER = {"mode": "delta", "refresh_after_consolidation": True}
+# `exclude_mental_models` keeps a refresh from reading the bank's mental models, its own
+# previous version included: with it off, a refresh summarized the old summary and drifted.
+# `recall_max_tokens` lets a refresh read the whole bank: Hindsight's default of 2048 tokens
+# returned about 20 of 126 claims.
+_MENTAL_MODEL_TRIGGER = {"mode": "delta", "refresh_after_consolidation": True,
+                         "exclude_mental_models": True, "recall_max_tokens": 12000}
 
 
 def _stale(current: dict, builtin: BuiltinModel) -> bool:
@@ -311,9 +316,12 @@ class HindsightBackend(Backend):
 
     def provision_mental_models(self, bank_id: str, builtins: Sequence[BuiltinModel]) -> None:
         path = f"{_bank(bank_id)}/mental-models"
+        # The list defaults to `detail=metadata` from Hindsight 1.x, which drops `source_query`
+        # and `trigger`: `_stale()` would then PATCH every model on every retain.
         existing = {
             item.get("name"): item
-            for item in (self._request("GET", path) or {}).get("items") or []
+            for item in (self._request("GET", path, params={"detail": "content"}) or {})
+            .get("items") or []
         }
         for builtin in builtins:
             body = {

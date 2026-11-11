@@ -501,7 +501,8 @@ def test_provision_mental_models_creates_a_missing_model(make_backend, recorder)
     assert body == {
         "name": "User Context", "source_query": "summarize",
         "tags": ["schema:ach-retain-v1"], "tags_match": "all",
-        "trigger": {"mode": "delta", "refresh_after_consolidation": True},
+        "trigger": {"mode": "delta", "refresh_after_consolidation": True,
+                    "exclude_mental_models": True, "recall_max_tokens": 12000},
     }
 
 
@@ -524,7 +525,8 @@ def test_provision_mental_models_is_a_noop_when_the_prompt_is_unchanged(make_bac
     backend = make_backend({
         ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
             "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
-                       "trigger": {"mode": "delta", "refresh_after_consolidation": True}}]
+                       "trigger": {"mode": "delta", "refresh_after_consolidation": True,
+                                   "exclude_mental_models": True, "recall_max_tokens": 12000}}]
         }),
     })
     builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
@@ -548,4 +550,35 @@ def test_provision_mental_models_turns_on_refresh_for_a_model_created_without_it
     backend.provision_mental_models(BANK, (builtin,))
 
     body = json.loads(recorder.calls[("PATCH", f"{_bank(BANK)}/mental-models/mm-1")].read())
-    assert body["trigger"] == {"mode": "delta", "refresh_after_consolidation": True}
+    assert body["trigger"] == {"mode": "delta", "refresh_after_consolidation": True,
+                               "exclude_mental_models": True, "recall_max_tokens": 12000}
+
+
+def test_provision_mental_models_excludes_mental_models_from_an_existing_model(make_backend, recorder):
+    backend = make_backend({
+        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
+            "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
+                       "trigger": {"mode": "delta", "refresh_after_consolidation": True,
+                                   "exclude_mental_models": False}}]
+        }),
+        ("PATCH", f"{_bank(BANK)}/mental-models/mm-1"): httpx.Response(200, json={}),
+    })
+    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
+
+    backend.provision_mental_models(BANK, (builtin,))
+
+    body = json.loads(recorder.calls[("PATCH", f"{_bank(BANK)}/mental-models/mm-1")].read())
+    assert body["trigger"]["exclude_mental_models"] is True
+
+
+def test_provision_mental_models_lists_with_the_trigger_and_prompt(make_backend, recorder):
+    backend = make_backend({
+        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={"items": []}),
+        ("POST", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={"id": "mm-1"}),
+    })
+    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
+
+    backend.provision_mental_models(BANK, (builtin,))
+
+    listed = recorder.calls[("GET", f"{_bank(BANK)}/mental-models")]
+    assert listed.url.params["detail"] == "content"
