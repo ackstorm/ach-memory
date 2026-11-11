@@ -151,6 +151,14 @@ class HindsightBackend(Backend):
         except ValueError:
             raise UpstreamError("memory backend returned an unreadable response") from None
 
+    def _read(self, method: str, path: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict:
+        """A read that answers empty on a bank that does not exist yet: Hindsight 1.x returns 404
+        there, and a user's bank is created only by their first retain."""
+        try:
+            return self._request(method, path, payload, not_found=NotFound, **kwargs)
+        except NotFound:
+            return {}
+
     def capabilities(self) -> frozenset[Capability]:
         return frozenset({"synthesis", "operations", "mental_models"})
 
@@ -193,7 +201,7 @@ class HindsightBackend(Backend):
         }
         if translated:
             body["tag_groups"] = translated
-        response = self._request("POST", f"{_bank(bank_id)}/memories/recall", body)
+        response = self._read("POST", f"{_bank(bank_id)}/memories/recall", body)
         hits: list[Hit] = []
         seen: set[str] = set()
         for raw in (response or {}).get("results") or []:
@@ -284,7 +292,7 @@ class HindsightBackend(Backend):
             first = tag_groups[0]
             params["tags"] = list(first.get("tags") or [])
             params["tags_match"] = "all" if first.get("match") == "all" else "any"
-        response = self._request("GET", f"{_bank(bank_id)}/memories/list", params=params)
+        response = self._read("GET", f"{_bank(bank_id)}/memories/list", params=params)
         remaining_groups = tag_groups[1:]
         items: list[MemoryView] = []
         for raw in (response or {}).get("items") or []:
@@ -305,8 +313,8 @@ class HindsightBackend(Backend):
         body: dict[str, Any] = {"query": query}
         if translated:
             body["tag_groups"] = translated
-        response = self._request("POST", f"{_bank(bank_id)}/reflect", body,
-                                  timeout=self._llm_timeout)
+        response = self._read("POST", f"{_bank(bank_id)}/reflect", body,
+                               timeout=self._llm_timeout)
         return (response or {}).get("text") or ""
 
     def get_operation(self, bank_id: str, operation_ref: str) -> dict:
@@ -343,7 +351,7 @@ class HindsightBackend(Backend):
         if name is None:
             return None
         path = f"{_bank(bank_id)}/mental-models"
-        existing = {i.get("name"): i for i in (self._request("GET", path) or {}).get("items") or []}
+        existing = {i.get("name"): i for i in (self._read("GET", path) or {}).get("items") or []}
         item = existing.get(name)
         if item is None:
             return None
