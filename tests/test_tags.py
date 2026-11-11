@@ -46,3 +46,12 @@ def test_too_many_tags_are_refused():
 def test_a_non_list_of_strings_is_a_typed_rejection_not_a_crash(bad):
     with pytest.raises(InvalidRequest):
         normalize_caller_tags(bad)
+
+
+def test_briefing_is_a_memory_type():
+    from typing import get_args
+
+    from memory.tags import MemoryType
+
+    assert "briefing" in get_args(MemoryType)
+    assert type_tag("briefing") == "type:briefing"
