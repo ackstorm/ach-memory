@@ -639,3 +639,20 @@ def test_provision_mental_models_puts_the_tag_match_in_the_trigger(make_backend,
     assert body["trigger"]["tags_match"] == "any_strict"
     assert body["trigger"]["mode"] == "full"
     assert "tags_match" not in body  # not a mental model field on Hindsight 1.2
+
+
+def test_provision_mental_models_patches_a_model_whose_tags_changed(make_backend, recorder):
+    path = f"{_bank(BANK)}/mental-models"
+    current = {"id": "mm-1", "name": TRAPS.name, "source_query": TRAPS.prompt,
+               "tags": ["type:fact"], "trigger": {"mode": "full", "refresh_after_consolidation": True,
+                                                   "exclude_mental_models": True,
+                                                   "recall_max_tokens": 12000,
+                                                   "tags_match": "any_strict"}}
+    backend = make_backend({
+        ("GET", path): httpx.Response(200, json={"items": [current]}),
+        ("PATCH", f"{path}/mm-1"): httpx.Response(200, json={}),
+    })
+
+    backend.provision_mental_models(BANK, (TRAPS,))
+
+    assert ("PATCH", f"{path}/mm-1") in recorder.calls

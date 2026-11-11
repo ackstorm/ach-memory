@@ -25,7 +25,7 @@ Version: 0.1.0
 
 | Capability | One line |
 |---|---|
-| Bounded standing context | at session start, project only: the newest `purpose`-tagged claim verbatim, the `briefing` model, then an index of the on-demand models, within `context_budget_chars` (8,700). The briefing is cut at a whole line, with a line telling the agent to load the rest; nothing without a project. Activation text plus context must stay under Claude Code's ~10,000-character inline limit for SessionStart output |
+| Bounded standing context | at session start, project only: the newest `purpose`-tagged claim verbatim, the `briefing` model, then an index of the on-demand models. The briefing gets what the purpose and the index leave of `context_budget_chars` (8,700), cut at a whole line with a line telling the agent to load the rest; nothing without a project. Activation text plus context must stay under Claude Code's ~10,000-character inline limit for SessionStart output |
 | Users, groups, `on_behalf_of` | identity model behind every mutation and read |
 | MCP stdio proxy | runs on the SDK, on the host, resolves project and injects identity |
 | Project resolution from git origin | slug derived from the git remote; a hand-typed spelling of the current repository resolves to it on calls without a `memory_id`, so it cannot split the repository into a second project |

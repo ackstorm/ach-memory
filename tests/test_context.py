@@ -104,3 +104,14 @@ def test_an_unknown_model_is_rejected(db, principal, backend, bank):
 def test_a_model_needs_a_project(db, principal, backend):
     with pytest.raises(InvalidRequest):
         _load(db, principal, backend, model=TRAPS.key)
+
+
+def test_a_briefing_with_no_room_left_is_dropped_not_overflowed(db, principal, backend, bank):
+    _note(backend, bank, "mem_p", "p" * 8600, "type:fact", "purpose")
+    _note(backend, bank, "mem_b", "A note.", "type:briefing")
+    backend.mental_model_content[bank] = {BRIEFING.key: "\n".join(["- note"] * 500)}
+
+    result = _load(db, principal, backend, project_slug="acme")
+
+    assert result.truncated
+    assert "- note" not in result.text

@@ -93,10 +93,10 @@ def _strip_bank_id(value: Any, bank_id: str) -> Any:
 # this is generated once at provision and never again (seen in production, 0.1.2).
 # `exclude_mental_models` keeps a refresh from reading the bank's mental models, its own
 # previous version included: with it off, a refresh summarized the old summary and drifted.
-# Full mode rebuilds from the claims each time; delta only appended, and Project Context grew
-# to 13,161 chars with stale lines. Hindsight 1.2.1 ignores `recall_max_tokens` (the refresh
-# agent passes 2,048 itself), so each prompt asks for 12,000. `tags_match` is a trigger field
-# on 1.2: sent at the top level it is silently ignored.
+# Full mode rebuilds from the claims each time: delta mode only appends, and one model reached
+# 13,161 chars of stale lines. Hindsight 1.2.1 ignores `recall_max_tokens` (the refresh agent
+# passes 2,048 itself), so each prompt asks for 12,000; the field stays for a version that
+# honours it. `tags_match` is a trigger field on 1.2: sent at the top level it is ignored.
 _MENTAL_MODEL_TRIGGER = {"mode": "full", "refresh_after_consolidation": True,
                          "exclude_mental_models": True, "recall_max_tokens": 12000}
 
@@ -107,8 +107,10 @@ def _trigger(builtin: BuiltinModel) -> dict[str, Any]:
 
 def _stale(current: dict, builtin: BuiltinModel) -> bool:
     trigger = current.get("trigger") or {}
-    return current.get("source_query") != builtin.prompt or any(
-        trigger.get(k) != v for k, v in _trigger(builtin).items()
+    return (
+        current.get("source_query") != builtin.prompt
+        or sorted(current.get("tags") or []) != sorted(builtin.source_tags)
+        or any(trigger.get(k) != v for k, v in _trigger(builtin).items())
     )
 
 

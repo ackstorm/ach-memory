@@ -100,8 +100,10 @@ def _briefing(backend: Backend, bank_id: str, budget: int) -> tuple[str, bool]:
     text = f"{_BRIEFING_HEAD}{view.content.strip()}\n\n"
     if len(text) <= budget:
         return text, False
-    cut = text.rfind("\n", 0, budget - len(_BRIEFING_CUT))
-    return text[:cut + 1] + _BRIEFING_CUT, True
+    end = budget - len(_BRIEFING_CUT)
+    if end <= 0:
+        return "", True
+    return text[:text.rfind("\n", 0, end) + 1] + _BRIEFING_CUT, True
 
 
 def _index() -> str:
