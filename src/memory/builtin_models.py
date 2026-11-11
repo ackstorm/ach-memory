@@ -9,8 +9,9 @@ class BuiltinModel:
     name: str
     prompt: str
     scope: str  # "user" | "project"
-    # A model reads only memories carrying one of these tags (`tags_match` any_strict).
-    source_tags: tuple[str, ...]
+    # A model reads only memories carrying one of these tags (`tags_match` any_strict); empty
+    # reads the whole bank.
+    source_tags: tuple[str, ...] = ()
     tags_match: str = "any_strict"
     # None: printed at session start. Otherwise the index line telling an agent when to load it.
     load_when: str | None = None

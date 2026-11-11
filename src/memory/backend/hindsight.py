@@ -93,16 +93,22 @@ def _strip_bank_id(value: Any, bank_id: str) -> Any:
 # this is generated once at provision and never again (seen in production, 0.1.2).
 # `exclude_mental_models` keeps a refresh from reading the bank's mental models, its own
 # previous version included: with it off, a refresh summarized the old summary and drifted.
-# `recall_max_tokens` lets a refresh read the whole bank: Hindsight's default of 2048 tokens
-# returned about 20 of 126 claims.
-_MENTAL_MODEL_TRIGGER = {"mode": "delta", "refresh_after_consolidation": True,
+# Full mode rebuilds from the claims each time; delta only appended, and Project Context grew
+# to 13,161 chars with stale lines. Hindsight 1.2.1 ignores `recall_max_tokens` (the refresh
+# agent passes 2,048 itself), so each prompt asks for 12,000. `tags_match` is a trigger field
+# on 1.2: sent at the top level it is silently ignored.
+_MENTAL_MODEL_TRIGGER = {"mode": "full", "refresh_after_consolidation": True,
                          "exclude_mental_models": True, "recall_max_tokens": 12000}
+
+
+def _trigger(builtin: BuiltinModel) -> dict[str, Any]:
+    return {**_MENTAL_MODEL_TRIGGER, "tags_match": builtin.tags_match}
 
 
 def _stale(current: dict, builtin: BuiltinModel) -> bool:
     trigger = current.get("trigger") or {}
     return current.get("source_query") != builtin.prompt or any(
-        trigger.get(k) != v for k, v in _MENTAL_MODEL_TRIGGER.items()
+        trigger.get(k) != v for k, v in _trigger(builtin).items()
     )
 
 
@@ -336,14 +342,19 @@ class HindsightBackend(Backend):
                 "name": builtin.name,
                 "source_query": builtin.prompt,
                 "tags": list(builtin.source_tags),
-                "tags_match": builtin.tags_match,
-                "trigger": _MENTAL_MODEL_TRIGGER,
+                "trigger": _trigger(builtin),
             }
             current = existing.get(builtin.name)
             if current is None:
                 self._request("POST", path, body)
             elif _stale(current, builtin):
                 self._request("PATCH", f"{path}/{current['id']}", body)
+        # Every mental model in a bank is ach-memory's own: one whose name left the built-ins
+        # (User Context, Project Context) is deleted, or it keeps refreshing after every retain.
+        wanted = {builtin.name for builtin in builtins}
+        for name, item in existing.items():
+            if name not in wanted:
+                self._request("DELETE", f"{path}/{item['id']}")
 
     def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
         """Hindsight indexes by name, not `key` -- resolved via BUILTIN_MODELS, the only keys ACH passes."""

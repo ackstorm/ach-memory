@@ -147,9 +147,7 @@ class FakeBackend(Backend):
                            created_at=record.created_at)
 
     def provision_mental_models(self, bank_id: str, builtins: Sequence[BuiltinModel]) -> None:
-        models = self.mental_models.setdefault(bank_id, {})
-        for builtin in builtins:
-            models[builtin.key] = builtin
+        self.mental_models[bank_id] = {builtin.key: builtin for builtin in builtins}
 
     def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
         builtin = self.mental_models.get(bank_id, {}).get(key)
