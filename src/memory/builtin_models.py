@@ -20,8 +20,8 @@ class BuiltinModel:
 _RULES = (
     "Currentness: when memories conflict, the most recent one wins; drop anything a later memory "
     "says was removed, replaced or superseded. Use only what the memories state; never invent. "
-    "Leave out history (dates, merge request numbers, incident stories), personal preferences of "
-    "the user, secrets, and advice that would fit any project."
+    "Leave out history (dates, merge request numbers, incident stories), a person's habits or "
+    "tastes that are not about this project, secrets, and advice that would fit any project."
 )
 
 BRIEFING = BuiltinModel(
@@ -44,7 +44,9 @@ BRIEFING = BuiltinModel(
         "3. how changes are tested, released and rolled out;\n"
         "4. anything else every session needs.\n\n"
         "One point per bullet, written as an instruction or a fact an agent can act on, with "
-        "commands and names exactly as the notes give them. Merge notes that say the same thing. "
+        "commands and names exactly as the notes give them. Merge notes that say the same thing; "
+        "otherwise keep each note's own wording, since a rephrased note can come to mean the "
+        "opposite. "
         "A note about one component, file, host tool or incident goes last. " + _RULES
     ),
 )

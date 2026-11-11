@@ -25,3 +25,12 @@ def test_every_prompt_asks_recall_for_12000_tokens():
     # itself, ignoring trigger.recall_max_tokens: only the prompt reaches it.
     for model in BUILTIN_MODELS:
         assert "max_tokens 12000" in model.prompt
+
+
+def test_the_briefing_keeps_each_note_in_its_own_words():
+    # A rewrite once turned "judged only in production: e2e uses a mock LLM" into its opposite.
+    assert "keep each note's own wording" in BRIEFING.prompt
+
+
+def test_no_prompt_drops_the_preferences_decisions_reads():
+    assert all("personal preferences of the user" not in m.prompt for m in BUILTIN_MODELS)

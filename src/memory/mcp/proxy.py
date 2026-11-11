@@ -161,14 +161,17 @@ _PERSONAL_DESCRIPTIONS = {
 
 def personal_tools(tools: list[types.Tool]) -> list[types.Tool]:
     """Tool list for a session with no project: user memory only, so `scope` and
-    `project_slug` leave the schemas and `rename_project` disappears."""
+    `project_slug` leave the schemas, `rename_project` disappears, and so does
+    `load_context`'s `model`, since every model belongs to a project."""
     out = []
     for tool in tools:
         if tool.name == "rename_project":
             continue
         schema = dict(tool.input_schema)
         schema["properties"] = {
-            k: v for k, v in schema.get("properties", {}).items() if k not in ("scope", "project_slug")
+            k: v for k, v in schema.get("properties", {}).items()
+            if k not in ("scope", "project_slug")
+            and not (tool.name == "load_context" and k == "model")
         }
         if "required" in schema:
             schema["required"] = [r for r in schema["required"] if r not in ("scope", "project_slug")]
