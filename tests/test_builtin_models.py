@@ -1,19 +1,27 @@
-from memory.builtin_models import BUILTIN_MODELS, PROJECT_CONTEXT, USER_CONTEXT
+from memory.builtin_models import BRIEFING, BUILTIN_MODELS, DECISIONS, HOW_WE_WORK, TRAPS
 
 
-def test_the_two_builtins_exist():
-    assert BUILTIN_MODELS == (USER_CONTEXT, PROJECT_CONTEXT)
+def test_builtins_are_the_briefing_and_three_on_demand_models():
+    assert BUILTIN_MODELS == (BRIEFING, TRAPS, DECISIONS, HOW_WE_WORK)
+    assert BRIEFING.load_when is None
+    assert all(m.load_when for m in (TRAPS, DECISIONS, HOW_WE_WORK))
 
 
-def test_builtin_keys_are_distinct():
+def test_builtins_are_project_models_with_unique_keys():
+    assert {m.scope for m in BUILTIN_MODELS} == {"project"}
     assert len({m.key for m in BUILTIN_MODELS}) == len(BUILTIN_MODELS)
 
 
-def test_builtins_carry_the_schema_source_tag():
+def test_each_builtin_reads_only_its_memory_types():
+    assert BRIEFING.source_tags == ("type:briefing",)
+    assert TRAPS.source_tags == ("type:gotcha",)
+    assert set(DECISIONS.source_tags) == {"type:decision", "type:constraint", "type:preference"}
+    assert set(HOW_WE_WORK.source_tags) == {"type:convention", "type:fact"}
+    assert all(m.tags_match == "any_strict" for m in BUILTIN_MODELS)
+
+
+def test_every_prompt_asks_recall_for_12000_tokens():
+    # Hindsight 1.2.1's recall tool defaults to 2,048 tokens and the refresh agent passes that
+    # itself, ignoring trigger.recall_max_tokens: only the prompt reaches it.
     for model in BUILTIN_MODELS:
-        assert "schema:ach-retain-v1" in model.source_tags
-
-
-def test_builtin_scopes_match_their_purpose():
-    assert USER_CONTEXT.scope == "user"
-    assert PROJECT_CONTEXT.scope == "project"
+        assert "max_tokens 12000" in model.prompt
