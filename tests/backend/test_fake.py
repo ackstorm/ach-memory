@@ -105,3 +105,13 @@ def test_reset_clears_memories_and_mental_models(backend):
 
     assert backend.get(BANK, "mem_1") is None
     assert backend.mental_models == {}
+
+
+def test_provision_mental_models_drops_a_model_no_longer_built_in(backend):
+    briefing = BuiltinModel(key="briefing", name="Briefing", prompt="p", scope="project")
+    traps = BuiltinModel(key="traps", name="Traps", prompt="p", scope="project")
+
+    backend.provision_mental_models(BANK, (briefing, traps))
+    backend.provision_mental_models(BANK, (briefing,))
+
+    assert backend.get_mental_model(BANK, traps.key) is None

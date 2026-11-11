@@ -287,14 +287,14 @@ def test_provision_mental_models_is_idempotent(backend):
 def test_get_mental_model_returns_a_view_for_a_provisioned_builtin(backend):
     if "mental_models" not in backend.capabilities():
         pytest.skip("backend does not declare mental_models")
-    from memory.builtin_models import USER_CONTEXT
+    from memory.builtin_models import BRIEFING
 
-    backend.provision_mental_models(BANK, (USER_CONTEXT,))
+    backend.provision_mental_models(BANK, (BRIEFING,))
 
-    view = backend.get_mental_model(BANK, USER_CONTEXT.key)
+    view = backend.get_mental_model(BANK, BRIEFING.key)
 
     assert view is not None
-    assert view.name == USER_CONTEXT.name
+    assert view.name == BRIEFING.name
 
 
 def test_get_mental_model_unknown_key_returns_none(backend):

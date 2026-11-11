@@ -14,7 +14,7 @@ import pytest
 
 from memory.backend.base import Hit, MemoryView, WriteAck
 from memory.backend.hindsight import HindsightBackend, _bank
-from memory.builtin_models import BuiltinModel
+from memory.builtin_models import DECISIONS, TRAPS, BuiltinModel
 from memory.errors import InvalidRequest, MemoryNotFound, UpstreamError
 
 BASE = "http://hindsight.test"
@@ -525,9 +525,10 @@ def test_provision_mental_models_creates_a_missing_model(make_backend, recorder)
     body = json.loads(recorder.calls[("POST", f"{_bank(BANK)}/mental-models")].read())
     assert body == {
         "name": "User Context", "source_query": "summarize",
-        "tags": ["schema:ach-retain-v1"], "tags_match": "all",
-        "trigger": {"mode": "delta", "refresh_after_consolidation": True,
-                    "exclude_mental_models": True, "recall_max_tokens": 12000},
+        "tags": ["schema:ach-retain-v1"],
+        "trigger": {"mode": "full", "refresh_after_consolidation": True,
+                    "exclude_mental_models": True, "recall_max_tokens": 12000,
+                    "tags_match": "all"},
     }
 
 
@@ -550,8 +551,9 @@ def test_provision_mental_models_is_a_noop_when_the_prompt_is_unchanged(make_bac
     backend = make_backend({
         ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
             "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
-                       "trigger": {"mode": "delta", "refresh_after_consolidation": True,
-                                   "exclude_mental_models": True, "recall_max_tokens": 12000}}]
+                       "trigger": {"mode": "full", "refresh_after_consolidation": True,
+                                   "exclude_mental_models": True, "recall_max_tokens": 12000,
+                                   "tags_match": "any_strict"}}]
         }),
     })
     builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
@@ -575,8 +577,9 @@ def test_provision_mental_models_turns_on_refresh_for_a_model_created_without_it
     backend.provision_mental_models(BANK, (builtin,))
 
     body = json.loads(recorder.calls[("PATCH", f"{_bank(BANK)}/mental-models/mm-1")].read())
-    assert body["trigger"] == {"mode": "delta", "refresh_after_consolidation": True,
-                               "exclude_mental_models": True, "recall_max_tokens": 12000}
+    assert body["trigger"] == {"mode": "full", "refresh_after_consolidation": True,
+                               "exclude_mental_models": True, "recall_max_tokens": 12000,
+                               "tags_match": "any_strict"}
 
 
 def test_provision_mental_models_excludes_mental_models_from_an_existing_model(make_backend, recorder):
@@ -607,3 +610,49 @@ def test_provision_mental_models_lists_with_the_trigger_and_prompt(make_backend,
 
     listed = recorder.calls[("GET", f"{_bank(BANK)}/mental-models")]
     assert listed.url.params["detail"] == "content"
+
+
+def test_provision_mental_models_deletes_a_model_no_longer_built_in(make_backend, recorder):
+    path = f"{_bank(BANK)}/mental-models"
+    backend = make_backend({
+        ("GET", path): httpx.Response(200, json={"items": [{"id": "mm-old", "name": "Project Context"}]}),
+        ("POST", path): httpx.Response(200, json={}),
+        ("DELETE", f"{path}/mm-old"): httpx.Response(200, json={}),
+    })
+
+    backend.provision_mental_models(BANK, (TRAPS,))
+
+    assert ("DELETE", f"{path}/mm-old") in recorder.calls
+
+
+def test_provision_mental_models_puts_the_tag_match_in_the_trigger(make_backend, recorder):
+    path = f"{_bank(BANK)}/mental-models"
+    backend = make_backend({
+        ("GET", path): httpx.Response(200, json={"items": []}),
+        ("POST", path): httpx.Response(200, json={}),
+    })
+
+    backend.provision_mental_models(BANK, (DECISIONS,))
+
+    body = json.loads(recorder.calls[("POST", path)].read())
+    assert body["tags"] == list(DECISIONS.source_tags)
+    assert body["trigger"]["tags_match"] == "any_strict"
+    assert body["trigger"]["mode"] == "full"
+    assert "tags_match" not in body  # not a mental model field on Hindsight 1.2
+
+
+def test_provision_mental_models_patches_a_model_whose_tags_changed(make_backend, recorder):
+    path = f"{_bank(BANK)}/mental-models"
+    current = {"id": "mm-1", "name": TRAPS.name, "source_query": TRAPS.prompt,
+               "tags": ["type:fact"], "trigger": {"mode": "full", "refresh_after_consolidation": True,
+                                                   "exclude_mental_models": True,
+                                                   "recall_max_tokens": 12000,
+                                                   "tags_match": "any_strict"}}
+    backend = make_backend({
+        ("GET", path): httpx.Response(200, json={"items": [current]}),
+        ("PATCH", f"{path}/mm-1"): httpx.Response(200, json={}),
+    })
+
+    backend.provision_mental_models(BANK, (TRAPS,))
+
+    assert ("PATCH", f"{path}/mm-1") in recorder.calls

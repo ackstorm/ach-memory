@@ -25,13 +25,13 @@ Version: 0.1.0
 
 | Capability | One line |
 |---|---|
-| Bounded standing context | at session start: project `constraint`, user `constraint`, project `convention` verbatim and newest first, then mental models in what is left of `context_budget_chars` (8,700). Whole items only, with a closing line naming what was left out. Activation text plus context must stay under Claude Code's ~10,000-character inline limit for SessionStart output |
+| Bounded standing context | at session start, project only: the newest `purpose`-tagged claim verbatim, the `briefing` model, then an index of the on-demand models. The briefing gets what the purpose and the index leave of `context_budget_chars` (8,700), cut at a whole line with a line telling the agent to load the rest; nothing without a project. Activation text plus context must stay under Claude Code's ~10,000-character inline limit for SessionStart output |
 | Users, groups, `on_behalf_of` | identity model behind every mutation and read |
 | MCP stdio proxy | runs on the SDK, on the host, resolves project and injects identity |
 | Project resolution from git origin | slug derived from the git remote; a hand-typed spelling of the current repository resolves to it on calls without a `memory_id`, so it cannot split the repository into a second project |
 | External auth | JWT/JWKS plus platform whoami |
 | Automatic bootstrap | users and projects created on first authorized contact |
-| Built-in mental models | provisioned at first retain: `user-context`, `project-context` |
+| Built-in mental models | project scope, provisioned at every retain, rebuilt in full mode: `briefing` (session start, from `briefing` notes), `traps`, `decisions`, `how-we-work` (on demand). A model that left the built-ins is deleted from the bank |
 | Idempotent retain | same `operation_id` replays to the same memory id, no duplicate |
 | Governance journal | one row per mutation, actor and outcome, survives engine replacement |
 | Secret scrub | content sanitized at the retain boundary before it reaches the engine |
@@ -65,7 +65,7 @@ Version: 0.1.0
 | Term | Values |
 |---|---|
 | `scope` | `user`, `project` |
-| `memory_type` | constraint, preference, decision, convention, fact, gotcha |
+| `memory_type` | constraint, preference, decision, convention, fact, gotcha, briefing |
 | `basis` | `human_explicit`, `agent_verified` |
 | `on_behalf_of` | operator-only: act as another user; recorded in the journal |
 | tags | `type:<memory_type>`, `basis:<basis>`, `schema:ach-retain-v1` |
@@ -171,7 +171,7 @@ session-start (standing context), pre-compact (retain nudge), subagent-start. No
 | `list_memories` | list | page memories, newest first |
 | `get_memory` | get | fetch one memory by id |
 | `history` | history | journal entries for one memory |
-| `load_context` | context load | deliver bounded standing context |
+| `load_context` | context load | deliver bounded standing context; with `model`, one built-in model in full |
 | `get_operation` | — | engine-side async outcome; only if the adapter declares `operations` |
 | `rename_project` | — | move a project to a new slug after its git remote moved; the old slug keeps forwarding |
 

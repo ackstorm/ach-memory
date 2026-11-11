@@ -153,8 +153,8 @@ _PERSONAL_DESCRIPTIONS = {
         "scores well above a Spanish one against the same claim."
     ),
     "load_context": (
-        "Load the bounded standing context for this session from your own memory. "
-        "Creates nothing; call once at session start."
+        "Load this session's standing context. Without a project there is none; "
+        "creates nothing."
     ),
 }
 

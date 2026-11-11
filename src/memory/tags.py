@@ -5,7 +5,9 @@ from typing import Literal
 
 from memory.errors import InvalidRequest
 
-MemoryType = Literal["constraint", "preference", "decision", "convention", "fact", "gotcha"]
+MemoryType = Literal[
+    "constraint", "preference", "decision", "convention", "fact", "gotcha", "briefing"
+]
 Basis = Literal["human_explicit", "agent_verified"]
 SCHEMA_TAG = "schema:ach-retain-v1"
 # Derived server-side; a caller tag here would collide with them.

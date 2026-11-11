@@ -37,7 +37,8 @@ Every claim needs:
 
 - `memory_type`: `constraint` (must be obeyed), `preference` (defeasible), `decision` (an accepted
   choice with rationale), `convention` (a repeatable way of working), `fact` (durable, not cheaply
-  rediscoverable), or `gotcha` (a non-obvious failure pattern).
+  rediscoverable), `gotcha` (a non-obvious failure pattern), or `briefing` (project only:
+  something every session in this project must know before doing anything -- see Context).
 - `basis`: `human_explicit` for what the human established, `agent_verified` for what you directly
   verified with a tool or authoritative source. Neither fits -> ask, verify, or abstain.
 - optional `tags` for later filtering, and an `operation_id` UUID per intended claim -- reuse it
@@ -65,8 +66,21 @@ memory and why, across every `forget`/`restore`/`correct`/`delete_memory`.
 
 ## Context
 
-Load standing context at session start with `load_context`. Unfinished work is not memory: do not
-retain task progress, and do not expect the next session to find it here.
+Session start shows the project's purpose, its briefing, and the models you can load on demand.
+Agents write all of it:
+
+- When session start says no purpose is stored, read the README or AGENTS.md and retain one
+  project `fact` tagged `purpose`: two or three sentences on what the project is and does, who
+  uses it, its main parts and where it runs. To change it, `correct` that memory.
+- Retain a `briefing` note when you learn something you wish you had known at the start of this
+  session and that applies to any task in this project: how to reach its environment, how
+  changes ship, a rule every change must respect. A trap in one component, file or tool is a
+  `gotcha`, not a briefing note. Do not repeat what AGENTS.md already says.
+- Before that kind of work, load the model session start lists under "More context" with
+  `load_context` and `model`. When the briefing says it continues, load `briefing` the same way.
+
+Unfinished work is not memory: do not retain task progress, and do not expect the next session
+to find it here.
 
 The live tool schema is authoritative for fields, authorization and confirmation requirements.
 
@@ -107,7 +121,8 @@ export ACH_MEMORY_API_KEY=<token from your identity provider>
 option A. Never write a token value into a file the user did not ask for, and never echo one.
 
 Check from a repository: `uvx --from git+https://github.com/ackstorm/ach-memory ach-memory
-context load` prints `###` headings when everything works. When the tools
+context load` prints a `### More context` section when everything works, and nothing in a
+project with nothing retained yet. When the tools
 answer `UNAUTHORIZED: missing or malformed credential`, no credential reached the service: the
 variables are unset in the host's environment, or `ACH_MEMORY_URL` bypasses the gateway that
 accepts the token. In Codex, remove any hand-written `[mcp_servers.ach-memory]` entry

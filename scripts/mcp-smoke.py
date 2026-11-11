@@ -124,7 +124,7 @@ async def check_reflect(t, s) -> None:
         say("(reflect: answer)")
 async def check_load_context(t, s) -> None:
     body = unwrap(await s.call_tool("load_context", {"project_slug": t["project"]}))
-    assert "text" in body and "entries" in body, body
+    assert "text" in body and "truncated" in body, body
 async def check_secret_rejection(t, s) -> None:
     content = "AWS key AKIAIOSFODNN7EXAMPLE secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     res = await s.call_tool("retain", retain_args("project", content, project=t["project"], memory_type="fact"))

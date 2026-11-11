@@ -102,7 +102,7 @@ claude plugin list | grep -A1 'ach-memory@'     # Version: the latest release
 codex  plugin list | grep 'ach-memory@'
 codex  mcp list    | grep ach-memory            # `uvx ... ach-memory mcp`, not a URL
 cd <a git checkout> && uvx --from git+https://github.com/ackstorm/ach-memory \
-  ach-memory context load | head -1             # a ### heading
+  ach-memory context load | grep '### More'     # "### More context"; empty in a project with nothing retained yet
 ```
 
 Troubleshooting:
