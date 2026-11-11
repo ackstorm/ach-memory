@@ -2,7 +2,7 @@ apiVersion: v2
 name: ach-memory
 description: Governed, engine-neutral memory harness for coding agents
 type: application
-version: 0.10.4
-appVersion: "0.10.4"
+version: 0.10.5
+appVersion: "0.10.5"
 annotations:
   artifacthub.io/license: "MIT"
