@@ -1,6 +1,5 @@
-"""Bounded standing context: stored rules verbatim, then built-in mental models (SPEC §2, §6)."""
-
-from typing import Literal
+"""Standing context for a session start (SPEC §2, §6): the project's purpose, its briefing, and
+the on-demand models an agent loads with `load_context(model=...)`."""
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
@@ -8,115 +7,103 @@ from sqlalchemy.orm import Session
 from memory.auth.principal import Principal
 from memory.backend.base import Backend
 from memory.bank_ref import resolve_bank
-from memory.builtin_models import BUILTIN_MODELS
+from memory.builtin_models import BRIEFING, BUILTIN_MODELS
 from memory.config import get_settings
-from memory.errors import ProjectNotFound, UnsupportedCapability
+from memory.errors import InvalidRequest, ProjectNotFound, UnsupportedCapability
 
-# Delivery order. Rules skip the LLM: a 1,000-token summary kept 1-4 of 19 constraints on
-# Hindsight 0.9.2, and the constraints alone do not fit in one.
-_RULES = (
-    ("project", "constraint", "Project Constraints"),
-    ("user", "constraint", "User Constraints"),
-    ("project", "convention", "Project Conventions"),
+PURPOSE_TAG = "purpose"
+ON_DEMAND = tuple(m for m in BUILTIN_MODELS if m.load_when)
+
+_NO_PURPOSE = (
+    "No purpose is stored for this project. Read its README or AGENTS.md and retain one project "
+    "`fact` tagged `purpose`: two or three sentences on what it is and does, who uses it, its "
+    "main parts and where it runs.\n\n"
 )
-# ponytail: one page, since ~30 claims fill the budget; `Page.total` still counts the rest.
-_RULES_PAGE = 100
-
-
-def _left_out_line(rules: int, models: list[str]) -> str:
-    items = [f"{rules} stored rule{'' if rules == 1 else 's'}"] if rules else []
-    return f"Left out for size: {', '.join(items + models)}. Use `recall`.\n\n"
-
-
-_LEFT_OUT_ROOM = len(_left_out_line(999, [m.name for m in BUILTIN_MODELS]))
+_EMPTY_BRIEFING = (
+    "The briefing is empty. When you learn something every session in this project needs before "
+    "doing anything, retain it with `memory_type` `briefing`.\n\n"
+)
+_BRIEFING_HEAD = (
+    "### Briefing\nNotes agents saved to know at the start of every session in this project. "
+    "Read them before doing anything.\n"
+)
+_BRIEFING_CUT = (
+    "The briefing continues: these are notes saved to know before doing anything in this "
+    "project. You MUST call `load_context` with `model` \"briefing\" to read the rest.\n\n"
+)
 
 
 class LoadContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_slug: str | None = None
-
-
-class ContextEntry(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    scope: Literal["user", "project"]
-    key: str
-    name: str
-    chars: int
+    model: str | None = None
 
 
 class LoadContextResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str
-    entries: list[ContextEntry]
-    omitted: list[str]
+    truncated: bool = False
 
 
 def load(
     db: Session, principal: Principal, request: LoadContextRequest, *, backend: Backend
 ) -> LoadContextResponse:
-    """User bank always; project bank too when `project_slug` names a known project (an
-    unknown one is silently omitted). Rules come first, newest first, then models, user before
-    project. Whole items only: one that would exceed `context_budget_chars` goes to `omitted`,
-    never truncated, and a closing line in the text names what was left out."""
-    refs = [resolve_bank(db, principal, "user", None, create=False)[0]]
-    if request.project_slug:
-        try:
-            refs.append(resolve_bank(db, principal, "project", request.project_slug, create=False)[0])
-        except ProjectNotFound:
-            pass
-
-    budget = get_settings().context_budget_chars - _LEFT_OUT_ROOM
-    sections: list[str] = []
-    entries: list[ContextEntry] = []
-    omitted: list[str] = []
-    used = 0
-
-    banks = {ref.scope: ref.bank_id for ref in refs}
-    rules_left_out = 0
-    models_left_out: list[str] = []
-    for scope, memory_type, heading in _RULES:
-        if scope not in banks:
-            continue
-        page = backend.list(banks[scope], tag_groups=({"tags": [f"type:{memory_type}"], "match": "any"},),
-                            state=None, limit=_RULES_PAGE, offset=0)
-        rules_left_out += page.total - len(page.items)
-        section = f"### {heading}\n"
-        kept = False
-        for view in page.items:
-            line = f"- {view.text}\n"
-            if used + len(section) + len(line) + 1 > budget:
-                rules_left_out += 1
-                omitted.append(view.memory_id)
-                continue
-            section += line
-            kept = True
-        if kept:
-            section += "\n"
-            sections.append(section)
-            entries.append(ContextEntry(scope=scope, key=memory_type, name=heading, chars=len(section)))
-            used += len(section)
-
+    """Project bank only; no project, or an unknown one, loads nothing. With `model`, that one
+    model in full. Otherwise purpose, briefing and index within `context_budget_chars`: the
+    briefing is cut at a whole line, never mid-sentence, and says how to load the rest."""
+    if request.model and not request.project_slug:
+        raise InvalidRequest("models belong to a project: pass project_slug")
+    if not request.project_slug:
+        return LoadContextResponse(text="")
     try:
-        for ref in refs:
-            for builtin in BUILTIN_MODELS:
-                if builtin.scope != ref.scope:
-                    continue
-                view = backend.get_mental_model(ref.bank_id, builtin.key)
-                if view is None or not view.content:
-                    continue
-                section = f"### {view.name}\n{view.content}\n\n"
-                if used + len(section) > budget:
-                    omitted.append(builtin.key)
-                    models_left_out.append(view.name)
-                    continue
-                sections.append(section)
-                entries.append(
-                    ContextEntry(scope=ref.scope, key=builtin.key, name=view.name, chars=len(section))
-                )
-                used += len(section)
-    except UnsupportedCapability:
-        pass
+        ref, _ = resolve_bank(db, principal, "project", request.project_slug, create=False)
+    except ProjectNotFound:
+        if request.model:
+            raise
+        return LoadContextResponse(text="")
+    if request.model:
+        return LoadContextResponse(text=_model(backend, ref.bank_id, request.model))
+    head, tail = _purpose(backend, ref.bank_id), _index()
+    body, truncated = _briefing(
+        backend, ref.bank_id, get_settings().context_budget_chars - len(head) - len(tail)
+    )
+    return LoadContextResponse(text=head + body + tail, truncated=truncated)
 
-    if rules_left_out or models_left_out:
-        sections.append(_left_out_line(rules_left_out, models_left_out))
-    return LoadContextResponse(text="".join(sections), entries=entries, omitted=omitted)
+
+def _model(backend: Backend, bank_id: str, key: str) -> str:
+    builtin = next((m for m in BUILTIN_MODELS if m.key == key), None)
+    if builtin is None:
+        raise InvalidRequest(f"unknown model; use one of: {', '.join(m.key for m in BUILTIN_MODELS)}")
+    view = backend.get_mental_model(bank_id, key)
+    return f"### {builtin.name}\n{view.content.strip()}\n" if view and view.content else ""
+
+
+def _purpose(backend: Backend, bank_id: str) -> str:
+    page = backend.list(bank_id, tag_groups=({"tags": [PURPOSE_TAG], "match": "any"},),
+                        state=None, limit=1, offset=0)
+    if not page.items:
+        return _NO_PURPOSE
+    return f"### Project purpose\n{page.items[0].text}\n\n"
+
+
+def _briefing(backend: Backend, bank_id: str, budget: int) -> tuple[str, bool]:
+    notes = backend.list(bank_id, tag_groups=({"tags": ["type:briefing"], "match": "any"},),
+                         state=None, limit=1, offset=0)
+    if not notes.total:
+        return _EMPTY_BRIEFING, False
+    try:
+        view = backend.get_mental_model(bank_id, BRIEFING.key)
+    except UnsupportedCapability:
+        return "", False
+    if view is None or not view.content:
+        return "", False
+    text = f"{_BRIEFING_HEAD}{view.content.strip()}\n\n"
+    if len(text) <= budget:
+        return text, False
+    cut = text.rfind("\n", 0, budget - len(_BRIEFING_CUT))
+    return text[:cut + 1] + _BRIEFING_CUT, True
+
+
+def _index() -> str:
+    lines = "".join(f"- `{m.key}`: {m.load_when}\n" for m in ON_DEMAND)
+    return f"### More context\nCall `load_context` with `model` set to one of these when it applies:\n{lines}"
