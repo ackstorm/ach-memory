@@ -22,6 +22,7 @@ from leakscan import find as leak_find
 EXPECTED_TOOLS = {
     "retain", "recall", "reflect", "correct", "forget", "restore", "delete_memory",
     "list_memories", "get_memory", "history", "load_context", "get_operation",
+    "rename_project",
 }
 MEMORY_ID_RE = re.compile(r"^mem_[0-9a-f]{32}$")
 _log: list[str] = []
