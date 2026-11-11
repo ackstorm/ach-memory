@@ -459,3 +459,10 @@ def test_memory_project_turns_spellings_off(tmp_path, monkeypatch):
     repo = _git_repo(tmp_path, "git@github.com:acme/payments-api.git")
     monkeypatch.setenv("MEMORY_PROJECT", "payments-api")
     assert repo_slug_spellings(str(repo)) == frozenset()
+
+
+def test_personal_tools_drop_the_model_of_load_context():
+    # Models belong to a project: without one, `model` could only ever fail.
+    schema = {"type": "object", "properties": {"project_slug": {}, "model": {}}}
+    (load,) = personal_tools([types.Tool(name="load_context", inputSchema=schema)])
+    assert load.input_schema["properties"] == {}

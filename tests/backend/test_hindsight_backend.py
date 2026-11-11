@@ -527,7 +527,7 @@ def test_provision_mental_models_creates_a_missing_model(make_backend, recorder)
         "name": "User Context", "source_query": "summarize",
         "tags": ["schema:ach-retain-v1"],
         "trigger": {"mode": "full", "refresh_after_consolidation": True,
-                    "exclude_mental_models": True, "recall_max_tokens": 12000,
+                    "exclude_mental_models": True,
                     "tags_match": "all"},
     }
 
@@ -552,7 +552,7 @@ def test_provision_mental_models_is_a_noop_when_the_prompt_is_unchanged(make_bac
         ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
             "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
                        "trigger": {"mode": "full", "refresh_after_consolidation": True,
-                                   "exclude_mental_models": True, "recall_max_tokens": 12000,
+                                   "exclude_mental_models": True,
                                    "tags_match": "any_strict"}}]
         }),
     })
@@ -578,7 +578,7 @@ def test_provision_mental_models_turns_on_refresh_for_a_model_created_without_it
 
     body = json.loads(recorder.calls[("PATCH", f"{_bank(BANK)}/mental-models/mm-1")].read())
     assert body["trigger"] == {"mode": "full", "refresh_after_consolidation": True,
-                               "exclude_mental_models": True, "recall_max_tokens": 12000,
+                               "exclude_mental_models": True,
                                "tags_match": "any_strict"}
 
 
@@ -646,7 +646,6 @@ def test_provision_mental_models_patches_a_model_whose_tags_changed(make_backend
     current = {"id": "mm-1", "name": TRAPS.name, "source_query": TRAPS.prompt,
                "tags": ["type:fact"], "trigger": {"mode": "full", "refresh_after_consolidation": True,
                                                    "exclude_mental_models": True,
-                                                   "recall_max_tokens": 12000,
                                                    "tags_match": "any_strict"}}
     backend = make_backend({
         ("GET", path): httpx.Response(200, json={"items": [current]}),
