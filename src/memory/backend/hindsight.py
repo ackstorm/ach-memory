@@ -349,8 +349,8 @@ class HindsightBackend(Backend):
                 self._request("POST", path, body)
             elif _stale(current, builtin):
                 self._request("PATCH", f"{path}/{current['id']}", body)
-        # Every mental model in a bank is ach-memory's own: one whose name left the built-ins
-        # (User Context, Project Context) is deleted, or it keeps refreshing after every retain.
+        # Every mental model in a bank is ach-memory's own: one that is not a built-in is
+        # deleted, or it keeps refreshing after every retain.
         wanted = {builtin.name for builtin in builtins}
         for name, item in existing.items():
             if name not in wanted:
