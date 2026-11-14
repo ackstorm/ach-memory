@@ -143,10 +143,14 @@ class HindsightBackend(Backend):
         return frozenset({"synthesis", "operations"})
 
     def provision(self, bank_id: str) -> None:
-        """`retain_extraction_mode` as configured, and `enable_observations` off: ACH serves no
-        derived views, and consolidation would spend an LLM call per retain building them."""
+        """`retain_extraction_mode` as configured; `enable_observations` off, since ACH serves no
+        derived views; and recall fused from text and semantic search only. With the graph and
+        temporal arms in the fusion, a capped reranker (HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID)
+        sees the wrong candidates: on the ach-agent bank, cap 10 gave hit@1 0.20 with them and
+        0.46 without (2026-11-14)."""
         self._request("PUT", _bank(bank_id), {})
-        wanted = {"retain_extraction_mode": self._extraction_mode, "enable_observations": False}
+        wanted = {"retain_extraction_mode": self._extraction_mode, "enable_observations": False,
+                  "enable_graph_retrieval": False, "enable_temporal_retrieval": False}
         cfg = (self._request("GET", f"{_bank(bank_id)}/config") or {}).get("config") or {}
         if all(cfg.get(k) == v for k, v in wanted.items()):
             return

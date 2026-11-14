@@ -85,7 +85,8 @@ def test_provision_skips_the_patch_when_config_already_matches(make_backend, rec
     backend = make_backend({
         ("PUT", f"{_bank(BANK)}"): httpx.Response(200, json={}),
         ("GET", f"{_bank(BANK)}/config"): httpx.Response(
-            200, json={"config": {"retain_extraction_mode": "verbatim", "enable_observations": False}}
+            200, json={"config": {"retain_extraction_mode": "verbatim", "enable_observations": False,
+                                  "enable_graph_retrieval": False, "enable_temporal_retrieval": False}}
         ),
         ("PATCH", f"{_bank(BANK)}/config"): httpx.Response(200, json={}),
     })
@@ -98,7 +99,8 @@ def test_provision_skips_the_patch_when_config_already_matches(make_backend, rec
 def test_provision_patches_and_reverifies_when_config_differs(make_backend, recorder):
     responses = iter([
         httpx.Response(200, json={"config": {"retain_extraction_mode": "verbatim", "enable_observations": True}}),
-        httpx.Response(200, json={"config": {"retain_extraction_mode": "verbatim", "enable_observations": False}}),
+        httpx.Response(200, json={"config": {"retain_extraction_mode": "verbatim", "enable_observations": False,
+                                             "enable_graph_retrieval": False, "enable_temporal_retrieval": False}}),
     ])
     backend = make_backend({
         ("PUT", f"{_bank(BANK)}"): httpx.Response(200, json={}),
@@ -109,9 +111,10 @@ def test_provision_patches_and_reverifies_when_config_differs(make_backend, reco
     backend.provision(BANK)
 
     patch_request = recorder.calls[("PATCH", f"{_bank(BANK)}/config")]
-    assert json.loads(patch_request.read()) == {
-        "updates": {"retain_extraction_mode": "verbatim", "enable_observations": False}
-    }
+    assert json.loads(patch_request.read()) == {"updates": {
+        "retain_extraction_mode": "verbatim", "enable_observations": False,
+        "enable_graph_retrieval": False, "enable_temporal_retrieval": False,
+    }}
 
 
 def test_provision_raises_upstream_error_when_verification_still_fails(make_backend):

@@ -151,6 +151,8 @@ candidates" as a premise; its two misses are the Spanish queries in §5.
 | Setting/gotcha | Value |
 |---|---|
 | `retain_extraction_mode` | `verbatim`, set and verified at provision |
+| `enable_graph_retrieval`, `enable_temporal_retrieval` | `false`, set and verified at provision: recall fuses text and semantic search only. With those arms in the fusion, a reranker capped by `HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID` sees the wrong candidates (ach-agent bank, 2026-11-14, cap 10: hit@1 0.20 with them, 0.46 without; uncapped 0.52 either way) |
+| reranker cap | `HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID=10` on the engine (a GitOps setting): recall median 41.6 s → 1.18 s on a 2-CPU host 1.5× slower than production; hit@1 0.52 → 0.46, Spanish 0.23 → 0.17 |
 | `enable_observations` | `false`, set and verified at provision: no consolidation, no derived views. Observation units written before stay in the bank; `reflect` still searches them (its `search_observations` tool keys off the request's fact types, not this flag) and now reads them as stale |
 | recall | `types=["world"]` |
 | read-side shaping | semantic-score floor only |

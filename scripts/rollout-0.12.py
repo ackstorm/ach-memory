@@ -8,7 +8,7 @@
   show  PLAN SLUG...                   offline: the full session start of each project from PLAN,
                                        by slug or by a unique part of one.
   apply PLAN                           writes. Per bank: deletes the mental models, turns
-                                       consolidation off, stores the family list and one
+                                       consolidation and the graph and temporal recall arms off, stores the family list and one
                                        `memories` record per memory. Needs migration 0005.
 
 --hindsight is the engine's bank API root, e.g. http://localhost:18888/api/v1/default through
@@ -392,11 +392,11 @@ def apply(args: argparse.Namespace) -> None:
         path = f"/banks/{bank['bank_id']}/mental-models"
         for item in (hs.get(path).raise_for_status().json().get("items") or []):
             hs.delete(f"{path}/{item['id']}").raise_for_status()
-        hs.patch(f"/banks/{bank['bank_id']}/config",
-                 json={"updates": {"enable_observations": False}}).raise_for_status()
+        off = {"enable_observations": False, "enable_graph_retrieval": False, "enable_temporal_retrieval": False}
+        hs.patch(f"/banks/{bank['bank_id']}/config", json={"updates": off}).raise_for_status()
         cfg = hs.get(f"/banks/{bank['bank_id']}/config").raise_for_status().json().get("config") or {}
-        if cfg.get("enable_observations") is not False:
-            sys.exit(f"{bank['bank_id']}: enable_observations did not turn off")
+        if any(cfg.get(k) is not False for k in off):
+            sys.exit(f"{bank['bank_id']}: bank config did not take {off}")
 
     for bank in banks:
         for m in (m for m in bank["memories"] if m.get("forget")):
