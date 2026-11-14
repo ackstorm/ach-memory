@@ -79,7 +79,9 @@ class Settings(BaseSettings):
     # Header carrying the key: Bearer on Authorization, the bare key on any other header.
     llm_header: str = "Authorization"
     llm_model: str = "ackstorm.smart"
-    llm_timeout_seconds: float = Field(default=120.0, gt=0)
+    # The draft runs inside the retain that reaches the threshold, with the project row locked:
+    # a slow gateway must not hold that retain for long.
+    llm_timeout_seconds: float = Field(default=20.0, gt=0)
 
     @field_validator("database_url")
     @classmethod
