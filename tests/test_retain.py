@@ -23,6 +23,7 @@ def principal() -> Principal:
 def request_() -> retain.RetainRequest:
     return retain.RetainRequest(
         scope="user",
+        title="A title",
         content="Project slugs remain stable through aliases.",
         memory_type="constraint",
         basis="human_explicit",
@@ -33,6 +34,7 @@ def request_() -> retain.RetainRequest:
 def test_happy_path_stores_server_then_caller_tags(db, principal, backend):
     request = retain.RetainRequest(
         scope="user",
+        title="A title",
         content="The user prefers concise status reports.",
         memory_type="preference",
         basis="human_explicit",
@@ -72,6 +74,7 @@ def test_replay_returns_the_same_memory_id_and_does_not_call_the_backend_twice(
 def test_secret_content_is_rejected_and_nothing_is_retained(db, principal, backend):
     request = retain.RetainRequest(
         scope="user",
+        title="A title",
         content="the key is sk-1234567890abcdef1234",
         memory_type="fact",
         basis="human_explicit",
@@ -92,6 +95,7 @@ def test_oversize_content_is_rejected(db, principal, backend, monkeypatch):
     monkeypatch.setattr(settings, "max_content_bytes", 5)
     request = retain.RetainRequest(
         scope="user",
+        title="A title",
         content="far too long for the limit",
         memory_type="fact",
         basis="human_explicit",
@@ -105,6 +109,7 @@ def test_oversize_content_is_rejected(db, principal, backend, monkeypatch):
 def test_project_created_notice_on_first_retain_to_a_new_slug(db, principal, backend):
     request = retain.RetainRequest(
         scope="project",
+        title="A title",
         project_slug="brand-new",
         content="A durable project fact.",
         memory_type="fact",

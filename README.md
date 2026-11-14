@@ -13,17 +13,19 @@ agent host (Claude Code, Codex)
   │ stdio                       ┌────────────────────────────┐
   ▼                             │ ach-memory (this service)   │
 ach-memory mcp  ── HTTPS/MCP ──▶│  auth → scope → service     │──▶ Postgres
-  (proxy: git origin → slug,    │  retain · recall · curation │    users, projects,
-   auth header)                 │  standing context           │    journal
-                                │  Backend ABC ─ Hindsight    │──▶ Hindsight (banks,
-                                └────────────────────────────┘    mental models)
+  (proxy: git origin → slug,    │  retain · recall · curation │    users, projects, journal,
+   auth header)                 │  standing context           │    titles/families/pins,
+                                │  Backend ABC ─ Hindsight    │    read log
+                                └────────────────────────────┘──▶ Hindsight (store, search)
 ```
 
 ## Tools
 
 `retain` · `recall` · `reflect` · `forget` · `restore` · `correct` ·
-`delete_memory` · `list_memories` · `get_memory` · `history` ·
-`load_context` · `get_operation` · `rename_project`.
+`delete_memory` · `pin` · `list_memories` · `get_memory` · `history` ·
+`load_context` · `list_families` · `set_families` · `get_operation` · `rename_project`.
+A person edits a project's family list with `ach-memory families set <family>...
+[--rename old=new]`; `ach-memory families` shows it.
 One MCP endpoint (`/mcp/`), one health route (`/health`). No REST data plane.
 
 ## Install on a host
@@ -102,7 +104,7 @@ claude plugin list | grep -A1 'ach-memory@'     # Version: the latest release
 codex  plugin list | grep 'ach-memory@'
 codex  mcp list    | grep ach-memory            # `uvx ... ach-memory mcp`, not a URL
 cd <a git checkout> && uvx --from git+https://github.com/ackstorm/ach-memory \
-  ach-memory context load | grep '### More'     # "### More context"; empty in a project with nothing retained yet
+  ach-memory context load | grep '### Memory'   # "### Memory index"; empty where nothing is retained yet
 ```
 
 Troubleshooting:

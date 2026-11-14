@@ -54,3 +54,10 @@ class UpstreamError(DomainError):
 class UnsupportedCapability(DomainError):
     code = "UNSUPPORTED"
     status = 501
+
+
+class PinCapExceeded(DomainError):
+    """A pin would put the bank's pinned text over its cap; the message lists what is pinned."""
+
+    code = "PIN_CAP_EXCEEDED"
+    status = 409

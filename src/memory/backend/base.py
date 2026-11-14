@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-from memory.builtin_models import BuiltinModel
 from memory.errors import UnsupportedCapability
 
-Capability = Literal["synthesis", "operations", "mental_models"]
+Capability = Literal["synthesis", "operations"]
 MemoryState = Literal["valid", "invalidated"]
 WriteStatus = Literal["completed", "pending", "unknown"]
 
@@ -70,14 +68,6 @@ class Page:
     total: int
 
 
-@dataclass(frozen=True)
-class MentalModelView:
-    key: str
-    name: str
-    content: str | None
-    updated_at: str | None = None
-
-
 class Backend(ABC):
     @abstractmethod
     def capabilities(self) -> frozenset[Capability]:
@@ -86,8 +76,8 @@ class Backend(ABC):
 
     @abstractmethod
     def provision(self, bank_id: str) -> None:
-        """Ensure the bank exists and carries the adapter's deployment configuration; other
-        methods may assume it. Adapters may also create lazily (the fake does; Hindsight
+        """Ensure the bank exists and carries the adapter's deployment configuration (no derived
+        views: consolidation off); other methods may assume it. Adapters may also create lazily (the fake does; Hindsight
         auto-creates a bank on first write)."""
 
     @abstractmethod
@@ -136,12 +126,3 @@ class Backend(ABC):
         """Engine-shaped dict with bank ids redacted; ACH passes it through unchanged
         (capability `operations`)."""
         raise UnsupportedCapability("operations")
-
-    def provision_mental_models(self, bank_id: str, builtins: Sequence[BuiltinModel]) -> None:
-        """Ensure each of `builtins` exists in `bank_id`, created or updated to its current
-        prompt; idempotent (capability `mental_models`)."""
-        raise UnsupportedCapability("mental_models")
-
-    def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
-        """Current content of one mental model, or `None` if absent (capability `mental_models`)."""
-        raise UnsupportedCapability("mental_models")

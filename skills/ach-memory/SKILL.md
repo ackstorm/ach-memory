@@ -1,6 +1,6 @@
 ---
 name: ach-memory
-description: Read this before the first `recall` or `retain` of a session. Durable user and project memory: what to store, which scope and type it takes, what never to store, and when to read before you act. Also read it to install or configure ach-memory, or when its tools are missing or answer UNAUTHORIZED.
+description: Read this before the first `recall` or `retain` of a session. Durable user and project memory: what to store, which scope, type and family it takes, how to title it, when to pin it, what never to store, and when to read before you act. Also read it to install or configure ach-memory, or when its tools are missing or answer UNAUTHORIZED.
 ---
 
 # ach-memory
@@ -8,13 +8,23 @@ description: Read this before the first `recall` or `retain` of a session. Durab
 ach-memory is the system of record for durable context across sessions. Use it instead of
 `MEMORY.md` or a host memory directory, which ach-memory cannot see. Never store secrets.
 
+## What session start gives you
+
+Session start prints, in order: the project's purpose; your pinned memories in full; the
+project's pinned memories in full; an index of the project's memory, one line per family with
+its count and its three newest titles (below 30 memories, the plain list of titles); and one line
+of totals. Pinned memories apply to every task. The index shows what exists, not what it says.
+
 ## Recall before depending on memory
 
-Call `recall` before work that depends on a prior decision, preference, constraint, convention,
-fact or gotcha. Use `scope="all"` when you do not know whether the answer is a personal
+Memory holds what the repository cannot tell you: a past decision and the alternative it
+rejected, a convention where several ways would work, a fact about something outside the repo
+(the gateway, the cluster, credential handling, a third-party tool). Code, comments, docs and
+tests you can read for yourself. Before work that depends on one of the first kind, call
+`recall`, or list the family the index points to with `list_memories` and `family` (titles and
+ids; `full: true` adds the text), or read one memory with `get_memory`. Use `scope="all"` when you do not know whether the answer is a personal
 preference or a project decision; name one scope only when you do. Use `reflect` only when a
-synthesized answer is more useful than exact hits. List stored memories without a query with
-`list_memories`, or fetch one by id with `get_memory`. Live tools, repository state and host
+synthesized answer is more useful than exact hits. Live tools, repository state and host
 policy override a remembered claim when they conflict. Do not narrate routine retrieval.
 
 Query in English whatever language the conversation uses. Claims are stored in English and
@@ -35,17 +45,32 @@ repository facts, or transient task progress.
 
 Every claim needs:
 
+- `title`: one line, at most 80 characters, naming what the claim is about the way someone would
+  look for it: the component, command, file, setting or service, and the point. "Releases need
+  `make release-cut` on a clean main" beats "Release process". It is what the index shows.
+- `family`: the area of the project it belongs to. Once a project holds 30 memories it gets a
+  closed list of at most 12 families plus `other`, and every project retain must name one from
+  it: a family not on the list is refused, and the error lists them. Pick the family whose
+  memories you would want next to this one; `other` when none fits. Below 30 it is optional.
+  Families are a project thing: user memories need none.
 - `memory_type`: `constraint` (must be obeyed), `preference` (defeasible), `decision` (an accepted
   choice with rationale), `convention` (a repeatable way of working), `fact` (durable, not cheaply
-  rediscoverable), `gotcha` (a non-obvious failure pattern), or `briefing` (project only:
-  something every session in this project must know before doing anything -- see Context).
+  rediscoverable), or `gotcha` (a non-obvious failure pattern). `briefing` remains for older
+  memories; for something every session needs, pick the real type and pin it.
 - `basis`: `human_explicit` for what the human established, `agent_verified` for what you directly
   verified with a tool or authoritative source. Neither fits -> ask, verify, or abstain.
 - optional `tags` for later filtering, and an `operation_id` UUID per intended claim -- reuse it
   verbatim to retry safely.
 
+Pin (`pin: true` on `retain`, or the `pin` tool later) only what every session in the project
+needs before doing anything: a rule every change must respect, how to reach the environment, how
+changes ship. A trap in one component is not pinned; the index and `recall` find it when the work
+gets there. Pinned text has a cap per bank (3,500 characters for a project, 1,200 for a user); a
+pin past it is refused with the list of what is pinned, so unpin or shorten something first.
+Unpin what stopped applying with `pin` and `pinned: false`.
+
 The response's `memory_id` is the handle for `correct`, `forget`, `restore`, `delete_memory`,
-`get_memory` and `history`. Those tools infer `scope` from the id, so a `recall` hit is enough to
+`pin`, `get_memory` and `history`. Those tools infer `scope` from the id, so a `recall` hit is enough to
 act on it: leave `scope` out unless you know it.
 
 ## Scope
@@ -64,20 +89,12 @@ supersedes the old one, followed by a fresh `retain`; use `restore` to undo a mi
 Use `delete_memory` only to erase for good -- nothing brings it back. `history` shows who changed a
 memory and why, across every `forget`/`restore`/`correct`/`delete_memory`.
 
-## Context
+## Purpose
 
-Session start shows the project's purpose, its briefing, and the models you can load on demand.
-Agents write all of it:
-
-- When session start says no purpose is stored, read the README or AGENTS.md and retain one
-  project `fact` tagged `purpose`: two or three sentences on what the project is and does, who
-  uses it, its main parts and where it runs. To change it, `correct` that memory.
-- Retain a `briefing` note when you learn something you wish you had known at the start of this
-  session and that applies to any task in this project: how to reach its environment, how
-  changes ship, a rule every change must respect. A trap in one component, file or tool is a
-  `gotcha`, not a briefing note. Do not repeat what AGENTS.md already says.
-- Before that kind of work, load the model session start lists under "More context" with
-  `load_context` and `model`. When the briefing says it continues, load `briefing` the same way.
+When session start says no purpose is stored, read the README or AGENTS.md and retain one
+project `fact` tagged `purpose`, titled "Project purpose": two or three sentences on what the
+project is and does, who uses it, its main parts and where it runs. To change it, `correct` that
+memory.
 
 Unfinished work is not memory: do not retain task progress, and do not expect the next session
 to find it here.
@@ -121,8 +138,8 @@ export ACH_MEMORY_API_KEY=<token from your identity provider>
 option A. Never write a token value into a file the user did not ask for, and never echo one.
 
 Check from a repository: `uvx --from git+https://github.com/ackstorm/ach-memory ach-memory
-context load` prints a `### More context` section when everything works, and nothing in a
-project with nothing retained yet. When the tools
+context load` prints the session start when everything works (a `### Memory index` section in a
+project with memories), and nothing where nothing is retained yet. When the tools
 answer `UNAUTHORIZED: missing or malformed credential`, no credential reached the service: the
 variables are unset in the host's environment, or `ACH_MEMORY_URL` bypasses the gateway that
 accepts the token. In Codex, remove any hand-written `[mcp_servers.ach-memory]` entry

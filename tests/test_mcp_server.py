@@ -8,21 +8,11 @@ from mcp.client.streamable_http import streamable_http_client
 
 from memory.mcp.server import create_app
 
-_EXPECTED_TOOLS = [
-    "correct",
-    "delete_memory",
-    "forget",
-    "get_memory",
-    "get_operation",
-    "history",
-    "list_memories",
-    "load_context",
-    "recall",
-    "reflect",
-    "rename_project",
-    "restore",
-    "retain",
-]
+_EXPECTED_TOOLS = sorted([
+    "correct", "delete_memory", "forget", "get_memory", "get_operation", "history",
+    "list_families", "list_memories", "load_context", "pin", "recall", "reflect",
+    "rename_project", "restore", "retain", "set_families",
+])
 
 
 def test_health_returns_ok():

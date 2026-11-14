@@ -461,8 +461,8 @@ def test_memory_project_turns_spellings_off(tmp_path, monkeypatch):
     assert repo_slug_spellings(str(repo)) == frozenset()
 
 
-def test_personal_tools_drop_the_model_of_load_context():
-    # Models belong to a project: without one, `model` could only ever fail.
-    schema = {"type": "object", "properties": {"project_slug": {}, "model": {}}}
-    (load,) = personal_tools([types.Tool(name="load_context", inputSchema=schema)])
-    assert load.input_schema["properties"] == {}
+def test_personal_tools_drop_the_project_only_tools():
+    schema = {"type": "object", "properties": {"project_slug": {}}}
+    tools = [types.Tool(name=n, inputSchema=schema)
+             for n in ("list_families", "set_families", "rename_project", "load_context")]
+    assert [t.name for t in personal_tools(tools)] == ["load_context"]

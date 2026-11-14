@@ -1,11 +1,10 @@
 """FakeBackend specifics not covered by the shared contract: token-overlap scoring order,
-`capabilities()`, and `provision_mental_models`."""
+`capabilities()` and `reset()`."""
 from __future__ import annotations
 
 import pytest
 
 from memory.backend.fake import FakeBackend
-from memory.builtin_models import BuiltinModel
 
 BANK = "bank-a"
 
@@ -39,8 +38,8 @@ def test_recall_breaks_score_ties_by_memory_id(backend):
     assert [h.memory_id for h in hits] == ["mem_a", "mem_b"]
 
 
-def test_capabilities_is_mental_models_only():
-    assert FakeBackend().capabilities() == frozenset({"mental_models"})
+def test_capabilities_are_empty():
+    assert FakeBackend().capabilities() == frozenset()
 
 
 def test_retain_wait_false_returns_pending_but_stores_immediately(backend):
@@ -71,47 +70,9 @@ def test_tag_group_with_empty_tags_raises_value_error(backend):
         backend.recall(BANK, "text", tag_groups=({"tags": [], "match": "any"},), limit=10)
 
 
-def test_provision_mental_models_creates_one_entry_per_key(backend):
-    builtins = (
-        BuiltinModel(key="user-context", name="User Context", prompt="p1", scope="user"),
-        BuiltinModel(key="project-context", name="Project Context", prompt="p2", scope="project"),
-    )
-
-    backend.provision_mental_models(BANK, builtins)
-
-    assert set(backend.mental_models[BANK]) == {"user-context", "project-context"}
-    assert backend.mental_models[BANK]["user-context"].prompt == "p1"
-
-
-def test_provision_mental_models_overwrites_on_repeat_call(backend):
-    backend.provision_mental_models(
-        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="old", scope="user"),)
-    )
-    backend.provision_mental_models(
-        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="new", scope="user"),)
-    )
-
-    assert len(backend.mental_models[BANK]) == 1
-    assert backend.mental_models[BANK]["user-context"].prompt == "new"
-
-
-def test_reset_clears_memories_and_mental_models(backend):
+def test_reset_clears_memories(backend):
     backend.retain(BANK, "mem_1", "text", tags=(), metadata={}, wait=True)
-    backend.provision_mental_models(
-        BANK, (BuiltinModel(key="user-context", name="User Context", prompt="p", scope="user"),)
-    )
 
     backend.reset()
 
     assert backend.get(BANK, "mem_1") is None
-    assert backend.mental_models == {}
-
-
-def test_provision_mental_models_drops_a_model_no_longer_built_in(backend):
-    briefing = BuiltinModel(key="briefing", name="Briefing", prompt="p", scope="project")
-    traps = BuiltinModel(key="traps", name="Traps", prompt="p", scope="project")
-
-    backend.provision_mental_models(BANK, (briefing, traps))
-    backend.provision_mental_models(BANK, (briefing,))
-
-    assert backend.get_mental_model(BANK, traps.key) is None

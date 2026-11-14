@@ -1,4 +1,5 @@
-"""CLI: `ach-memory mcp`, `ach-memory context load`, `ach-memory hook <pre-compact|idle-nudge>`.
+"""CLI: `ach-memory mcp`, `ach-memory context load`, `ach-memory families [set ...]`,
+`ach-memory hook <pre-compact|idle-nudge>`.
 
 Installing is the host's own job -- `claude plugin install`, `codex plugin add`,
 `opencode plugin`, `pi install`; see docs/hosts.md.
@@ -43,6 +44,14 @@ def _parser() -> argparse.ArgumentParser:
     load = context_sub.add_parser("load")
     load.add_argument("--project", default=None)
 
+    families = commands.add_parser("families", help="show or set the project's family list")
+    families.add_argument("--project", default=None)
+    families_sub = families.add_subparsers(dest="families_command")
+    set_cmd = families_sub.add_parser("set", help="replace the list; 'other' is always kept")
+    set_cmd.add_argument("names", nargs="+", metavar="FAMILY")
+    set_cmd.add_argument("--rename", action="append", default=[], metavar="OLD=NEW",
+                         help="move OLD's memories to NEW (repeatable)")
+
     hook = commands.add_parser("hook", help="host lifecycle nudges")
     hook_sub = hook.add_subparsers(dest="hook_command", required=True)
     hook_sub.add_parser("pre-compact")
@@ -65,6 +74,32 @@ def _context_load(project: str | None) -> int:
     return 0
 
 
+def _families(args: argparse.Namespace) -> int:
+    url = os.environ.get("ACH_MEMORY_URL", "")
+    slug = args.project or proxy.resolve_project_context()
+    if not url or not slug:
+        print("ach-memory: needs ACH_MEMORY_URL and a project (--project or a git origin)", file=sys.stderr)
+        return 1
+    try:
+        if args.families_command == "set":
+            rename = dict(pair.split("=", 1) for pair in args.rename if "=" in pair)
+            result = asyncio.run(proxy.call_tool(
+                url, "set_families", {"families": args.names, "rename": rename}, slug))
+            print("\n".join(result.get("families") or []))
+            return 0
+        result = asyncio.run(proxy.call_tool(url, "list_families", {}, slug))
+    except Exception as exc:  # noqa: BLE001 -- report the server's message, not a traceback
+        print(f"ach-memory: {exc}", file=sys.stderr)
+        return 1
+    if not result.get("has_list"):
+        print(f"{slug} has no family list yet.")
+    for row in result.get("families") or []:
+        print(f"{row['family']}\t{row['memories']}")
+    for family, count in (result.get("unlisted") or {}).items():
+        print(f"{family}\t{count}\t(not on the list)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -80,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "context" and args.context_command == "load":
         return _context_load(args.project)
+
+    if args.command == "families":
+        return _families(args)
 
     if args.command == "hook" and args.hook_command == "pre-compact":
         print(_PRE_COMPACT_NUDGE)

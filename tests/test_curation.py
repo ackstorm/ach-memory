@@ -21,7 +21,7 @@ def principal() -> Principal:
 def _seed(db, principal, backend, content: str, *, scope="user", project_slug=None, tags=()) -> str:
     result = retain.submit(
         db, principal,
-        retain.RetainRequest(scope=scope, project_slug=project_slug, content=content, memory_type="fact",
+        retain.RetainRequest(scope=scope, project_slug=project_slug, title="T", content=content, memory_type="fact",
                               basis="human_explicit", operation_id=uuid4(), tags=list(tags), wait=True),
         backend=backend,
     )

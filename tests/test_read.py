@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import pytest
 
-from memory import read, retain
+from memory import curation, read, retain
 from memory.auth.principal import Principal
 from memory.backend.fake import FakeBackend
 from memory.errors import InvalidRequest, MemoryNotFound, UnsupportedCapability
@@ -21,7 +21,7 @@ def principal() -> Principal:
 def _seed(db, principal, backend, content: str, memory_type: str = "fact") -> str:
     result = retain.submit(
         db, principal,
-        retain.RetainRequest(scope="user", content=content, memory_type=memory_type,
+        retain.RetainRequest(scope="user", title="T", content=content, memory_type=memory_type,
                               basis="human_explicit", operation_id=uuid4(), wait=True),
         backend=backend,
     )
@@ -58,7 +58,8 @@ def test_recall_filters_by_memory_type(db, principal, backend):
 
 def test_list_valid_and_invalid_after_invalidate(db, principal, backend):
     memory_id = _seed(db, principal, backend, "Will be forgotten.")
-    backend.invalidate("user_usr_juan", memory_id, reason="test")
+    curation.forget(db, principal, curation.CurationRequest(scope="user", memory_id=memory_id, reason="test"),
+                    backend=backend)
 
     valid = read.list_memories(db, principal, read.ListRequest(scope="user"), backend=backend)
     invalid = read.list_memories(db, principal, read.ListRequest(scope="user", state="invalid"), backend=backend)
@@ -131,7 +132,7 @@ def test_reads_on_a_project_nobody_retained_into_are_empty(db, principal):
 def _seed_project(db, principal, backend, slug: str, content: str) -> str:
     result = retain.submit(
         db, principal,
-        retain.RetainRequest(scope="project", project_slug=slug, content=content,
+        retain.RetainRequest(scope="project", project_slug=slug, title="T", content=content,
                               memory_type="decision", basis="human_explicit",
                               operation_id=uuid4(), wait=True),
         backend=backend,

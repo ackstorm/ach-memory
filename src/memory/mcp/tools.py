@@ -7,6 +7,7 @@ them.
 """
 
 import logging
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
@@ -18,16 +19,18 @@ from mcp_types import ToolAnnotations
 from pydantic import BaseModel, ValidationError, model_serializer
 from sqlalchemy.orm import Session
 
-from memory import audit, projects
+from memory import audit, catalog, projects
+from memory import families as family_list
 from memory.auth.principal import Principal, authenticate
 from memory.backend import get_backend
 from memory.bank_ref import resolve_bank
 from memory.context import LoadContextRequest
 from memory.context import load as do_load_context
-from memory.curation import CorrectRequest, CurationRequest
+from memory.curation import CorrectRequest, CurationRequest, PinRequest
 from memory.curation import correct as do_correct
 from memory.curation import delete as do_delete
 from memory.curation import forget as do_forget
+from memory.curation import pin as do_pin
 from memory.curation import restore as do_restore
 from memory.db import session_scope
 from memory.errors import DomainError
@@ -114,6 +117,20 @@ def _result(response: BaseModel) -> ToolResult:
     return ToolResult(result=response.model_dump(mode="json"), notice=getattr(response, "notice", None))
 
 
+def _read(ctx: Context, tool: str, call: Callable[[Principal, Session], BaseModel], *,
+          scope: str | None, project_slug: str | None, results: Callable[[BaseModel], int],
+          query: str | None = None, family: str | None = None) -> ToolResult:
+    """Run one read and log it (`read_events`): who, project, tool, query or family, how many
+    results, how long. Failed reads are not logged."""
+    started = time.perf_counter()
+    with tool_session(ctx) as (principal, db):
+        response = call(principal, db)
+        audit.log_read(db, principal=principal, tool=tool, scope=scope, project_slug=project_slug,
+                       query=query, family=family, results=results(response),
+                       latency_ms=round((time.perf_counter() - started) * 1000))
+        return _result(response)
+
+
 # forget/restore/delete_memory share one request shape and one call pattern;
 # only the service function, description and annotations differ.
 _CURATION: tuple[tuple[str, Callable, str, ToolAnnotations | None], ...] = (
@@ -170,20 +187,28 @@ def register(mcp: MCPServer) -> None:
             "Store one durable, independently-correctable claim -- for an explicit human "
             "'remember this' request or an agent's own well-verified conclusion. One claim "
             "per call, written in English whatever language the conversation uses: retrieval "
-            "reranks in English only. `operation_id` is a UUID you generate; reuse it verbatim "
-            "to retry the same claim safely. The response `memory_id` is the stable handle for "
-            "forget, correct, restore, delete_memory, get_memory and history, which infer "
-            "`scope` from it when you leave it out. `wait=true` blocks until the "
-            "claim is searchable; leave false to return immediately."
+            "reranks in English only. `title`: one line of at most 80 characters naming what the "
+            "claim is about (component, command, setting), the way session start lists it. "
+            "`family`: the project area it belongs to; once the project has a family list it is "
+            "required and must be on it (an unknown one is refused with the list). `pin=true` "
+            "delivers it in full at every session start: only for what every session needs; a pin "
+            "past the bank's cap is refused with what is pinned. `operation_id` is a UUID you "
+            "generate; reuse it verbatim to retry the same claim safely. The response `memory_id` "
+            "is the stable handle for forget, correct, restore, delete_memory, pin, get_memory "
+            "and history, which infer `scope` from it when you leave it out. `wait=true` blocks "
+            "until the claim is searchable; leave false to return immediately."
         ),
     )
     def retain(
         scope: Scope,
+        title: str,
         content: str,
         memory_type: MemoryType,
         basis: Basis,
         operation_id: str,
         ctx: Context,
+        family: str | None = None,
+        pin: bool = False,
         project_slug: str | None = None,
         tags: list[str] = [],  # noqa: B006 -- never mutated, only read into a pydantic model
         wait: bool = False,
@@ -192,6 +217,9 @@ def register(mcp: MCPServer) -> None:
             request = RetainRequest(
                 scope=scope,
                 project_slug=project_slug,
+                title=title,
+                family=family,
+                pin=pin,
                 content=content,
                 memory_type=memory_type,
                 basis=basis,
@@ -223,16 +251,17 @@ def register(mcp: MCPServer) -> None:
         memory_types: list[str] = [],  # noqa: B006
         basis: list[str] = [],  # noqa: B006
     ) -> ToolResult:
-        with tool_session(ctx) as (principal, db):
-            request = RecallRequest(
-                scope=scope,
-                project_slug=project_slug,
-                query=query,
-                max_results=max_results,
-                memory_types=memory_types,
-                basis=basis,
-            )
-            return _result(do_recall(db, principal, request, backend=get_backend()))
+        request = RecallRequest(
+            scope=scope,
+            project_slug=project_slug,
+            query=query,
+            max_results=max_results,
+            memory_types=memory_types,
+            basis=basis,
+        )
+        return _read(ctx, "recall", lambda p, db: do_recall(db, p, request, backend=get_backend()),
+                     scope=scope, project_slug=project_slug, query=query,
+                     results=lambda r: r.total)
 
     @mcp.tool(
         description=(
@@ -284,8 +313,9 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "List stored memories, most recent first. Filter by `memory_types`/`basis`, or "
-            "`state` ('valid'/'invalid') to see retired memories too."
+            "List stored memories, most recent first: titles and ids, the text only with "
+            "`full=true`. Filter by `family`, `memory_types`, `pinned`, or `state` "
+            "('valid'/'invalid') to see retired memories."
         ),
         annotations=ToolAnnotations(read_only_hint=True),
     )
@@ -293,23 +323,29 @@ def register(mcp: MCPServer) -> None:
         scope: Scope,
         ctx: Context,
         project_slug: str | None = None,
+        family: str | None = None,
         memory_types: list[str] = [],  # noqa: B006
-        basis: list[str] = [],  # noqa: B006
+        pinned: bool | None = None,
         state: Literal["valid", "invalid"] | None = None,
+        full: bool = False,
         limit: int = 20,
         offset: int = 0,
     ) -> ToolResult:
-        with tool_session(ctx) as (principal, db):
-            request = ListRequest(
-                scope=scope,
-                project_slug=project_slug,
-                memory_types=memory_types,
-                basis=basis,
-                state=state,
-                limit=limit,
-                offset=offset,
-            )
-            return _result(do_list_memories(db, principal, request, backend=get_backend()))
+        request = ListRequest(
+            scope=scope,
+            project_slug=project_slug,
+            family=family,
+            memory_types=memory_types,
+            pinned=pinned,
+            state=state,
+            full=full,
+            limit=limit,
+            offset=offset,
+        )
+        return _read(ctx, "list_memories",
+                     lambda p, db: do_list_memories(db, p, request, backend=get_backend()),
+                     scope=scope, project_slug=project_slug, family=family,
+                     results=lambda r: len(r.items))
 
     @mcp.tool(
         description="Fetch one memory by id. Raises MEMORY_NOT_FOUND for an unknown id.",
@@ -321,9 +357,9 @@ def register(mcp: MCPServer) -> None:
         scope: Scope | None = None,
         project_slug: str | None = None,
     ) -> ToolResult:
-        with tool_session(ctx) as (principal, db):
-            request = GetRequest(scope=scope, project_slug=project_slug, memory_id=memory_id)
-            return _result(do_get_memory(db, principal, request, backend=get_backend()))
+        request = GetRequest(scope=scope, project_slug=project_slug, memory_id=memory_id)
+        return _read(ctx, "get_memory", lambda p, db: do_get_memory(db, p, request, backend=get_backend()),
+                     scope=scope, project_slug=project_slug, query=memory_id, results=lambda r: 1)
 
     @mcp.tool(
         description=(
@@ -344,19 +380,75 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Load this session's standing context: the project's purpose, its briefing and the "
-            "models you can load on demand. With `model`, load that one model in full instead: "
-            "`briefing` for the rest of a cut briefing, or one listed under 'More context'. "
+            "Load this session's standing context again: the project's purpose, your pinned "
+            "memories and the project's in full, and an index of the project's memory by family. "
             "Creates nothing."
         ),
         annotations=ToolAnnotations(read_only_hint=True),
     )
-    def load_context(
-        ctx: Context, project_slug: str | None = None, model: str | None = None
+    def load_context(ctx: Context, project_slug: str | None = None) -> ToolResult:
+        request = LoadContextRequest(project_slug=project_slug)
+        return _read(ctx, "load_context", lambda p, db: do_load_context(db, p, request, backend=get_backend()),
+                     scope=None, project_slug=project_slug, results=lambda r: r.shown)
+
+    @mcp.tool(
+        description=(
+            "Pin a memory so every session start delivers it in full, or unpin it with "
+            "`pinned=false`. Pin only what every session needs before doing anything. A pin past "
+            "the bank's cap is refused with the list of what is pinned: unpin or shorten one."
+        ),
+    )
+    def pin(
+        memory_id: str,
+        ctx: Context,
+        pinned: bool = True,
+        reason: str | None = None,
+        scope: Scope | None = None,
+        project_slug: str | None = None,
     ) -> ToolResult:
         with tool_session(ctx) as (principal, db):
-            request = LoadContextRequest(project_slug=project_slug, model=model)
-            return _result(do_load_context(db, principal, request, backend=get_backend()))
+            request = PinRequest(scope=scope, project_slug=project_slug, memory_id=memory_id,
+                                 pinned=pinned, reason=reason)
+            return _result(do_pin(db, principal, request, backend=get_backend()))
+
+    @mcp.tool(
+        description=(
+            "Show the project's family list with how many valid memories each holds. Without a "
+            "list yet, families are optional; one is drafted when the project first holds "
+            f"{family_list.THRESHOLD} memories."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True),
+    )
+    def list_families(project_slug: str, ctx: Context) -> ToolResult:
+        with tool_session(ctx) as (principal, db):
+            project = projects.resolve(db, principal, project_slug, create=False).project
+            counts: dict[str, int] = {}
+            for row in catalog.valid(db, project.internal_id):
+                counts[row.family or family_list.OTHER] = counts.get(row.family or family_list.OTHER, 0) + 1
+            listed = project.families or []
+            return ToolResult(result={
+                "families": [{"family": f, "memories": counts.get(f, 0)} for f in listed],
+                "unlisted": {f: n for f, n in counts.items() if f not in listed},
+                "has_list": project.families is not None,
+            })
+
+    @mcp.tool(
+        description=(
+            "Replace the project's family list (at most 12, plus 'other', which is always kept). "
+            "`rename` maps an old family to a new one and moves its memories; memories in a "
+            "family that leaves the list go to 'other'. Owner or operator only. For people "
+            "through the CLI (`ach-memory families set`): do not call it unless asked to."
+        ),
+    )
+    def set_families(
+        project_slug: str,
+        families: list[str],
+        ctx: Context,
+        rename: dict[str, str] = {},  # noqa: B006 -- never mutated
+    ) -> ToolResult:
+        with tool_session(ctx) as (principal, db):
+            project = projects.resolve(db, principal, project_slug, create=False).project
+            return ToolResult(result={"families": family_list.replace(db, principal, project, families, rename)})
 
     @mcp.tool(
         description=(

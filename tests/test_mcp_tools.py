@@ -8,10 +8,13 @@ import httpx2
 import pytest
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from sqlalchemy import select
 
 from memory.auth.providers import platform
 from memory.config import get_settings
+from memory.db import session_scope
 from memory.mcp.server import create_app
+from memory.models import ProjectSlug, ReadEvent
 
 _HEADER = "x-litellm-api-key"
 
@@ -67,7 +70,7 @@ def test_retain_then_recall_round_trips_with_project_created_notice():
             retained = await session.call_tool(
                 "retain",
                 {
-                    "scope": "project",
+                    "scope": "project", "title": "A title",
                     "project_slug": slug,
                     "content": "export retries three times before failing",
                     "memory_type": "convention",
@@ -85,7 +88,7 @@ def test_retain_then_recall_round_trips_with_project_created_notice():
             recalled = await session.call_tool(
                 "recall",
                 {
-                    "scope": "project",
+                    "scope": "project", "title": "A title",
                     "project_slug": slug,
                     "query": "export retries three times before failing",
                 },
@@ -119,7 +122,7 @@ def test_invalid_request_is_reported_as_such():
             result = await session.call_tool(
                 "retain",
                 {
-                    "scope": "user",
+                    "scope": "user", "title": "A title",
                     "content": "",
                     "memory_type": "fact",
                     "basis": "human_explicit",
@@ -141,7 +144,7 @@ def test_forget_then_list_invalid_memories_shows_it():
             retained = await session.call_tool(
                 "retain",
                 {
-                    "scope": "user",
+                    "scope": "user", "title": "A title",
                     "content": "the staging DB uses a read replica",
                     "memory_type": "fact",
                     "basis": "human_explicit",
@@ -175,14 +178,26 @@ def test_load_context_returns_text():
     asyncio.run(scenario())
 
 
-def test_load_context_rejects_an_unknown_model():
+def test_a_pinned_memory_reaches_session_start_and_reads_are_logged():
     async def scenario():
         app = create_app()
+        slug = f"acme-{uuid4().hex}"
         async with app.router.lifespan_context(app), _session(app, _auth_headers()) as session:
-            result = await session.call_tool(
-                "load_context", {"project_slug": "acme", "model": "nope"}
-            )
-            assert result.is_error and "INVALID_REQUEST" in _text(result)
+            await session.call_tool("retain", {
+                "scope": "project", "project_slug": slug, "title": "Deploy with make deploy",
+                "content": "Deploy only with make deploy.", "memory_type": "convention",
+                "basis": "human_explicit", "operation_id": str(uuid4()), "pin": True, "wait": True,
+            })
+            loaded = await session.call_tool("load_context", {"project_slug": slug})
+            assert "- **Deploy with make deploy**: Deploy only with make deploy." in (
+                loaded.structured_content["result"]["text"])
+            await session.call_tool("recall", {"scope": "project", "project_slug": slug, "query": "deploy only with make"})
+
+        with session_scope() as db:
+            project_id = db.get(ProjectSlug, slug).project_internal_id
+            logged = db.scalars(select(ReadEvent).where(ReadEvent.project_internal_id == project_id)).all()
+        assert sorted((e.tool, e.results) for e in logged) == [("load_context", 2), ("recall", 1)]
+        assert next(e.query for e in logged if e.tool == "recall") == "deploy only with make"
 
     asyncio.run(scenario())
 
@@ -207,7 +222,7 @@ def test_rename_project_forwards_the_old_slug_to_the_same_memories():
             retained = await session.call_tool(
                 "retain",
                 {
-                    "scope": "project", "project_slug": old_slug,
+                    "scope": "project", "title": "A title", "project_slug": old_slug,
                     "content": "deploys are gated on a green pipeline",
                     "memory_type": "convention", "basis": "human_explicit",
                     "operation_id": str(uuid4()), "wait": True,
@@ -239,7 +254,7 @@ def test_rename_project_forwards_the_old_slug_to_the_same_memories():
             through_old = await session.call_tool(
                 "retain",
                 {
-                    "scope": "project", "project_slug": old_slug,
+                    "scope": "project", "title": "A title", "project_slug": old_slug,
                     "content": "rollbacks are gated on the same pipeline",
                     "memory_type": "convention", "basis": "human_explicit",
                     "operation_id": str(uuid4()), "wait": True,
@@ -260,7 +275,7 @@ def test_rename_project_refuses_a_slug_another_project_holds():
                 await session.call_tool(
                     "retain",
                     {
-                        "scope": "project", "project_slug": slug, "content": f"a fact about {slug}",
+                        "scope": "project", "title": "A title", "project_slug": slug, "content": f"a fact about {slug}",
                         "memory_type": "fact", "basis": "human_explicit",
                         "operation_id": str(uuid4()), "wait": True,
                     },
@@ -285,7 +300,7 @@ def test_rename_project_denies_a_caller_who_does_not_own_it():
                 await owner.call_tool(
                     "retain",
                     {
-                        "scope": "project", "project_slug": slug, "content": "owned by the first toucher",
+                        "scope": "project", "title": "A title", "project_slug": slug, "content": "owned by the first toucher",
                         "memory_type": "fact", "basis": "human_explicit",
                         "operation_id": str(uuid4()), "wait": True,
                     },

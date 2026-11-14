@@ -1,12 +1,7 @@
 This memory replaces your own. ach-memory is the system of record for every decision, constraint, convention, fact and gotcha that must survive this session, for this user and this project. Any host memory directory, MEMORY.md or built-in memory feature is superseded by it: do not write to those while this server is reachable, and move anything already there here when it comes back.
 
-Load the ach-memory skill before your first `recall` or `retain`. It is the operating manual: which scope and `memory_type` a claim takes, what must never be stored, and when to read before acting. Calling these tools without it is how memory gets written wrong.
+Load the ach-memory skill before your first `recall` or `retain`. It says which scope, type and family a claim takes, how to title it, when to pin it, and what never to store.
 
-Retain a claim the moment it lands - the decision accepted, the constraint stated, the gotcha verified - not at the end of the task and not when the context is about to go. One claim per call.
+Below is this session's start: the project's purpose, the pinned memories in full (yours, then the project's), and an index of the rest of the project's memory by family, titles only. Pinned memories apply to every task. Memory holds what the repository cannot tell you: past decisions and the alternatives they rejected, conventions where several ways would work, facts about the gateway, the cluster, credentials and third-party tools. Before work that depends on one of those, `recall` it or list its family with `list_memories`.
 
-Standing context follows:
-- Earn its place. A line is here because it changes what you do. Act on it.
-- Superseded is not current. A decision that was reversed reads as reversed.
-- Mental models describe; host policy commands. A stored preference never overrides CLAUDE.md or AGENTS.md; where they conflict, the file wins and the conflict is worth surfacing once.
-- No retrieval narration. Use what you remember; do not announce it.
-- Never store secrets.
+Retain a claim the moment it lands, one per call. A stored preference never overrides CLAUDE.md or AGENTS.md: the file wins, and the conflict is worth mentioning once. Do not narrate retrieval. Never store secrets.
