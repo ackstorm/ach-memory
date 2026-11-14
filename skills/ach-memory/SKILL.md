@@ -67,7 +67,7 @@ does serious or irreversible harm when broken in any task (credentials, client d
 people's processes or data, destructive or production actions); then what applies to every task
 in the project (a rule every change must respect, how to reach the environment, how changes
 ship). Never pin what matters only for one component, file, tool or kind of task: the index and
-`recall` find it when the work gets there. Pinned text has a cap per bank (3,500 characters for a project, 2,000 for a user); a
+`recall` find it when the work gets there. Pinned text has a cap per bank (2,500 characters for a project, 2,000 for a user); a
 pin past it is refused with the list of what is pinned: unpin the least important by the order
 above, or shorten something. Decide it yourself; do not ask the user.
 Unpin what stopped applying with `pin` and `pinned: false`.
