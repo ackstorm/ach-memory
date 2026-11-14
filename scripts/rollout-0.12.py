@@ -44,8 +44,11 @@ from memory.families import OTHER, THRESHOLD
 from memory.models import Memory
 
 ACTOR = "rollout-0.12.0"
-PIN_TYPES = ("constraint",)  # project banks only; user banks start with nothing pinned
-CAPS = {"project": 3500, "user": 1200}
+FORGET_REASON = "rollout 0.12.0: describes a behaviour this release removes"
+#: Pinned in this order until the bank's cap; "scoped" memories are never pinned.
+PIN_ORDER = ("critical", "always")
+OBSOLETE_IN = "github.com-ackstorm-ach-memory-"  # only this project documents the removed views
+CAPS = {"project": 3500, "user": 2000}
 ACTIVATION = Path(__file__).resolve().parents[1] / "hooks" / "activation.txt"
 
 TITLE = """You title one memory of a coding project's shared memory, the way an index lists it.
@@ -55,6 +58,28 @@ Answer with JSON only: {{"title": "..."}}
 Memory:
 type: {type}
 tags: {tags}
+text: {text}"""
+
+IMPORTANCE = """A coding agent's memory delivers a few memories in full at the start of every session ("pinned"); the rest it finds through an index and search when the work gets there. Decide whether this {scope} memory earns a pin. Answer two questions in order.
+
+1. "scope": does it apply to every task {where}, whatever the agent is working on, or only to some?
+   - "every": a rule or fact that any task can run into: how changes are made, committed, tested, shipped or reviewed; how to reach the environment; what must never be done anywhere.
+   - "some": it concerns one component, file, service, tool, client, agent, incident or kind of task. Most memories are "some", including serious traps in one component: the agent finds those when it works there.
+2. "harm", only if scope is "every": "severe" if breaking it does serious or irreversible harm (leaked credentials or client data, killed or wiped processes or data that are not the agent's own, destructive or production actions), otherwise "minor".
+
+Answer with JSON only: {{"scope": "every"|"some", "harm": "severe"|"minor"|null, "why": "a few words"}}
+
+Memory:
+type: {type}
+title: {title}
+text: {text}"""
+
+OBSOLETE = """ach-memory 0.12.0 removes these behaviours: the built-in Hindsight mental models (briefing, traps, decisions, how-we-work, user context, project context/brief), their prompts, triggers, refresh, provisioning and sizing; `load_context(model=...)`; and consolidation (observations). Session start becomes pinned memories plus a deterministic index.
+Is this memory only about how those removed behaviours worked, were tuned or failed, so it no longer applies? A decision explaining why they were removed, or a fact that still holds for recall, retain, reflect or the engine in general, is not obsolete.
+Answer with JSON only: {{"obsolete": true|false, "why": "a few words"}}
+
+Memory:
+title: {title}
 text: {text}"""
 
 FAMILY = """You file one memory of a coding project's shared memory into one family of the project's closed list.
@@ -203,21 +228,39 @@ def plan(args: argparse.Namespace) -> None:
 
     with ThreadPoolExecutor(4) as pool:
         list(pool.map(_draft, [b for b in banks if b["kind"] == "project"]))
+    valid = [(b, m) for b, m in every if m["state"] == "valid"]
+    with ThreadPoolExecutor(8) as pool:
+        rated = list(pool.map(lambda bm: _complete_json(_settings, IMPORTANCE.format(
+            scope="project" if bm[0]["kind"] == "project" else "personal",
+            where="in this project" if bm[0]["kind"] == "project" else "this user does, in any project",
+            type=bm[1]["memory_type"], title=bm[1]["title"], text=bm[1]["text"][:4000])), valid))
+    for (_, m), answer in zip(valid, rated, strict=True):
+        every = answer.get("scope") == "every"
+        m["importance"] = ("critical" if answer.get("harm") == "severe" else "always") if every else "scoped"
+        m["importance_why"] = answer.get("why")
+    stale = [(b, m) for b, m in valid if (b["slug"] or "").startswith(OBSOLETE_IN)]
+    with ThreadPoolExecutor(8) as pool:
+        judged = list(pool.map(lambda bm: _complete_json(_settings, OBSOLETE.format(
+            title=bm[1]["title"], text=bm[1]["text"][:4000])), stale))
+    for (_, m), answer in zip(stale, judged, strict=True):
+        m["forget"] = answer.get("obsolete") is True
+        m["forget_why"] = answer.get("why")
+
     for bank in banks:
         for m in bank["memories"]:
             m.setdefault("family", None)
             m["chars"] = len(m["text"])
             m["pinned"] = False
         bank["pin_overflow"], used = [], 0
-        if bank["kind"] != "project":
-            continue
-        for m in bank["memories"]:  # newest first
-            if m["state"] != "valid" or m["memory_type"] not in PIN_TYPES:
-                continue
-            if used + m["chars"] <= CAPS["project"]:
-                m["pinned"], used = True, used + m["chars"]
-            else:
-                bank["pin_overflow"].append(m["memory_id"])
+        cap = CAPS[bank["kind"]]
+        for level in PIN_ORDER:
+            for m in bank["memories"]:  # newest first
+                if m["state"] != "valid" or m.get("importance") != level or m.get("forget"):
+                    continue
+                if used + m["chars"] <= cap:
+                    m["pinned"], used = True, used + m["chars"]
+                else:
+                    bank["pin_overflow"].append(m["memory_id"])
     Path(args.out).write_text(json.dumps({"banks": banks, "llm": COST}, indent=1, ensure_ascii=False))
     report(banks)
     for slug in args.show or ():
@@ -294,11 +337,13 @@ def report(banks: list[dict]) -> None:
         cap = CAPS[bank["kind"]]
         print(f"pinned: {len(pinned)}, {sum(m['chars'] for m in pinned)} chars against a cap of {cap}")
         by_id = {m["memory_id"]: m for m in bank["memories"]}
+        for m in pinned:
+            print(f"  pinned ({m['importance']}): {m['memory_id']} ({m['chars']} chars) {m['title']}")
         for mid in bank.get("pin_overflow") or []:
-            print(f"  not pinned, over the cap: {mid} ({by_id[mid]['chars']} chars) {by_id[mid]['title']}")
-        if bank["kind"] == "user":
-            for m in (m for m in valid if m["memory_type"] == "constraint"):
-                print(f"  constraint: {m['memory_id']} ({m['chars']} chars) {m['title']}")
+            m = by_id[mid]
+            print(f"  not pinned, over the cap ({m['importance']}): {mid} ({m['chars']} chars) {m['title']}")
+        for m in (m for m in valid if m.get("forget")):
+            print(f"  to forget: {m['memory_id']} {m['title']} ({m['forget_why']})")
         if bank["kind"] == "project":
             rendered = render(user=_bank(None, "user"), project=_bank(bank, "project"), purpose="-")
             text = rendered.text
@@ -353,6 +398,14 @@ def apply(args: argparse.Namespace) -> None:
         if cfg.get("enable_observations") is not False:
             sys.exit(f"{bank['bank_id']}: enable_observations did not turn off")
 
+    for bank in banks:
+        for m in (m for m in bank["memories"] if m.get("forget")):
+            for unit in hs.get(f"/banks/{bank['bank_id']}/memories/list", params={
+                    "document_id": m["memory_id"], "type": "world", "state": "valid", "limit": 100,
+            }).raise_for_status().json().get("items") or []:
+                hs.patch(f"/banks/{bank['bank_id']}/memories/{unit['id']}",
+                         json={"state": "invalidated", "reason": FORGET_REASON}).raise_for_status()
+
     sql = ["BEGIN;"]
     for bank in banks:
         if bank["families"]:
@@ -367,10 +420,15 @@ def apply(args: argparse.Namespace) -> None:
                 "INSERT INTO memories (memory_id, scope, owner_id, title, family, pinned, memory_type, state, "
                 f"chars, created_at) VALUES ({_q(m['memory_id'])}, {_q(bank['kind'])}, {_q(bank['id'])}, "
                 f"{_q(m['title'])}, {_q(m['family'])}, {_q(m['pinned'])}, {_q(m['memory_type'])}, "
-                f"{_q(m['state'])}, {m['chars']}, {_q(m['created_at'])}) ON CONFLICT (memory_id) DO NOTHING;")
+                f"{_q('invalid' if m.get('forget') else m['state'])}, {m['chars']}, {_q(m['created_at'])}) "
+                "ON CONFLICT (memory_id) DO NOTHING;")
+            if m.get("forget"):
+                sql.append(_audit("memory.forget", m["memory_id"],
+                                  {"scope": bank["kind"], "owner": bank["id"], "reason": FORGET_REASON}))
             if m["pinned"]:
                 sql.append(_audit("memory.pin", m["memory_id"],
-                                  {"scope": bank["kind"], "owner": bank["id"], "reason": "rollout: briefing and constraint memories start pinned"}))
+                                  {"scope": bank["kind"], "owner": bank["id"],
+                                   "reason": f"rollout: rated {m['importance']}, pinned within the cap"}))
     sql.append("COMMIT;")
     subprocess.run([*psql, "-v", "ON_ERROR_STOP=1", "-q"], input="\n".join(sql), text=True, timeout=600, check=True)
     print(f"applied: {len(banks)} banks, {sum(len(b['memories']) for b in banks)} memories planned, "

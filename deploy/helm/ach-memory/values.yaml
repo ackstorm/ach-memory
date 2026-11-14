@@ -23,7 +23,7 @@ config:
   # session start, per bank; a pin past the cap is refused.
   pinCap:
     project: 3500
-    user: 1200
+    user: 2000
 
   # MEMORY_LLM_*. OpenAI-compatible chat endpoint that drafts a project's family list when it
   # first holds 30 memories. Empty url: nothing is drafted and families stay optional.

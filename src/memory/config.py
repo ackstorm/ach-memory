@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     context_budget_chars: int = 8000
     # Pinned text delivered in full at session start, per bank. A pin past the cap is refused.
     pin_cap_project_chars: int = Field(default=3500, ge=0)
-    pin_cap_user_chars: int = Field(default=1200, ge=0)
+    pin_cap_user_chars: int = Field(default=2000, ge=0)
 
     # OpenAI-compatible chat endpoint that drafts a project's family list once it passes the
     # threshold. Empty: no list is drafted and families stay optional until one is set.
