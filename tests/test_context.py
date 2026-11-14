@@ -118,8 +118,8 @@ def test_from_the_threshold_the_index_has_one_line_per_family(db, principal, bac
 
     assert "- deploy (14): Deploy note 27; Deploy note 25; Deploy note 23\n" in text
     assert "- testing (15): Deploy note 28; Deploy note 26; Deploy note 24\n" in text
-    assert "- release (0)\n" in text
-    assert text.index("- release (0)") < text.index("- other (1): Loose end")
+    assert "release" not in text  # a family with no memory has no line
+    assert text.index("- testing (15)") < text.index("- other (1): Loose end")
     assert "30 project memories in 3 families" in text
 
 
@@ -131,5 +131,28 @@ def test_the_whole_stays_within_the_budget(db, principal, backend, monkeypatch):
     result = _load(db, principal, backend)
 
     assert len(result.text) <= 900
-    assert "more lines: `list_memories` lists them." in result.text
+    assert "more: `list_memories` lists them." in result.text
     assert result.truncated
+
+
+def test_a_tight_budget_drops_sample_titles_before_any_family_line(db, principal, backend, monkeypatch):
+    for i in range(THRESHOLD):
+        _retain(db, principal, backend, f"A long enough title for memory number {i:02d}", family=f"family-{i % 6}")
+    monkeypatch.setattr(get_settings(), "context_budget_chars", 1050)
+
+    result = _load(db, principal, backend)
+
+    assert all(f"- family-{i} (5)" in result.text for i in range(6))
+    lines = [line for line in result.text.splitlines() if line.startswith("- family-")]
+    assert len(lines) == 6 and all(line.count(";") < 2 for line in lines)
+    assert len(result.text) <= 1050 and result.truncated
+
+
+def test_pinned_memories_are_not_repeated_as_sample_titles(db, principal, backend):
+    for i in range(THRESHOLD - 1):
+        _retain(db, principal, backend, f"Note {i}", family="deploy")
+    _retain(db, principal, backend, "Pinned rule", family="deploy", pin=True)
+
+    text = _load(db, principal, backend).text
+
+    assert "- deploy (30): Note 28; Note 27; Note 26\n" in text

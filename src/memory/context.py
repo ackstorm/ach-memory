@@ -17,7 +17,7 @@ from memory.bank_ref import LogicalBankRef, resolve_bank
 from memory.config import get_settings
 from memory.errors import ProjectNotFound
 from memory.families import OTHER, THRESHOLD
-from memory.models import Memory, Project
+from memory.models import Memory
 
 PURPOSE_TAG = "purpose"
 TITLES_PER_FAMILY = 3
@@ -72,19 +72,17 @@ def load(
     user = Bank(catalog.valid(db, user_ref.owner_id), catalog.pin_cap("user"), text_of(user_ref))
     if project_ref is None:
         return render(user=user)
-    project = Bank(catalog.valid(db, project_ref.owner_id), catalog.pin_cap("project"),
-                   text_of(project_ref), db.get(Project, project_ref.owner_id).families)
+    project = Bank(catalog.valid(db, project_ref.owner_id), catalog.pin_cap("project"), text_of(project_ref))
     return render(user=user, project=project, purpose=_purpose(backend, project_ref.bank_id))
 
 
 @dataclass
 class Bank:
-    """What `render` needs of one bank: its valid memories newest first, its pin cap, a way to
-    read a pinned memory's text, and (for a project) its family list."""
+    """What `render` needs of one bank: its valid memories newest first, its pin cap, and a way
+    to read a pinned memory's text."""
     rows: list[Memory]
     cap: int
     text_of: Callable[[Memory], str | None]
-    families: list[str] | None = None
 
 
 def render(*, user: Bank, project: Bank | None = None, purpose: str | None = None,
@@ -104,23 +102,20 @@ def render(*, user: Bank, project: Bank | None = None, purpose: str | None = Non
     rows = project.rows
     head = (f"### Project purpose\n{purpose}\n\n" if purpose else _NO_PURPOSE) + user_pins + (
         project_pins or _NOTHING_PINNED)
-    index_head, lines = _index(rows, project.families)
-    grouped = len(rows) >= THRESHOLD
     totals = (
-        f"{len(rows)} project memories" + (f" in {len({r.family or OTHER for r in rows})} families" if grouped else "")
+        f"{len(rows)} project memories"
+        + (f" in {len({r.family or OTHER for r in rows})} families" if len(rows) >= THRESHOLD else "")
         + f", {sum(r.pinned for r in rows)} pinned; {len(user.rows)} of yours, "
         f"{sum(r.pinned for r in user.rows)} pinned.\n"
     )
-    kept = list(lines)
-    while kept and len(head) + len(index_head) + sum(map(len, kept)) + len(totals) + 80 > budget:
-        kept.pop()
-    more = f"... {len(lines) - len(kept)} more lines: `list_memories` lists them.\n" if len(kept) < len(lines) else ""
-    text = head + (index_head + "".join(kept) + more + "\n" if lines else "") + totals
+    room = budget - len(head) - len(totals) - 80
+    index, cut = _index(rows, room)
+    text = head + index + totals
     if len(text) > budget:
         text = text[: text.rfind("\n", 0, budget) + 1]
     return LoadContextResponse(
-        text=text, truncated=user_cut or project_cut or len(kept) < len(lines),
-        shown=user_shown + project_shown + len(kept),
+        text=text, truncated=user_cut or project_cut or cut,
+        shown=user_shown + project_shown + index.count("\n- "),
     )
 
 
@@ -150,14 +145,27 @@ def _pinned(bank: Bank, heading: str) -> tuple[str, int, bool]:
     return f"### {heading}\n" + "".join(lines) + note + "\n", len(lines), bool(left)
 
 
-def _index(rows: list[Memory], families: list[str] | None) -> tuple[str, list[str]]:
-    """Below THRESHOLD memories, the flat list of titles; from there, one line per family."""
+def _index(rows: list[Memory], room: int) -> tuple[str, bool]:
+    """The index section within `room` chars, and whether anything was cut. Below THRESHOLD
+    memories, the flat list of titles, cut from the bottom. From there, one line per family with
+    a memory, its count and its newest unpinned titles (pinned ones are printed above): every
+    family line stays, and the sample titles go first, 3 per line, then 2, 1, none."""
+    if not rows:
+        return "", False
     if len(rows) < THRESHOLD:
-        return _RECENT_HEAD, [f"- {row.title}\n" for row in rows if row.title]
+        lines = [f"- {row.title}\n" for row in rows if row.title]
+        kept = list(lines)
+        while kept and len(_RECENT_HEAD) + sum(map(len, kept)) > room:
+            kept.pop()
+        more = f"... {len(lines) - len(kept)} more: `list_memories` lists them.\n" if len(kept) < len(lines) else ""
+        return _RECENT_HEAD + "".join(kept) + more + "\n", len(kept) < len(lines)
     counts = Counter(row.family or OTHER for row in rows)
-    order = sorted(set(families or ()) | set(counts), key=lambda f: (f == OTHER, -counts[f], f))
-    lines = []
-    for family in order:
-        titles = [r.title for r in rows if (r.family or OTHER) == family and r.title][:TITLES_PER_FAMILY]
-        lines.append(f"- {family} ({counts[family]})" + (": " + "; ".join(titles) if titles else "") + "\n")
-    return _INDEX_HEAD, lines
+    order = sorted(counts, key=lambda f: (f == OTHER, -counts[f], f))
+    samples = {f: [r.title for r in rows if (r.family or OTHER) == f and r.title and not r.pinned] for f in order}
+    for n in range(TITLES_PER_FAMILY, -1, -1):
+        lines = [f"- {f} ({counts[f]})" + (": " + "; ".join(samples[f][:n]) if n and samples[f] else "") + "\n"
+                 for f in order]
+        text = _INDEX_HEAD + "".join(lines) + "\n"
+        if len(text) <= room:
+            break
+    return text, n < TITLES_PER_FAMILY

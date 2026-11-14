@@ -4,6 +4,7 @@
                                        family lists and families with the LLM, writes PLAN and
                                        prints the dry-run report, plus the full session start of
                                        each --show project.
+  report PLAN                          offline: the dry-run report again.
   show  PLAN SLUG...                   offline: the full session start of each project from PLAN,
                                        by slug or by a unique part of one.
   apply PLAN                           writes. Per bank: deletes the mental models, turns
@@ -20,6 +21,7 @@ answers are cached next to PLAN, so a second plan pays only for memories retaine
 import argparse
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -31,14 +33,18 @@ from pathlib import Path
 
 import httpx
 
+# The service's settings demand these; the rollout reaches both through --hindsight and --psql.
+os.environ.setdefault("MEMORY_DATABASE_URL", "unused")
+os.environ.setdefault("MEMORY_HINDSIGHT_URL", "unused")
+
 from memory import families, llm
-from memory.config import Settings
+from memory.config import Settings, get_settings
 from memory.context import Bank, render
 from memory.families import OTHER, THRESHOLD
 from memory.models import Memory
 
 ACTOR = "rollout-0.12.0"
-PIN_TYPES = ("briefing", "constraint")
+PIN_TYPES = ("constraint",)  # project banks only; user banks start with nothing pinned
 CAPS = {"project": 3500, "user": 1200}
 ACTIVATION = Path(__file__).resolve().parents[1] / "hooks" / "activation.txt"
 
@@ -63,7 +69,7 @@ text: {text}"""
 
 
 # ---------- LLM: memory.llm's call, cached on disk, with the gateway's reported cost ----------
-_settings = Settings(database_url="unused", hindsight_url="unused")
+_settings: Settings = get_settings()
 _lock = threading.Lock()
 _cache: dict[str, dict] = {}
 _cache_file: Path | None = None
@@ -193,33 +199,67 @@ def plan(args: argparse.Namespace) -> None:
         titles = list(pool.map(lambda bm: _complete_json(_settings, TITLE.format(
             type=bm[1]["memory_type"], tags=", ".join(bm[1]["tags"]) or "-", text=bm[1]["text"][:4000])), every))
     for (_, m), answer in zip(every, titles, strict=True):
-        m["title"] = " ".join(str(answer.get("title") or m["text"]).split())[:80]
+        m["title"] = _title(str(answer.get("title") or m["text"]))
 
-    for bank in banks:
-        valid = [m for m in bank["memories"] if m["state"] == "valid"]
-        bank["families"] = None
-        if bank["kind"] == "project" and len(valid) >= THRESHOLD:
-            bank["families"], _ = families.propose([f"[{m['memory_type']}] {m['title']}" for m in valid])
-    filing = [(b, m) for b, m in every if b["families"] and m["state"] == "valid"]
-    with ThreadPoolExecutor(8) as pool:
-        picked = list(pool.map(lambda bm: _complete_json(_settings, FAMILY.format(
-            families=", ".join(bm[0]["families"]), type=bm[1]["memory_type"], title=bm[1]["title"],
-            text=bm[1]["text"][:4000])), filing))
-    for (bank, m), answer in zip(filing, picked, strict=True):
-        family = str(answer.get("family") or "").strip().lower().replace(" ", "-")
-        m["family"] = family if family in bank["families"] else OTHER
-
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(_draft, [b for b in banks if b["kind"] == "project"]))
     for bank in banks:
         for m in bank["memories"]:
             m.setdefault("family", None)
-            m["pinned"] = m["state"] == "valid" and m["memory_type"] in PIN_TYPES
             m["chars"] = len(m["text"])
-            if not (m["pinned"] or "purpose" in m["tags"]):
-                del m["text"]
+            m["pinned"] = False
+        bank["pin_overflow"], used = [], 0
+        if bank["kind"] != "project":
+            continue
+        for m in bank["memories"]:  # newest first
+            if m["state"] != "valid" or m["memory_type"] not in PIN_TYPES:
+                continue
+            if used + m["chars"] <= CAPS["project"]:
+                m["pinned"], used = True, used + m["chars"]
+            else:
+                bank["pin_overflow"].append(m["memory_id"])
     Path(args.out).write_text(json.dumps({"banks": banks, "llm": COST}, indent=1, ensure_ascii=False))
     report(banks)
     for slug in args.show or ():
         show(banks, slug)
+
+
+def _title(text: str) -> str:
+    """One line, at most 80 characters, cut at a word boundary."""
+    title = " ".join(text.split())
+    return title if len(title) <= 80 else title[:81].rsplit(" ", 1)[0].rstrip(",;:-")
+
+
+def _file(bank: dict, valid: list[dict]) -> list[str]:
+    """One family per memory from the bank's closed list, with the memory's text."""
+    with ThreadPoolExecutor(4) as pool:
+        answers = list(pool.map(lambda m: _complete_json(_settings, FAMILY.format(
+            families=", ".join(bank["families"]), type=m["memory_type"], title=m["title"],
+            text=m["text"][:4000])), valid))
+    picked = []
+    for answer in answers:
+        family = str(answer.get("family") or "").strip().lower().replace(" ", "-")
+        picked.append(family if family in bank["families"] else OTHER)
+    return picked
+
+
+def _draft(bank: dict) -> None:
+    """The family list and filing for one project bank, redrafted with the reason while a family
+    is named after the project or holds over a third (families.problems)."""
+    valid = [m for m in bank["memories"] if m["state"] == "valid"]
+    bank["families"], bank["redrafts"] = None, []
+    if len(valid) < THRESHOLD:
+        return
+    feedback: list[str] = []
+    for _ in range(families.ATTEMPTS):
+        bank["families"], _ = families.propose([f"[{m['memory_type']}] {m['title']}" for m in valid],
+                                               bank["slug"], feedback)
+        picked = _file(bank, valid)
+        if not (feedback := families.problems(picked, bank["slug"])):
+            break
+        bank["redrafts"].append(feedback)
+    for m, family in zip(valid, picked, strict=True):
+        m["family"] = family
 
 
 def _rows(bank: dict) -> list[Memory]:
@@ -233,7 +273,7 @@ def _bank(bank: dict | None, kind: str) -> Bank:
     if bank is None:
         return Bank([], CAPS[kind], lambda row: None)
     texts = {m["memory_id"]: m.get("text") for m in bank["memories"]}
-    return Bank(_rows(bank), CAPS[kind], lambda row: texts.get(row.memory_id), bank.get("families"))
+    return Bank(_rows(bank), CAPS[kind], lambda row: texts.get(row.memory_id))
 
 
 def report(banks: list[dict]) -> None:
@@ -244,13 +284,21 @@ def report(banks: list[dict]) -> None:
         name = bank["slug"] or f"user {bank['id'][:12]}"
         print(f"## {name} ({bank['kind']})")
         print(f"memories: {len(valid)} valid, {len(bank['memories']) - len(valid)} invalid")
-        if bank["families"]:
+        if bank.get("families"):
             counts = {f: sum(m["family"] == f for m in valid) for f in bank["families"]}
             print("families: " + ", ".join(f"{f} {n}" for f, n in counts.items()))
         else:
             print("families: none (below 30)" if bank["kind"] == "project" else "families: none (user)")
+        for attempt, found in enumerate(bank.get("redrafts") or [], 1):
+            print(f"redrafted after attempt {attempt}: {'; '.join(found)}")
         cap = CAPS[bank["kind"]]
         print(f"pinned: {len(pinned)}, {sum(m['chars'] for m in pinned)} chars against a cap of {cap}")
+        by_id = {m["memory_id"]: m for m in bank["memories"]}
+        for mid in bank.get("pin_overflow") or []:
+            print(f"  not pinned, over the cap: {mid} ({by_id[mid]['chars']} chars) {by_id[mid]['title']}")
+        if bank["kind"] == "user":
+            for m in (m for m in valid if m["memory_type"] == "constraint"):
+                print(f"  constraint: {m['memory_id']} ({m['chars']} chars) {m['title']}")
         if bank["kind"] == "project":
             rendered = render(user=_bank(None, "user"), project=_bank(bank, "project"), purpose="-")
             text = rendered.text
@@ -348,9 +396,14 @@ def main() -> None:
     s = sub.add_parser("show")
     s.add_argument("plan")
     s.add_argument("slugs", nargs="+")
+    r = sub.add_parser("report")
+    r.add_argument("plan")
+    r.set_defaults(slugs=[])
     args = parser.parse_args()
-    if args.command == "show":
+    if args.command in ("show", "report"):
         banks = json.loads(Path(args.plan).read_text())["banks"]
+        if args.command == "report":
+            report(banks)
         for slug in args.slugs:
             show(banks, slug)
         return

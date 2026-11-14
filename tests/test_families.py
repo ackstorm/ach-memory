@@ -63,7 +63,7 @@ def test_the_list_is_drafted_once_at_the_threshold(db, principal, backend, monke
     def fake_llm(settings, prompt):
         calls.append(prompt)
         return {"families": ["Deploy", "testing", "other", "deploy"],
-                "assign": {str(i): "deploy" if i % 2 else "nonsense" for i in range(1, 40)}}
+                "assign": {str(i): ("deploy", "testing", "nonsense")[i % 3] for i in range(1, 40)}}
 
     monkeypatch.setattr(families.llm, "complete_json", fake_llm)
     for i in range(families.THRESHOLD - 1):
@@ -182,3 +182,29 @@ def test_a_logged_query_shaped_like_a_secret_is_withheld(db, principal):
     from memory.models import ReadEvent
 
     assert db.query(ReadEvent).one().query == "[withheld: looks like a secret]"
+
+
+def test_a_family_named_after_the_project_or_holding_over_a_third_is_a_problem():
+    slug = "github.com-ackstorm-ach-runtime-cb9cdb87"
+    assert families.problems(["ach-runtime", "a", "b", "c"], slug) == ['"ach-runtime" is named after the project']
+    assert families.problems(["ach-runtime-core", "a", "b", "c"], slug) == ['"ach-runtime-core" is named after the project']
+    assert families.problems(["ach-agent", "a", "b", "c"], slug) == []
+    assert families.problems(["a", "a", "b", "c", "d"], slug) == ['"a" holds 2 of 5 memories']
+
+
+def test_a_draft_that_breaks_the_rules_is_redone_with_the_reason(db, principal, backend, monkeypatch):
+    monkeypatch.setattr(get_settings(), "llm_url", "http://llm.test/v1")
+    prompts = []
+
+    def fake_llm(settings, prompt):
+        prompts.append(prompt)
+        name = "acme" if len(prompts) == 1 else "deploy"
+        return {"families": [name, "testing", "docs"],
+                "assign": {str(i): (name, "testing", "docs")[i % 3] for i in range(1, 31)}}
+
+    monkeypatch.setattr(families.llm, "complete_json", fake_llm)
+    for i in range(families.THRESHOLD):
+        _retain(db, principal, backend, f"Note {i}")
+
+    assert _project(db).families == ["deploy", "testing", "docs", "other"]
+    assert len(prompts) == 2 and '"acme" is named after the project' in prompts[1]

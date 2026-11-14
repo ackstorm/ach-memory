@@ -3,6 +3,7 @@ THRESHOLD valid memories, then required on every project retain; editable by the
 
 import logging
 import re
+from collections import Counter
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,17 +12,20 @@ from memory import audit, catalog, llm
 from memory.auth.principal import Principal
 from memory.config import get_settings
 from memory.errors import InvalidRequest
-from memory.models import Memory, Project
+from memory.models import Memory, Project, ProjectSlug
 
 logger = logging.getLogger("memory.families")
 
 THRESHOLD = 30
 MAX_FAMILIES = 12
 OTHER = "other"
+#: No family may hold more than about this share of a project's memories.
+MAX_SHARE = 0.36
+ATTEMPTS = 3
 
-PROMPT = """Below are the {n} memories of a software project's shared memory, one per line as "number. [type] title".
-Group them into at most 12 families: the broad areas of this project an agent would browse by, named as the project names them. Each family name is lowercase, words joined by hyphens, at most 3 words. Every family should hold several memories; do not make a family for one or two. Do not include "other": anything that fits no family goes there.
-Then assign every memory number to one family, or to "other".
+PROMPT = """Below are the {n} memories of a software project's shared memory, one per line as "number. [type] title". The project's repository is "{project}".
+Group them into at most 12 families: the broad areas of this project an agent would browse by, named as the project names them. Each family name is lowercase, words joined by hyphens, at most 3 words. Do not name a family after the project itself: every memory here is about the project, so name the areas inside it. Every family should hold several memories; do not make a family for one or two, and none may hold more than a third of them: split a bigger one. Do not include "other": anything that fits no family goes there.
+Then assign every memory number to one family, or to "other".{feedback}
 Answer with JSON only: {{"families": ["..."], "assign": {{"1": "family", "2": "other", ...}}}}
 
 Memories:
@@ -60,10 +64,29 @@ def resolve(families: list[str] | None, family: str | None) -> str | None:
     return normalized
 
 
-def propose(lines: list[str]) -> tuple[list[str], list[str]]:
-    """A family list for these memory lines and one family per line, from the configured LLM."""
+def problems(picked: list[str], project: str) -> list[str]:
+    """What breaks the rules in a filing: a family named after the project (its repository name
+    is one of the last hyphenated parts of the slug), or one holding over MAX_SHARE."""
+    tokens = re.sub(r"-[0-9a-f]{8}$", "", project).split("-")
+    names = {"-".join(tokens[-k:]) for k in (1, 2, 3)}
+    found = []
+    for family, count in Counter(picked).most_common():
+        if family == OTHER:
+            continue
+        if family in names or any(family.startswith(f"{name}-") for name in names if "-" in name):
+            found.append(f'"{family}" is named after the project')
+        if count > MAX_SHARE * len(picked):
+            found.append(f'"{family}" holds {count} of {len(picked)} memories')
+    return found
+
+
+def propose(lines: list[str], project: str = "", feedback: list[str] = ()) -> tuple[list[str], list[str]]:
+    """A family list for these memory lines and one family per line, from the configured LLM.
+    `feedback` names what was wrong with a previous attempt."""
     numbered = "\n".join(f"{i}. {line}" for i, line in enumerate(lines, 1))
-    answer = llm.complete_json(get_settings(), PROMPT.format(n=len(lines), memories=numbered))
+    note = ("\nA previous attempt broke the rules: " + "; ".join(feedback) + ". Fix that.") if feedback else ""
+    answer = llm.complete_json(get_settings(), PROMPT.format(
+        n=len(lines), project=project, feedback=note, memories=numbered))
     names = []
     for name in answer.get("families") or []:
         try:
@@ -92,8 +115,14 @@ def maybe_draft(db: Session, principal: Principal, project_id: str) -> None:
     if project is None or project.families is not None:
         return
     rows = catalog.valid(db, project_id)
+    slug = db.scalar(select(ProjectSlug.slug).where(
+        ProjectSlug.project_internal_id == project_id, ProjectSlug.is_canonical)) or ""
+    lines, feedback = [f"[{row.memory_type}] {row.title or ''}" for row in rows], []
     try:
-        families, picked = propose([f"[{row.memory_type}] {row.title or ''}" for row in rows])
+        for _ in range(ATTEMPTS):
+            families, picked = propose(lines, slug, feedback)
+            if not (feedback := problems(picked, slug)):
+                break
     except Exception as exc:  # noqa: BLE001 -- a failed draft must not fail the retain
         logger.warning("family list draft failed: %s", type(exc).__name__)
         return
