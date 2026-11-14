@@ -119,7 +119,11 @@ def repo_slug_spellings(cwd: str | None = None) -> frozenset[str]:
 
 # Tools that pick a bank by slug alone. A call with a `memory_id` must keep the slug it was
 # given: the memory may live in a project split off under that spelling.
-_ROUTED_BY_SLUG = frozenset({"retain", "recall", "reflect", "list_memories", "load_context"})
+_ROUTED_BY_SLUG = frozenset({
+    "retain", "recall", "reflect", "list_memories", "load_context", "list_families", "set_families",
+})
+# Project tools without a `scope`: the slug is filled whenever the caller left it out.
+_UNSCOPED = frozenset({"load_context", "list_families", "set_families"})
 
 
 def fill_arguments(
@@ -128,15 +132,15 @@ def fill_arguments(
 ) -> dict:
     """Inject the resolved project where the caller left it out, and where the caller spelled
     this repository by hand, which would otherwise split it into a second project. Any other
-    slug addresses another repository and stands. `load_context` carries no `scope`, so it
-    is filled unconditionally; recall's `scope="all"` needs the slug for the project half of
+    slug addresses another repository and stands. `load_context` and the family tools carry no
+    `scope`, so they are filled unconditionally; recall's `scope="all"` needs the slug for the project half of
     its search; a call by `memory_id` without `scope` needs it in case the server infers
     project scope."""
     filled = dict(arguments)
     typed = filled.get("project_slug")
     scope = filled.get("scope")
     if project_slug and not typed and (
-        tool_name == "load_context" or scope in ("project", "all")
+        tool_name in _UNSCOPED or scope in ("project", "all")
         or (scope is None and "memory_id" in filled)
     ) or project_slug and typed and tool_name in _ROUTED_BY_SLUG and collapse_slug(typed) in spellings:
         filled["project_slug"] = project_slug
@@ -153,25 +157,23 @@ _PERSONAL_DESCRIPTIONS = {
         "scores well above a Spanish one against the same claim."
     ),
     "load_context": (
-        "Load this session's standing context. Without a project there is none; "
-        "creates nothing."
+        "Load this session's standing context again: your pinned memories in full. "
+        "Creates nothing."
     ),
 }
 
 
 def personal_tools(tools: list[types.Tool]) -> list[types.Tool]:
     """Tool list for a session with no project: user memory only, so `scope` and
-    `project_slug` leave the schemas, `rename_project` disappears, and so does
-    `load_context`'s `model`, since every model belongs to a project."""
+    `project_slug` leave the schemas, and the project-only tools disappear."""
     out = []
     for tool in tools:
-        if tool.name == "rename_project":
+        if tool.name in ("rename_project", "list_families", "set_families"):
             continue
         schema = dict(tool.input_schema)
         schema["properties"] = {
             k: v for k, v in schema.get("properties", {}).items()
             if k not in ("scope", "project_slug")
-            and not (tool.name == "load_context" and k == "model")
         }
         if "required" in schema:
             schema["required"] = [r for r in schema["required"] if r not in ("scope", "project_slug")]
@@ -205,8 +207,8 @@ def retain_stamp(cwd: str | None = None) -> Path:
 #: package, so it knows them; tests/test_proxy.py pins this to the live registry.
 TOOL_NAMES = frozenset({
     "correct", "delete_memory", "forget", "get_memory", "get_operation", "history",
-    "list_memories", "load_context", "recall", "reflect", "rename_project", "restore",
-    "retain",
+    "list_families", "list_memories", "load_context", "pin", "recall", "reflect",
+    "rename_project", "restore", "retain", "set_families",
 })
 
 
@@ -280,8 +282,8 @@ async def serve(url: str) -> None:
             await bridge.run(in_stream, out_stream, bridge.create_initialization_options())
 
 
-async def call_load_context(url: str, project_slug: str | None) -> str:
-    """One `load_context` call to url; returns its text (used by `ach-memory context load`)."""
+async def call_tool(url: str, name: str, arguments: dict, project_slug: str | None) -> dict:
+    """One tool call to url with the project filled in; returns its `result` (used by the CLI)."""
     client = create_mcp_http_client(auth=FreshCredential())
     async with (
         client,
@@ -289,10 +291,14 @@ async def call_load_context(url: str, project_slug: str | None) -> str:
         ClientSession(read, write) as session,
     ):
         await _handshake(session)
-        arguments = fill_arguments("load_context", {}, project_slug)
-        result = await session.call_tool("load_context", arguments)
+        result = await session.call_tool(name, fill_arguments(name, arguments, project_slug))
     if result.is_error:
-        raise RuntimeError("load_context failed")
-    # The tool answers {"result": {"text": ...}}; the hook prints only the standing context.
-    structured = result.structured_content or {}
-    return str(structured.get("result", {}).get("text") or "")
+        text = " ".join(getattr(c, "text", "") for c in result.content)
+        raise RuntimeError(text or f"{name} failed")
+    # Every tool answers {"result": {...}}.
+    return (result.structured_content or {}).get("result") or {}
+
+
+async def call_load_context(url: str, project_slug: str | None) -> str:
+    """The standing context text (used by `ach-memory context load`)."""
+    return str((await call_tool(url, "load_context", {}, project_slug)).get("text") or "")

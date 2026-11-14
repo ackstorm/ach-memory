@@ -5,7 +5,9 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
+    Text,
     func,
     text,
 )
@@ -60,6 +62,8 @@ class Project(Base):
     owner_type: Mapped[str] = mapped_column(String(8))
     owner_id: Mapped[str] = mapped_column(String(128))
     bank_id: Mapped[str] = mapped_column(String(64), unique=True)
+    # The closed family list a project retain must pick from; None until one is generated or set.
+    families: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -105,4 +109,46 @@ class AuditEvent(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         index=True,
+    )
+
+
+class Memory(Base):
+    """What ACH owns about one memory: its title, family and pin, plus the state and size the
+    index and the pin cap need without asking the engine. The text stays in the engine."""
+
+    __tablename__ = "memories"
+    __table_args__ = (Index("ix_memories_owner_state", "owner_id", "state"),)
+
+    memory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(8))
+    # The project's internal id or the user's id, as in the journal's `owner`.
+    owner_id: Mapped[str] = mapped_column(String(128))
+    title: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    family: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    pinned: Mapped[bool] = mapped_column(default=False)
+    memory_type: Mapped[str] = mapped_column(String(16))
+    state: Mapped[str] = mapped_column(String(8), default="valid")
+    chars: Mapped[int] = mapped_column(Integer)
+    # clock_timestamp, not now(): rows written in one transaction (the rollout) still order.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("clock_timestamp()")
+    )
+
+
+class ReadEvent(Base):
+    """One read: session-start load, recall, list or get. How we know whether agents use memory."""
+
+    __tablename__ = "read_events"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    project_internal_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    tool: Mapped[str] = mapped_column(String(32))
+    scope: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    family: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    results: Mapped[int] = mapped_column(Integer)
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
     )

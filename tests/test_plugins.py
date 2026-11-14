@@ -226,3 +226,15 @@ def test_package_json_ships_the_whole_tree():
     `MCP error -32000: Connection closed`, with nothing to say why.
     """
     assert "files" not in load("package.json")
+
+
+def test_session_start_output_stays_under_the_hosts_inline_limit():
+    # Claude Code shows SessionStart output inline only under 10,000 characters: the activation
+    # text, a newline, the standing context (capped by context_budget_chars) and the no-project
+    # notice must fit together.
+    from memory.cli import _NO_PROJECT_NOTICE
+    from memory.config import Settings
+
+    activation = (ROOT / "hooks" / "activation.txt").read_text()
+    budget = Settings.model_fields["context_budget_chars"].default
+    assert len(activation) + 1 + budget + 1 + len(_NO_PROJECT_NOTICE) + 1 < 10_000

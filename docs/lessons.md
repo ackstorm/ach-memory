@@ -68,8 +68,8 @@ else does not get written.
   entities/dates; `concise` reworded 13/34 claims. Banks are provisioned
   `verbatim` (`benchmarks/experiments/2026-09-14-extraction/`).
 - Observations are twins of world facts and were delivered twice (QA
-  F-02/F-12). Recall with `types=["world"]`; leave observations on for
-  mental models.
+  F-02/F-12). Recall with `types=["world"]`. Consolidation is off since
+  0.12.0 (`enable_observations=false`): nothing reads observations any more.
 - Reranker bake-off (2026-09-11): base-size cross-encoders measured no better
   than MiniLM; upgrade is one Hindsight env var.
 - Our QA corpus saturates recall@5 (all 1.00); the one "miss" was a matcher
@@ -78,6 +78,38 @@ else does not get written.
   same text under N ids are N memories (probe `dup_bill`). Hindsight recall
   copes; no ACH dedup was worth its lines.
 - Only read-side shaping that earned its place: a semantic-score floor.
+
+## What the 2026-11 redesign evaluation measured
+
+Three production banks (ach-memory 67, ach-runtime 190, ach-agent 361 valid
+memories), exported read-only, LLM-labelled with hand-checked samples.
+
+- **Families are stable only against a closed list.** Agreement between two
+  labelling runs: 0.94-0.97 with a closed list of about 12, 0.18-0.35 when
+  families were suggested freely. Blind labelling produced 37-107 families,
+  57-64% of them holding one memory.
+- **Keys cannot drive updates.** Topic keys agreed 0.65-0.69 between runs, and
+  a reused key was a false merge in 20-36% of hand-checked cases.
+- **The index fits.** 1.3k-2.9k chars per bank with closed families, against
+  the 8.7k budget of the time.
+- **Views rewrite meaning.** The `briefing` model turned "only judged in
+  production: `make e2e` runs against a mock LLM" into its opposite (2026-11-11);
+  full-mode refreshes dropped and recovered bullets with no new retain (one
+  page: 2,869 chars, then 1,818, 2,497 and 1,753).
+- **About 40% of retains should have been updates** of an existing memory
+  (37-43%, weighted by hand-checked label precision); the right candidate is in
+  the top 3 of a similarity search in 93-98% of cases.
+- **Search.** BM25 plus multilingual-e5 matched Hindsight at hit@5 (0.59-0.79
+  against 0.55-0.68) and beat it on Spanish queries; Hindsight's cross-encoder
+  won at hit@1 by 0.03-0.09. Shipped recall took 6-27 s, 95-97% of it in the
+  reranker at 80-105 ms per candidate on 2 CPUs. No score from any method told
+  "nothing relevant here" apart (AUC 0.43-0.62).
+- **Most gotchas are not in the code.** Of 40 sampled ach-agent gotchas, 65%
+  were external (not revealed by the checkout), 15% code-visible, 20% already
+  fixed; of all 36 ach-memory gotchas, 50%, 33% and 17%.
+- **Opus finds code-visible traps without memory.** Without memory it avoided
+  9 of 10 tasks built from code-derived gotchas; it fell only into traps whose
+  answer lives outside the repository.
 
 ## Verified gotchas
 
@@ -128,11 +160,11 @@ Security:
 - ACH is a governed, engine-neutral access and delivery layer. It never
   re-implements memory (spec v3 §1, invariants I1–I8).
 - Public memory id = engine document id, minted by ACH (`mem_<32hex>`).
-- Retain carries `content`, `memory_type`, `basis`, `operation_id`, tags —
-  no evidence, trigger or `valid_until`. Vocabulary as tags:
+- Retain carries `title`, `content`, `memory_type`, `basis`, `operation_id`,
+  tags, and a `family` and `pin` — no evidence, trigger or `valid_until`. Vocabulary as tags:
   `type:`, `basis:`, `schema:ach-retain-v1`.
-- Mental models are native to the engine; ACH only names the built-ins and
-  provisions them at first retain.
+- No LLM-synthesized views reach an agent (0.12.0). Session start is pinned
+  memories in full plus an index by family, built from ACH's own record.
 - MCP is the only delivery. No REST mirror of engine operations.
 - Corrections are synchronous and serialised per memory; first retains are
   async with the engine operation ref exposed.

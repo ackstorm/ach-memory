@@ -56,6 +56,27 @@ spec:
               value: {{ .Values.config.maxContentBytes | quote }}
             - name: MEMORY_RECALL_MIN_SEMANTIC
               value: {{ .Values.config.recallMinSemantic | quote }}
+            - name: MEMORY_PIN_CAP_PROJECT_CHARS
+              value: {{ .Values.config.pinCap.project | quote }}
+            - name: MEMORY_PIN_CAP_USER_CHARS
+              value: {{ .Values.config.pinCap.user | quote }}
+            {{- with .Values.config.llm }}
+            {{- if .url }}
+            - name: MEMORY_LLM_URL
+              value: {{ .url | quote }}
+            - name: MEMORY_LLM_MODEL
+              value: {{ .model | quote }}
+            - name: MEMORY_LLM_HEADER
+              value: {{ .header | quote }}
+            {{- if .apiKeySecret.name }}
+            - name: MEMORY_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .apiKeySecret.name }}
+                  key: {{ .apiKeySecret.key }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- $hosts := .Values.config.mcpAllowedHosts }}
             {{- if and (not $hosts) .Values.ingress.enabled .Values.ingress.host }}
             {{- $hosts = list .Values.ingress.host }}

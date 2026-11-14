@@ -14,7 +14,6 @@ import pytest
 
 from memory.backend.base import Hit, MemoryView, WriteAck
 from memory.backend.hindsight import HindsightBackend, _bank
-from memory.builtin_models import DECISIONS, TRAPS, BuiltinModel
 from memory.errors import InvalidRequest, MemoryNotFound, UpstreamError
 
 BASE = "http://hindsight.test"
@@ -86,7 +85,8 @@ def test_provision_skips_the_patch_when_config_already_matches(make_backend, rec
     backend = make_backend({
         ("PUT", f"{_bank(BANK)}"): httpx.Response(200, json={}),
         ("GET", f"{_bank(BANK)}/config"): httpx.Response(
-            200, json={"config": {"retain_extraction_mode": "verbatim"}}
+            200, json={"config": {"retain_extraction_mode": "verbatim", "enable_observations": False,
+                                  "enable_graph_retrieval": False, "enable_temporal_retrieval": False}}
         ),
         ("PATCH", f"{_bank(BANK)}/config"): httpx.Response(200, json={}),
     })
@@ -98,8 +98,9 @@ def test_provision_skips_the_patch_when_config_already_matches(make_backend, rec
 
 def test_provision_patches_and_reverifies_when_config_differs(make_backend, recorder):
     responses = iter([
-        httpx.Response(200, json={"config": {"retain_extraction_mode": "concise"}}),
-        httpx.Response(200, json={"config": {"retain_extraction_mode": "verbatim"}}),
+        httpx.Response(200, json={"config": {"retain_extraction_mode": "verbatim", "enable_observations": True}}),
+        httpx.Response(200, json={"config": {"retain_extraction_mode": "verbatim", "enable_observations": False,
+                                             "enable_graph_retrieval": False, "enable_temporal_retrieval": False}}),
     ])
     backend = make_backend({
         ("PUT", f"{_bank(BANK)}"): httpx.Response(200, json={}),
@@ -110,7 +111,10 @@ def test_provision_patches_and_reverifies_when_config_differs(make_backend, reco
     backend.provision(BANK)
 
     patch_request = recorder.calls[("PATCH", f"{_bank(BANK)}/config")]
-    assert json.loads(patch_request.read()) == {"updates": {"retain_extraction_mode": "verbatim"}}
+    assert json.loads(patch_request.read()) == {"updates": {
+        "retain_extraction_mode": "verbatim", "enable_observations": False,
+        "enable_graph_retrieval": False, "enable_temporal_retrieval": False,
+    }}
 
 
 def test_provision_raises_upstream_error_when_verification_still_fails(make_backend):
@@ -433,10 +437,6 @@ def test_list_on_a_missing_bank_is_an_empty_page(make_backend):
     assert page.items == () and page.total == 0
 
 
-def test_get_mental_model_on_a_missing_bank_is_none(make_backend):
-    assert make_backend({}).get_mental_model(BANK, "user-context") is None
-
-
 def test_recall_on_a_missing_bank_is_empty(make_backend):
     assert make_backend({}).recall(BANK, "q", tag_groups=(), limit=5) == []
 
@@ -482,10 +482,10 @@ def test_reflect_rejects_an_invalid_tag_group_match(make_backend):
 # ---------------------------------------------------------------------------
 
 
-def test_capabilities_declare_synthesis_operations_and_mental_models(make_backend):
+def test_capabilities_declare_synthesis_and_operations(make_backend):
     backend = make_backend({})
 
-    assert backend.capabilities() == frozenset({"synthesis", "operations", "mental_models"})
+    assert backend.capabilities() == frozenset({"synthesis", "operations"})
 
 
 # ---------------------------------------------------------------------------
@@ -504,154 +504,3 @@ def test_get_operation_strips_the_bank_id(make_backend):
 
     assert "bank_id" not in result
     assert BANK not in result["note"]
-
-
-# ---------------------------------------------------------------------------
-# mental models
-# ---------------------------------------------------------------------------
-
-
-def test_provision_mental_models_creates_a_missing_model(make_backend, recorder):
-    backend = make_backend({
-        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={"items": []}),
-        ("POST", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={"id": "mm-1"}),
-    })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="summarize",
-                            scope="user",
-                            source_tags=("schema:ach-retain-v1",), tags_match="all")
-
-    backend.provision_mental_models(BANK, (builtin,))
-
-    body = json.loads(recorder.calls[("POST", f"{_bank(BANK)}/mental-models")].read())
-    assert body == {
-        "name": "User Context", "source_query": "summarize",
-        "tags": ["schema:ach-retain-v1"],
-        "trigger": {"mode": "full", "refresh_after_consolidation": True,
-                    "exclude_mental_models": True,
-                    "tags_match": "all"},
-    }
-
-
-def test_provision_mental_models_updates_a_model_with_a_changed_prompt(make_backend, recorder):
-    backend = make_backend({
-        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
-            "items": [{"id": "mm-1", "name": "User Context", "source_query": "old prompt"}]
-        }),
-        ("PATCH", f"{_bank(BANK)}/mental-models/mm-1"): httpx.Response(200, json={}),
-    })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="new prompt",
-                            scope="user")
-
-    backend.provision_mental_models(BANK, (builtin,))
-
-    assert ("PATCH", f"{_bank(BANK)}/mental-models/mm-1") in recorder.calls
-
-
-def test_provision_mental_models_is_a_noop_when_the_prompt_is_unchanged(make_backend, recorder):
-    backend = make_backend({
-        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
-            "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
-                       "trigger": {"mode": "full", "refresh_after_consolidation": True,
-                                   "exclude_mental_models": True,
-                                   "tags_match": "any_strict"}}]
-        }),
-    })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
-
-    backend.provision_mental_models(BANK, (builtin,))
-
-    assert ("PATCH", f"{_bank(BANK)}/mental-models/mm-1") not in recorder.calls
-    assert ("POST", f"{_bank(BANK)}/mental-models") not in recorder.calls
-
-
-def test_provision_mental_models_turns_on_refresh_for_a_model_created_without_it(make_backend, recorder):
-    backend = make_backend({
-        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
-            "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
-                       "trigger": {"mode": "full", "refresh_after_consolidation": False}}]
-        }),
-        ("PATCH", f"{_bank(BANK)}/mental-models/mm-1"): httpx.Response(200, json={}),
-    })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
-
-    backend.provision_mental_models(BANK, (builtin,))
-
-    body = json.loads(recorder.calls[("PATCH", f"{_bank(BANK)}/mental-models/mm-1")].read())
-    assert body["trigger"] == {"mode": "full", "refresh_after_consolidation": True,
-                               "exclude_mental_models": True,
-                               "tags_match": "any_strict"}
-
-
-def test_provision_mental_models_excludes_mental_models_from_an_existing_model(make_backend, recorder):
-    backend = make_backend({
-        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={
-            "items": [{"id": "mm-1", "name": "User Context", "source_query": "same",
-                       "trigger": {"mode": "delta", "refresh_after_consolidation": True,
-                                   "exclude_mental_models": False}}]
-        }),
-        ("PATCH", f"{_bank(BANK)}/mental-models/mm-1"): httpx.Response(200, json={}),
-    })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
-
-    backend.provision_mental_models(BANK, (builtin,))
-
-    body = json.loads(recorder.calls[("PATCH", f"{_bank(BANK)}/mental-models/mm-1")].read())
-    assert body["trigger"]["exclude_mental_models"] is True
-
-
-def test_provision_mental_models_lists_with_the_trigger_and_prompt(make_backend, recorder):
-    backend = make_backend({
-        ("GET", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={"items": []}),
-        ("POST", f"{_bank(BANK)}/mental-models"): httpx.Response(200, json={"id": "mm-1"}),
-    })
-    builtin = BuiltinModel(key="user-context", name="User Context", prompt="same", scope="user")
-
-    backend.provision_mental_models(BANK, (builtin,))
-
-    listed = recorder.calls[("GET", f"{_bank(BANK)}/mental-models")]
-    assert listed.url.params["detail"] == "content"
-
-
-def test_provision_mental_models_deletes_a_model_no_longer_built_in(make_backend, recorder):
-    path = f"{_bank(BANK)}/mental-models"
-    backend = make_backend({
-        ("GET", path): httpx.Response(200, json={"items": [{"id": "mm-old", "name": "Project Context"}]}),
-        ("POST", path): httpx.Response(200, json={}),
-        ("DELETE", f"{path}/mm-old"): httpx.Response(200, json={}),
-    })
-
-    backend.provision_mental_models(BANK, (TRAPS,))
-
-    assert ("DELETE", f"{path}/mm-old") in recorder.calls
-
-
-def test_provision_mental_models_puts_the_tag_match_in_the_trigger(make_backend, recorder):
-    path = f"{_bank(BANK)}/mental-models"
-    backend = make_backend({
-        ("GET", path): httpx.Response(200, json={"items": []}),
-        ("POST", path): httpx.Response(200, json={}),
-    })
-
-    backend.provision_mental_models(BANK, (DECISIONS,))
-
-    body = json.loads(recorder.calls[("POST", path)].read())
-    assert body["tags"] == list(DECISIONS.source_tags)
-    assert body["trigger"]["tags_match"] == "any_strict"
-    assert body["trigger"]["mode"] == "full"
-    assert "tags_match" not in body  # not a mental model field on Hindsight 1.2
-
-
-def test_provision_mental_models_patches_a_model_whose_tags_changed(make_backend, recorder):
-    path = f"{_bank(BANK)}/mental-models"
-    current = {"id": "mm-1", "name": TRAPS.name, "source_query": TRAPS.prompt,
-               "tags": ["type:fact"], "trigger": {"mode": "full", "refresh_after_consolidation": True,
-                                                   "exclude_mental_models": True,
-                                                   "tags_match": "any_strict"}}
-    backend = make_backend({
-        ("GET", path): httpx.Response(200, json={"items": [current]}),
-        ("PATCH", f"{path}/mm-1"): httpx.Response(200, json={}),
-    })
-
-    backend.provision_mental_models(BANK, (TRAPS,))
-
-    assert ("PATCH", f"{path}/mm-1") in recorder.calls

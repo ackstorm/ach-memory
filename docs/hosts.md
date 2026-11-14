@@ -107,9 +107,15 @@ then stays quiet. Unset means `1800` (30 minutes).
 | MCP tools | `mcp.json` | `codex-mcp.json` | plugin `config` hook | extension writes `~/.pi/agent/mcp.json` |
 | Skill | `skills/` | `skills/` | plugin `config` hook | `package.json` `pi.skills` |
 | Standing context at start | `SessionStart` | `SessionStart` | `chat.system.transform` | `before_agent_start` |
+| Standing context after compaction | `SessionStart` runs again (source `compact`) | `SessionStart` runs again (source `compact`, root sessions) | stays in the system prompt | stays in the system prompt |
 | Subagent activation | `SubagentStart` | `SubagentStart` | ❌ no subagent event | ❌ no subagent event |
 | Retain nudge before compaction | `PreCompact` | `PreCompact` | `session.compacting` | ❌ not wired |
 | Idle retain nudge | `UserPromptSubmit` | `UserPromptSubmit` | `chat.message` | `before_agent_start` → `message` |
+
+opencode and pi compute the standing context once, when the plugin loads, and
+add it to every system prompt; a compaction summarizes the messages, not the
+system prompt, so it survives. A pin made during the session shows from the
+next session on.
 
 opencode has no subagent lifecycle event; pi has none either. pi's
 `session_before_compact` can only cancel or replace the whole compaction (its

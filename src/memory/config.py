@@ -66,7 +66,20 @@ class Settings(BaseSettings):
     recall_min_semantic: float = Field(default=0.60, ge=0, le=1)
     # Standing context plus hooks/activation.txt must stay under Claude Code's ~10,000-character
     # inline limit for SessionStart output; past it the agent sees a 2KB preview.
-    context_budget_chars: int = 8700
+    # tests/test_plugins.py holds the sum under the limit.
+    context_budget_chars: int = 8000
+    # Pinned text delivered in full at session start, per bank. A pin past the cap is refused.
+    pin_cap_project_chars: int = Field(default=3500, ge=0)
+    pin_cap_user_chars: int = Field(default=2000, ge=0)
+
+    # OpenAI-compatible chat endpoint that drafts a project's family list once it passes the
+    # threshold. Empty: no list is drafted and families stay optional until one is set.
+    llm_url: str = ""
+    llm_api_key: str = ""
+    # Header carrying the key: Bearer on Authorization, the bare key on any other header.
+    llm_header: str = "Authorization"
+    llm_model: str = "ackstorm.smart"
+    llm_timeout_seconds: float = Field(default=120.0, gt=0)
 
     @field_validator("database_url")
     @classmethod

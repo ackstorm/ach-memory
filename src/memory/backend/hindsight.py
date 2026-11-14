@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -18,13 +17,11 @@ from memory.backend.base import (
     Hit,
     MemoryState,
     MemoryView,
-    MentalModelView,
     Page,
     TagGroup,
     WriteAck,
     matches_tag_groups,
 )
-from memory.builtin_models import BUILTIN_MODELS, BuiltinModel
 from memory.config import get_settings
 from memory.errors import InvalidRequest, MemoryNotFound, NotFound, UpstreamError
 
@@ -89,31 +86,6 @@ def _strip_bank_id(value: Any, bank_id: str) -> Any:
     return value
 
 
-# Hindsight defaults `refresh_after_consolidation` to False: a model created without
-# this is generated once at provision and never again (seen in production, 0.1.2).
-# `exclude_mental_models` keeps a refresh from reading the bank's mental models, its own
-# previous version included: with it off, a refresh summarized the old summary and drifted.
-# Full mode rebuilds from the claims each time: delta mode only appends, and one model reached
-# 13,161 chars of stale lines. The refresh agent recalls 2,048 tokens unless told otherwise, and
-# Hindsight 1.2.1 ignores the trigger's `recall_max_tokens`: each prompt asks for 12,000 instead.
-# `tags_match` is a trigger field on 1.2: sent at the top level it is ignored.
-_MENTAL_MODEL_TRIGGER = {"mode": "full", "refresh_after_consolidation": True,
-                         "exclude_mental_models": True}
-
-
-def _trigger(builtin: BuiltinModel) -> dict[str, Any]:
-    return {**_MENTAL_MODEL_TRIGGER, "tags_match": builtin.tags_match}
-
-
-def _stale(current: dict, builtin: BuiltinModel) -> bool:
-    trigger = current.get("trigger") or {}
-    return (
-        current.get("source_query") != builtin.prompt
-        or sorted(current.get("tags") or []) != sorted(builtin.source_tags)
-        or any(trigger.get(k) != v for k, v in _trigger(builtin).items())
-    )
-
-
 class HindsightBackend(Backend):
     """Production `Backend` implementation, talking straight to the Hindsight HTTP API."""
 
@@ -168,18 +140,24 @@ class HindsightBackend(Backend):
             return {}
 
     def capabilities(self) -> frozenset[Capability]:
-        return frozenset({"synthesis", "operations", "mental_models"})
+        return frozenset({"synthesis", "operations"})
 
     def provision(self, bank_id: str) -> None:
+        """`retain_extraction_mode` as configured; `enable_observations` off, since ACH serves no
+        derived views; and recall fused from text and semantic search only. With the graph and
+        temporal arms in the fusion, a capped reranker (HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID)
+        sees the wrong candidates: on the ach-agent bank, cap 10 gave hit@1 0.20 with them and
+        0.46 without (2026-11-14)."""
         self._request("PUT", _bank(bank_id), {})
+        wanted = {"retain_extraction_mode": self._extraction_mode, "enable_observations": False,
+                  "enable_graph_retrieval": False, "enable_temporal_retrieval": False}
         cfg = (self._request("GET", f"{_bank(bank_id)}/config") or {}).get("config") or {}
-        if cfg.get("retain_extraction_mode") == self._extraction_mode:
+        if all(cfg.get(k) == v for k, v in wanted.items()):
             return
-        self._request("PATCH", f"{_bank(bank_id)}/config",
-                       {"updates": {"retain_extraction_mode": self._extraction_mode}})
+        self._request("PATCH", f"{_bank(bank_id)}/config", {"updates": wanted})
         cfg = (self._request("GET", f"{_bank(bank_id)}/config") or {}).get("config") or {}
-        if cfg.get("retain_extraction_mode") != self._extraction_mode:
-            raise UpstreamError("memory backend extraction mode could not be verified")
+        if any(cfg.get(k) != v for k, v in wanted.items()):
+            raise UpstreamError("memory backend configuration could not be verified")
 
     def retain(self, bank_id: str, memory_id: str, content: str, *, tags: tuple[str, ...],
                metadata: dict, wait: bool) -> WriteAck:
@@ -329,45 +307,3 @@ class HindsightBackend(Backend):
         result = self._request("GET", f"{_bank(bank_id)}/operations/{operation_ref}",
                                 not_found=NotFound)
         return _strip_bank_id(_derive_failed(result), bank_id)
-
-    def provision_mental_models(self, bank_id: str, builtins: Sequence[BuiltinModel]) -> None:
-        path = f"{_bank(bank_id)}/mental-models"
-        # The list defaults to `detail=metadata` from Hindsight 1.x, which drops `source_query`
-        # and `trigger`: `_stale()` would then PATCH every model on every retain.
-        existing = {
-            item.get("name"): item
-            for item in (self._request("GET", path, params={"detail": "content"}) or {})
-            .get("items") or []
-        }
-        for builtin in builtins:
-            body = {
-                "name": builtin.name,
-                "source_query": builtin.prompt,
-                "tags": list(builtin.source_tags),
-                "trigger": _trigger(builtin),
-            }
-            current = existing.get(builtin.name)
-            if current is None:
-                self._request("POST", path, body)
-            elif _stale(current, builtin):
-                self._request("PATCH", f"{path}/{current['id']}", body)
-        # Every mental model in a bank is ach-memory's own: one that is not a built-in is
-        # deleted, or it keeps refreshing after every retain.
-        wanted = {builtin.name for builtin in builtins}
-        for name, item in existing.items():
-            if name not in wanted:
-                self._request("DELETE", f"{path}/{item['id']}")
-
-    def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
-        """Hindsight indexes by name, not `key` -- resolved via BUILTIN_MODELS, the only keys ACH passes."""
-        name = next((m.name for m in BUILTIN_MODELS if m.key == key), None)
-        if name is None:
-            return None
-        path = f"{_bank(bank_id)}/mental-models"
-        existing = {i.get("name"): i for i in (self._read("GET", path) or {}).get("items") or []}
-        item = existing.get(name)
-        if item is None:
-            return None
-        content = (self._request("GET", f"{path}/{item['id']}") or {}).get("content")
-        return MentalModelView(key=key, name=name, content=content if isinstance(content, str) else None,
-                                updated_at=item.get("updated_at"))

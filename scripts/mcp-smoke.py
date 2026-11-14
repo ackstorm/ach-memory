@@ -22,7 +22,7 @@ from leakscan import find as leak_find
 EXPECTED_TOOLS = {
     "retain", "recall", "reflect", "correct", "forget", "restore", "delete_memory",
     "list_memories", "get_memory", "history", "load_context", "get_operation",
-    "rename_project",
+    "rename_project", "pin", "list_families", "set_families",
 }
 MEMORY_ID_RE = re.compile(r"^mem_[0-9a-f]{32}$")
 _log: list[str] = []
@@ -45,7 +45,7 @@ def proj(t: dict, **extra: object) -> dict:
     return {"scope": "project", "project_slug": t["project"], **extra}
 def retain_args(scope: str, content: str, *, op_id: str | None = None, project: str | None = None,
                  **extra: object) -> dict:
-    d = {"scope": scope, "content": content, "basis": "human_explicit", "wait": True,
+    d = {"scope": scope, "title": content[:80], "content": content, "basis": "human_explicit", "wait": True,
          "operation_id": op_id or str(uuid.uuid4()), **extra}
     if project:
         d["project_slug"] = project
@@ -123,8 +123,14 @@ async def check_reflect(t, s) -> None:
         assert isinstance(answer, str) and answer, res.structured_content
         say("(reflect: answer)")
 async def check_load_context(t, s) -> None:
+    pinned = "Smoke: every change in this project runs make verify first."
+    mid = unwrap(await s.call_tool("retain", retain_args(
+        "project", pinned, project=t["project"], memory_type="convention", pin=True)))["memory_id"]
     body = unwrap(await s.call_tool("load_context", {"project_slug": t["project"]}))
-    assert "text" in body and "truncated" in body, body
+    assert pinned in body["text"] and "### Memory index" in body["text"], body
+    unwrap(await s.call_tool("pin", proj(t, memory_id=mid, pinned=False)))
+    listed = unwrap(await s.call_tool("list_memories", proj(t, pinned=True)))["items"]
+    assert mid not in {i["memory_id"] for i in listed}, listed
 async def check_secret_rejection(t, s) -> None:
     content = "AWS key AKIAIOSFODNN7EXAMPLE secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     res = await s.call_tool("retain", retain_args("project", content, project=t["project"], memory_type="fact"))

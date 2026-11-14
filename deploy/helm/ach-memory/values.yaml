@@ -19,6 +19,23 @@ config:
   # the new value; 0 disables the floor, which is how the probe reads raw scores.
   recallMinSemantic: 0.60
 
+  # MEMORY_PIN_CAP_PROJECT_CHARS / MEMORY_PIN_CAP_USER_CHARS. Pinned text delivered in full at
+  # session start, per bank; a pin past the cap is refused.
+  pinCap:
+    project: 3500
+    user: 2000
+
+  # MEMORY_LLM_*. OpenAI-compatible chat endpoint that drafts a project's family list when it
+  # first holds 30 memories. Empty url: nothing is drafted and families stay optional.
+  llm:
+    url: ""
+    model: "ackstorm.smart"
+    # Bearer on Authorization; any other header carries the bare key.
+    header: "Authorization"
+    apiKeySecret:
+      name: ""
+      key: "api-key"
+
   # MEMORY_HINDSIGHT_TIMEOUT_SECONDS / MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS.
   # The LLM one covers sync_retain/reflect, which block on the configured model.
   timeoutSeconds: 30

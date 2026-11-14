@@ -5,7 +5,6 @@ Emulates no memory intelligence -- recall is plain token overlap, nothing more.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -15,13 +14,11 @@ from memory.backend.base import (
     Hit,
     MemoryState,
     MemoryView,
-    MentalModelView,
     Page,
     TagGroup,
     WriteAck,
     matches_tag_groups,
 )
-from memory.builtin_models import BuiltinModel
 from memory.errors import MemoryNotFound
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -45,17 +42,12 @@ class FakeBackend(Backend):
 
     def __init__(self) -> None:
         self._data: dict[str, dict[str, _Record]] = {}
-        self.mental_models: dict[str, dict[str, BuiltinModel]] = {}
-        #: content a test wants `get_mental_model` to return; unset means None.
-        self.mental_model_content: dict[str, dict[str, str | None]] = {}
 
     def reset(self) -> None:
         self._data = {}
-        self.mental_models = {}
-        self.mental_model_content = {}
 
     def capabilities(self) -> frozenset[Capability]:
-        return frozenset({"mental_models"})
+        return frozenset()
 
     def provision(self, bank_id: str) -> None:
         self._data.setdefault(bank_id, {})
@@ -145,16 +137,6 @@ class FakeBackend(Backend):
         return MemoryView(memory_id=memory_id, text=record.text, state=record.state,
                            tags=record.tags, metadata=dict(record.metadata),
                            created_at=record.created_at)
-
-    def provision_mental_models(self, bank_id: str, builtins: Sequence[BuiltinModel]) -> None:
-        self.mental_models[bank_id] = {builtin.key: builtin for builtin in builtins}
-
-    def get_mental_model(self, bank_id: str, key: str) -> MentalModelView | None:
-        builtin = self.mental_models.get(bank_id, {}).get(key)
-        if builtin is None:
-            return None
-        content = self.mental_model_content.get(bank_id, {}).get(key)
-        return MentalModelView(key=key, name=builtin.name, content=content)
 
 
 #: `get_backend()`'s "fake" registration: one process-wide instance, reset between tests

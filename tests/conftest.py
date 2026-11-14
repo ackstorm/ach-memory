@@ -41,7 +41,10 @@ def engine():
 
     _ensure_database_exists(TEST_DATABASE_URL)
     eng = create_engine(TEST_DATABASE_URL)
-    # Drop what the database actually holds, not what the current models know.
+    # Drop what the database actually holds, not what the current models know; views first,
+    # since a migration test leaves the read log's view behind.
+    with eng.begin() as conn:
+        conn.execute(text("DROP VIEW IF EXISTS read_daily"))
     existing = MetaData()
     existing.reflect(bind=eng)
     existing.drop_all(eng)
