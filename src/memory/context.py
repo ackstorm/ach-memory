@@ -20,6 +20,8 @@ from memory.families import OTHER, THRESHOLD
 from memory.models import Memory
 
 PURPOSE_TAG = "purpose"
+#: A longer purpose is cut at its last sentence end within this, so it never crowds out the index.
+PURPOSE_CHARS = 600
 TITLES_PER_FAMILY = 3
 
 _NO_PURPOSE = (
@@ -100,7 +102,7 @@ def render(*, user: Bank, project: Bank | None = None, purpose: str | None = Non
 
     project_pins, project_shown, project_cut = _pinned(project, "Pinned in this project")
     rows = project.rows
-    head = (f"### Project purpose\n{purpose}\n\n" if purpose else _NO_PURPOSE) + user_pins + (
+    head = (f"### Project purpose\n{_short(purpose)}\n\n" if purpose else _NO_PURPOSE) + user_pins + (
         project_pins or _NOTHING_PINNED)
     totals = (
         f"{len(rows)} project memories"
@@ -123,6 +125,14 @@ def _purpose(backend: Backend, bank_id: str) -> str | None:
     page = backend.list(bank_id, tag_groups=({"tags": [PURPOSE_TAG], "match": "any"},),
                         state=None, limit=1, offset=0)
     return page.items[0].text if page.items else None
+
+
+def _short(purpose: str) -> str:
+    if len(purpose) <= PURPOSE_CHARS:
+        return purpose
+    head = purpose[: PURPOSE_CHARS + 1]
+    end = max(head.rfind(". "), head.rfind(".\n"), head.rfind("! "), head.rfind("? "))
+    return head[: end + 1] if end > 0 else head[: head.rfind(" ")] + "…"
 
 
 def _pinned(bank: Bank, heading: str) -> tuple[str, int, bool]:
