@@ -414,6 +414,10 @@ def apply(args: argparse.Namespace) -> None:
             sql.append(_audit("project.families", bank["id"],
                               {"before": None, "after": bank["families"], "drafted": True}))
         for m in bank["memories"]:
+            if m.get("forget"):
+                sql.append(f"UPDATE memories SET state = 'invalid' WHERE memory_id = {_q(m['memory_id'])};")
+                sql.append(_audit("memory.forget", m["memory_id"],
+                                  {"scope": bank["kind"], "owner": bank["id"], "reason": FORGET_REASON}))
             if m["memory_id"] in known:
                 continue
             sql.append(
@@ -422,9 +426,6 @@ def apply(args: argparse.Namespace) -> None:
                 f"{_q(m['title'])}, {_q(m['family'])}, {_q(m['pinned'])}, {_q(m['memory_type'])}, "
                 f"{_q('invalid' if m.get('forget') else m['state'])}, {m['chars']}, {_q(m['created_at'])}) "
                 "ON CONFLICT (memory_id) DO NOTHING;")
-            if m.get("forget"):
-                sql.append(_audit("memory.forget", m["memory_id"],
-                                  {"scope": bank["kind"], "owner": bank["id"], "reason": FORGET_REASON}))
             if m["pinned"]:
                 sql.append(_audit("memory.pin", m["memory_id"],
                                   {"scope": bank["kind"], "owner": bank["id"],
