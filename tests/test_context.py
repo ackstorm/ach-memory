@@ -7,7 +7,7 @@ from memory.auth.principal import Principal
 from memory.backend.fake import FakeBackend
 from memory.config import get_settings
 from memory.families import THRESHOLD
-from memory.models import Project
+from memory.models import Memory, Project
 
 
 @pytest.fixture
@@ -156,3 +156,25 @@ def test_pinned_memories_are_not_repeated_as_sample_titles(db, principal, backen
     text = _load(db, principal, backend).text
 
     assert "- deploy (30): Note 28; Note 27; Note 26\n" in text
+
+
+def test_full_caps_and_a_long_purpose_keep_every_family_line_and_the_totals():
+    def pins(prefix, n, chars):
+        return [Memory(memory_id=f"{prefix}{i}", title=f"{prefix} pin {i}", family="family-0", pinned=True,
+                       chars=chars, memory_type="constraint") for i in range(n)]
+
+    user = context.Bank(pins("u", 10, get_settings().pin_cap_user_chars // 10), get_settings().pin_cap_user_chars,
+                        lambda row: "u" * row.chars)
+    rows = pins("p", 10, get_settings().pin_cap_project_chars // 10) + [
+        Memory(memory_id=f"m{i}", title=f"A memory title of a realistic length, number {i:02d}",
+               family=f"family-{i % 12}", pinned=False, chars=200, memory_type="fact") for i in range(60)]
+    project = context.Bank(rows, get_settings().pin_cap_project_chars, lambda row: "p" * row.chars)
+    purpose = " ".join(f"Sentence {i} says what the project does." for i in range(40))
+
+    text = context.render(user=user, project=project, purpose=purpose).text
+
+    shown = text.split("### Project purpose\n")[1].split("\n\n")[0]
+    assert len(purpose) > 1500 and len(shown) <= context.PURPOSE_CHARS and shown.endswith("does.")
+    assert all(f"- family-{i} (" in text for i in range(12))
+    assert text.endswith("70 project memories in 12 families, 10 pinned; 10 of yours, 10 pinned.\n")
+    assert "left out" not in text and len(text) <= get_settings().context_budget_chars
