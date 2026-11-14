@@ -408,7 +408,7 @@ def apply(args: argparse.Namespace) -> None:
 
     sql = ["BEGIN;"]
     for bank in banks:
-        if bank["families"]:
+        if bank.get("families"):
             sql.append(f"UPDATE projects SET families = {_q(json.dumps(bank['families']))} "
                        f"WHERE internal_id = {_q(bank['id'])} AND families IS NULL;")
             sql.append(_audit("project.families", bank["id"],
