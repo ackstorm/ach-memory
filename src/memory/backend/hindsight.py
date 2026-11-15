@@ -177,7 +177,7 @@ class HindsightBackend(Backend):
                          operation_ref=(response or {}).get("operation_id"))
 
     def recall(self, bank_id: str, query: str, *, tag_groups: tuple[TagGroup, ...],
-               limit: int) -> list[Hit]:
+               limit: int, timeout: float | None = None) -> list[Hit]:
         if limit <= 0:
             return []
         translated = [_translate_tag_group(g) for g in tag_groups]
@@ -187,7 +187,8 @@ class HindsightBackend(Backend):
         }
         if translated:
             body["tag_groups"] = translated
-        response = self._read("POST", f"{_bank(bank_id)}/memories/recall", body)
+        response = self._read("POST", f"{_bank(bank_id)}/memories/recall", body,
+                              timeout=httpx.Timeout(timeout) if timeout else None)
         hits: list[Hit] = []
         seen: set[str] = set()
         for raw in (response or {}).get("results") or []:

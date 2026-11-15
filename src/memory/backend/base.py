@@ -88,9 +88,10 @@ class Backend(ABC):
 
     @abstractmethod
     def recall(self, bank_id: str, query: str, *, tag_groups: tuple[TagGroup, ...],
-               limit: int) -> list[Hit]:
+               limit: int, timeout: float | None = None) -> list[Hit]:
         """Ranked hits for `query` in `bank_id`, filtered by `tag_groups` (ANDed), capped at
-        `limit`. Never returns invalidated memories."""
+        `limit`. Never returns invalidated memories. `timeout` seconds, when given, bounds the
+        call instead of the adapter's default."""
 
     @abstractmethod
     def invalidate(self, bank_id: str, memory_id: str, *, reason: str | None) -> None:

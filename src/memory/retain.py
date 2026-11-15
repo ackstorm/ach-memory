@@ -5,6 +5,7 @@ adapter owns durability and search.
 """
 
 import hashlib
+import logging
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -15,12 +16,18 @@ from sqlalchemy.orm import Session
 from memory import audit, catalog, families
 from memory.auth.principal import Principal
 from memory.backend.base import Backend
-from memory.bank_ref import lock_bank, resolve_bank
+from memory.bank_ref import LogicalBankRef, lock_bank, resolve_bank
 from memory.config import get_settings
 from memory.errors import InvalidRequest
 from memory.models import Project
 from memory.sanitization import normalize_claim
 from memory.tags import SCHEMA_TAG, Basis, MemoryType, basis_tag, normalize_caller_tags, type_tag
+
+logger = logging.getLogger(__name__)
+SIMILAR_MAX = 3
+SIMILAR_EXCERPT_CHARS = 200
+#: A slower recall drops `similar` from the response; it never fails or holds up a retain longer.
+SIMILAR_TIMEOUT_SECONDS = 3.0
 
 
 class RetainRequest(BaseModel):
@@ -43,6 +50,15 @@ class RetainRequest(BaseModel):
         return normalize_caller_tags(value)
 
 
+class Similar(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    memory_id: str
+    title: str | None
+    memory_type: str
+    pinned: bool
+    excerpt: str
+
+
 class RetainResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     memory_id: str
@@ -50,6 +66,9 @@ class RetainResponse(BaseModel):
     status: Literal["completed", "pending", "unknown", "replayed"]
     notice: str | None = None
     operation_ref: str | None = None
+    #: The closest other valid memories in the same bank, for the agent to judge; None when the
+    #: search failed or was slow.
+    similar: list[Similar] | None = None
 
 
 def submit(
@@ -91,6 +110,7 @@ def submit(
     )
     catalog.add(db, ref, memory_id, title=title, family=family, pinned=request.pin,
                 memory_type=request.memory_type, chars=len(content))
+    similar = _similar(db, backend, ref, memory_id, f"{title}\n{content}")
 
     audit.record(
         db, principal=principal, action="memory.retain", resource=memory_id,
@@ -107,11 +127,31 @@ def submit(
             "title": title,
             "family": family,
             "pinned": request.pin,
+            "similar": None if similar is None else [s.memory_id for s in similar],
         },
     )
     if ref.scope == "project":
         families.maybe_draft(db, principal, ref.owner_id)
     return RetainResponse(
         memory_id=memory_id, operation_id=request.operation_id,
-        status=ack.status, notice=notice, operation_ref=ack.operation_ref,
+        status=ack.status, notice=notice, operation_ref=ack.operation_ref, similar=similar,
     )
+
+
+def _similar(db: Session, backend: Backend, ref: LogicalBankRef, memory_id: str,
+             query: str) -> list[Similar] | None:
+    """The top other valid memories for the new claim, with no score floor: nothing in the
+    score separates a related memory from an unrelated one, so the agent judges."""
+    try:
+        hits = backend.recall(ref.bank_id, query, tag_groups=(), limit=SIMILAR_MAX + 1,
+                              timeout=SIMILAR_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 -- a failed search must never fail the retain
+        logger.warning("similar search failed: %s", type(exc).__name__)
+        return None
+    rows = catalog.by_ids(db, [hit.memory_id for hit in hits])
+    return [
+        Similar(memory_id=hit.memory_id, title=row.title, memory_type=row.memory_type,
+                pinned=row.pinned, excerpt=hit.text[:SIMILAR_EXCERPT_CHARS])
+        for hit in hits
+        if hit.memory_id != memory_id and (row := rows.get(hit.memory_id)) and row.state == "valid"
+    ][:SIMILAR_MAX]
