@@ -32,6 +32,17 @@ retrieval scores the query against them directly: the same question asked in Spa
 below the relevance floor and comes back empty, where its English form ranks the right claim
 first. Translate the question, not the answer.
 
+## Where a claim belongs
+
+- A table or inventory (hosts, namespaces, ports, accounts) belongs in a file in the repository;
+  memory keeps at most a pointer to it.
+- A procedure belongs in AGENTS.md or a skill. When you write one for a recurring task, name the
+  memory family to list before starting it.
+- A gotcha that the code, a comment or a test already shows is not stored.
+- When a remembered trap is fixed at its source, forget it.
+- What stays in memory: decisions and the alternatives they rejected, conventions where several
+  ways would work, facts about things outside the repository, and what a person asked for.
+
 ## Retain one claim per call
 
 Call `retain` when the user explicitly establishes durable information, or when you preserve the
@@ -72,6 +83,18 @@ pin past it is refused with the list of what is pinned: unpin the least importan
 above, or shorten something. Decide it yourself; do not ask the user.
 Unpin what stopped applying with `pin` and `pinned: false`.
 
+The response's `similar` lists up to three other memories in the same bank closest to the new
+one: id, title, type, pin and the first 200 characters. Nothing filters them by score, so judge
+each one and act without asking the user:
+
+- the same claim: forget the newer one, or the older one if the new text is better;
+- the new one replaces it: forget the old one, with the reason;
+- the same subject, and the new one adds detail: `correct` the old one to include it, then
+  forget the new one;
+- anything else: nothing.
+
+`similar` is missing when the search failed or was slow; the claim is stored either way.
+
 The response's `memory_id` is the handle for `correct`, `forget`, `restore`, `delete_memory`,
 `pin`, `get_memory` and `history`. Those tools infer `scope` from the id, so a `recall` hit is enough to
 act on it: leave `scope` out unless you know it.
@@ -81,9 +104,17 @@ act on it: leave `scope` out unless you know it.
 - `project`: repository-specific decisions, constraints, conventions, facts and gotchas.
 - `user`: explicitly personal facts or preferences stable across projects.
 - If ownership is ambiguous, ask or abstain -- never use `user` as a fallback for project uncertainty.
-- `project_slug` is filled by the proxy from the current repository's `origin` remote (or
-  `MEMORY_PROJECT`); pass it yourself only to address another repository. In a directory with
-  no remote, project memory has no home: ask which project before inventing a slug.
+- `project_slug` is filled by the proxy from `MEMORY_PROJECT`, else the current repository's
+  `origin` remote, else an `.ach-memory` marker in the folder or one above it; pass it yourself
+  only to address another project.
+- In a folder with no remote and no marker, call `list_projects`, ask the user which project this
+  is (suggest the folder name when none fits), then write the marker: a file named `.ach-memory`
+  at the root of the folder with one line, `project = "<slug>"` (or run `ach-memory project init
+  <slug>` there). Never invent a slug silently. The proxy reads the marker when it starts: ask the
+  user to reconnect ach-memory (`/mcp` in Claude Code) or restart the host before project memory
+  works there.
+- A host with no folder has no project: name it in each call with `project_slug`, picked from
+  `list_projects`.
 
 ## Correct, forget, restore, delete
 
