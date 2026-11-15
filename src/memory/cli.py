@@ -1,5 +1,5 @@
 """CLI: `ach-memory mcp`, `ach-memory context load`, `ach-memory families [set ...]`,
-`ach-memory hook <pre-compact|idle-nudge>`.
+`ach-memory project init <name>`, `ach-memory hook <pre-compact|idle-nudge>`.
 
 Installing is the host's own job -- `claude plugin install`, `codex plugin add`,
 `opencode plugin`, `pi install`; see docs/hosts.md.
@@ -10,11 +10,14 @@ import asyncio
 import os
 import sys
 
+from memory.errors import InvalidRequest
 from memory.mcp import proxy
+from memory.slugs import normalize_slug
 
 _NO_PROJECT_NOTICE = (
-    "No project context: this directory has no git origin. Pass project_slug or set "
-    "MEMORY_PROJECT to retain project memory."
+    "No project context: this folder has no git origin and no .ach-memory marker. Call "
+    "list_projects, ask the user which project this is (suggest the folder name when none fits), "
+    "then write the marker as the ach-memory skill says. Never invent a slug silently."
 )
 
 _PRE_COMPACT_NUDGE = (
@@ -51,6 +54,11 @@ def _parser() -> argparse.ArgumentParser:
     set_cmd.add_argument("names", nargs="+", metavar="FAMILY")
     set_cmd.add_argument("--rename", action="append", default=[], metavar="OLD=NEW",
                          help="move OLD's memories to NEW (repeatable)")
+
+    project = commands.add_parser("project", help="name the project of a folder with no git origin")
+    project_sub = project.add_subparsers(dest="project_command", required=True)
+    init = project_sub.add_parser("init", help=f"write {proxy.MARKER} here")
+    init.add_argument("name")
 
     hook = commands.add_parser("hook", help="host lifecycle nudges")
     hook_sub = hook.add_subparsers(dest="hook_command", required=True)
@@ -100,6 +108,26 @@ def _families(args: argparse.Namespace) -> int:
     return 0
 
 
+def _project_init(name: str) -> int:
+    """Write the marker in the current folder; refused where a git origin or a marker (here or
+    above) already names the project, so it never splits one that has memory."""
+    if proxy._origin_url(None):
+        print("ach-memory: this folder has a git origin, which names its project", file=sys.stderr)
+        return 1
+    if (marker := proxy.find_marker()) is not None:
+        print(f"ach-memory: {marker} already names this folder's project", file=sys.stderr)
+        return 1
+    try:
+        slug = normalize_slug(name)
+    except InvalidRequest as exc:
+        print(f"ach-memory: {exc.message}", file=sys.stderr)
+        return 1
+    with open(proxy.MARKER, "x", encoding="utf-8") as marker_file:
+        marker_file.write(f'project = "{slug}"\n')
+    print(f"{proxy.MARKER}: project = {slug}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -118,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "families":
         return _families(args)
+
+    if args.command == "project" and args.project_command == "init":
+        return _project_init(args.name)
 
     if args.command == "hook" and args.hook_command == "pre-compact":
         print(_PRE_COMPACT_NUDGE)

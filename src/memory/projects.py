@@ -18,7 +18,9 @@ class Resolved:
     notice: str | None
 
 
-def _authorized(principal: Principal, project: Project) -> bool:
+def authorized(principal: Principal, project: Project) -> bool:
+    """Whether `principal` may read and write `project`: its owner, a member of its owning
+    group, or an operator."""
     if principal.is_operator:
         return True
     if project.owner_type == "user":
@@ -59,7 +61,7 @@ def resolve(db: Session, principal: Principal, slug: str, *, create: bool) -> Re
             return Resolved(_create(db, principal, slug), notice="PROJECT_CREATED")
 
     project = db.get(Project, mapping.project_internal_id)
-    if not _authorized(principal, project):
+    if not authorized(principal, project):
         raise Forbidden()
     notice = None if mapping.is_canonical else "PROJECT_RENAMED"
     return Resolved(project, notice=notice)
@@ -75,7 +77,7 @@ def rename(db: Session, principal: Principal, project: Project, new_slug: str) -
     project's retains into this bank. Renaming back to one of this project's own
     retired slugs is allowed and just flips the tombstone.
     """
-    if not _authorized(principal, project):
+    if not authorized(principal, project):
         raise Forbidden()
     new_slug = normalize_slug(new_slug)
     current = db.scalars(

@@ -17,9 +17,11 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, ValidationError, model_serializer
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from memory import audit, catalog, projects
+from memory import context as standing_context
 from memory import families as family_list
 from memory.auth.principal import Principal, authenticate
 from memory.backend import get_backend
@@ -34,6 +36,7 @@ from memory.curation import pin as do_pin
 from memory.curation import restore as do_restore
 from memory.db import session_scope
 from memory.errors import DomainError
+from memory.models import Memory, Project, ProjectSlug
 from memory.read import GetRequest, HistoryRequest, ListRequest, RecallRequest, ReflectRequest
 from memory.read import get_memory as do_get_memory
 from memory.read import history as do_history
@@ -131,6 +134,40 @@ def _read(ctx: Context, tool: str, call: Callable[[Principal, Session], BaseMode
         return _result(response)
 
 
+#: A listed project's purpose is cut to about its first sentence.
+LISTED_PURPOSE_CHARS = 200
+
+
+class ProjectSummary(BaseModel):
+    project_slug: str
+    purpose: str | None
+    memories: int
+
+
+class ProjectsResponse(BaseModel):
+    items: list[ProjectSummary]
+
+
+def list_readable_projects(db: Session, principal: Principal) -> ProjectsResponse:
+    """Every project the caller may read, by slug, with its purpose and valid memory count.
+    ponytail: one engine read per project for the purpose; cache it if the list grows past ~100."""
+    counts = dict(db.execute(select(Memory.owner_id, func.count()).where(Memory.state == "valid")
+                             .group_by(Memory.owner_id)).all())
+    slugs = dict(db.execute(select(ProjectSlug.project_internal_id, ProjectSlug.slug)
+                            .where(ProjectSlug.is_canonical.is_(True))).all())
+    backend = get_backend()
+    items = []
+    for project in db.scalars(select(Project)):
+        if not projects.authorized(principal, project) or project.internal_id not in slugs:
+            continue
+        purpose = standing_context.read_purpose(backend, project.bank_id)
+        items.append(ProjectSummary(
+            project_slug=slugs[project.internal_id],
+            purpose=standing_context.shorten(purpose, LISTED_PURPOSE_CHARS) if purpose else None,
+            memories=counts.get(project.internal_id, 0)))
+    return ProjectsResponse(items=sorted(items, key=lambda item: item.project_slug))
+
+
 # forget/restore/delete_memory share one request shape and one call pattern;
 # only the service function, description and annotations differ.
 _CURATION: tuple[tuple[str, Callable, str, ToolAnnotations | None], ...] = (
@@ -196,7 +233,10 @@ def register(mcp: MCPServer) -> None:
             "generate; reuse it verbatim to retry the same claim safely. The response `memory_id` "
             "is the stable handle for forget, correct, restore, delete_memory, pin, get_memory "
             "and history, which infer `scope` from it when you leave it out. `wait=true` blocks "
-            "until the claim is searchable; leave false to return immediately."
+            "until the claim is searchable; leave false to return immediately. `similar` lists up "
+            "to 3 other memories closest to the new one, unfiltered: if one is the same claim, is "
+            "replaced by the new one, or covers the same subject with less detail, keep one (the "
+            "ach-memory skill says how) without asking the user."
         ),
     )
     def retain(
@@ -466,6 +506,19 @@ def register(mcp: MCPServer) -> None:
         with tool_session(ctx) as (principal, db):
             ref, _ = resolve_bank(db, principal, scope, project_slug, create=False)
             return ToolResult(result=get_backend().get_operation(ref.bank_id, operation_ref))
+
+    @mcp.tool(
+        description=(
+            "List the projects you can read: slug, purpose and how many memories each holds. "
+            "Use it where no project is set (a folder with no git remote and no `.ach-memory` "
+            "marker, or a host with no folder) to find the project to name, and before starting "
+            "a new project, so you offer an existing one instead of a near-duplicate."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True),
+    )
+    def list_projects(ctx: Context) -> ToolResult:
+        return _read(ctx, "list_projects", lambda p, db: list_readable_projects(db, p),
+                     scope=None, project_slug=None, results=lambda r: len(r.items))
 
     @mcp.tool(
         description=(

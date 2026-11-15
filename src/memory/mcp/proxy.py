@@ -9,6 +9,7 @@ the remote unchanged; the `mcp` SDK owns the protocol.
 import os
 import subprocess
 import time
+import tomllib
 from pathlib import Path
 
 import httpx2
@@ -20,7 +21,10 @@ from mcp.server.stdio import stdio_server
 from mcp.shared.exceptions import MCPError
 
 from memory.errors import InvalidRequest
-from memory.slugs import collapse_slug, repo_spellings, slug_from_locator
+from memory.slugs import collapse_slug, normalize_slug, repo_spellings, slug_from_locator
+
+#: Names the project of a folder with no git origin: one line, `project = "<slug>"`.
+MARKER = ".ach-memory"
 
 
 def api_key() -> str:
@@ -93,14 +97,42 @@ def _origin_url(cwd: str | None) -> str:
     return result.stdout.strip()
 
 
+def find_marker(cwd: str | None = None) -> Path | None:
+    """The nearest `.ach-memory` from `cwd` upwards, the way git finds `.git`. The home
+    directory and what is above it are not searched, so one file there cannot claim every
+    folder under it."""
+    start = Path(cwd or os.getcwd()).resolve()
+    home = Path.home().resolve()
+    for folder in (start, *start.parents):
+        if folder == home:
+            return None
+        if (folder / MARKER).is_file():
+            return folder / MARKER
+    return None
+
+
+def marker_slug(cwd: str | None = None) -> str | None:
+    """The slug the nearest marker names; None without one, or when it cannot be read."""
+    marker = find_marker(cwd)
+    if marker is None:
+        return None
+    try:
+        value = tomllib.loads(marker.read_text()).get("project")
+        return normalize_slug(value) if isinstance(value, str) else None
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, InvalidRequest):
+        return None
+
+
 def resolve_project_context(cwd: str | None = None) -> str | None:
-    """MEMORY_PROJECT, else the repo's origin remote slugged; None outside a repo/origin."""
+    """MEMORY_PROJECT, else the repo's origin remote slugged, else the `.ach-memory` marker.
+    The marker counts only without an origin, so it can never split a repository that
+    already has memory; None when none of the three is there."""
     slug = os.environ.get("MEMORY_PROJECT")
     if slug:
         return slug
     locator = _origin_url(cwd)
     if not locator:
-        return None
+        return marker_slug(cwd)
     try:
         return slug_from_locator(locator)
     except InvalidRequest:
@@ -207,7 +239,7 @@ def retain_stamp(cwd: str | None = None) -> Path:
 #: package, so it knows them; tests/test_proxy.py pins this to the live registry.
 TOOL_NAMES = frozenset({
     "correct", "delete_memory", "forget", "get_memory", "get_operation", "history",
-    "list_families", "list_memories", "load_context", "pin", "recall", "reflect",
+    "list_families", "list_memories", "list_projects", "load_context", "pin", "recall", "reflect",
     "rename_project", "restore", "retain", "set_families",
 })
 
@@ -251,7 +283,7 @@ def _build_bridge(
 
     async def _call_tool(ctx, params):
         arguments = fill_arguments(params.name, params.arguments or {}, slug, spellings)
-        if not slug and params.name != "load_context":
+        if not slug and params.name not in ("load_context", "list_projects"):
             arguments["scope"] = "user"
         try:
             result = await session.call_tool(remote_names.get(params.name, params.name), arguments)

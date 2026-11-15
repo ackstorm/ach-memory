@@ -23,7 +23,8 @@ ach-memory mcp  ── HTTPS/MCP ──▶│  auth → scope → service     �
 
 `retain` · `recall` · `reflect` · `forget` · `restore` · `correct` ·
 `delete_memory` · `pin` · `list_memories` · `get_memory` · `history` ·
-`load_context` · `list_families` · `set_families` · `get_operation` · `rename_project`.
+`load_context` · `list_families` · `set_families` · `list_projects` · `get_operation` ·
+`rename_project`.
 A person edits a project's family list with `ach-memory families set <family>...
 [--rename old=new]`; `ach-memory families` shows it.
 One MCP endpoint (`/mcp/`), one health route (`/health`). No REST data plane.
@@ -31,8 +32,9 @@ One MCP endpoint (`/mcp/`), one health route (`/health`). No REST data plane.
 ## Install on a host
 
 Every host runs the same thing: a local stdio proxy (`ach-memory mcp`) that
-resolves the project from the checkout's git `origin` and forwards to the
-remote service. Per-host details in [`docs/hosts.md`](docs/hosts.md).
+resolves the project from the checkout's git `origin` (or, in a folder with no
+origin, from an `.ach-memory` marker that `ach-memory project init <name>`
+writes) and forwards to the remote service. Per-host details in [`docs/hosts.md`](docs/hosts.md).
 
 Prerequisites: [`uv`](https://docs.astral.sh/uv/) (the plugin starts the proxy
 with `uvx`) and the host CLI (`claude`, `codex`, `opencode` or `pi`).

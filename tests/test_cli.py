@@ -117,3 +117,29 @@ def test_main_context_load_project_flag_overrides_resolution(monkeypatch):
 
     cli.main(["context", "load", "--project", "explicit-slug"])
     assert seen["slug"] == "explicit-slug"
+
+
+def test_project_init_writes_the_marker_once(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli.proxy, "_origin_url", lambda cwd: "")
+
+    assert cli.main(["project", "init", "Design MD2"]) == 0
+    assert (tmp_path / ".ach-memory").read_text() == 'project = "design-md2"\n'
+    assert cli.proxy.resolve_project_context(str(tmp_path)) == "design-md2"
+
+    (tmp_path / "sub").mkdir()
+    monkeypatch.chdir(tmp_path / "sub")
+    assert cli.main(["project", "init", "other"]) == 1
+    assert "already names" in capsys.readouterr().err
+    assert not (tmp_path / "sub" / ".ach-memory").exists()
+
+
+def test_project_init_refuses_a_folder_with_a_git_origin_or_a_bad_name(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli.proxy, "_origin_url", lambda cwd: "git@github.com:acme/app.git")
+    assert cli.main(["project", "init", "app"]) == 1
+    assert "git origin" in capsys.readouterr().err
+
+    monkeypatch.setattr(cli.proxy, "_origin_url", lambda cwd: "")
+    assert cli.main(["project", "init", "!!"]) == 1
+    assert not (tmp_path / ".ach-memory").exists()

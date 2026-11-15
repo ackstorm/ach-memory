@@ -314,3 +314,35 @@ def test_rename_project_denies_a_caller_who_does_not_own_it():
             assert "FORBIDDEN" in _text(result)
 
     asyncio.run(scenario())
+
+
+def test_list_projects_shows_only_the_callers_projects_with_purpose_and_count():
+    async def scenario():
+        app = create_app()
+        mine, other = f"design-{uuid4().hex[:8]}", f"notes-{uuid4().hex[:8]}"
+        owner, stranger = f"sk-{uuid4().hex[:8]}", f"sk-{uuid4().hex[:8]}"
+
+        def claim(slug, content, tags=()):
+            return {"scope": "project", "title": "A title", "project_slug": slug, "content": content,
+                    "memory_type": "fact", "basis": "human_explicit", "operation_id": str(uuid4()),
+                    "tags": list(tags), "wait": True}
+
+        async with app.router.lifespan_context(app):
+            async with _session(app, _auth_headers(owner)) as session:
+                await session.call_tool("retain", claim(mine, "Design docs for the md2 site. More here.",
+                                                        ["purpose"]))
+                await session.call_tool("retain", claim(mine, "A second claim."))
+                await session.call_tool("retain", claim(other, "Notes."))
+                listed = await session.call_tool("list_projects", {})
+            async with _session(app, _auth_headers(stranger)) as session:
+                unseen = await session.call_tool("list_projects", {})
+                taken = await session.call_tool("retain", claim(mine, "Same name, other person."))
+
+        assert listed.structured_content["result"]["items"] == [
+            {"project_slug": mine, "purpose": "Design docs for the md2 site. More here.", "memories": 2},
+            {"project_slug": other, "purpose": None, "memories": 1},
+        ]
+        assert unseen.structured_content["result"]["items"] == []
+        assert taken.is_error and "FORBIDDEN" in _text(taken)
+
+    asyncio.run(scenario())

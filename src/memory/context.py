@@ -75,7 +75,7 @@ def load(
     if project_ref is None:
         return render(user=user)
     project = Bank(catalog.valid(db, project_ref.owner_id), catalog.pin_cap("project"), text_of(project_ref))
-    return render(user=user, project=project, purpose=_purpose(backend, project_ref.bank_id))
+    return render(user=user, project=project, purpose=read_purpose(backend, project_ref.bank_id))
 
 
 @dataclass
@@ -102,7 +102,7 @@ def render(*, user: Bank, project: Bank | None = None, purpose: str | None = Non
 
     project_pins, project_shown, project_cut = _pinned(project, "Pinned in this project")
     rows = project.rows
-    head = (f"### Project purpose\n{_short(purpose)}\n\n" if purpose else _NO_PURPOSE) + user_pins + (
+    head = (f"### Project purpose\n{shorten(purpose)}\n\n" if purpose else _NO_PURPOSE) + user_pins + (
         project_pins or _NOTHING_PINNED)
     totals = (
         f"{len(rows)} project memories"
@@ -121,16 +121,18 @@ def render(*, user: Bank, project: Bank | None = None, purpose: str | None = Non
     )
 
 
-def _purpose(backend: Backend, bank_id: str) -> str | None:
+def read_purpose(backend: Backend, bank_id: str) -> str | None:
+    """The newest `purpose`-tagged memory's text, None when there is none."""
     page = backend.list(bank_id, tag_groups=({"tags": [PURPOSE_TAG], "match": "any"},),
                         state=None, limit=1, offset=0)
     return page.items[0].text if page.items else None
 
 
-def _short(purpose: str) -> str:
-    if len(purpose) <= PURPOSE_CHARS:
+def shorten(purpose: str, limit: int = PURPOSE_CHARS) -> str:
+    """`purpose` within `limit` chars, cut at its last sentence end, else at a word."""
+    if len(purpose) <= limit:
         return purpose
-    head = purpose[: PURPOSE_CHARS + 1]
+    head = purpose[: limit + 1]
     end = max(head.rfind(". "), head.rfind(".\n"), head.rfind("! "), head.rfind("? "))
     return head[: end + 1] if end > 0 else head[: head.rfind(" ")] + "…"
 
