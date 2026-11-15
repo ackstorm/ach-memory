@@ -86,6 +86,18 @@ async def check_recall(t, s) -> None:
     items = unwrap(await s.call_tool("recall", proj(t, query="which tool manages python dependencies?")))["items"]
     assert t["project_memory_id"] in {i["memory_id"] for i in items}, items
     assert all("score" in i for i in items), items
+async def check_retain_similar(t, s) -> None:
+    args = retain_args("project", "This smoke-test project manages Python dependencies with uv.",
+                       project=t["project"], memory_type="convention")
+    body = unwrap(await s.call_tool("retain", args))
+    t["created"].append(("project", t["project"], body["memory_id"]))
+    similar = body.get("similar")
+    assert isinstance(similar, list), f"no similar (search failed or slow): {body}"
+    assert t["project_memory_id"] in {m["memory_id"] for m in similar}, similar
+async def check_list_projects(t, s) -> None:
+    items = unwrap(await s.call_tool("list_projects", {}))["items"]
+    mine = [i for i in items if i["project_slug"] == t["project"]]
+    assert mine and mine[0]["memories"] >= 2, items
 async def check_list_get_history(t, s) -> None:
     mid = t["project_memory_id"]
     listing = unwrap(await s.call_tool("list_memories", proj(t)))
@@ -165,7 +177,8 @@ async def cleanup(t, s) -> None:
 CHECKS = [
     ("tools/list", check_tools), ("retain(project)", check_retain_project),
     ("retain(replay)", check_retain_replay), ("retain(user)", check_retain_user),
-    ("recall", check_recall), ("list/get/history", check_list_get_history),
+    ("recall", check_recall), ("retain(similar)", check_retain_similar),
+    ("list_projects", check_list_projects), ("list/get/history", check_list_get_history),
     ("correct", check_correct), ("forget/restore", check_forget_restore),
     ("reflect", check_reflect), ("load_context", check_load_context),
     ("secret rejection", check_secret_rejection),
