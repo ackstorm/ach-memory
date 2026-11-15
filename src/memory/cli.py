@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 from memory.errors import InvalidRequest
 from memory.mcp import proxy
@@ -114,8 +115,12 @@ def _project_init(name: str) -> int:
     if proxy._origin_url(None):
         print("ach-memory: this folder has a git origin, which names its project", file=sys.stderr)
         return 1
-    if (marker := proxy.find_marker()) is not None:
-        print(f"ach-memory: {marker} already names this folder's project", file=sys.stderr)
+    if (marker := proxy.find_marker()) is not None or os.path.lexists(proxy.MARKER):
+        print(f"ach-memory: {marker or proxy.MARKER} already names this folder's project", file=sys.stderr)
+        return 1
+    if Path.cwd().resolve() in (Path.home().resolve(), Path("/")):
+        print("ach-memory: the home folder and / cannot be a project; run it in the project's folder",
+              file=sys.stderr)
         return 1
     try:
         slug = normalize_slug(name)

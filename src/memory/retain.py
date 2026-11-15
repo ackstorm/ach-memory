@@ -6,6 +6,7 @@ adapter owns durability and search.
 
 import hashlib
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -28,6 +29,10 @@ SIMILAR_MAX = 3
 SIMILAR_EXCERPT_CHARS = 200
 #: A slower recall drops `similar` from the response; it never fails or holds up a retain longer.
 SIMILAR_TIMEOUT_SECONDS = 3.0
+# httpx bounds each phase of a request, not the whole; the pool bounds the whole.
+# ponytail: a recall past the deadline keeps its worker until httpx gives up; more workers if
+# slow searches ever queue behind each other.
+_similar_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="similar")
 
 
 class RetainRequest(BaseModel):
@@ -97,12 +102,14 @@ def submit(
         family = families.resolve(db.get(Project, ref.owner_id).families, request.family)
     else:
         family = families.normalize(request.family) if request.family else None
+    memory_id = f"mem_{uuid4().hex}"
+    # Before the bank lock a pin takes: a slow search must not hold up other writes to the bank.
+    similar = _similar(db, backend, ref, memory_id, f"{title}\n{content}")
     if request.pin:
         lock_bank(db, ref.bank_id)
         catalog.check_pin_cap(db, ref, len(content))
     backend.provision(ref.bank_id)
 
-    memory_id = f"mem_{uuid4().hex}"
     tags = (type_tag(request.memory_type), basis_tag(request.basis), SCHEMA_TAG, *request.tags)
     ack = backend.retain(
         ref.bank_id, memory_id, content,
@@ -110,7 +117,6 @@ def submit(
     )
     catalog.add(db, ref, memory_id, title=title, family=family, pinned=request.pin,
                 memory_type=request.memory_type, chars=len(content))
-    similar = _similar(db, backend, ref, memory_id, f"{title}\n{content}")
 
     audit.record(
         db, principal=principal, action="memory.retain", resource=memory_id,
@@ -143,8 +149,10 @@ def _similar(db: Session, backend: Backend, ref: LogicalBankRef, memory_id: str,
     """The top other valid memories for the new claim, with no score floor: nothing in the
     score separates a related memory from an unrelated one, so the agent judges."""
     try:
-        hits = backend.recall(ref.bank_id, query, tag_groups=(), limit=SIMILAR_MAX + 1,
-                              timeout=SIMILAR_TIMEOUT_SECONDS)
+        hits = _similar_pool.submit(
+            backend.recall, ref.bank_id, query, tag_groups=(), limit=SIMILAR_MAX + 1,
+            timeout=SIMILAR_TIMEOUT_SECONDS,
+        ).result(timeout=SIMILAR_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 -- a failed search must never fail the retain
         logger.warning("similar search failed: %s", type(exc).__name__)
         return None

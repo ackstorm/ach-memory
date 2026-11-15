@@ -192,3 +192,15 @@ def test_the_similar_effect_query_counts_a_forget_of_a_returned_id(db, principal
     db.flush()
 
     assert tuple(a - b for a, b in zip(counts(), before, strict=True)) == (2, 1, 1, 1)
+
+
+def test_a_search_past_the_deadline_returns_the_retain_without_similar(db, principal, backend, monkeypatch):
+    import time
+
+    monkeypatch.setattr(retain, "SIMILAR_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(backend, "recall", lambda *a, **kw: time.sleep(0.5) or [])
+    started = time.perf_counter()
+
+    result = _claim(principal, db, backend, "A title", "Some durable claim.")
+
+    assert result.similar is None and time.perf_counter() - started < 0.4

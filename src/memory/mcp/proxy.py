@@ -98,13 +98,13 @@ def _origin_url(cwd: str | None) -> str:
 
 
 def find_marker(cwd: str | None = None) -> Path | None:
-    """The nearest `.ach-memory` from `cwd` upwards, the way git finds `.git`. The home
-    directory and what is above it are not searched, so one file there cannot claim every
-    folder under it."""
+    """The nearest `.ach-memory` from `cwd` upwards, the way git finds `.git`. The search
+    stops below the home directory, or below `/` outside it, so one file there cannot claim
+    every folder under it."""
     start = Path(cwd or os.getcwd()).resolve()
     home = Path.home().resolve()
     for folder in (start, *start.parents):
-        if folder == home:
+        if folder == home or folder == folder.parent:
             return None
         if (folder / MARKER).is_file():
             return folder / MARKER

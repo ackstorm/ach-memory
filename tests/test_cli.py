@@ -143,3 +143,16 @@ def test_project_init_refuses_a_folder_with_a_git_origin_or_a_bad_name(tmp_path,
     monkeypatch.setattr(cli.proxy, "_origin_url", lambda cwd: "")
     assert cli.main(["project", "init", "!!"]) == 1
     assert not (tmp_path / ".ach-memory").exists()
+
+
+def test_project_init_refuses_the_home_folder_and_a_marker_directory(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli.proxy, "_origin_url", lambda cwd: "")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["project", "init", "notes"]) == 1
+    assert "home folder" in capsys.readouterr().err
+
+    (tmp_path / "work" / ".ach-memory").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path / "work")
+    assert cli.main(["project", "init", "notes"]) == 1
+    assert not (tmp_path / ".ach-memory").exists()

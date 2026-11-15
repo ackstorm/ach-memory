@@ -160,7 +160,10 @@ def list_readable_projects(db: Session, principal: Principal) -> ProjectsRespons
     for project in db.scalars(select(Project)):
         if not projects.authorized(principal, project) or project.internal_id not in slugs:
             continue
-        purpose = standing_context.read_purpose(backend, project.bank_id)
+        try:
+            purpose = standing_context.read_purpose(backend, project.bank_id)
+        except DomainError:  # one unreadable bank must not hide the rest of the list
+            purpose = None
         items.append(ProjectSummary(
             project_slug=slugs[project.internal_id],
             purpose=standing_context.shorten(purpose, LISTED_PURPOSE_CHARS) if purpose else None,
