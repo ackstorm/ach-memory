@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 _STATE_TO_BACKEND = {"valid": "valid", "invalid": "invalidated"}
 #: How many of recall's first hits the decision model scores.
 RELEVANCE_TOP = 10
+#: A slower scoring is dropped and recall answers without relevance.
+RELEVANCE_TIMEOUT_SECONDS = 2.0
 NOTHING_CLEAR = ("No memory clearly answers this query. The hits below are only the nearest: "
                  "check one before relying on it.")
 _STATE_FROM_BACKEND = {"valid": "valid", "invalidated": "invalid"}
@@ -167,7 +169,8 @@ def _with_relevance(query: str, items: tuple[RecallHit, ...]) -> tuple[tuple[Rec
     text = f"Query from a coding agent searching its project's memory:\n{query}\n\nMemories:\n{listing}"
     questions = [f"Does memory [{n}] help answer the query?" for n in range(1, len(head) + 1)]
     try:
-        probs = llm.within(settings.recall_relevance_timeout_seconds, llm.decide, settings, text, questions)
+        probs = llm.within(RELEVANCE_TIMEOUT_SECONDS, llm.decide, settings, text, questions,
+                           timeout=RELEVANCE_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 -- relevance is advisory; recall answers without it
         logger.warning("recall relevance failed: %s", type(exc).__name__)
         return items, None

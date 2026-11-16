@@ -77,7 +77,6 @@ else does not get written.
 - Dedup: idempotency covers the same `operation_id` only; N retains of the
   same text under N ids are N memories (probe `dup_bill`). Hindsight recall
   copes; no ACH dedup was worth its lines.
-- Only read-side shaping that earned its place: a semantic-score floor.
 
 ## What the 2026-11 redesign evaluation measured
 

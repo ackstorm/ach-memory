@@ -187,7 +187,7 @@ def test_recall_keeps_the_engine_order_not_the_semantic_score(db, principal, bac
 def _decide(probs):
     calls = []
 
-    def fake(settings, text, questions):
+    def fake(settings, text, questions, timeout):
         calls.append((text, questions))
         if isinstance(probs, Exception):
             raise probs
@@ -237,8 +237,8 @@ def test_recall_answers_without_relevance_when_the_model_fails_or_is_slow(db, pr
     _seed(db, principal, backend, "deploy step")
     if failure == "slow":
         import time
-        monkeypatch.setattr(read.get_settings(), "recall_relevance_timeout_seconds", 0.05)
-        monkeypatch.setattr(read.llm, "decide", lambda *a: time.sleep(0.5) or [0.9])
+        monkeypatch.setattr(read, "RELEVANCE_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(read.llm, "decide", lambda *a, **kw: time.sleep(0.5) or [0.9])
     else:
         decision(failure)
 

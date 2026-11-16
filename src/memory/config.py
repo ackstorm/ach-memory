@@ -84,8 +84,6 @@ class Settings(BaseSettings):
     llm_decision_model: str = ""
     # The best relevance under this makes recall say first that no memory clearly answers.
     recall_relevance_note_below: float = Field(default=0.6, ge=0, le=1)
-    # A slower scoring is dropped and recall answers without relevance.
-    recall_relevance_timeout_seconds: float = Field(default=2.0, gt=0)
 
     @field_validator("database_url")
     @classmethod

@@ -16,14 +16,19 @@ def configured(settings: Settings) -> bool:
 
 
 # httpx bounds each phase of a request, not the whole; a worker with a deadline bounds the whole.
-# ponytail: a call past its deadline keeps its worker until httpx gives up; more workers if slow
-# calls ever queue behind each other.
+# A call past its deadline keeps its worker until httpx gives up, so callers pass httpx a timeout
+# near the deadline. ponytail: more workers if slow calls ever queue behind each other.
 _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="deadline")
 
 
 def within[T](seconds: float, call: Callable[..., T], *args, **kwargs) -> T:
     """`call(*args, **kwargs)`, or TimeoutError once `seconds` have passed."""
-    return _pool.submit(call, *args, **kwargs).result(timeout=seconds)
+    future = _pool.submit(call, *args, **kwargs)
+    try:
+        return future.result(timeout=seconds)
+    except TimeoutError:
+        future.cancel()
+        raise
 
 
 def _headers(settings: Settings) -> dict[str, str]:
@@ -32,13 +37,13 @@ def _headers(settings: Settings) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"} if header.lower() == "authorization" else {header: key}
 
 
-def decide(settings: Settings, text: str, questions: list[str]) -> list[float]:
+def decide(settings: Settings, text: str, questions: list[str], timeout: float) -> list[float]:
     """The probability that each yes/no question holds of `text`, in order: one request to the
     gateway's Decisions endpoint (`MEMORY_LLM_DECISION_MODEL`). Raises on any failure."""
     response = httpx.post(
         f"{settings.llm_url.rstrip('/')}/decisions",
         headers=_headers(settings),
-        timeout=settings.llm_timeout_seconds,
+        timeout=timeout,
         json={"model": settings.llm_decision_model, "input": text,
               "questions": [{"type": "predicate", "name": f"q{i}", "instructions": q}
                             for i, q in enumerate(questions)]},

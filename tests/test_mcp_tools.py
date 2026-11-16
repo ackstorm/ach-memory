@@ -183,7 +183,7 @@ def test_a_pinned_memory_reaches_session_start_and_reads_are_logged(monkeypatch)
 
     monkeypatch.setattr(get_settings(), "llm_url", "http://gateway.test/v1")
     monkeypatch.setattr(get_settings(), "llm_decision_model", "ackstorm.decision")
-    monkeypatch.setattr(read.llm, "decide", lambda settings, text, questions: [0.42] * len(questions))
+    monkeypatch.setattr(read.llm, "decide", lambda settings, text, questions, timeout: [0.42] * len(questions))
 
     async def scenario():
         app = create_app()
