@@ -68,6 +68,8 @@ spec:
               value: {{ .model | quote }}
             - name: MEMORY_LLM_HEADER
               value: {{ .header | quote }}
+            - name: MEMORY_LLM_DECISION_MODEL
+              value: {{ .decisionModel | quote }}
             {{- if .apiKeySecret.name }}
             - name: MEMORY_LLM_API_KEY
               valueFrom:
