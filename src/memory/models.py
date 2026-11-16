@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy import (
     JSON,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -148,6 +149,8 @@ class ReadEvent(Base):
     query: Mapped[str | None] = mapped_column(Text, nullable=True)
     family: Mapped[str | None] = mapped_column(String(48), nullable=True)
     results: Mapped[int] = mapped_column(Integer)
+    #: A recall's best decision-model relevance; None when it was not scored.
+    relevance: Mapped[float | None] = mapped_column(Float, nullable=True)
     latency_ms: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True

@@ -14,10 +14,6 @@ config:
   databaseUrl: ""
   # MEMORY_MAX_CONTENT_BYTES.
   maxContentBytes: 256000
-  # MEMORY_RECALL_MIN_SEMANTIC. Cosine floor a recall hit must clear, calibrated
-  # on an English corpus. Move it only with a `scripts/probe-recall.py` run behind
-  # the new value; 0 disables the floor, which is how the probe reads raw scores.
-  recallMinSemantic: 0.60
 
   # MEMORY_PIN_CAP_PROJECT_CHARS / MEMORY_PIN_CAP_USER_CHARS. Pinned text delivered in full at
   # session start, per bank; a pin past the cap is refused.
@@ -25,11 +21,13 @@ config:
     project: 2500
     user: 2000
 
-  # MEMORY_LLM_*. OpenAI-compatible chat endpoint that drafts a project's family list when it
-  # first holds 30 memories. Empty url: nothing is drafted and families stay optional.
+  # MEMORY_LLM_*. The model gateway: `model` drafts a project's family list when it first holds
+  # 30 memories; `decisionModel` scores recall's first hits as `relevance` (empty: no scoring).
+  # Empty url: neither runs, and families stay optional.
   llm:
     url: ""
     model: "ackstorm.smart"
+    decisionModel: ""
     # Bearer on Authorization; any other header carries the bare key.
     header: "Authorization"
     apiKeySecret:

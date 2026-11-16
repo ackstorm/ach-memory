@@ -12,7 +12,7 @@ ach-memory is the system of record for durable context across sessions. Use it i
 
 Session start prints, in order: the project's purpose; your pinned memories in full; the
 project's pinned memories in full; an index of the project's memory, one line per family with
-its count and its three newest titles (below 30 memories, the plain list of titles); and one line
+its count and its newest titles, as many as fit (below 30 memories, the plain list of titles); and one line
 of totals. Pinned memories apply to every task. The index shows what exists, not what it says.
 
 ## Recall before depending on memory
@@ -27,10 +27,14 @@ preference or a project decision; name one scope only when you do. Use `reflect`
 synthesized answer is more useful than exact hits. Live tools, repository state and host
 policy override a remembered claim when they conflict. Do not narrate routine retrieval.
 
-Query in English whatever language the conversation uses. Claims are stored in English and
-retrieval scores the query against them directly: the same question asked in Spanish scores
-below the relevance floor and comes back empty, where its English form ranks the right claim
-first. Translate the question, not the answer.
+Query in English whatever language the conversation uses. Claims are stored in English, and an
+English query finds the right one more often: in the largest bank measured, among the first 5
+hits 9 times in 10, against 6 in 10 for the same question in Spanish. Translate the question,
+not the answer.
+
+The first hits carry `relevance`, the probability that each helps answer the query. When even
+the best is low, the answer starts with a `note` saying no memory clearly answers: the hits are
+then only the nearest memories. Do not build on one without checking it.
 
 ## Where a claim belongs
 

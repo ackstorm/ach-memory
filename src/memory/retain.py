@@ -6,7 +6,6 @@ adapter owns durability and search.
 
 import hashlib
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -14,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from memory import audit, catalog, families
+from memory import audit, catalog, families, llm
 from memory.auth.principal import Principal
 from memory.backend.base import Backend
 from memory.bank_ref import LogicalBankRef, lock_bank, resolve_bank
@@ -29,10 +28,6 @@ SIMILAR_MAX = 3
 SIMILAR_EXCERPT_CHARS = 200
 #: A slower recall drops `similar` from the response; it never fails or holds up a retain longer.
 SIMILAR_TIMEOUT_SECONDS = 3.0
-# httpx bounds each phase of a request, not the whole; the pool bounds the whole.
-# ponytail: a recall past the deadline keeps its worker until httpx gives up; more workers if
-# slow searches ever queue behind each other.
-_similar_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="similar")
 
 
 class RetainRequest(BaseModel):
@@ -149,10 +144,8 @@ def _similar(db: Session, backend: Backend, ref: LogicalBankRef, memory_id: str,
     """The top other valid memories for the new claim, with no score floor: nothing in the
     score separates a related memory from an unrelated one, so the agent judges."""
     try:
-        hits = _similar_pool.submit(
-            backend.recall, ref.bank_id, query, tag_groups=(), limit=SIMILAR_MAX + 1,
-            timeout=SIMILAR_TIMEOUT_SECONDS,
-        ).result(timeout=SIMILAR_TIMEOUT_SECONDS)
+        hits = llm.within(SIMILAR_TIMEOUT_SECONDS, backend.recall, ref.bank_id, query, tag_groups=(),
+                          limit=SIMILAR_MAX + 1, timeout=SIMILAR_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 -- a failed search must never fail the retain
         logger.warning("similar search failed: %s", type(exc).__name__)
         return None

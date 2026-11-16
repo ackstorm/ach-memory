@@ -161,7 +161,8 @@ def _index(rows: list[Memory], room: int) -> tuple[str, bool]:
     """The index section within `room` chars, and whether anything was cut. Below THRESHOLD
     memories, the flat list of titles, cut from the bottom. From there, one line per family with
     a memory, its count and its newest unpinned titles (pinned ones are printed above): every
-    family line stays, and the sample titles go first, 3 per line, then 2, 1, none."""
+    family line stays. Each line shows the same number of titles, 3 to start; with room to spare
+    that number grows by one while the whole still fits, and without room it falls to 2, 1, none."""
     if not rows:
         return "", False
     if len(rows) < THRESHOLD:
@@ -174,10 +175,17 @@ def _index(rows: list[Memory], room: int) -> tuple[str, bool]:
     counts = Counter(row.family or OTHER for row in rows)
     order = sorted(counts, key=lambda f: (f == OTHER, -counts[f], f))
     samples = {f: [r.title for r in rows if (r.family or OTHER) == f and r.title and not r.pinned] for f in order}
-    for n in range(TITLES_PER_FAMILY, -1, -1):
-        lines = [f"- {f} ({counts[f]})" + (": " + "; ".join(samples[f][:n]) if n and samples[f] else "") + "\n"
-                 for f in order]
-        text = _INDEX_HEAD + "".join(lines) + "\n"
-        if len(text) <= room:
-            break
-    return text, n < TITLES_PER_FAMILY
+
+    def text(n: int) -> str:
+        return _INDEX_HEAD + "".join(
+            f"- {f} ({counts[f]})" + (": " + "; ".join(samples[f][:n]) if n and samples[f] else "") + "\n"
+            for f in order) + "\n"
+
+    n, most = TITLES_PER_FAMILY, max(map(len, samples.values()))
+    if len(text(n)) <= room:
+        while n < most and len(text(n + 1)) <= room:
+            n += 1
+    else:
+        while n > 0 and len(text(n)) > room:
+            n -= 1
+    return text(n), n < TITLES_PER_FAMILY

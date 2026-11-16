@@ -122,14 +122,15 @@ def _result(response: BaseModel) -> ToolResult:
 
 def _read(ctx: Context, tool: str, call: Callable[[Principal, Session], BaseModel], *,
           scope: str | None, project_slug: str | None, results: Callable[[BaseModel], int],
-          query: str | None = None, family: str | None = None) -> ToolResult:
+          query: str | None = None, family: str | None = None,
+          relevance: Callable[[BaseModel], float | None] = lambda r: None) -> ToolResult:
     """Run one read and log it (`read_events`): who, project, tool, query or family, how many
     results, how long. Failed reads are not logged."""
     started = time.perf_counter()
     with tool_session(ctx) as (principal, db):
         response = call(principal, db)
         audit.log_read(db, principal=principal, tool=tool, scope=scope, project_slug=project_slug,
-                       query=query, family=family, results=results(response),
+                       query=query, family=family, results=results(response), relevance=relevance(response),
                        latency_ms=round((time.perf_counter() - started) * 1000))
         return _result(response)
 
@@ -274,14 +275,14 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Search memory and return bounded, grounded matching facts, most relevant first. "
-            "Results below a relevance floor are withheld rather than returned as padding, so "
-            "a query with no good answer returns nothing instead of a confident-looking list; "
-            "each hit carries the `score` it was ranked by. Filter with `memory_types`/`basis`. "
+            "Search memory and return matching facts, most relevant first. The first hits carry "
+            "`relevance`, the probability that each helps answer the query; when even the best "
+            "is low, `note` says so first: then the hits are only the nearest memories, not an "
+            "answer, so check one before relying on it. Filter with `memory_types`/`basis`. "
             "scope='all' searches your own memories and the project's together -- use it when "
             "you do not know which of the two holds the answer; scope='project' needs "
-            "`project_slug`. Query in English whatever language the conversation uses: a "
-            "translated query scores well above a Spanish one against the same claim."
+            "`project_slug`. Query in English whatever language the conversation uses: it finds "
+            "the right memory more often than a Spanish one."
         ),
         annotations=ToolAnnotations(read_only_hint=True),
     )
@@ -304,7 +305,8 @@ def register(mcp: MCPServer) -> None:
         )
         return _read(ctx, "recall", lambda p, db: do_recall(db, p, request, backend=get_backend()),
                      scope=scope, project_slug=project_slug, query=query,
-                     results=lambda r: r.total)
+                     results=lambda r: r.total,
+                     relevance=lambda r: max((h.relevance for h in r.items if h.relevance is not None), default=None))
 
     @mcp.tool(
         description=(

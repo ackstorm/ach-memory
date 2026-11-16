@@ -61,9 +61,6 @@ class Settings(BaseSettings):
     auth_platform_user_field: str = ""
     auth_platform_groups_field: str = ""
 
-    # Cosine-similarity floor a recall hit must clear (see old config.py for
-    # the corpus measurement this default is pinned to).
-    recall_min_semantic: float = Field(default=0.60, ge=0, le=1)
     # Standing context plus hooks/activation.txt must stay under Claude Code's ~10,000-character
     # inline limit for SessionStart output; past it the agent sees a 2KB preview.
     # tests/test_plugins.py holds the sum under the limit.
@@ -82,6 +79,11 @@ class Settings(BaseSettings):
     # The draft runs inside the retain that reaches the threshold, with the project row locked:
     # a slow gateway must not hold that retain for long.
     llm_timeout_seconds: float = Field(default=20.0, gt=0)
+    # Decision model on the same gateway that scores recall's top hits as `relevance`. Empty: no
+    # relevance and no "nothing clear" note.
+    llm_decision_model: str = ""
+    # The best relevance under this makes recall say first that no memory clearly answers.
+    recall_relevance_note_below: float = Field(default=0.6, ge=0, le=1)
 
     @field_validator("database_url")
     @classmethod

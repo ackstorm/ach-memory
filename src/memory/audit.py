@@ -52,6 +52,7 @@ def find_memory_retain(db: Session, memory_id: str) -> AuditEvent | None:
 def log_read(
     db: Session, *, principal: Principal, tool: str, scope: str | None, project_slug: str | None,
     results: int, latency_ms: int, query: str | None = None, family: str | None = None,
+    relevance: float | None = None,
 ) -> None:
     """One read (SPEC §7 `read_events`). A query shaped like a secret is not stored."""
     project_id = None
@@ -65,5 +66,5 @@ def log_read(
         id=f"rd_{uuid4().hex}", actor_user_id=principal.on_behalf_of or principal.user_id,
         project_internal_id=project_id, tool=tool, scope=scope,
         query="[withheld: looks like a secret]" if query and contains_secret(query) else query,
-        family=family, results=results, latency_ms=latency_ms,
+        family=family, results=results, relevance=relevance, latency_ms=latency_ms,
     ))
