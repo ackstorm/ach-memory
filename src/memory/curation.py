@@ -31,6 +31,7 @@ class CurationRequest(BaseModel):
 
 class CorrectRequest(CurationRequest):
     content: str = Field(min_length=1)
+    title: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class PinRequest(BaseModel):
@@ -99,9 +100,14 @@ def correct(db: Session, principal: Principal, request: CorrectRequest, *, backe
     if row is not None and row.pinned:
         catalog.check_pin_cap(db, ref, len(content), memory_id=request.memory_id)
     backend.retain(ref.bank_id, request.memory_id, content, tags=before.tags, metadata=before.metadata, wait=True)
+    extra = {"before": before.text, "after": content}
     if row is not None:
         row.chars = len(content)
-    _journal(db, principal, "memory.correct", request, ref, {"before": before.text, "after": content})
+        if request.title is not None:
+            title = " ".join(normalize_claim(request.title).split())
+            extra |= {"title_before": row.title, "title_after": title}
+            row.title = title
+    _journal(db, principal, "memory.correct", request, ref, extra)
     return CurationResponse(memory_id=request.memory_id, status="valid", notice=notice)
 
 

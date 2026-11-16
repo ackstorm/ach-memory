@@ -102,6 +102,18 @@ def run_hook(script: str, payload: str, tmp_path: Path, **env: str) -> str:
     ).stdout
 
 
+def test_session_start_says_when_no_context_was_loaded(tmp_path):
+    """The activation text announces the purpose, pins and index; without them the agent must hear why."""
+    unreachable = "ach-memory is not reachable in this session"
+    assert unreachable in run_hook("session-start.sh", "", tmp_path, ACH_MEMORY_API_KEY="", ACH_MEMORY_TOKEN_COMMAND="")
+    assert unreachable in run_hook("session-start.sh", "", tmp_path, ACH_MEMORY_API_KEY="k")  # uvx fails
+    (tmp_path / "uvx").write_text("#!/bin/sh\necho '### Project purpose'\n")
+    loaded = subprocess.run([str(ROOT / "hooks" / "scripts" / "session-start.sh")], capture_output=True, text=True,
+                            env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "ACH_MEMORY_API_KEY": "k"},
+                            check=True).stdout
+    assert "### Project purpose" in loaded and unreachable not in loaded
+
+
 def test_idle_nudge_fires_only_when_nothing_was_retained_and_once_per_window(tmp_path):
     """The proxy stamps retains under the same key; a fresh checkout starts the clock instead of nagging."""
     def idle(payload: str) -> str:

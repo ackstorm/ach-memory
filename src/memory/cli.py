@@ -69,13 +69,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _context_load(project: str | None) -> int:
-    """Print standing context text; any failure prints nothing so a hook never breaks a session."""
+    """Print standing context text. A failure prints nothing and exits 1: the hook says so."""
     url = os.environ.get("ACH_MEMORY_URL", "")
     slug = project or proxy.resolve_project_context()
     try:
         text = asyncio.run(proxy.call_load_context(url, slug))
-    except Exception:  # noqa: BLE001 -- fail open, must never break the session
-        return 0
+    except Exception:  # noqa: BLE001 -- no traceback in the hook's output
+        return 1
     if text:
         print(text)
     if slug is None:

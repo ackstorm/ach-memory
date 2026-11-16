@@ -339,7 +339,8 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool(
         description=(
             "Replace the text of a memory, keeping the same memory_id. The previous text is "
-            "kept in history. `reason` is recorded in the journal."
+            "kept in history. `reason` is recorded in the journal. Pass `title` too when the "
+            "old one no longer fits the new text: session start lists memories by title."
         ),
     )
     def correct(
@@ -349,10 +350,12 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         scope: Scope | None = None,
         project_slug: str | None = None,
+        title: str | None = None,
     ) -> ToolResult:
         with tool_session(ctx) as (principal, db):
             request = CorrectRequest(
-                scope=scope, project_slug=project_slug, memory_id=memory_id, content=content, reason=reason
+                scope=scope, project_slug=project_slug, memory_id=memory_id, content=content, reason=reason,
+                title=title,
             )
             return _result(do_correct(db, principal, request, backend=get_backend()))
 

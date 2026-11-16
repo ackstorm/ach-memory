@@ -55,7 +55,7 @@ Version: 0.1.0
 | `reflect` | optional (`synthesis`) | one synthesized answer over scoped memories | no |
 | `forget` | required | soft-invalidate one memory | yes |
 | `restore` | required | reverse a `forget` | yes |
-| `correct` | required | replace a memory's text, same memory id | yes (before/after) |
+| `correct` | required | replace a memory's text, and its title if given, same memory id | yes (before/after) |
 | `delete` | required | hard-erase one memory and anything derived from it | yes |
 | `list` | required | page memories, newest first, from ACH's own record: titles and ids, text on request; filter by family, type, pin, state; empty for a project nobody retained into | no |
 | `pin` | ACH-owned | pin or unpin one valid memory; refused past the bank's cap | yes |
@@ -180,7 +180,7 @@ session-start (standing context; Claude Code and Codex run it again after a comp
 | `reflect` | reflect | one synthesized answer; same `memory_types`/`basis` filter as recall |
 | `forget` | forget | soft-invalidate one memory |
 | `restore` | restore | reverse a forget |
-| `correct` | correct | replace a memory's text, same id |
+| `correct` | correct | replace a memory's text, and `title` if given, same id |
 | `delete_memory` | delete | hard-erase one memory |
 | `list_memories` | list | titles and ids, newest first; `family`, `memory_types`, `pinned`, `state`; `full=true` adds the text |
 | `get_memory` | get | fetch one memory by id |

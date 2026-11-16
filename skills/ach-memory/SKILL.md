@@ -122,8 +122,9 @@ act on it: leave `scope` out unless you know it.
 
 ## Correct, forget, restore, delete
 
-Use `correct` to replace a memory's text under the same `memory_id`. Use `forget` when a new claim
-supersedes the old one, followed by a fresh `retain`; use `restore` to undo a mistaken `forget`.
+Use `correct` to replace a memory's text under the same `memory_id`, and its `title` when the old
+one no longer fits. Use `forget` when a new claim supersedes the old one, followed by a fresh
+`retain`; use `restore` to undo a mistaken `forget`.
 Use `delete_memory` only to erase for good -- nothing brings it back. `history` shows who changed a
 memory and why, across every `forget`/`restore`/`correct`/`delete_memory`.
 
