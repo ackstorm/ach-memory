@@ -101,7 +101,7 @@ def test_main_context_load_fails_open_and_prints_nothing(monkeypatch, capsys):
     monkeypatch.setattr(cli.proxy, "call_load_context", fake_call_load_context)
     monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: None)
 
-    assert cli.main(["context", "load"]) == 0
+    assert cli.main(["context", "load"]) == 1
     assert capsys.readouterr().out == ""
 
 
