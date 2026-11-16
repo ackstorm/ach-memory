@@ -116,8 +116,8 @@ def test_from_the_threshold_the_index_has_one_line_per_family(db, principal, bac
 
     text = _load(db, principal, backend).text
 
-    assert "- deploy (14): Deploy note 27; Deploy note 25; Deploy note 23\n" in text
-    assert "- testing (15): Deploy note 28; Deploy note 26; Deploy note 24\n" in text
+    assert "- deploy (14): Deploy note 27; Deploy note 25; Deploy note 23; " in text
+    assert "- testing (15): Deploy note 28; Deploy note 26; Deploy note 24; " in text
     assert "release" not in text  # a family with no memory has no line
     assert text.index("- testing (15)") < text.index("- other (1): Loose end")
     assert "30 project memories in 3 families" in text
@@ -155,7 +155,49 @@ def test_pinned_memories_are_not_repeated_as_sample_titles(db, principal, backen
 
     text = _load(db, principal, backend).text
 
-    assert "- deploy (30): Note 28; Note 27; Note 26\n" in text
+    line = next(x for x in text.splitlines() if x.startswith("- deploy (30): "))
+    assert line == "- deploy (30): " + "; ".join(f"Note {i}" for i in range(28, -1, -1))
+
+
+def _families(db, principal, backend, n, per_family, title="A long enough title for memory number"):
+    for i in range(n):
+        _retain(db, principal, backend, f"{title} {i:02d}", family=f"family-{i % per_family}")
+
+
+def _titles_per_line(text):
+    return [line.count(";") + 1 if ": " in line else 0 for line in text.splitlines() if line.startswith("- family-")]
+
+
+def test_spare_room_shows_more_titles_on_every_line_and_stays_within_the_budget(db, principal, backend):
+    _families(db, principal, backend, 60, 6)
+
+    result = _load(db, principal, backend)
+
+    shown = _titles_per_line(result.text)
+    assert len(shown) == 6 and len(set(shown)) == 1 and shown[0] > 3
+    assert len(result.text) <= get_settings().context_budget_chars and not result.truncated
+
+
+def test_without_room_for_three_the_index_sheds_titles_as_before(db, principal, backend, monkeypatch):
+    _families(db, principal, backend, THRESHOLD, 6)
+    monkeypatch.setattr(get_settings(), "context_budget_chars", 1050)
+
+    result = _load(db, principal, backend)
+
+    assert all(n < 3 for n in _titles_per_line(result.text)) and len(_titles_per_line(result.text)) == 6
+    assert len(result.text) <= 1050 and result.truncated
+
+
+def test_a_family_with_fewer_memories_than_the_number_shows_them_all(db, principal, backend):
+    _families(db, principal, backend, 40, 4)
+    _retain(db, principal, backend, "The only small one", family="small")
+    project = db.query(Project).one()
+    project.families = ["family-0", "family-1", "family-2", "family-3", "small", "other"]
+
+    text = _load(db, principal, backend).text
+
+    assert "- small (1): The only small one\n" in text
+    assert all(n == 10 for n in _titles_per_line(text))
 
 
 def test_full_caps_and_a_long_purpose_keep_every_family_line_and_the_totals():
