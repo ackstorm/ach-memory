@@ -75,6 +75,23 @@ def test_correct_replaces_text_keeps_id_and_tags_and_journals_before_after(db, p
     assert correct_entry.details["after"] == "New text."
 
 
+def test_correct_with_a_title_replaces_the_title_session_start_lists(db, principal, backend):
+    memory_id = _seed(db, principal, backend, "Old text.")
+
+    curation.correct(
+        db, principal,
+        curation.CorrectRequest(scope="user", memory_id=memory_id, reason="fix", content="New text.",
+                                title="  New   title "),
+        backend=backend,
+    )
+
+    listed = read.list_memories(db, principal, read.ListRequest(scope="user"), backend=backend)
+    assert [item.title for item in listed.items] == ["New title"]
+    history = read.history(db, principal, read.HistoryRequest(scope="user", memory_id=memory_id), backend=backend)
+    entry = next(e for e in history.journal if e.action == "memory.correct")
+    assert (entry.details["title_before"], entry.details["title_after"]) == ("T", "New title")
+
+
 def test_delete_then_get_not_found(db, principal, backend):
     memory_id = _seed(db, principal, backend, "Will be deleted.")
 
