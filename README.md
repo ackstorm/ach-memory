@@ -148,7 +148,7 @@ Every setting is an environment variable with the `MEMORY_` prefix
 | `MEMORY_AUTH_JWT_*` | alternatively, JWKS-verified JWTs |
 | `MEMORY_MASTER_USERS` / `_GROUPS` | operators, matched on the identity provider's subject |
 
-Engine profile (`verbatim` extraction, `types=world` recall, semantic floor)
+Engine profile (`verbatim` extraction, `types=world` recall)
 lives in the Hindsight adapter, not in core; see `SPEC.md` §5.
 
 ## Add an engine

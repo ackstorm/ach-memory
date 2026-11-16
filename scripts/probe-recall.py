@@ -69,8 +69,6 @@ async def main() -> None:
             hit = next((pair for pair in enumerate(items, 1)
                         if pair[1]["memory_id"].startswith(expected)), None)
             ranks.append(hit[0] if hit else None)
-            # The target's own score is what a floor change is decided on: set the floor to 0
-            # on the deployment, read these, then pick a value with a margin under the lowest.
             mark = f"@{hit[0]} {hit[1]['score']:.3f}" if hit else "MISS"
             print(f"{mark:>10}  {len(items):>2} hits  [{scope}] {query}")
 

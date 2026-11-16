@@ -54,8 +54,6 @@ spec:
               value: {{ .Values.config.llmTimeoutSeconds | quote }}
             - name: MEMORY_MAX_CONTENT_BYTES
               value: {{ .Values.config.maxContentBytes | quote }}
-            - name: MEMORY_RECALL_MIN_SEMANTIC
-              value: {{ .Values.config.recallMinSemantic | quote }}
             - name: MEMORY_PIN_CAP_PROJECT_CHARS
               value: {{ .Values.config.pinCap.project | quote }}
             - name: MEMORY_PIN_CAP_USER_CHARS

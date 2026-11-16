@@ -39,7 +39,7 @@ def matches_tag_groups(tags: tuple[str, ...], tag_groups: tuple[TagGroup, ...]) 
 class Hit:
     memory_id: str
     text: str
-    score: float | None          # adapter rank score; the semantic floor is per-adapter config
+    score: float | None          # the engine's semantic similarity, not its rank
     tags: tuple[str, ...] = ()
     metadata: dict = field(default_factory=dict)
     mentioned_at: str | None = None

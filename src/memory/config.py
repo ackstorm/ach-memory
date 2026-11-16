@@ -61,9 +61,6 @@ class Settings(BaseSettings):
     auth_platform_user_field: str = ""
     auth_platform_groups_field: str = ""
 
-    # Cosine-similarity floor a recall hit must clear (see old config.py for
-    # the corpus measurement this default is pinned to).
-    recall_min_semantic: float = Field(default=0.60, ge=0, le=1)
     # Standing context plus hooks/activation.txt must stay under Claude Code's ~10,000-character
     # inline limit for SessionStart output; past it the agent sees a 2KB preview.
     # tests/test_plugins.py holds the sum under the limit.

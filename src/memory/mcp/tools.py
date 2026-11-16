@@ -275,14 +275,14 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Search memory and return bounded, grounded matching facts, most relevant first. "
-            "Results below a relevance floor are withheld rather than returned as padding, so "
-            "a query with no good answer returns nothing instead of a confident-looking list; "
-            "each hit carries the `score` it was ranked by. Filter with `memory_types`/`basis`. "
+            "Search memory and return matching facts, most relevant first. The first hits carry "
+            "`relevance`, the probability that each helps answer the query; when even the best "
+            "is low, `note` says so first: then the hits are only the nearest memories, not an "
+            "answer, so check one before relying on it. Filter with `memory_types`/`basis`. "
             "scope='all' searches your own memories and the project's together -- use it when "
             "you do not know which of the two holds the answer; scope='project' needs "
-            "`project_slug`. Query in English whatever language the conversation uses: a "
-            "translated query scores well above a Spanish one against the same claim."
+            "`project_slug`. Query in English whatever language the conversation uses: it finds "
+            "the right memory more often than a Spanish one."
         ),
         annotations=ToolAnnotations(read_only_hint=True),
     )

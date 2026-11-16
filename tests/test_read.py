@@ -28,18 +28,16 @@ def _seed(db, principal, backend, content: str, memory_type: str = "fact") -> st
     return result.memory_id
 
 
-def test_recall_drops_hits_below_the_floor(db, principal, backend, monkeypatch):
+def test_recall_withholds_no_hit_however_low_it_scores(db, principal, backend):
     high_id = _seed(db, principal, backend, "alpha bravo charlie delta echo")
-    _seed(db, principal, backend, "alpha zulu yankee xray")
-
-    monkeypatch.setattr(read.get_settings(), "recall_min_semantic", 0.5)
+    low_id = _seed(db, principal, backend, "alpha zulu yankee xray")
 
     result = read.recall(
         db, principal, read.RecallRequest(scope="user", query="alpha bravo charlie delta"), backend=backend
     )
 
-    assert [hit.memory_id for hit in result.items] == [high_id]
-    assert result.truncated is False
+    assert [hit.memory_id for hit in result.items] == [high_id, low_id]
+    assert result.items[1].score < 0.5 and result.truncated is False
 
 
 def test_recall_filters_by_memory_type(db, principal, backend):
@@ -180,7 +178,6 @@ def test_recall_keeps_the_engine_order_not_the_semantic_score(db, principal, bac
     reranked = [by_id[second].__class__(**{**by_id[second].__dict__, "score": 0.61}),
                 by_id[first].__class__(**{**by_id[first].__dict__, "score": 0.99})]
     monkeypatch.setattr(backend, "recall", lambda *a, **kw: reranked)
-    monkeypatch.setattr(read.get_settings(), "recall_min_semantic", 0.6)
 
     result = read.recall(db, principal, read.RecallRequest(scope="user", query="alpha"), backend=backend)
 
@@ -202,7 +199,6 @@ def _decide(probs):
 def decision(monkeypatch):
     monkeypatch.setattr(read.get_settings(), "llm_url", "http://gateway.test/v1")
     monkeypatch.setattr(read.get_settings(), "llm_decision_model", "ackstorm.decision")
-    monkeypatch.setattr(read.get_settings(), "recall_min_semantic", 0.0)
 
     def use(probs):
         fake, calls = _decide(probs)

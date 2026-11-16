@@ -84,7 +84,7 @@ def test_retain_then_recall_round_trips_with_project_created_notice():
             memory_id = retained.structured_content["result"]["memory_id"]
 
             # The fake backend scores by plain token overlap; querying with the retained
-            # text itself clears the recall floor (SPEC I5) regardless of its exact value.
+            # text itself ranks it first.
             recalled = await session.call_tool(
                 "recall",
                 {

@@ -16,7 +16,7 @@ Version: 0.1.0
 | I2 | Identifier opacity: memory id (ACH-minted, stable), operation id (caller's idempotency key), engine ids (adapter-owned, never public) | engine ids churn on every upsert |
 | I3 | Sanitization boundary: secret patterns and control characters never reach the engine | the engine stores whatever it is given |
 | I4 | Mutation authorization and journal: every mutation is authorized and recorded — who, on whose behalf, memory id, action, reason, outcome, before/after for corrections | the engine hard-deletes on replacement; history is a product promise |
-| I5 | Noise floor: recall withholds hits below a measured semantic floor | the engine never abstains |
+| I5 | Abstention signal: with a decision model set, recall says first when no hit clearly answers; nothing is withheld | the engine never abstains |
 | I6 | Capability honesty: an unsupported intention answers `UNSUPPORTED`; ACH never emulates engine intelligence | otherwise ACH becomes part of the engine |
 | I7 | Correction ordering: two corrections of one memory cannot land out of order; a read after a correction sees the correction | async engines give no ordering |
 | I8 | Redaction: engine namespaces and secrets never appear in responses, errors or logs | operational hygiene the engine cannot do for us |
@@ -51,7 +51,7 @@ Version: 0.1.0
 | Intention | Required/optional | Semantics | Journaled? |
 |---|---|---|---|
 | `retain` | required | remember one claim, returns the memory id and `similar`: up to 3 other valid memories of the same bank closest to the claim (id, title, type, pin, first 200 chars), unfiltered by score; left out when that search fails or takes over 3 s | yes (with the `similar` ids) |
-| `recall` | required | ranked hits for a query, scope-bounded, floor applied; hits keep the engine's order (its reranker's), and `scope="all"` alternates the project and user banks by rank, project first; the first 10 carry `relevance`, the decision model's probability that each helps (`MEMORY_LLM_DECISION_MODEL`), and when the best is under 0.6 a `note` says first that no memory clearly answers; nothing is dropped, and a failed or slow scoring (2 s) answers without it; empty for a project nobody retained into | no |
+| `recall` | required | ranked hits for a query, scope-bounded; hits keep the engine's order (its reranker's), and `scope="all"` alternates the project and user banks by rank, project first; the first 10 carry `relevance`, the decision model's probability that each helps (`MEMORY_LLM_DECISION_MODEL`), and when the best is under 0.6 a `note` says first that no memory clearly answers; nothing is dropped, and a failed or slow scoring (2 s) answers without it; empty for a project nobody retained into | no |
 | `reflect` | optional (`synthesis`) | one synthesized answer over scoped memories | no |
 | `forget` | required | soft-invalidate one memory | yes |
 | `restore` | required | reverse a `forget` | yes |
@@ -156,14 +156,14 @@ candidates" as a premise; its two misses are the Spanish queries in §5.
 | reranker cap | `HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID=10` on the engine (a GitOps setting): recall median 41.6 s → 1.18 s on a 2-CPU host 1.5× slower than production; hit@1 0.52 → 0.46, Spanish 0.23 → 0.17 |
 | `enable_observations` | `false`, set and verified at provision: no consolidation, no derived views. Observation units written before stay in the bank; `reflect` still searches them (its `search_observations` tool keys off the request's fact types, not this flag) and now reads them as stale |
 | recall | `types=["world"]` |
-| read-side shaping | semantic-score floor only |
+| read-side shaping | none in the engine; ACH scores recall's first 10 hits for `relevance` |
 | dates | three (`occurred_*`, `mentioned_at`, `invalidated_at`), no expiry |
 | document id | upsert replaces the document, its units, and the observation twin |
 | API path | `/api/v1/...` in-cluster; no prefix on the local compose stack |
 | `PATCH /config` body | `{"updates": {...}}`, not the bare dict |
 | local LLM | mock: verbatim extraction works, `reflect` does not |
 | `history` | not declared; the ACH journal is the history |
-| semantic floor | `0.60`, calibrated on an English corpus and measured against lowering it on 2026-09-17 (`scripts/probe-recall.py`, floor temporarily 0 in production): Spanish probes that fail score 0.536 and 0.595 where their English form scores ~0.72 at rank 1, and catching both needs 0.53, which takes irrelevant hits per query from 2.6 to 6.3 (0.58 catches one, for 3.3). Agents query in English instead; the floor stays. Re-measure the same way before reopening |
+| semantic floor | none. Measured end to end through ACH on 2026-11-16 (3 banks, Hindsight's decision reranker over 100 candidates): the 0.60 floor cut Spanish hit@5 from 1.00/0.88/0.62 to 0.62/0.50/0.45, because a Spanish query scores low against English claims that the reranker still puts first. The decision model's `relevance` tells present from absent queries instead (AUC 0.97-0.98) |
 | identifier recall | Hindsight 0.9.2 fuses BM25 with semantic search and reranks, so identifiers inside code spans are retrievable: of 38 sampled from production banks on 2026-11-05, 35 reached the top 10 and 25 rank 1. The misses were `customInstructions`, `projects` and `basis`. No ACH retrieval layer is needed |
 
 ## 6. Delivery
@@ -176,7 +176,7 @@ session-start (standing context; Claude Code and Codex run it again after a comp
 | Tool | Intention | One line |
 |---|---|---|
 | `retain` | retain | store one claim with its `title`, `family` and optional `pin`; `wait: bool = false` blocks until searchable — one tool, one intention, not two near-duplicate tools; answers with `similar` |
-| `recall` | recall | ranked, floor-filtered hits for a query; `scope="all"` spans both banks |
+| `recall` | recall | ranked hits for a query, the first 10 with `relevance`, and a `note` when none clearly answers; `scope="all"` spans both banks |
 | `reflect` | reflect | one synthesized answer; same `memory_types`/`basis` filter as recall |
 | `forget` | forget | soft-invalidate one memory |
 | `restore` | restore | reverse a forget |

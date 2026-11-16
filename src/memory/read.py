@@ -1,6 +1,7 @@
-"""Resolve through the adapter, apply the semantic floor, shape the response (SPEC §3.1).
+"""Resolve through the adapter and shape the response (SPEC §3.1).
 
-The only read-side shaping is the recall floor (invariant I5); everything
+The only read-side shaping is recall's relevance and its "nothing clear" note (invariant I5);
+nothing is withheld. Everything
 else here is a straight adapter call plus tag/state translation. A read
 never creates a bank -- `resolve_bank(..., create=False)`.
 """
@@ -146,11 +147,9 @@ def recall(db: Session, principal: Principal, request: RecallRequest, *, backend
     batches = [backend.recall(bank_id, request.query, tag_groups=tag_groups,
                                limit=request.max_results + 1)
                for bank_id in _recall_banks(db, principal, request)]
-    floor = get_settings().recall_min_semantic
-    kept = [[hit for hit in batch if hit.score is None or hit.score >= floor] for batch in batches]
     # Each bank's hits come in the engine reranker's order, which `score` (the semantic
     # similarity) knows nothing of; two banks interleave by rank, project first.
-    merged = [hit for rank in zip_longest(*kept) for hit in rank if hit is not None][: request.max_results]
+    merged = [hit for rank in zip_longest(*batches) for hit in rank if hit is not None][: request.max_results]
     rows = catalog.by_ids(db, [hit.memory_id for hit in merged])
     items, note = _with_relevance(request.query, tuple(_to_hit(hit, rows.get(hit.memory_id)) for hit in merged))
     return RecallResponse(note=note, items=items, total=len(items),
