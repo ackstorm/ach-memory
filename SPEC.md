@@ -25,7 +25,7 @@ Version: 0.1.0
 
 | Capability | One line |
 |---|---|
-| Bounded standing context | at session start, in order: the newest `purpose`-tagged claim verbatim; the user's pinned memories in full; the project's pinned memories in full; an index of the project's memories, one line per family that holds any, with its count and its 3 newest unpinned titles (below 30 memories, the flat list of titles); one line of totals. Without a project, the user's pinned memories alone. Pinned text stops at each bank's cap, newest first, with a line counting what was left out. To keep the whole within `context_budget_chars` (8,000) the index sheds sample titles (3, 2, 1, none per family) and never a family line. Activation text plus context must stay under Claude Code's ~10,000-character inline limit for SessionStart output (`tests/test_plugins.py`). Hosts deliver it again after compaction |
+| Bounded standing context | at session start, in order: the newest `purpose`-tagged claim verbatim; the user's pinned memories in full; the project's pinned memories in full; an index of the project's memories, one line per family that holds any, with its count and its newest unpinned titles, the same number on every line: 3, or more while the whole fits the budget (below 30 memories, the flat list of titles); one line of totals. Without a project, the user's pinned memories alone. Pinned text stops at each bank's cap, newest first, with a line counting what was left out. To keep the whole within `context_budget_chars` (8,000) the index sheds sample titles (2, 1, none per family) when 3 do not fit, and never a family line. Activation text plus context must stay under Claude Code's ~10,000-character inline limit for SessionStart output (`tests/test_plugins.py`). Hosts deliver it again after compaction |
 | Titles, families, pins | every memory has a title (≤80 chars) and, in a project, a family; a pin is optional. A project's family list is closed (≤12 plus `other`), drafted once by an LLM (`MEMORY_LLM_*`; unset, nothing is drafted and families stay optional) when the project first holds 30 valid memories, redrafted with the reason while a family is named after the project or holds over about a third of them, and editable by its owner. Pinned text is capped per bank (2,500 chars project, 2,000 user); a pin past the cap is refused with the list of what is pinned. Nothing is ever updated automatically by title, family or key |
 | Read log | every session-start load, recall, list and get: who, project, tool, query or family, result count, latency; `read_daily` view per day, project and tool |
 | Users, groups, `on_behalf_of` | identity model behind every mutation and read |
@@ -51,7 +51,7 @@ Version: 0.1.0
 | Intention | Required/optional | Semantics | Journaled? |
 |---|---|---|---|
 | `retain` | required | remember one claim, returns the memory id and `similar`: up to 3 other valid memories of the same bank closest to the claim (id, title, type, pin, first 200 chars), unfiltered by score; left out when that search fails or takes over 3 s | yes (with the `similar` ids) |
-| `recall` | required | ranked hits for a query, scope-bounded, floor applied; `scope="all"` merges the user and project banks by score, project first on a tie; empty for a project nobody retained into | no |
+| `recall` | required | ranked hits for a query, scope-bounded, floor applied; hits keep the engine's order (its reranker's), and `scope="all"` alternates the project and user banks by rank, project first; the first 10 carry `relevance`, the decision model's probability that each helps (`MEMORY_LLM_DECISION_MODEL`), and when the best is under 0.6 a `note` says first that no memory clearly answers; nothing is dropped, and a failed or slow scoring (2 s) answers without it; empty for a project nobody retained into | no |
 | `reflect` | optional (`synthesis`) | one synthesized answer over scoped memories | no |
 | `forget` | required | soft-invalidate one memory | yes |
 | `restore` | required | reverse a `forget` | yes |
@@ -204,7 +204,7 @@ The tools that address one memory by id (`forget`, `restore`, `correct`, `delete
 | `groups` | id, name — membership comes from the auth provider at request time |
 | `projects` | id, slug, bank_id, owner_user_id, owner_group_id (nullable), families (nullable), created_at |
 | `memories` | memory_id, scope, owner_id, title, family, pinned, memory_type, state, chars, created_at — ACH's own record of each memory; the text stays in the engine |
-| `read_events` | actor, project, tool, scope, query, family, results, latency_ms, created_at; view `read_daily` |
+| `read_events` | actor, project, tool, scope, query, family, results, relevance (a recall's best), latency_ms, created_at; view `read_daily` |
 | `project_slugs` | project_id, slug, retired_at |
 | `audit_events` | actor, on_behalf_of, action, memory_id, operation_id, details, created_at |
 

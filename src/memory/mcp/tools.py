@@ -122,14 +122,15 @@ def _result(response: BaseModel) -> ToolResult:
 
 def _read(ctx: Context, tool: str, call: Callable[[Principal, Session], BaseModel], *,
           scope: str | None, project_slug: str | None, results: Callable[[BaseModel], int],
-          query: str | None = None, family: str | None = None) -> ToolResult:
+          query: str | None = None, family: str | None = None,
+          relevance: Callable[[BaseModel], float | None] = lambda r: None) -> ToolResult:
     """Run one read and log it (`read_events`): who, project, tool, query or family, how many
     results, how long. Failed reads are not logged."""
     started = time.perf_counter()
     with tool_session(ctx) as (principal, db):
         response = call(principal, db)
         audit.log_read(db, principal=principal, tool=tool, scope=scope, project_slug=project_slug,
-                       query=query, family=family, results=results(response),
+                       query=query, family=family, results=results(response), relevance=relevance(response),
                        latency_ms=round((time.perf_counter() - started) * 1000))
         return _result(response)
 
@@ -304,7 +305,8 @@ def register(mcp: MCPServer) -> None:
         )
         return _read(ctx, "recall", lambda p, db: do_recall(db, p, request, backend=get_backend()),
                      scope=scope, project_slug=project_slug, query=query,
-                     results=lambda r: r.total)
+                     results=lambda r: r.total,
+                     relevance=lambda r: max((h.relevance for h in r.items if h.relevance is not None), default=None))
 
     @mcp.tool(
         description=(

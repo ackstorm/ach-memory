@@ -12,7 +12,7 @@ ach-memory is the system of record for durable context across sessions. Use it i
 
 Session start prints, in order: the project's purpose; your pinned memories in full; the
 project's pinned memories in full; an index of the project's memory, one line per family with
-its count and its three newest titles (below 30 memories, the plain list of titles); and one line
+its count and its newest titles, as many as fit (below 30 memories, the plain list of titles); and one line
 of totals. Pinned memories apply to every task. The index shows what exists, not what it says.
 
 ## Recall before depending on memory

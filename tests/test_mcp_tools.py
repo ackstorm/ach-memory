@@ -178,7 +178,13 @@ def test_load_context_returns_text():
     asyncio.run(scenario())
 
 
-def test_a_pinned_memory_reaches_session_start_and_reads_are_logged():
+def test_a_pinned_memory_reaches_session_start_and_reads_are_logged(monkeypatch):
+    from memory import read
+
+    monkeypatch.setattr(get_settings(), "llm_url", "http://gateway.test/v1")
+    monkeypatch.setattr(get_settings(), "llm_decision_model", "ackstorm.decision")
+    monkeypatch.setattr(read.llm, "decide", lambda settings, text, questions: [0.42] * len(questions))
+
     async def scenario():
         app = create_app()
         slug = f"acme-{uuid4().hex}"
@@ -198,6 +204,8 @@ def test_a_pinned_memory_reaches_session_start_and_reads_are_logged():
             logged = db.scalars(select(ReadEvent).where(ReadEvent.project_internal_id == project_id)).all()
         assert sorted((e.tool, e.results) for e in logged) == [("load_context", 2), ("recall", 1)]
         assert next(e.query for e in logged if e.tool == "recall") == "deploy only with make"
+        assert [e.relevance for e in logged if e.tool == "recall"] == [0.42]
+        assert {e.relevance for e in logged if e.tool == "load_context"} == {None}
 
     asyncio.run(scenario())
 

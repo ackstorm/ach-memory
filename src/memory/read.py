@@ -5,13 +5,15 @@ else here is a straight adapter call plus tag/state translation. A read
 never creates a bank -- `resolve_bank(..., create=False)`.
 """
 
+import logging
+from itertools import zip_longest
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from memory import catalog
+from memory import catalog, llm
 from memory.auth.principal import Principal
 from memory.backend.base import Backend, Hit, MemoryView, TagGroup
 from memory.bank_ref import resolve_bank, resolve_memory_bank
@@ -20,7 +22,12 @@ from memory.errors import MemoryNotFound, ProjectNotFound, UnsupportedCapability
 from memory.models import AuditEvent, Memory
 from memory.tags import SCHEMA_TAG
 
+logger = logging.getLogger(__name__)
 _STATE_TO_BACKEND = {"valid": "valid", "invalid": "invalidated"}
+#: How many of recall's first hits the decision model scores.
+RELEVANCE_TOP = 10
+NOTHING_CLEAR = ("No memory clearly answers this query. The hits below are only the nearest: "
+                 "check one before relying on it.")
 _STATE_FROM_BACKEND = {"valid": "valid", "invalidated": "invalid"}
 
 class _Base(BaseModel):
@@ -44,8 +51,12 @@ class _MemoryFields(_Base):
 
 class RecallHit(_MemoryFields):
     score: float | None = None
+    #: The decision model's probability that this hit helps answer the query; first hits only.
+    relevance: float | None = None
 
 class RecallResponse(_Base):
+    #: First, so it is read first: set when even the best hit is unlikely to answer.
+    note: str | None = None
     items: tuple[RecallHit, ...] = (); total: int = 0; truncated: bool = False
 
 class ReflectRequest(_ScopedRequest):
@@ -136,15 +147,33 @@ def recall(db: Session, principal: Principal, request: RecallRequest, *, backend
                                limit=request.max_results + 1)
                for bank_id in _recall_banks(db, principal, request)]
     floor = get_settings().recall_min_semantic
-    kept = [hit for batch in batches for hit in batch if hit.score is None or hit.score >= floor]
-    # One engine and one embedding model back every bank, and the floor is already one
-    # constant across them, so scores are comparable; the sort is stable, which is what
-    # keeps the bank order above as the tie-break.
-    kept.sort(key=lambda hit: -(hit.score or 0.0))
-    rows = catalog.by_ids(db, [hit.memory_id for hit in kept[: request.max_results]])
-    items = tuple(_to_hit(hit, rows.get(hit.memory_id)) for hit in kept[: request.max_results])
-    return RecallResponse(items=items, total=len(items),
+    kept = [[hit for hit in batch if hit.score is None or hit.score >= floor] for batch in batches]
+    # Each bank's hits come in the engine reranker's order, which `score` (the semantic
+    # similarity) knows nothing of; two banks interleave by rank, project first.
+    merged = [hit for rank in zip_longest(*kept) for hit in rank if hit is not None][: request.max_results]
+    rows = catalog.by_ids(db, [hit.memory_id for hit in merged])
+    items, note = _with_relevance(request.query, tuple(_to_hit(hit, rows.get(hit.memory_id)) for hit in merged))
+    return RecallResponse(note=note, items=items, total=len(items),
                           truncated=any(len(batch) > request.max_results for batch in batches))
+
+def _with_relevance(query: str, items: tuple[RecallHit, ...]) -> tuple[tuple[RecallHit, ...], str | None]:
+    """The first hits with the decision model's `relevance`, and the "nothing clear" note when
+    the best is low. Nothing is dropped or reordered. Without a model, or when the call fails or
+    is slow, the hits come back as they were."""
+    settings = get_settings()
+    head = items[:RELEVANCE_TOP]
+    if not head or not (settings.llm_url and settings.llm_decision_model):
+        return items, None
+    listing = "\n\n".join(f"[{n}] {hit.title or ''}\n{hit.content}" for n, hit in enumerate(head, 1))
+    text = f"Query from a coding agent searching its project's memory:\n{query}\n\nMemories:\n{listing}"
+    questions = [f"Does memory [{n}] help answer the query?" for n in range(1, len(head) + 1)]
+    try:
+        probs = llm.within(settings.recall_relevance_timeout_seconds, llm.decide, settings, text, questions)
+    except Exception as exc:  # noqa: BLE001 -- relevance is advisory; recall answers without it
+        logger.warning("recall relevance failed: %s", type(exc).__name__)
+        return items, None
+    scored = tuple(hit.model_copy(update={"relevance": round(p, 3)}) for hit, p in zip(head, probs, strict=True))
+    return scored + items[len(head):], NOTHING_CLEAR if max(probs) < settings.recall_relevance_note_below else None
 
 def reflect(db: Session, principal: Principal, request: ReflectRequest, *, backend: Backend) -> ReflectResponse:
     if "synthesis" not in backend.capabilities():

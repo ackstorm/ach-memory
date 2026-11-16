@@ -158,7 +158,7 @@ def test_recall_scope_all_merges_both_banks_project_first_on_a_tie(db, principal
     assert [hit.memory_type for hit in result.items] == ["decision", "fact"]
 
 
-def test_recall_scope_all_orders_both_banks_by_score(db, principal, backend):
+def test_recall_scope_all_alternates_the_banks_by_rank_project_first(db, principal, backend):
     user_id = _seed(db, principal, backend, "alpine images")
     project_id = _seed_project(db, principal, backend, "github.com-x-alpine",
                                 "alpine images pinned")
@@ -170,9 +170,85 @@ def test_recall_scope_all_orders_both_banks_by_score(db, principal, backend):
         backend=backend,
     )
 
-    assert [hit.memory_id for hit in result.items] == [user_id, project_id]
-    scores = [hit.score for hit in result.items]
-    assert scores == sorted(scores, reverse=True), scores
+    assert [hit.memory_id for hit in result.items] == [project_id, user_id]
+
+
+def test_recall_keeps_the_engine_order_not_the_semantic_score(db, principal, backend, monkeypatch):
+    first, second = (_seed(db, principal, backend, text) for text in ("alpha one", "alpha two"))
+    hits = backend.recall("user_usr_juan", "alpha", tag_groups=(), limit=5)
+    by_id = {h.memory_id: h for h in hits}
+    reranked = [by_id[second].__class__(**{**by_id[second].__dict__, "score": 0.61}),
+                by_id[first].__class__(**{**by_id[first].__dict__, "score": 0.99})]
+    monkeypatch.setattr(backend, "recall", lambda *a, **kw: reranked)
+    monkeypatch.setattr(read.get_settings(), "recall_min_semantic", 0.6)
+
+    result = read.recall(db, principal, read.RecallRequest(scope="user", query="alpha"), backend=backend)
+
+    assert [hit.memory_id for hit in result.items] == [second, first]
+
+
+def _decide(probs):
+    calls = []
+
+    def fake(settings, text, questions):
+        calls.append((text, questions))
+        if isinstance(probs, Exception):
+            raise probs
+        return probs[: len(questions)]
+    return fake, calls
+
+
+@pytest.fixture
+def decision(monkeypatch):
+    monkeypatch.setattr(read.get_settings(), "llm_url", "http://gateway.test/v1")
+    monkeypatch.setattr(read.get_settings(), "llm_decision_model", "ackstorm.decision")
+    monkeypatch.setattr(read.get_settings(), "recall_min_semantic", 0.0)
+
+    def use(probs):
+        fake, calls = _decide(probs)
+        monkeypatch.setattr(read.llm, "decide", fake)
+        return calls
+    return use
+
+
+def test_recall_scores_the_first_ten_hits_without_dropping_or_reordering(db, principal, backend, decision):
+    ids = [_seed(db, principal, backend, f"deploy step {i}") for i in range(12)]
+    calls = decision([0.9, *[0.1] * 9])
+
+    result = read.recall(db, principal, read.RecallRequest(scope="user", query="deploy step", max_results=12),
+                         backend=backend)
+
+    assert len(result.items) == 12 and {h.memory_id for h in result.items} == set(ids)
+    assert [h.relevance for h in result.items] == [0.9, *[0.1] * 9, None, None]
+    assert result.note is None
+    text, questions = calls[0]
+    assert "deploy step" in text and len(questions) == 10 and questions[0] == "Does memory [1] help answer the query?"
+
+
+def test_recall_says_first_when_no_hit_clearly_answers(db, principal, backend, decision):
+    _seed(db, principal, backend, "deploy step")
+    decision([0.4])
+
+    result = read.recall(db, principal, read.RecallRequest(scope="user", query="deploy"), backend=backend)
+
+    assert result.note == read.NOTHING_CLEAR and len(result.items) == 1
+    assert next(iter(result.model_dump())) == "note"
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("gateway down"), "slow"])
+def test_recall_answers_without_relevance_when_the_model_fails_or_is_slow(db, principal, backend, decision,
+                                                                          monkeypatch, failure):
+    _seed(db, principal, backend, "deploy step")
+    if failure == "slow":
+        import time
+        monkeypatch.setattr(read.get_settings(), "recall_relevance_timeout_seconds", 0.05)
+        monkeypatch.setattr(read.llm, "decide", lambda *a: time.sleep(0.5) or [0.9])
+    else:
+        decision(failure)
+
+    result = read.recall(db, principal, read.RecallRequest(scope="user", query="deploy"), backend=backend)
+
+    assert [h.relevance for h in result.items] == [None] and result.note is None
 
 
 def test_recall_scope_all_survives_a_project_nobody_retained_into(db, principal, backend):
