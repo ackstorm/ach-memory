@@ -21,6 +21,7 @@ from memory.mcp.proxy import (
     call_load_context,
     canonical_tool_name,
     fill_arguments,
+    find_marker,
     personal_tools,
     repo_slug_spellings,
     resolve_project_context,
@@ -137,6 +138,45 @@ def test_repo_without_origin_resolves_nothing(tmp_path, monkeypatch):
 
 def test_no_repo_resolves_nothing(tmp_path, monkeypatch):
     monkeypatch.delenv("MEMORY_PROJECT", raising=False)
+    assert resolve_project_context(str(tmp_path)) is None
+
+
+def _marker(folder, text='project = "Design MD2"\n'):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ".ach-memory").write_text(text)
+
+
+def test_a_marker_names_the_project_of_a_folder_without_origin(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEMORY_PROJECT", raising=False)
+    _marker(tmp_path / "docs")
+    (tmp_path / "docs" / "deep" / "er").mkdir(parents=True)
+    assert resolve_project_context(str(tmp_path / "docs" / "deep" / "er")) == "design-md2"
+    assert resolve_project_context(str(tmp_path)) is None
+
+
+def test_a_marker_counts_in_a_repo_without_origin_and_never_against_one(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEMORY_PROJECT", raising=False)
+    _marker(tmp_path / "a")
+    _marker(tmp_path / "b")
+    assert resolve_project_context(str(_git_repo(tmp_path / "a", None))) == "design-md2"
+    repo = _git_repo(tmp_path / "b", "git@github.com:acme/payments-api.git")
+    assert resolve_project_context(str(repo)) == "github.com-acme-payments-api-dab6719d"
+    monkeypatch.setenv("MEMORY_PROJECT", "from-env")
+    assert resolve_project_context(str(tmp_path / "a")) == "from-env"
+
+
+def test_the_marker_search_stops_below_home(tmp_path, monkeypatch):
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
+    _marker(tmp_path / "home")
+    (tmp_path / "home" / "work").mkdir()
+    assert find_marker(str(tmp_path / "home" / "work")) is None
+    assert find_marker(str(tmp_path / "home")) is None
+
+
+@pytest.mark.parametrize("text", ["project = 3\n", "not toml at all", "other = \"x\"\n", 'project = "--"\n'])
+def test_an_unreadable_marker_resolves_nothing(tmp_path, monkeypatch, text):
+    monkeypatch.delenv("MEMORY_PROJECT", raising=False)
+    _marker(tmp_path, text)
     assert resolve_project_context(str(tmp_path)) is None
 
 
@@ -464,5 +504,27 @@ def test_memory_project_turns_spellings_off(tmp_path, monkeypatch):
 def test_personal_tools_drop_the_project_only_tools():
     schema = {"type": "object", "properties": {"project_slug": {}}}
     tools = [types.Tool(name=n, inputSchema=schema)
-             for n in ("list_families", "set_families", "rename_project", "load_context")]
-    assert [t.name for t in personal_tools(tools)] == ["load_context"]
+             for n in ("list_families", "set_families", "rename_project", "load_context", "list_projects")]
+    assert [t.name for t in personal_tools(tools)] == ["load_context", "list_projects"]
+
+
+def test_without_a_project_list_projects_goes_out_bare_and_the_rest_as_user():
+    calls: list[tuple[str, dict]] = []
+
+    async def _remote_call_tool(ctx, params):
+        calls.append((params.name, dict(params.arguments or {})))
+        return types.CallToolResult(content=[types.TextContent(text="ok")])
+
+    remote = Server("fake-remote", on_list_tools=_remote_list_tools, on_call_tool=_remote_call_tool)
+
+    async def scenario():
+        async with InMemoryTransport(remote) as (read, write), ClientSession(read, write) as session:
+            await session.discover()
+            bridge = _build_bridge(session, None)
+            async with InMemoryTransport(bridge) as (h_read, h_write), ClientSession(h_read, h_write) as host:
+                await host.discover()
+                await host.call_tool("list_projects", {})
+                await host.call_tool("recall", {"query": "x"})
+
+    asyncio.run(scenario())
+    assert calls == [("list_projects", {}), ("recall", {"query": "x", "scope": "user"})]

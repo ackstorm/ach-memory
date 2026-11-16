@@ -71,7 +71,7 @@ class FakeBackend(Backend):
         return WriteAck(memory_id=memory_id, status="completed" if wait else "pending")
 
     def recall(self, bank_id: str, query: str, *, tag_groups: tuple[TagGroup, ...],
-               limit: int) -> list[Hit]:
+               limit: int, timeout: float | None = None) -> list[Hit]:
         records = self._data.get(bank_id, {})
         q = _tokens(query)
         scored: list[tuple[float, str]] = []

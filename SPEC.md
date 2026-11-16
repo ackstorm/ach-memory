@@ -31,6 +31,7 @@ Version: 0.1.0
 | Users, groups, `on_behalf_of` | identity model behind every mutation and read |
 | MCP stdio proxy | runs on the SDK, on the host, resolves project and injects identity |
 | Project resolution from git origin | slug derived from the git remote; a hand-typed spelling of the current repository resolves to it on calls without a `memory_id`, so it cannot split the repository into a second project |
+| Project marker | a folder with no git origin names its project in `.ach-memory` (`project = "<slug>"`), found from the current directory upwards and never in or above the home directory; read only when there is no origin, so it cannot split a repository. `ach-memory project init <name>` writes it and refuses where an origin or a marker already names the project |
 | External auth | JWT/JWKS plus platform whoami |
 | Automatic bootstrap | users and projects created on first authorized contact |
 | Idempotent retain | same `operation_id` replays to the same memory id, no duplicate |
@@ -49,7 +50,7 @@ Version: 0.1.0
 
 | Intention | Required/optional | Semantics | Journaled? |
 |---|---|---|---|
-| `retain` | required | remember one claim, returns the memory id | yes |
+| `retain` | required | remember one claim, returns the memory id and `similar`: up to 3 other valid memories of the same bank closest to the claim (id, title, type, pin, first 200 chars), unfiltered by score; left out when that search fails or takes over 3 s | yes (with the `similar` ids) |
 | `recall` | required | ranked hits for a query, scope-bounded, floor applied; `scope="all"` merges the user and project banks by score, project first on a tie; empty for a project nobody retained into | no |
 | `reflect` | optional (`synthesis`) | one synthesized answer over scoped memories | no |
 | `forget` | required | soft-invalidate one memory | yes |
@@ -169,12 +170,12 @@ candidates" as a premise; its two misses are the Spanish queries in §5.
 
 MCP streamable-HTTP server: SDK app, `/health`, header auth resolving to a `Principal`; must accept
 a header-less `initialize` (LiteLLM sends none). Stdio proxy on the SDK, running on the host,
-resolving project from `MEMORY_PROJECT` or the git origin, injecting the slug. Hooks:
+resolving project from `MEMORY_PROJECT`, the git origin or an `.ach-memory` marker, injecting the slug. Hooks:
 session-start (standing context; Claude Code and Codex run it again after a compaction, opencode and pi keep it in the system prompt), pre-compact (retain nudge), subagent-start. No REST data plane.
 
 | Tool | Intention | One line |
 |---|---|---|
-| `retain` | retain | store one claim with its `title`, `family` and optional `pin`; `wait: bool = false` blocks until searchable — one tool, one intention, not two near-duplicate tools |
+| `retain` | retain | store one claim with its `title`, `family` and optional `pin`; `wait: bool = false` blocks until searchable — one tool, one intention, not two near-duplicate tools; answers with `similar` |
 | `recall` | recall | ranked, floor-filtered hits for a query; `scope="all"` spans both banks |
 | `reflect` | reflect | one synthesized answer; same `memory_types`/`basis` filter as recall |
 | `forget` | forget | soft-invalidate one memory |
@@ -189,6 +190,7 @@ session-start (standing context; Claude Code and Codex run it again after a comp
 | `list_families` | families | a project's family list with counts |
 | `set_families` | families | replace a project's family list; for people, through `ach-memory families set` |
 | `get_operation` | — | engine-side async outcome; only if the adapter declares `operations` |
+| `list_projects` | — | the projects the caller may read: slug, purpose (about its first sentence) and valid memory count |
 | `rename_project` | — | move a project to a new slug after its git remote moved; the old slug keeps forwarding |
 
 The tools that address one memory by id (`forget`, `restore`, `correct`, `delete_memory`, `get_memory`, `history`) take `scope` as optional: left out, it is read from that memory's `memory.retain` journal row, and the bank the caller resolves to must own the row (I1), else `MEMORY_NOT_FOUND`.

@@ -130,3 +130,77 @@ def test_journal_row_carries_operation_content_hash_and_owner(db, principal, req
     assert row.resource == result.memory_id
     assert row.details["content_hash"]
     assert row.details["owner"] == "usr_juan"
+
+
+def _claim(principal, db, backend, title, content):
+    request = retain.RetainRequest(scope="user", title=title, content=content, memory_type="fact",
+                                   basis="agent_verified", operation_id=uuid4())
+    return retain.submit(db, principal, request, backend=backend)
+
+
+def test_retain_returns_the_closest_other_valid_memories(db, principal, backend):
+    from memory import curation
+
+    ids = [_claim(principal, db, backend, f"Deploy note {i}", f"Deploy with make deploy, case {i}. " + "x" * 300)
+           .memory_id for i in range(5)]
+    curation.forget(db, principal, curation.CurationRequest(memory_id=ids[0], reason="wrong"), backend=backend)
+
+    result = _claim(principal, db, backend, "Deploy rule", "Deploy with make deploy, case 9.")
+
+    assert len(result.similar) == 3
+    assert {s.memory_id for s in result.similar} <= set(ids[1:])
+    first = result.similar[0]
+    assert first.title.startswith("Deploy note") and first.memory_type == "fact" and not first.pinned
+    assert len(first.excerpt) == 200
+    journal = audit.find_memory_retain(db, result.memory_id)
+    assert journal.details["similar"] == [s.memory_id for s in result.similar]
+
+
+def test_a_failed_or_slow_similar_search_still_stores_the_claim(db, principal, backend, monkeypatch):
+    calls = []
+
+    def slow(*args, timeout=None, **kwargs):
+        calls.append(timeout)
+        raise TimeoutError
+
+    monkeypatch.setattr(backend, "recall", slow)
+    result = _claim(principal, db, backend, "A title", "Some durable claim.")
+
+    assert result.similar is None and calls == [retain.SIMILAR_TIMEOUT_SECONDS]
+    assert backend.get("user_usr_juan", result.memory_id) is not None
+    assert audit.find_memory_retain(db, result.memory_id).details["similar"] is None
+
+
+def test_the_similar_effect_query_counts_a_forget_of_a_returned_id(db, principal, backend):
+    from pathlib import Path
+
+    from sqlalchemy import text
+
+    from memory import curation
+
+    sql = text((Path(__file__).parents[1] / "docs" / "similar-effect.sql").read_text())
+
+    def counts():
+        row = db.execute(sql).mappings().one()
+        return row["retains"], row["with_similar"], row["acted"], row["acted_incl_new"]
+
+    before = counts()
+    old = _claim(principal, db, backend, "Deploy rule", "Deploy with make deploy.").memory_id
+    new = _claim(principal, db, backend, "Deploy rule", "Deploy with make deploy, always.")
+    assert [s.memory_id for s in new.similar] == [old]
+    curation.forget(db, principal, curation.CurationRequest(memory_id=old, reason="replaced"), backend=backend)
+    db.flush()
+
+    assert tuple(a - b for a, b in zip(counts(), before, strict=True)) == (2, 1, 1, 1)
+
+
+def test_a_search_past_the_deadline_returns_the_retain_without_similar(db, principal, backend, monkeypatch):
+    import time
+
+    monkeypatch.setattr(retain, "SIMILAR_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(backend, "recall", lambda *a, **kw: time.sleep(0.5) or [])
+    started = time.perf_counter()
+
+    result = _claim(principal, db, backend, "A title", "Some durable claim.")
+
+    assert result.similar is None and time.perf_counter() - started < 0.4
