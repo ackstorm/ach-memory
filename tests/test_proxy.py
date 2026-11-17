@@ -85,22 +85,22 @@ def test_fresh_credential_asks_the_helper_on_every_request(tmp_path, monkeypatch
     assert seen == ["Bearer t1", "Bearer t2"]
 
 
-def test_handshake_falls_back_to_initialize_when_discover_is_refused():
-    """LiteLLM's MCP gateway answers `server/discover` with -32603."""
+def test_handshake_falls_back_to_discover_when_initialize_is_refused():
+    """`initialize` first: LiteLLM's MCP gateway answers `server/discover` with -32603."""
     from mcp.shared.exceptions import MCPError
 
     steps = []
 
     class Session:
-        async def discover(self):
-            steps.append("discover")
-            raise MCPError(code=-32603, message="Server returned an error response")
-
         async def initialize(self):
             steps.append("initialize")
+            raise MCPError(code=-32600, message="initialize not supported")
+
+        async def discover(self):
+            steps.append("discover")
 
     asyncio.run(_handshake(Session()))
-    assert steps == ["discover", "initialize"]
+    assert steps == ["initialize", "discover"]
 
 
 def _git_repo(tmp_path, origin: str | None):
@@ -368,7 +368,7 @@ def _stub_transport(monkeypatch, remote: Server, captured_headers: dict):
         return _DummyHttpClient()
 
     @contextlib.asynccontextmanager
-    async def fake_streamable_http_client(url, *, http_client=None):
+    async def fake_streamable_http_client(url, *, http_client=None, terminate_on_close=True):
         async with InMemoryTransport(remote) as (read, write):
             yield read, write
 
