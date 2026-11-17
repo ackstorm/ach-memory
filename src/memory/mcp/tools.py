@@ -123,7 +123,8 @@ def _result(response: BaseModel) -> ToolResult:
 def _read(ctx: Context, tool: str, call: Callable[[Principal, Session], BaseModel], *,
           scope: str | None, project_slug: str | None, results: Callable[[BaseModel], int],
           query: str | None = None, family: str | None = None,
-          relevance: Callable[[BaseModel], float | None] = lambda r: None) -> ToolResult:
+          relevance: Callable[[BaseModel], float | None] = lambda r: None,
+          session_id: str | None = None) -> ToolResult:
     """Run one read and log it (`read_events`): who, project, tool, query or family, how many
     results, how long. Failed reads are not logged."""
     started = time.perf_counter()
@@ -131,7 +132,7 @@ def _read(ctx: Context, tool: str, call: Callable[[Principal, Session], BaseMode
         response = call(principal, db)
         audit.log_read(db, principal=principal, tool=tool, scope=scope, project_slug=project_slug,
                        query=query, family=family, results=results(response), relevance=relevance(response),
-                       latency_ms=round((time.perf_counter() - started) * 1000))
+                       latency_ms=round((time.perf_counter() - started) * 1000), session_id=session_id)
         return _result(response)
 
 
@@ -294,6 +295,7 @@ def register(mcp: MCPServer) -> None:
         max_results: int = 10,
         memory_types: list[str] = [],  # noqa: B006
         basis: list[str] = [],  # noqa: B006
+        session_id: str | None = None,
     ) -> ToolResult:
         request = RecallRequest(
             scope=scope,
@@ -304,7 +306,7 @@ def register(mcp: MCPServer) -> None:
             basis=basis,
         )
         return _read(ctx, "recall", lambda p, db: do_recall(db, p, request, backend=get_backend()),
-                     scope=scope, project_slug=project_slug, query=query,
+                     scope=scope, project_slug=project_slug, query=query, session_id=session_id,
                      results=lambda r: r.total,
                      relevance=lambda r: max((h.relevance for h in r.items if h.relevance is not None), default=None))
 
@@ -378,6 +380,7 @@ def register(mcp: MCPServer) -> None:
         full: bool = False,
         limit: int = 20,
         offset: int = 0,
+        session_id: str | None = None,
     ) -> ToolResult:
         request = ListRequest(
             scope=scope,
@@ -392,7 +395,7 @@ def register(mcp: MCPServer) -> None:
         )
         return _read(ctx, "list_memories",
                      lambda p, db: do_list_memories(db, p, request, backend=get_backend()),
-                     scope=scope, project_slug=project_slug, family=family,
+                     scope=scope, project_slug=project_slug, family=family, session_id=session_id,
                      results=lambda r: len(r.items))
 
     @mcp.tool(
@@ -404,10 +407,12 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         scope: Scope | None = None,
         project_slug: str | None = None,
+        session_id: str | None = None,
     ) -> ToolResult:
         request = GetRequest(scope=scope, project_slug=project_slug, memory_id=memory_id)
         return _read(ctx, "get_memory", lambda p, db: do_get_memory(db, p, request, backend=get_backend()),
-                     scope=scope, project_slug=project_slug, query=memory_id, results=lambda r: 1)
+                     scope=scope, project_slug=project_slug, query=memory_id, session_id=session_id,
+                     results=lambda r: 1)
 
     @mcp.tool(
         description=(
@@ -434,10 +439,10 @@ def register(mcp: MCPServer) -> None:
         ),
         annotations=ToolAnnotations(read_only_hint=True),
     )
-    def load_context(ctx: Context, project_slug: str | None = None) -> ToolResult:
+    def load_context(ctx: Context, project_slug: str | None = None, session_id: str | None = None) -> ToolResult:
         request = LoadContextRequest(project_slug=project_slug)
         return _read(ctx, "load_context", lambda p, db: do_load_context(db, p, request, backend=get_backend()),
-                     scope=None, project_slug=project_slug, results=lambda r: r.shown)
+                     scope=None, project_slug=project_slug, session_id=session_id, results=lambda r: r.shown)
 
     @mcp.tool(
         description=(
@@ -524,9 +529,9 @@ def register(mcp: MCPServer) -> None:
         ),
         annotations=ToolAnnotations(read_only_hint=True),
     )
-    def list_projects(ctx: Context) -> ToolResult:
+    def list_projects(ctx: Context, session_id: str | None = None) -> ToolResult:
         return _read(ctx, "list_projects", lambda p, db: list_readable_projects(db, p),
-                     scope=None, project_slug=None, results=lambda r: len(r.items))
+                     scope=None, project_slug=None, session_id=session_id, results=lambda r: len(r.items))
 
     @mcp.tool(
         description=(

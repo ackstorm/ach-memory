@@ -144,9 +144,14 @@ class ReadEvent(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     actor_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     project_internal_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    #: The slug the caller asked for when it resolves to no project; None when it resolves.
+    project_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: The host's session, as the proxy reports it; None for callers that send none.
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     tool: Mapped[str] = mapped_column(String(32))
     scope: Mapped[str | None] = mapped_column(String(8), nullable=True)
     query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    query_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
     family: Mapped[str | None] = mapped_column(String(48), nullable=True)
     results: Mapped[int] = mapped_column(Integer)
     #: A recall's best decision-model relevance; None when it was not scored.

@@ -6,7 +6,8 @@
 # same key: $PWD with slashes as underscores, under the ach-memory cache dir --
 # not $TMPDIR, which differs per host), so an agent that saves on its own never
 # sees this. The only retain nudge: Stop cannot reach the model without a
-# blocking decision, which the host reports as a hook error.
+# blocking decision, which the host reports as a hook error. A session's first
+# prompt gets one recall instruction instead, with no network call.
 set -u
 # Session id as $1 (opencode, pi) or from the host's JSON on stdin (Claude Code, Codex).
 sid=${1:-}
@@ -20,9 +21,15 @@ now=$(date +%s)
 retain="$cache/retain-$(printf '%s' "$PWD" | tr '/' '_')"
 # No stamp yet: start the clock here rather than nag a fresh install on its first prompt.
 [ -f "$retain" ] || printf '%s' "$now" > "$retain"
-[ $((now - $(cat "$retain" 2>/dev/null || echo 0))) -lt "$interval" ] && exit 0
 
 sent="$cache/idle-$sid"
+# Marked with 0, not now: the idle clock below runs from the second prompt as it always did.
+if [ "$sid" != unknown ] && [ ! -f "$sent" ]; then
+  printf '0' > "$sent"
+  echo 'Before starting, run one ach-memory recall with this task in your own words and scope "all". If its note says nothing clearly answers, carry on.'
+  exit 0
+fi
+[ $((now - $(cat "$retain" 2>/dev/null || echo 0))) -lt "$interval" ] && exit 0
 [ $((now - $(cat "$sent" 2>/dev/null || echo 0))) -lt "$interval" ] && exit 0
 printf '%s' "$now" > "$sent"
 

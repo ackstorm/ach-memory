@@ -26,6 +26,8 @@ from memory.mcp.proxy import (
     repo_slug_spellings,
     resolve_project_context,
     retain_stamp,
+    with_session,
+    without_session,
 )
 
 
@@ -33,6 +35,13 @@ from memory.mcp.proxy import (
 def _no_token_helper(monkeypatch):
     """A developer shell running the token-helper setup must not leak into tests."""
     monkeypatch.delenv("ACH_MEMORY_TOKEN_COMMAND", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _host_session(monkeypatch):
+    """A fixed host session, whatever host runs the suite."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "ses-test")
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
 
 
 def test_auth_headers_defaults_to_authorization_bearer(monkeypatch):
@@ -272,7 +281,7 @@ def test_bridge_lists_and_forwards_tool_calls_with_filled_project_slug():
                 result = await host.call_tool("recall", {"query": "x", "scope": "project"})
                 assert result.content[0].text == "hit"
 
-        assert calls == [{"query": "x", "scope": "project", "project_slug": "acme-1"}]
+        assert calls == [{"query": "x", "scope": "project", "project_slug": "acme-1", "session_id": "ses-test"}]
 
     asyncio.run(scenario())
 
@@ -378,7 +387,7 @@ def _stub_transport(monkeypatch, remote: Server, captured_headers: dict):
 
 def test_call_load_context_fills_arguments_and_sends_the_auth_header(monkeypatch):
     async def _remote_call_tool(ctx, params):
-        assert params.arguments == {"project_slug": "acme-1"}
+        assert params.arguments == {"project_slug": "acme-1", "session_id": "ses-test"}
         return types.CallToolResult(content=[types.TextContent(text="{}")],
                                     structured_content={"result": {"text": "standing context"}})
 
@@ -568,4 +577,23 @@ def test_without_a_project_list_projects_goes_out_bare_and_the_rest_as_user():
                 await host.call_tool("recall", {"query": "x"})
 
     asyncio.run(scenario())
-    assert calls == [("list_projects", {}), ("recall", {"query": "x", "scope": "user"})]
+    assert calls == [("list_projects", {"session_id": "ses-test"}),
+                     ("recall", {"query": "x", "scope": "user", "session_id": "ses-test"})]
+
+
+def test_reads_carry_the_host_session_and_writes_do_not(monkeypatch):
+    from memory.mcp import proxy as proxy_module
+
+    assert with_session("recall", {"query": "x", "session_id": "typed"}) == {"query": "x", "session_id": "ses-test"}
+    assert with_session("retain", {"title": "t"}) == {"title": "t"}
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
+    assert proxy_module.host_session_id() == "thread-1"
+    monkeypatch.delenv("CODEX_THREAD_ID")
+    assert proxy_module.host_session_id() == proxy_module._PROCESS_SESSION
+
+
+def test_the_agent_never_sees_session_id_in_a_schema():
+    tool = types.Tool(name="recall", input_schema={
+        "type": "object", "properties": {"query": {"type": "string"}, "session_id": {"type": "string"}}})
+    assert set(without_session(tool).input_schema["properties"]) == {"query"}
