@@ -11,6 +11,7 @@ import subprocess
 import time
 import tomllib
 from pathlib import Path
+from uuid import uuid4
 
 import httpx2
 import mcp_types as types
@@ -196,6 +197,33 @@ _PERSONAL_DESCRIPTIONS = {
 }
 
 
+#: The tools whose calls `read_events` logs, with the session they belong to.
+_READS = frozenset({"recall", "list_memories", "get_memory", "load_context", "list_projects"})
+# A host that names no session gets one per proxy process.
+_PROCESS_SESSION = uuid4().hex
+
+
+def host_session_id() -> str:
+    """The host's own session id (Claude Code, Codex) when it hands one to its children,
+    so the session-start hook and this proxy's reads share it; else this process's."""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or _PROCESS_SESSION
+
+
+def with_session(tool_name: str, arguments: dict) -> dict:
+    """Stamp a read with the host session; the proxy owns it, so the agent's value never stands."""
+    return {**arguments, "session_id": host_session_id()} if tool_name in _READS else arguments
+
+
+def without_session(tool: types.Tool) -> types.Tool:
+    """The agent never fills `session_id`: hide it from the schema it sees."""
+    schema = dict(tool.input_schema)
+    properties = schema.get("properties", {})
+    if "session_id" not in properties:
+        return tool
+    schema["properties"] = {k: v for k, v in properties.items() if k != "session_id"}
+    return tool.model_copy(update={"input_schema": schema})
+
+
 def personal_tools(tools: list[types.Tool]) -> list[types.Tool]:
     """Tool list for a session with no project: user memory only, so `scope` and
     `project_slug` leave the schemas, and the project-only tools disappear."""
@@ -279,11 +307,11 @@ def _build_bridge(
             if name is not None:
                 remote_names[name] = tool.name
                 tool = tool.model_copy(update={"name": name})
-            tools.append(tool)
+            tools.append(without_session(tool))
         return listed.model_copy(update={"tools": tools if slug else personal_tools(tools)})
 
     async def _call_tool(ctx, params):
-        arguments = fill_arguments(params.name, params.arguments or {}, slug, spellings)
+        arguments = with_session(params.name, fill_arguments(params.name, params.arguments or {}, slug, spellings))
         if not slug and params.name not in ("load_context", "list_projects"):
             arguments["scope"] = "user"
         try:
@@ -339,7 +367,7 @@ async def call_tool(url: str, name: str, arguments: dict, project_slug: str | No
         _UnvalidatedSession(read, write) as session,
     ):
         await _handshake(session)
-        result = await session.call_tool(name, fill_arguments(name, arguments, project_slug))
+        result = await session.call_tool(name, with_session(name, fill_arguments(name, arguments, project_slug)))
     if result.is_error:
         text = " ".join(getattr(c, "text", "") for c in result.content)
         raise RuntimeError(text or f"{name} failed")
