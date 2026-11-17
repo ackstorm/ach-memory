@@ -123,6 +123,18 @@ def test_a_session_first_prompt_gets_one_recall_instruction(tmp_path):
     assert first.startswith("Before starting, run one ach-memory recall")
     assert prompt('{"session_id": "s1"}') == ""
     assert prompt('{"session_id": "s2"}') == first
+    assert prompt("{}") == ""  # no session id: no way to tell the first prompt
+
+
+def test_the_first_prompt_does_not_hold_back_the_idle_nudge(tmp_path):
+    def prompt(payload: str) -> str:
+        return run_hook("idle-nudge.sh", payload, tmp_path, ACH_MEMORY_IDLE_INTERVAL="600")
+
+    stamp = tmp_path / "ach-memory" / ("retain-" + str(tmp_path).replace("/", "_"))
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("0")  # nothing retained for ages
+    assert "recall" in prompt('{"session_id": "s1"}')
+    assert "for over 30 minutes" in prompt('{"session_id": "s1"}')
 
 
 def test_idle_nudge_fires_only_when_nothing_was_retained_and_once_per_window(tmp_path):
@@ -137,7 +149,6 @@ def test_idle_nudge_fires_only_when_nothing_was_retained_and_once_per_window(tmp
     assert stamp.exists()
     assert idle('{"session_id": "s1"}') == ""  # just retained, as far as the clock knows
     stamp.write_text("0")  # nothing retained for ages
-    (cache / "idle-s1").write_text("0")  # and the session's last nudge is old
     assert "for over 30 minutes" in idle('{"session_id": "s1"}')
     assert idle('{"session_id": "s1"}') == ""  # marked as sent for this session
     stamp.write_text(str(10**10))  # a retain just happened

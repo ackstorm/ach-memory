@@ -23,8 +23,9 @@ retain="$cache/retain-$(printf '%s' "$PWD" | tr '/' '_')"
 [ -f "$retain" ] || printf '%s' "$now" > "$retain"
 
 sent="$cache/idle-$sid"
-if [ ! -f "$sent" ]; then
-  printf '%s' "$now" > "$sent"
+# Marked with 0, not now: the idle clock below runs from the second prompt as it always did.
+if [ "$sid" != unknown ] && [ ! -f "$sent" ]; then
+  printf '0' > "$sent"
   echo 'Before starting, run one ach-memory recall with this task in your own words and scope "all". If its note says nothing clearly answers, carry on.'
   exit 0
 fi
