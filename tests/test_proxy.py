@@ -360,7 +360,7 @@ def _stub_transport(monkeypatch, remote: Server, captured_headers: dict):
     streamable_http_client and offers no injection seam of its own."""
     import memory.mcp.proxy as proxy_module
 
-    def fake_create_mcp_http_client(*, auth):
+    def fake_create_mcp_http_client(*, auth, timeout=None):
         request = next(auth.auth_flow(httpx2.Request("POST", "http://x/mcp")))
         captured_headers.update(
             {k: v for k, v in request.headers.items() if k.lower() == "authorization"}
@@ -413,6 +413,28 @@ def test_call_load_context_does_not_list_tools(monkeypatch):
 
     assert asyncio.run(call_load_context("http://x/mcp", "acme-1")) == "ctx"
     assert listed == []
+
+
+def test_call_load_context_uses_a_read_timeout_a_hook_can_wait_for(monkeypatch):
+    """The SDK's default 300 s read timeout outlives the host's 10 s session-start hook."""
+    import memory.mcp.proxy as proxy_module
+
+    async def _remote_call_tool(ctx, params):
+        return types.CallToolResult(content=[types.TextContent(text="{}")],
+                                    structured_content={"result": {"text": "ctx"}})
+
+    _stub_transport(monkeypatch, Server("fake-remote", on_list_tools=_remote_list_tools, on_call_tool=_remote_call_tool), {})
+    stubbed, seen = proxy_module.create_mcp_http_client, {}
+
+    def spy(*, auth, timeout=None):
+        seen["timeout"] = timeout
+        return stubbed(auth=auth)
+
+    monkeypatch.setattr(proxy_module, "create_mcp_http_client", spy)
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "sk-1")
+
+    assert asyncio.run(call_load_context("http://x/mcp", "acme-1")) == "ctx"
+    assert seen["timeout"].read < 10
 
 
 def test_call_load_context_raises_on_a_remote_error(monkeypatch):

@@ -1,5 +1,7 @@
 """The argument parser and the three subcommands' dispatch, with `proxy` stubbed out."""
 
+import asyncio
+
 from memory import cli
 
 
@@ -100,6 +102,19 @@ def test_main_context_load_fails_open_and_prints_nothing(monkeypatch, capsys):
 
     monkeypatch.setattr(cli.proxy, "call_load_context", fake_call_load_context)
     monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: None)
+
+    assert cli.main(["context", "load"]) == 1
+    assert capsys.readouterr().out == ""
+
+
+def test_main_context_load_gives_up_at_its_deadline(monkeypatch, capsys):
+    """A hung call must end inside the host's hook timeout, so the hook can say so."""
+    async def hung_call_load_context(url, slug):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(cli.proxy, "call_load_context", hung_call_load_context)
+    monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: "acme-1")
+    monkeypatch.setattr(cli, "_CONTEXT_LOAD_DEADLINE", 0.05)
 
     assert cli.main(["context", "load"]) == 1
     assert capsys.readouterr().out == ""
