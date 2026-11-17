@@ -396,6 +396,25 @@ def test_call_load_context_fills_arguments_and_sends_the_auth_header(monkeypatch
     assert captured == {"authorization": "Bearer sk-1"}
 
 
+def test_call_load_context_does_not_list_tools(monkeypatch):
+    """Through a gateway that prefixes names, the SDK's output check re-listed every call."""
+    listed = []
+
+    async def _list(ctx, params):
+        listed.append(1)
+        return await _remote_list_tools(ctx, params)
+
+    async def _remote_call_tool(ctx, params):
+        return types.CallToolResult(content=[types.TextContent(text="{}")],
+                                    structured_content={"result": {"text": "ctx"}})
+
+    _stub_transport(monkeypatch, Server("fake-remote", on_list_tools=_list, on_call_tool=_remote_call_tool), {})
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "sk-1")
+
+    assert asyncio.run(call_load_context("http://x/mcp", "acme-1")) == "ctx"
+    assert listed == []
+
+
 def test_call_load_context_raises_on_a_remote_error(monkeypatch):
     async def _remote_call_tool(ctx, params):
         return types.CallToolResult(isError=True, content=[types.TextContent(text="boom")])
