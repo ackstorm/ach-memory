@@ -62,16 +62,19 @@ def load(
     """Creates nothing. The engine is read for the purpose and the pinned texts only."""
     user_ref, _ = resolve_bank(db, principal, "user", None, create=False)
     project_ref = None
+    missing = False
     if request.project_slug:
         try:
             project_ref, _ = resolve_bank(db, principal, "project", request.project_slug, create=False)
         except ProjectNotFound:
-            pass
+            missing = True
 
     def text_of(ref: LogicalBankRef):
         return lambda row: (view.text if (view := backend.get(ref.bank_id, row.memory_id)) else None)
 
     user = Bank(catalog.valid(db, user_ref.owner_id), catalog.pin_cap("user"), text_of(user_ref))
+    if missing:  # nothing retained into this project yet: same start as an empty one
+        return render(user=user, project=Bank([], catalog.pin_cap("project"), lambda row: None))
     if project_ref is None:
         return render(user=user)
     project = Bank(catalog.valid(db, project_ref.owner_id), catalog.pin_cap("project"), text_of(project_ref))

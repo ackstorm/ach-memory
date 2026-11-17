@@ -36,7 +36,14 @@ def _load(db, principal, backend, slug="acme"):
 
 def test_nothing_anywhere_loads_nothing(db, principal, backend):
     assert _load(db, principal, backend, slug=None).text == ""
-    assert _load(db, principal, backend, slug="nope").text == ""
+
+
+def test_a_project_nobody_retained_into_asks_for_its_purpose(db, principal, backend):
+    text = _load(db, principal, backend, slug="nope").text
+
+    assert text.startswith("No purpose is stored for this project.")
+    assert "Nothing is pinned in this project." in text
+    assert text.endswith("0 project memories, 0 pinned; 0 of yours, 0 pinned.\n")
 
 
 def test_without_a_project_the_user_part_is_delivered(db, principal, backend):
