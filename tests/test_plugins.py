@@ -114,21 +114,35 @@ def test_session_start_says_when_no_context_was_loaded(tmp_path):
     assert "### Project purpose" in loaded and unreachable not in loaded
 
 
+def test_a_session_first_prompt_gets_one_recall_instruction(tmp_path):
+    """No network call: the hook prints the instruction itself, once per session."""
+    def prompt(payload: str) -> str:
+        return run_hook("idle-nudge.sh", payload, tmp_path, ACH_MEMORY_IDLE_INTERVAL="600")
+
+    first = prompt('{"session_id": "s1"}')
+    assert first.startswith("Before starting, run one ach-memory recall")
+    assert prompt('{"session_id": "s1"}') == ""
+    assert prompt('{"session_id": "s2"}') == first
+
+
 def test_idle_nudge_fires_only_when_nothing_was_retained_and_once_per_window(tmp_path):
     """The proxy stamps retains under the same key; a fresh checkout starts the clock instead of nagging."""
     def idle(payload: str) -> str:
         return run_hook("idle-nudge.sh", payload, tmp_path, ACH_MEMORY_IDLE_INTERVAL="600")
 
-    stamp = tmp_path / "ach-memory" / ("retain-" + str(tmp_path).replace("/", "_"))
+    cache = tmp_path / "ach-memory"
+    stamp = cache / ("retain-" + str(tmp_path).replace("/", "_"))
 
-    assert idle('{"session_id": "s1"}') == ""  # first prompt ever: clock starts, no nag
+    assert "recall" in idle('{"session_id": "s1"}')  # first prompt: the recall instruction, clock starts
     assert stamp.exists()
+    assert idle('{"session_id": "s1"}') == ""  # just retained, as far as the clock knows
     stamp.write_text("0")  # nothing retained for ages
+    (cache / "idle-s1").write_text("0")  # and the session's last nudge is old
     assert "for over 30 minutes" in idle('{"session_id": "s1"}')
     assert idle('{"session_id": "s1"}') == ""  # marked as sent for this session
-    assert idle('{"session_id": "s2"}') != ""  # another session has its own mark
     stamp.write_text(str(10**10))  # a retain just happened
-    assert idle('{"session_id": "s3"}') == ""
+    (cache / "idle-s1").write_text("0")
+    assert idle('{"session_id": "s1"}') == ""
 
 
 def test_opencode_nudge_part_carries_the_ids_opencode_validates(tmp_path):
@@ -168,7 +182,7 @@ def test_opencode_nudge_part_carries_the_ids_opencode_validates(tmp_path):
     )
 
     (part,) = json.loads(result.stdout)
-    assert "for over 30 minutes" in part["text"]
+    assert part["text"].startswith("Before starting, run one ach-memory recall")
     assert part["sessionID"] == "ses_1"
     assert part["messageID"] == "msg_1"
     assert part["id"]
