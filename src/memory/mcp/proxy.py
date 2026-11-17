@@ -73,12 +73,13 @@ class FreshCredential(httpx2.Auth):
 
 
 async def _handshake(session: ClientSession) -> None:
-    """`server/discover`, else legacy `initialize` -- the SDK leaves the fallback to us,
-    and LiteLLM's MCP gateway answers discover with -32603."""
+    """Legacy `initialize`, else `server/discover` -- the SDK leaves the fallback to us.
+    LiteLLM's MCP gateway answers discover with -32603, so trying it first costs every
+    session start a round trip (~180 ms)."""
     try:
-        await session.discover()
-    except MCPError:
         await session.initialize()
+    except MCPError:
+        await session.discover()
 
 
 def _origin_url(cwd: str | None) -> str:
@@ -314,13 +315,24 @@ async def serve(url: str) -> None:
             await bridge.run(in_stream, out_stream, bridge.create_initialization_options())
 
 
+class _UnvalidatedSession(ClientSession):
+    """Skips the SDK's output-schema check after a call. That check looks the tool up by the
+    name called, and a gateway lists it under its own prefix (`ach-memory.load_context`), so
+    the SDK re-reads the whole tool list on every call: 0.55-0.9 s through LiteLLM."""
+
+    async def validate_tool_result(self, name: str, result: types.CallToolResult) -> None:
+        return None
+
+
 async def call_tool(url: str, name: str, arguments: dict, project_slug: str | None) -> dict:
     """One tool call to url with the project filled in; returns its `result` (used by the CLI)."""
     client = create_mcp_http_client(auth=FreshCredential())
+    # One call, then exit: the session-ending DELETE would add a round trip (~250 ms) to every
+    # session start, and the server drops an idle session on its own.
     async with (
         client,
-        streamable_http_client(url, http_client=client) as (read, write),
-        ClientSession(read, write) as session,
+        streamable_http_client(url, http_client=client, terminate_on_close=False) as (read, write),
+        _UnvalidatedSession(read, write) as session,
     ):
         await _handshake(session)
         result = await session.call_tool(name, fill_arguments(name, arguments, project_slug))

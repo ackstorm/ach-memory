@@ -30,8 +30,7 @@ spec:
             - name: http
               containerPort: 8000
           env:
-            - name: MEMORY_DATABASE_URL
-              value: {{ required "config.databaseUrl is required (MEMORY_DATABASE_URL)" .Values.config.databaseUrl | quote }}
+            {{- include "ach-memory.databaseUrlEnv" . | nindent 12 }}
             - name: MEMORY_HINDSIGHT_URL
               value: {{ required "config.hindsight.url is required (MEMORY_HINDSIGHT_URL)" .Values.config.hindsight.url | quote }}
             {{- if .Values.config.hindsight.apiKeySecret.name }}

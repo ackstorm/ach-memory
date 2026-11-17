@@ -10,8 +10,13 @@ image:
 replicaCount: 1
 
 config:
-  # MEMORY_DATABASE_URL. Required. Points at a Postgres this chart does not run.
+  # MEMORY_DATABASE_URL. Required, as a value or, keeping the password out of the pod spec,
+  # from a Secret (CloudNativePG's `<cluster>-app` holds it under `uri`). The Secret wins.
+  # Points at a Postgres this chart does not run.
   databaseUrl: ""
+  databaseUrlSecret:
+    name: ""
+    key: "uri"
   # MEMORY_MAX_CONTENT_BYTES.
   maxContentBytes: 256000
 

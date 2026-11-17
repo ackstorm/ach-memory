@@ -19,7 +19,7 @@ _HORIZONTAL_WS = re.compile(r"[ \t]+")
 # Structural, not semantic: fixed patterns for shapes secrets commonly take.
 _SECRET_PATTERNS = [
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._-]{10,}"),
-    re.compile(r"\b(?:sk|gh[oprsu]|mem|xox[baprs])[-_][A-Za-z0-9]{10,}\b"),
+    re.compile(r"\b(?:sk|gh[oprsu]|xox[baprs])[-_][A-Za-z0-9]{10,}\b"),
     re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL
     ),

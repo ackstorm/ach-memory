@@ -34,6 +34,11 @@ def test_configuration_talk_with_a_keyword_is_not_a_secret(claim):
     assert normalize_claim(claim) == claim
 
 
+def test_a_memory_id_is_not_a_secret():
+    claim = "Supersedes mem_0c3db8c8a1b24e6f9d7c5b3a1e2f4d6c on the same subject."
+    assert normalize_claim(claim) == claim
+
+
 @pytest.mark.parametrize(
     "claim",
     [
