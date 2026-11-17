@@ -333,6 +333,20 @@ def test_delete_is_idempotent_on_a_404(make_backend):
     backend.delete(BANK, "mem_1")  # must not raise
 
 
+# An id that is not one path segment would address another route, or another bank.
+_NOT_ONE_SEGMENT = ["../../user_other/documents/mem_1", "..", "a/b", "list?limit=100", "a b", ""]
+
+
+@pytest.mark.parametrize("memory_id", _NOT_ONE_SEGMENT)
+def test_delete_refuses_an_id_that_is_not_one_path_segment(make_backend, recorder, memory_id):
+    backend = make_backend({})
+
+    with pytest.raises(InvalidRequest):
+        backend.delete(BANK, memory_id)
+
+    assert recorder.calls == {}
+
+
 # ---------------------------------------------------------------------------
 # get
 # ---------------------------------------------------------------------------
@@ -504,3 +518,13 @@ def test_get_operation_strips_the_bank_id(make_backend):
 
     assert "bank_id" not in result
     assert BANK not in result["note"]
+
+
+@pytest.mark.parametrize("operation_ref", _NOT_ONE_SEGMENT)
+def test_get_operation_refuses_a_ref_that_is_not_one_path_segment(make_backend, recorder, operation_ref):
+    backend = make_backend({})
+
+    with pytest.raises(InvalidRequest):
+        backend.get_operation(BANK, operation_ref)
+
+    assert recorder.calls == {}

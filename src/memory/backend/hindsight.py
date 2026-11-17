@@ -6,6 +6,7 @@ Translates ACH nouns (`memory_id`, `tag_groups` with `match` "any"/"all") to Hin
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -34,6 +35,17 @@ _TENANT = "default"
 
 def _bank(bank_id: str) -> str:
     return f"/v1/{_TENANT}/banks/{bank_id}"
+
+
+_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _segment(value: str) -> str:
+    """A caller-supplied id that becomes one URL path segment. Anything else (`../<bank>/...`,
+    a `?`) would address another route or another bank with the service's engine credential."""
+    if not _SEGMENT.fullmatch(value):
+        raise InvalidRequest("malformed id")
+    return value
 
 
 def _present(values: dict[str, Any]) -> dict[str, Any]:
@@ -240,7 +252,7 @@ class HindsightBackend(Backend):
 
     def delete(self, bank_id: str, memory_id: str) -> None:
         try:
-            self._request("DELETE", f"{_bank(bank_id)}/documents/{memory_id}",
+            self._request("DELETE", f"{_bank(bank_id)}/documents/{_segment(memory_id)}",
                            not_found=NotFound)
         except NotFound:
             pass
@@ -305,6 +317,6 @@ class HindsightBackend(Backend):
         return (response or {}).get("text") or ""
 
     def get_operation(self, bank_id: str, operation_ref: str) -> dict:
-        result = self._request("GET", f"{_bank(bank_id)}/operations/{operation_ref}",
+        result = self._request("GET", f"{_bank(bank_id)}/operations/{_segment(operation_ref)}",
                                 not_found=NotFound)
         return _strip_bank_id(_derive_failed(result), bank_id)
