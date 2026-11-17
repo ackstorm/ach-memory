@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     master_groups: _CsvList = Field(default_factory=list)
     master_issuer: str = ""
 
+    # Subjects whose read queries are logged by length only: shared service accounts
+    # whose agents query with client data.
+    withhold_query_users: _CsvList = Field(default_factory=list)
+
     auth_jwt_enabled: bool = False
     auth_jwt_issuer: str = ""
     auth_jwt_jwks_uri: str = ""
@@ -90,7 +94,7 @@ class Settings(BaseSettings):
     def _pin_psycopg(cls, value: str) -> str:
         return sqlalchemy_url(value)
 
-    @field_validator("mcp_allowed_hosts", "master_users", "master_groups", mode="before")
+    @field_validator("mcp_allowed_hosts", "master_users", "master_groups", "withhold_query_users", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
         if isinstance(value, str):

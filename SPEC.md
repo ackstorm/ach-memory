@@ -204,7 +204,7 @@ The tools that address one memory by id (`forget`, `restore`, `correct`, `delete
 | `groups` | id, name — membership comes from the auth provider at request time |
 | `projects` | id, slug, bank_id, owner_user_id, owner_group_id (nullable), families (nullable), created_at |
 | `memories` | memory_id, scope, owner_id, title, family, pinned, memory_type, state, chars, created_at — ACH's own record of each memory; the text stays in the engine |
-| `read_events` | actor, project, tool, scope, query, family, results, relevance (a recall's best), latency_ms, created_at; view `read_daily` |
+| `read_events` | actor, project (or the requested slug when it resolves to none), session_id (the host's, sent by the proxy), tool, scope, query (scrubbed like content; none for `MEMORY_WITHHOLD_QUERY_USERS`; cleared after 30 days), query_chars, family, results, relevance (a recall's best), latency_ms, created_at; view `read_daily` |
 | `project_slugs` | project_id, slug, retired_at |
 | `audit_events` | actor, on_behalf_of, action, memory_id, operation_id, details, created_at |
 

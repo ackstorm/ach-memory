@@ -210,6 +210,45 @@ def test_a_pinned_memory_reaches_session_start_and_reads_are_logged(monkeypatch)
     asyncio.run(scenario())
 
 
+def test_read_events_keep_the_session_the_unresolved_slug_and_no_service_query_text(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from memory import read
+
+    monkeypatch.setattr(get_settings(), "llm_url", "http://gateway.test/v1")
+    monkeypatch.setattr(get_settings(), "llm_decision_model", "ackstorm.decision")
+    monkeypatch.setattr(read.llm, "decide", lambda settings, text, questions, timeout: [0.5] * len(questions))
+    monkeypatch.setattr(get_settings(), "withhold_query_users", ["user-sk-svc"])
+    unknown = f"nobody-retained-{uuid4().hex}"
+    old_id = f"rd_{uuid4().hex}"
+    with session_scope() as db:
+        db.add(ReadEvent(id=old_id, tool="recall", query="a month-old query", results=0, latency_ms=1,
+                         created_at=datetime.now(UTC) - timedelta(days=31)))
+        db.commit()
+
+    async def scenario():
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            async with _session(app, _auth_headers()) as session:
+                await session.call_tool("load_context", {"project_slug": unknown, "session_id": "ses-person"})
+            async with _session(app, _auth_headers("sk-svc")) as session:
+                await session.call_tool("retain", {
+                    "scope": "user", "title": "A service fact", "content": "The service runs nightly.",
+                    "memory_type": "fact", "basis": "human_explicit", "operation_id": str(uuid4()), "wait": True,
+                })
+                await session.call_tool("recall", {"scope": "user", "query": "client account 111111111111",
+                                                   "session_id": "ses-svc"})
+
+    asyncio.run(scenario())
+    with session_scope() as db:
+        (start,) = db.scalars(select(ReadEvent).where(ReadEvent.session_id == "ses-person")).all()
+        (svc,) = db.scalars(select(ReadEvent).where(ReadEvent.session_id == "ses-svc")).all()
+        old = db.get(ReadEvent, old_id)
+        assert (start.project_internal_id, start.project_slug) == (None, unknown)
+        assert (svc.query, svc.query_chars) == (None, len("client account 111111111111"))
+        assert old.query is None
+
+
 def test_reflect_without_synthesis_is_unsupported():
     async def scenario():
         app = create_app()

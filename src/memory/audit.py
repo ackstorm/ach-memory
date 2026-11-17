@@ -1,15 +1,20 @@
 """The governance journal: one row per mutation (SPEC §3.4, invariant I4), and the read log."""
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from memory.auth.principal import Principal
+from memory.config import get_settings
 from memory.errors import InvalidRequest
 from memory.models import AuditEvent, ProjectSlug, ReadEvent
 from memory.sanitization import contains_secret
 from memory.slugs import normalize_slug
+
+#: Read queries keep their text this long; length, relevance and latency stay.
+QUERY_TEXT_DAYS = 30
 
 
 def record(
@@ -52,9 +57,11 @@ def find_memory_retain(db: Session, memory_id: str) -> AuditEvent | None:
 def log_read(
     db: Session, *, principal: Principal, tool: str, scope: str | None, project_slug: str | None,
     results: int, latency_ms: int, query: str | None = None, family: str | None = None,
-    relevance: float | None = None,
+    relevance: float | None = None, session_id: str | None = None,
 ) -> None:
-    """One read (SPEC §7 `read_events`). A query shaped like a secret is not stored."""
+    """One read (SPEC §7 `read_events`). A query shaped like a secret is not stored, nor any
+    query of a `withhold_query_users` subject; its length always is. Each session start
+    clears query text older than QUERY_TEXT_DAYS."""
     project_id = None
     if project_slug:
         try:
@@ -62,9 +69,20 @@ def log_read(
         except InvalidRequest:
             mapping = None
         project_id = mapping.project_internal_id if mapping else None
+    requested = project_slug[:128] if project_slug and not project_id else None
+    if not query or principal.subject in get_settings().withhold_query_users:
+        stored = None
+    else:
+        stored = "[withheld: looks like a secret]" if contains_secret(query) else query
     db.add(ReadEvent(
         id=f"rd_{uuid4().hex}", actor_user_id=principal.on_behalf_of or principal.user_id,
-        project_internal_id=project_id, tool=tool, scope=scope,
-        query="[withheld: looks like a secret]" if query and contains_secret(query) else query,
+        project_internal_id=project_id, project_slug=requested, session_id=session_id and session_id[:128],
+        tool=tool, scope=scope,
+        query=stored, query_chars=len(query) if query else None,
         family=family, results=results, relevance=relevance, latency_ms=latency_ms,
     ))
+    if tool == "load_context":
+        db.execute(update(ReadEvent)
+                   .where(ReadEvent.query.is_not(None),
+                          ReadEvent.created_at < datetime.now(UTC) - timedelta(days=QUERY_TEXT_DAYS))
+                   .values(query=None))

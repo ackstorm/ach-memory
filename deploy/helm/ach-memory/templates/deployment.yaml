@@ -47,6 +47,8 @@ spec:
               value: {{ .Values.master.groups | quote }}
             - name: MEMORY_MASTER_ISSUER
               value: {{ .Values.master.issuer | quote }}
+            - name: MEMORY_WITHHOLD_QUERY_USERS
+              value: {{ .Values.config.withholdQueryUsers | quote }}
             - name: MEMORY_HINDSIGHT_TIMEOUT_SECONDS
               value: {{ .Values.config.timeoutSeconds | quote }}
             - name: MEMORY_HINDSIGHT_LLM_TIMEOUT_SECONDS
