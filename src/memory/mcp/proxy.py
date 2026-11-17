@@ -315,6 +315,10 @@ async def serve(url: str) -> None:
             await bridge.run(in_stream, out_stream, bridge.create_initialization_options())
 
 
+# One-shot calls run inside host hooks; the SDK's 300 s read timeout is for long-lived streams.
+_ONE_SHOT_TIMEOUT = httpx2.Timeout(5.0)
+
+
 class _UnvalidatedSession(ClientSession):
     """Skips the SDK's output-schema check after a call. That check looks the tool up by the
     name called, and a gateway lists it under its own prefix (`ach-memory.load_context`), so
@@ -326,7 +330,7 @@ class _UnvalidatedSession(ClientSession):
 
 async def call_tool(url: str, name: str, arguments: dict, project_slug: str | None) -> dict:
     """One tool call to url with the project filled in; returns its `result` (used by the CLI)."""
-    client = create_mcp_http_client(auth=FreshCredential())
+    client = create_mcp_http_client(auth=FreshCredential(), timeout=_ONE_SHOT_TIMEOUT)
     # One call, then exit: the session-ending DELETE would add a round trip (~250 ms) to every
     # session start, and the server drops an idle session on its own.
     async with (

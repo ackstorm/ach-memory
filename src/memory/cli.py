@@ -15,6 +15,10 @@ from memory.errors import InvalidRequest
 from memory.mcp import proxy
 from memory.slugs import normalize_slug
 
+# Under the hosts' 10 s session-start hook, after ~1 s of uvx start: a hung call then ends
+# with the hook's "not reachable" line instead of a silent kill.
+_CONTEXT_LOAD_DEADLINE = 8.0
+
 _NO_PROJECT_NOTICE = (
     "No project context: this folder has no git origin and no .ach-memory marker. Call "
     "list_projects, ask the user which project this is (suggest the folder name when none fits), "
@@ -73,7 +77,7 @@ def _context_load(project: str | None) -> int:
     url = os.environ.get("ACH_MEMORY_URL", "")
     slug = project or proxy.resolve_project_context()
     try:
-        text = asyncio.run(proxy.call_load_context(url, slug))
+        text = asyncio.run(asyncio.wait_for(proxy.call_load_context(url, slug), _CONTEXT_LOAD_DEADLINE))
     except Exception:  # noqa: BLE001 -- no traceback in the hook's output
         return 1
     if text:
