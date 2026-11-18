@@ -15,7 +15,7 @@ from memory.auth.principal import Principal
 from memory.backend.base import Backend
 from memory.bank_ref import LogicalBankRef, resolve_bank
 from memory.config import get_settings
-from memory.errors import ProjectNotFound
+from memory.errors import Forbidden, ProjectNotFound
 from memory.families import OTHER, THRESHOLD
 from memory.models import Memory
 
@@ -56,18 +56,24 @@ class LoadContextResponse(BaseModel):
     shown: int = 0
 
 
+_UNREADABLE = ("This project's memory belongs to another user and is not readable; only your "
+               "own memories are loaded.\n")
+
+
 def load(
     db: Session, principal: Principal, request: LoadContextRequest, *, backend: Backend
 ) -> LoadContextResponse:
     """Creates nothing. The engine is read for the purpose and the pinned texts only."""
     user_ref, _ = resolve_bank(db, principal, "user", None, create=False)
     project_ref = None
-    missing = False
+    missing = unreadable = False
     if request.project_slug:
         try:
             project_ref, _ = resolve_bank(db, principal, "project", request.project_slug, create=False)
         except ProjectNotFound:
             missing = True
+        except Forbidden:  # another user's project: the caller's own memory is still theirs
+            unreadable = True
 
     def text_of(ref: LogicalBankRef):
         return lambda row: (view.text if (view := backend.get(ref.bank_id, row.memory_id)) else None)
@@ -75,6 +81,9 @@ def load(
     user = Bank(catalog.valid(db, user_ref.owner_id), catalog.pin_cap("user"), text_of(user_ref))
     if missing:  # nothing retained into this project yet: same start as an empty one
         return render(user=user, project=Bank([], catalog.pin_cap("project"), lambda row: None))
+    if unreadable:
+        own = render(user=user)
+        return own.model_copy(update={"text": own.text + _UNREADABLE})
     if project_ref is None:
         return render(user=user)
     project = Bank(catalog.valid(db, project_ref.owner_id), catalog.pin_cap("project"), text_of(project_ref))

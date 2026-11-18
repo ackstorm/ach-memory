@@ -5,7 +5,7 @@ import pytest
 from memory import curation, read, retain
 from memory.auth.principal import Principal
 from memory.backend.fake import FakeBackend
-from memory.errors import InvalidRequest, MemoryNotFound, UnsupportedCapability
+from memory.errors import Forbidden, InvalidRequest, MemoryNotFound, UnsupportedCapability
 
 
 @pytest.fixture
@@ -154,6 +154,30 @@ def test_recall_scope_all_merges_both_banks_project_first_on_a_tie(db, principal
 
     assert [hit.memory_id for hit in result.items] == [project_id, user_id]
     assert [hit.memory_type for hit in result.items] == ["decision", "fact"]
+
+
+def test_recall_scope_all_skips_a_project_the_caller_cannot_read(db, principal, backend):
+    _seed_project(db, Principal(user_id="usr_alice"), backend, "github.com-x-alpine", "alpine images")
+    own = _seed(db, principal, backend, "alpine images")
+
+    response = read.recall(
+        db, principal,
+        read.RecallRequest(scope="all", project_slug="github.com-x-alpine", query="alpine images"),
+        backend=backend,
+    )
+
+    assert [hit.memory_id for hit in response.items] == [own]
+
+
+def test_recall_of_another_users_project_by_name_is_refused(db, principal, backend):
+    _seed_project(db, Principal(user_id="usr_alice"), backend, "github.com-x-alpine", "alpine images")
+
+    with pytest.raises(Forbidden):
+        read.recall(
+            db, principal,
+            read.RecallRequest(scope="project", project_slug="github.com-x-alpine", query="alpine images"),
+            backend=backend,
+        )
 
 
 def test_recall_scope_all_alternates_the_banks_by_rank_project_first(db, principal, backend):
