@@ -19,7 +19,7 @@ from memory.auth.principal import Principal
 from memory.backend.base import Backend, Hit, MemoryView, TagGroup
 from memory.bank_ref import resolve_bank, resolve_memory_bank
 from memory.config import get_settings
-from memory.errors import MemoryNotFound, ProjectNotFound, UnsupportedCapability
+from memory.errors import Forbidden, MemoryNotFound, ProjectNotFound, UnsupportedCapability
 from memory.models import AuditEvent, Memory
 from memory.tags import SCHEMA_TAG
 
@@ -130,7 +130,8 @@ def _to_item(view: MemoryView, row: Memory | None) -> MemoryItem:
 def _recall_banks(db: Session, principal: Principal, request: RecallRequest) -> list[str]:
     """The banks one recall covers. `scope="all"` is project then user, so a
     project-specific claim wins a tie against a general user one; a project that is
-    unnamed or that nobody retained into drops out instead of failing the whole call."""
+    unnamed, that nobody retained into or that the caller cannot read drops out instead of
+    failing the whole call."""
     scopes = ("project", "user") if request.scope == "all" else (request.scope,)
     banks = []
     for scope in scopes:
@@ -139,6 +140,10 @@ def _recall_banks(db: Session, principal: Principal, request: RecallRequest) -> 
         try:
             ref, _ = resolve_bank(db, principal, scope, request.project_slug, create=False)
         except ProjectNotFound:  # nobody has retained into it yet; nothing to recall
+            continue
+        except Forbidden:  # another user's project: "all" still covers the caller's own bank
+            if request.scope != "all":
+                raise
             continue
         banks.append(ref.bank_id)
     return banks

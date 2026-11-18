@@ -56,6 +56,20 @@ def test_without_a_project_the_user_part_is_delivered(db, principal, backend):
     assert "1 memories of yours, 1 pinned." in text
 
 
+def test_another_users_project_still_delivers_the_callers_own_memory(db, principal, backend):
+    """The first person to retain into a slug owns the project. The next one opening the
+    same repository still gets their own pins, and is told why the project part is absent."""
+    _retain(db, Principal(user_id="usr_alice"), backend, "Hers", pin=True)
+    _retain(db, principal, backend, "Answer in English", scope="user", pin=True,
+            content="Always answer in English.")
+
+    text = _load(db, principal, backend).text
+
+    assert "- **Answer in English**: Always answer in English.\n" in text
+    assert "Hers" not in text
+    assert "belongs to another user" in text
+
+
 def test_sections_come_in_order(db, principal, backend):
     _retain(db, principal, backend, "Answer in English", scope="user", pin=True)
     _retain(db, principal, backend, "Project purpose", content="Acme ships widgets.", tags=["purpose"])
