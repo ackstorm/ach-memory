@@ -224,6 +224,16 @@ def without_session(tool: types.Tool) -> types.Tool:
     return tool.model_copy(update={"input_schema": schema})
 
 
+def project_filled(tool: types.Tool) -> types.Tool:
+    """The proxy fills `project_slug` for these tools, so the agent is never asked for it:
+    OpenCode and pi refuse a call that lacks a required argument before it reaches the proxy."""
+    required = tool.input_schema.get("required", [])
+    if tool.name not in _UNSCOPED or "project_slug" not in required:
+        return tool
+    schema = {**tool.input_schema, "required": [r for r in required if r != "project_slug"]}
+    return tool.model_copy(update={"input_schema": schema})
+
+
 def personal_tools(tools: list[types.Tool]) -> list[types.Tool]:
     """Tool list for a session with no project: user memory only, so `scope` and
     `project_slug` leave the schemas, and the project-only tools disappear."""
@@ -308,7 +318,7 @@ def _build_bridge(
                 remote_names[name] = tool.name
                 tool = tool.model_copy(update={"name": name})
             tools.append(without_session(tool))
-        return listed.model_copy(update={"tools": tools if slug else personal_tools(tools)})
+        return listed.model_copy(update={"tools": [project_filled(t) for t in tools] if slug else personal_tools(tools)})
 
     async def _call_tool(ctx, params):
         arguments = with_session(params.name, fill_arguments(params.name, params.arguments or {}, slug, spellings))

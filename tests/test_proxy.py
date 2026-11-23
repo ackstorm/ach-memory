@@ -249,6 +249,41 @@ async def _remote_list_tools(ctx, params):
     )
 
 
+def test_bridge_does_not_demand_the_project_slug_it_fills():
+    """OpenCode and pi check `required` before calling: a slug the proxy fills must not be required."""
+    families = {"type": "object", "properties": {"project_slug": {"type": "string"}}, "required": ["project_slug"]}
+    renamed = {
+        "type": "object",
+        "properties": {"project_slug": {"type": "string"}, "new_slug": {"type": "string"}},
+        "required": ["project_slug", "new_slug"],
+    }
+
+    async def _list(ctx, params):
+        return types.ListToolsResult(tools=[
+            types.Tool(name="list_families", inputSchema=families),
+            types.Tool(name="rename_project", inputSchema=renamed),
+        ])
+
+    async def scenario():
+        async with (
+            InMemoryTransport(Server("fake-remote", on_list_tools=_list)) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.discover()
+            bridge = _build_bridge(session, "acme-1")
+            async with (
+                InMemoryTransport(bridge) as (h_read, h_write),
+                ClientSession(h_read, h_write) as host,
+            ):
+                await host.discover()
+                return {t.name: t.input_schema for t in (await host.list_tools()).tools}
+
+    listed = asyncio.run(scenario())
+    assert listed["list_families"]["required"] == []
+    assert "project_slug" in listed["list_families"]["properties"]
+    assert listed["rename_project"]["required"] == ["project_slug", "new_slug"]  # names a project: never filled
+
+
 def test_bridge_lists_and_forwards_tool_calls_with_filled_project_slug():
     """One in-process round trip: host -> proxy Server -> remote Server, via the SDK's own
     in-memory transport (no real stdio, no real network)."""
