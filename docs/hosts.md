@@ -114,7 +114,7 @@ then stays quiet. Unset means `1800` (30 minutes).
 
 | | Claude Code | Codex | opencode | pi | Antigravity |
 |---|---|---|---|---|---|
-| MCP tools | `mcp.json` | `codex-mcp.json` | plugin `config` hook | extension writes `~/.pi/agent/mcp.json` | `mcp_config.json` |
+| MCP tools | `mcp.json` | `codex-mcp.json` | plugin `config` hook | extension calls `pi.registerMcpServer` | `mcp_config.json` |
 | Skill | `skills/` | `skills/` | plugin `config` hook | `package.json` `pi.skills` | `.antigravity-plugin/plugin.json` `skills` |
 | Standing context at start | `SessionStart` | `SessionStart` | `chat.system.transform` | `before_agent_start` | `SessionStart` (`hooks.json`) |
 | Standing context after compaction | `SessionStart` runs again (source `compact`) | `SessionStart` runs again (source `compact`, root sessions) | stays in the system prompt | stays in the system prompt | ❌ no compaction event |
@@ -143,6 +143,14 @@ installed copy of this release under `${CODEX_HOME:-~/.codex}/plugins/cache/*/ac
 (`make release-bump` writes the version) and starts the proxy from it; the
 server keeps the session folder as its cwd, which is how it names the project.
 Codex runs a plugin's hooks only once you trust them (`/hooks`).
+
+pi loads every install it is given in one process, a project's before the
+user's. The first copy of the extension to load runs and the others stay idle,
+so a project install wins over a global one and the context loads once. It
+registers the server for the session with `pi.registerMcpServer` and removes the
+`ach-memory` entry older releases wrote to `~/.pi/agent/mcp.json`, because an
+entry there wins over a registration; an entry of another shape is left alone.
+A pi without `registerMcpServer` still gets that entry written.
 
 Antigravity reads its own files at the plugin root: `hooks.json` (one named hook
 per entry) and `mcp_config.json`, where it expands `${PLUGIN_ROOT}` and nothing
