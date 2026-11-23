@@ -37,7 +37,7 @@ origin, from an `.ach-memory` marker that `ach-memory project init <name>`
 writes) and forwards to the remote service. Per-host details in [`docs/hosts.md`](docs/hosts.md).
 
 Prerequisites: [`uv`](https://docs.astral.sh/uv/) (the plugin starts the proxy
-with `uvx`) and the host CLI (`claude`, `codex`, `opencode` or `pi`).
+with `uvx`) and the host CLI (`claude`, `codex`, `opencode`, `pi` or `agy`).
 
 ### 1. Connection
 
@@ -78,6 +78,7 @@ codex    plugin marketplace add ackstorm/ach-memory && codex  plugin add     ach
 opencode plugin add ach-memory@git+https://github.com/ackstorm/ach-memory.git        # OpenCode 2
 opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global   # OpenCode 1
 pi       install git:github.com/ackstorm/ach-memory
+agy      plugin install https://github.com/ackstorm/ach-memory                        # Antigravity
 ```
 
 OpenCode 1 also installs straight from the service, with no git and no registry —

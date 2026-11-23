@@ -22,15 +22,20 @@ MANIFESTS = (
     ".claude-plugin/marketplace.json",
     ".claude-plugin/plugin.json",
     ".codex-plugin/plugin.json",
+    ".antigravity-plugin/plugin.json",
     "mcp.json",
     "codex-mcp.json",
     "hooks/hooks.json",
     "hooks/codex-hooks.json",
+    "hooks.json",
+    "mcp_config.json",
     "hooks/activation.subagent.json",
     "package.json",
 )
 
-HOOK_SCRIPTS = ("session-start.sh", "subagent-start.sh", "pre-compact.sh", "idle-nudge.sh")
+HOOK_SCRIPTS = (
+    "session-start.sh", "subagent-start.sh", "pre-compact.sh", "idle-nudge.sh", "antigravity-session-start.sh",
+)
 
 # Claude Code and Codex both expand their own plugin-root variable and nothing
 # else. A hook that names the wrong one resolves to an empty path and dies.
@@ -304,12 +309,52 @@ def test_hook_scripts_are_executable(script):
     assert os.access(ROOT / "hooks" / "scripts" / script, os.X_OK)
 
 
-@pytest.mark.parametrize("relative,variable", (("mcp.json", "CLAUDE_PLUGIN_ROOT"), ("codex-mcp.json", "PLUGIN_ROOT")))
+@pytest.mark.parametrize("relative,variable", (("mcp.json", "CLAUDE_PLUGIN_ROOT"), ("mcp_config.json", "PLUGIN_ROOT")))
 def test_mcp_runs_the_proxy_from_the_plugin_root(relative, variable):
     """No version pin: the host config freezes whatever it is given at install time."""
     args = load(relative)["mcpServers"]["ach-memory"]["args"]
     assert args[:2] == ["--from", f"${{{variable}}}"]
     assert not any("@v" in arg for arg in args)
+
+
+def test_codex_mcp_finds_its_plugin_root_itself():
+    """Codex expands nothing in a plugin's MCP config and passes only the variables `env_vars`
+    names: a `${...}` there reaches the process verbatim. The shell finds the installed copy of
+    this release, and the server starts in the session folder, which names the project."""
+    server = load("codex-mcp.json")["mcpServers"]["ach-memory"]
+    assert server["command"] == "sh" and server["args"][0] == "-c"
+    assert f"/plugins/cache/*/ach-memory/{VERSION}" in server["args"][1]
+    assert "cwd" not in server and "env" not in server
+    assert {"ACH_MEMORY_URL", "ACH_MEMORY_TOKEN_COMMAND", "ACH_MEMORY_API_KEY", "CODEX_HOME"} <= set(server["env_vars"])
+
+
+def test_antigravity_hooks_run_real_scripts_from_the_plugin_folder():
+    """Antigravity reads hooks.json at the root, one named hook per entry, run in the plugin folder."""
+    for name, events in load("hooks.json").items():
+        for event, handlers in events.items():
+            assert event in ("SessionStart", "PreInvocation", "PostInvocation", "Stop", "PreToolUse", "PostToolUse")
+            for handler in handlers:
+                assert handler["command"].startswith("./"), f"{name}/{event}"
+                assert os.access(ROOT / handler["command"], os.X_OK)
+
+
+def test_antigravity_session_start_injects_the_context_from_the_session_folder(tmp_path):
+    """Antigravity ignores plain stdout; it takes a protojson SessionStartHookResult. The session
+    folder comes only on stdin."""
+    session = tmp_path / "session"
+    session.mkdir()
+    (tmp_path / "uvx").write_text(
+        '#!/bin/sh\nprintf \'### Project purpose\\n"quoted"\\tC:\\\\\\033[0min %s\\n\' "$PWD"\n'
+    )
+    (tmp_path / "uvx").chmod(0o755)
+    out = subprocess.run(
+        [str(ROOT / "hooks" / "scripts" / "antigravity-session-start.sh")],
+        input=json.dumps({"conversationId": "c", "cwd": str(session), "hookEventName": "SessionStart"}),
+        capture_output=True, text=True, cwd=tmp_path, check=True,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "ACH_MEMORY_API_KEY": "k"},
+    ).stdout
+    text = json.loads(out)["injectSteps"][0]["systemMessage"]["systemMessage"]
+    assert f'### Project purpose\n"quoted"\tC:\\[0min {session}' in text  # control bytes dropped
 
 
 def test_package_json_gives_opencode_and_pi_their_entry_points():
@@ -322,7 +367,7 @@ def test_package_json_gives_opencode_and_pi_their_entry_points():
 
 
 def test_every_manifest_carries_the_release_version():
-    for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "package.json"):
+    for relative in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json", ".antigravity-plugin/plugin.json", "package.json"):
         assert load(relative)["version"] == VERSION, relative
     (entry,) = load(".claude-plugin/marketplace.json")["plugins"]
     assert entry["version"] == VERSION

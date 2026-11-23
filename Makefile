@@ -66,7 +66,8 @@ release-bump: # Update release metadata (VERSION=X.Y.Z)
 	sed -i -E 's/^version: .*/version: $(VERSION)/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E 's/^appVersion: ".*"$$/appVersion: "$(VERSION)"/' deploy/helm/ach-memory/Chart.yaml
 	sed -i -E '0,/"version": "[^"]*"/s//"version": "$(VERSION)"/' package.json
-	sed -i -E 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json .claude-plugin/plugin.json .codex-plugin/plugin.json
+	sed -i -E 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json .claude-plugin/plugin.json .codex-plugin/plugin.json .antigravity-plugin/plugin.json
+	sed -i -E 's#/ach-memory/[0-9][^ ;"]*#/ach-memory/$(VERSION)#g; s#ach-memory [0-9][^ ]* not found#ach-memory $(VERSION) not found#' codex-mcp.json
 	uv lock
 	$(MAKE) chart VERSION=$(VERSION)
 
