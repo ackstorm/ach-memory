@@ -1,9 +1,9 @@
 # Installing ach-memory on a host
 
-Four supported hosts. Each installs with its own native plugin command; there is
+Five supported hosts. Each installs with its own native plugin command; there is
 nothing of ours to run first. The plugin *is* this repository: one tree, one
 skill, one set of hook scripts, and a manifest per host at the root
-(`.claude-plugin/`, `.codex-plugin/`, `package.json`).
+(`.claude-plugin/`, `.codex-plugin/`, `.antigravity-plugin/`, `package.json`).
 
 ```bash
 claude   plugin marketplace add ackstorm/ach-memory
@@ -15,6 +15,7 @@ codex    plugin add ach-memory@ach-memory
 opencode plugin add ach-memory@git+https://github.com/ackstorm/ach-memory.git        # OpenCode 2
 opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global   # OpenCode 1
 pi       install git:github.com/ackstorm/ach-memory
+agy      plugin install https://github.com/ackstorm/ach-memory                        # Antigravity
 ```
 
 OpenCode 2's `plugin add` always installs globally and records the spec under
@@ -111,15 +112,15 @@ then stays quiet. Unset means `1800` (30 minutes).
 
 ## What each host gets
 
-| | Claude Code | Codex | opencode | pi |
-|---|---|---|---|---|
-| MCP tools | `mcp.json` | `codex-mcp.json` | plugin `config` hook | extension writes `~/.pi/agent/mcp.json` |
-| Skill | `skills/` | `skills/` | plugin `config` hook | `package.json` `pi.skills` |
-| Standing context at start | `SessionStart` | `SessionStart` | `chat.system.transform` | `before_agent_start` |
-| Standing context after compaction | `SessionStart` runs again (source `compact`) | `SessionStart` runs again (source `compact`, root sessions) | stays in the system prompt | stays in the system prompt |
-| Subagent activation | `SubagentStart` | `SubagentStart` | ❌ no subagent event | ❌ no subagent event |
-| Retain nudge before compaction | `PreCompact` | `PreCompact` | `session.compacting` | ❌ not wired |
-| Idle retain nudge | `UserPromptSubmit` | `UserPromptSubmit` | `chat.message` | `before_agent_start` → `message` |
+| | Claude Code | Codex | opencode | pi | Antigravity |
+|---|---|---|---|---|---|
+| MCP tools | `mcp.json` | `codex-mcp.json` | plugin `config` hook | extension writes `~/.pi/agent/mcp.json` | `mcp_config.json` |
+| Skill | `skills/` | `skills/` | plugin `config` hook | `package.json` `pi.skills` | `.antigravity-plugin/plugin.json` `skills` |
+| Standing context at start | `SessionStart` | `SessionStart` | `chat.system.transform` | `before_agent_start` | `SessionStart` (`hooks.json`) |
+| Standing context after compaction | `SessionStart` runs again (source `compact`) | `SessionStart` runs again (source `compact`, root sessions) | stays in the system prompt | stays in the system prompt | ❌ no compaction event |
+| Subagent activation | `SubagentStart` | `SubagentStart` | ❌ no subagent event | ❌ no subagent event | ❌ no subagent event |
+| Retain nudge before compaction | `PreCompact` | `PreCompact` | `session.compacting` | ❌ not wired | ❌ no compaction event |
+| Idle retain nudge | `UserPromptSubmit` | `UserPromptSubmit` | `chat.message` | `before_agent_start` → `message` | ❌ not wired |
 
 The opencode column names the OpenCode 1 hooks. On OpenCode 2 the same rows
 come from `mcp.transform`, `skill.transform` and the session hooks `context`,
@@ -134,6 +135,26 @@ opencode has no subagent lifecycle event; pi has none either. pi's
 `session_before_compact` can only cancel or replace the whole compaction (its
 result is `{cancel?, compaction?}`; `customInstructions` is read-only input),
 so there is no way to add the retain nudge to its summarizer.
+
+Codex expands nothing in a plugin's MCP config (`${PLUGIN_ROOT}`, `${HOME}` and
+`${VAR:-default}` all reach the process verbatim) and hands the server only the
+variables `env_vars` names. So `codex-mcp.json` runs `sh`, which finds the
+installed copy of this release under `${CODEX_HOME:-~/.codex}/plugins/cache/*/ach-memory/<version>`
+(`make release-bump` writes the version) and starts the proxy from it; the
+server keeps the session folder as its cwd, which is how it names the project.
+Codex runs a plugin's hooks only once you trust them (`/hooks`).
+
+Antigravity reads its own files at the plugin root: `hooks.json` (one named hook
+per entry) and `mcp_config.json`, where it expands `${PLUGIN_ROOT}` and nothing
+else. It runs both in the plugin folder and names the session folder only in the
+hook's stdin, so `antigravity-session-start.sh` moves there before loading the
+context, and prints it as protojson (`{"injectSteps":[{"systemMessage":...}]}`):
+Antigravity ignores plain stdout. The MCP server names the project from the plugin
+folder's git origin, so it does so only when the plugin sits inside the workspace
+(`.agents/plugins/`, where `ach-cli` puts it). Installed for the user
+(`~/.gemini/config/plugins/`), it has no project: Antigravity advertises MCP roots
+but never answers `roots/list`. The standing context still arrives, and the agent
+passes `project_slug` itself.
 
 Claude Code and Codex share the three hook scripts under `hooks/scripts/` but
 need separate hook files, because each expands only its own plugin-root
@@ -168,6 +189,7 @@ turn-finished nudge is gone rather than reworked.
 ```bash
 claude mcp list          # ach-memory should show as connected
 codex mcp list           # same, with the plugin's own entry and no stale one
+agy plugin list          # ach-memory (enabled): 1 skill, 1 MCP server, 1 hook
 ```
 
 Then ask the agent to recall something, or run the proxy's own loader directly:

@@ -1,0 +1,11 @@
+{
+  "ach-memory": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./hooks/scripts/antigravity-session-start.sh",
+        "timeout": 10
+      }
+    ]
+  }
+}

@@ -2,20 +2,20 @@
   "mcpServers": {
     "ach-memory": {
       "type": "stdio",
-      "command": "uvx",
+      "command": "sh",
       "args": [
-        "--from",
-        "${PLUGIN_ROOT}",
-        "ach-memory",
-        "mcp",
-        "--url",
-        "${ACH_MEMORY_URL:-http://localhost:8000/mcp/}"
+        "-c",
+        "root=$(ls -d \"${CODEX_HOME:-$HOME/.codex}\"/plugins/cache/*/ach-memory/0.13.8 2>/dev/null | head -n 1); exec uvx --from \"${root:?ach-memory 0.13.8 not found in the Codex plugin cache}\" ach-memory mcp"
       ],
-      "env": {
-        "ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY:-}",
-        "ACH_MEMORY_HEADER": "${ACH_MEMORY_HEADER:-Authorization}",
-        "ACH_MEMORY_TOKEN_COMMAND": "${ACH_MEMORY_TOKEN_COMMAND:-}"
-      }
+      "env_vars": [
+        "CODEX_HOME",
+        "ACH_MEMORY_URL",
+        "ACH_MEMORY_API_KEY",
+        "ACH_MEMORY_HEADER",
+        "ACH_MEMORY_TOKEN_COMMAND",
+        "MEMORY_PROJECT",
+        "XDG_CACHE_HOME"
+      ]
     }
   }
 }
