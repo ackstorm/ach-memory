@@ -199,6 +199,100 @@ def test_opencode_nudge_part_carries_the_ids_opencode_validates(tmp_path):
     assert part["id"]
 
 
+def run_opencode_plugin(tmp_path, body: str) -> dict:
+    """Run `body` in node against the plugin's default export, bound as `plugin`."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    (tmp_path / "uvx").write_text("#!/bin/sh\nexit 1\n")  # deterministic fallback texts
+    (tmp_path / "uvx").chmod(0o755)
+    stamp = tmp_path / "ach-memory" / ("retain-" + str(tmp_path).replace("/", "_"))
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("0")  # nothing retained for ages: the nudge fires
+
+    script = tmp_path / "run.mjs"
+    script.write_text(f'import plugin from "{ROOT / ".opencode" / "plugins" / "ach-memory.js"}";\n{body}')
+    result = subprocess.run(
+        [node, str(script)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "XDG_CACHE_HOME": str(tmp_path), "PATH": f"{tmp_path}:{os.environ['PATH']}",
+             "ACH_MEMORY_IDLE_INTERVAL": "600"},
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_opencode_2_setup_wires_skill_proxy_context_and_nudges(tmp_path):
+    """OpenCode 2 loads only a default export with an `id` and a `setup`.
+
+    A module without one is skipped with a warning in the server log and the
+    host silently gets no memory. `setup` registers everything through the
+    context: the skill and the proxy as transforms, the texts as session hooks.
+    """
+    out = run_opencode_plugin(
+        tmp_path,
+        """
+const skills = [], servers = {}, hooks = {};
+await plugin.setup({
+  skill: { transform: async (edit) => edit({ get: (id) => skills.find((s) => s.id === id), add: (s) => skills.push(s) }) },
+  mcp: { transform: async (edit) => edit({ set: (name, config) => { servers[name] = config; } }) },
+  session: { hook: async (name, callback) => { hooks[name] = callback; } },
+});
+const prompt = { sessionID: "ses_1", prompt: { text: "hi" } };
+await hooks.prompt(prompt);
+const request = { sessionID: "ses_1", system: [], messages: [
+  { role: "user", content: [{ type: "text", text: "hi" }], metadata: prompt.metadata },
+  { role: "user", content: [{ type: "text", text: "again" }] },
+] };
+await hooks.context(request);
+const compaction = { system: [] };
+await hooks.compaction(compaction);
+console.log(JSON.stringify({ id: plugin.id, skills, servers, request, compaction }));
+""",
+    )
+
+    assert out["id"] == "ach-memory"
+    (skill,) = out["skills"]
+    assert skill["id"] == skill["name"] == "ach-memory"
+    assert skill["description"].startswith("Read this before the first")
+    assert skill["path"] == str(ROOT / "skills" / "ach-memory" / "SKILL.md")
+    assert skill["content"].lstrip().startswith("# ach-memory")
+    proxy = out["servers"]["ach-memory"]
+    assert proxy["type"] == "local"
+    assert proxy["command"][:5] == ["uvx", "--from", str(ROOT), "ach-memory", "mcp"]
+    assert "environment" not in proxy
+    (system,) = out["request"]["system"]
+    assert system["type"] == "text"
+    assert system["text"].startswith((ROOT / "hooks" / "activation.txt").read_text()[:40])
+    first, second = out["request"]["messages"]
+    assert first["content"][0]["text"] == "hi"
+    assert first["content"][1]["text"].startswith("Before starting, run one ach-memory recall")
+    assert second["content"] == [{"type": "text", "text": "again"}]
+    (nudge,) = out["compaction"]["system"]
+    assert nudge["text"].startswith("Before context is compacted")
+
+
+def test_opencode_1_gets_the_v1_plugin_and_no_setup(tmp_path):
+    """OpenCode 1.19 calls `server` and also `setup`, with no `mcp` or `session` domain."""
+    out = run_opencode_plugin(
+        tmp_path,
+        """
+let touched = false;
+await plugin.setup({ skill: { transform: async () => { touched = true; } } });
+const v1 = await plugin.server();
+console.log(JSON.stringify({ touched, hooks: Object.keys(v1).sort() }));
+""",
+    )
+
+    assert out["touched"] is False
+    assert out["hooks"] == [
+        "chat.message", "config", "experimental.chat.system.transform", "experimental.session.compacting",
+    ]
+
+
 def test_subagent_activation_is_the_session_activation():
     """One text, two carriers: the JSON is generated from the txt and must not drift."""
     text = (ROOT / "hooks" / "activation.txt").read_text().rstrip("\n")
@@ -221,6 +315,8 @@ def test_mcp_runs_the_proxy_from_the_plugin_root(relative, variable):
 def test_package_json_gives_opencode_and_pi_their_entry_points():
     package = load("package.json")
     assert (ROOT / package["main"]).exists()
+    # OpenCode 2 resolves a local plugin directory through `exports`, not `main`.
+    assert package["exports"]["."] == "./" + package["main"]
     assert (ROOT / package["pi"]["extensions"][0]).exists()
     assert (ROOT / package["pi"]["skills"][0]).is_dir()
 

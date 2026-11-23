@@ -75,11 +75,12 @@ environment.
 ```bash
 claude   plugin marketplace add ackstorm/ach-memory && claude plugin install ach-memory@ach-memory
 codex    plugin marketplace add ackstorm/ach-memory && codex  plugin add     ach-memory@ach-memory
-opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global
+opencode plugin add ach-memory@git+https://github.com/ackstorm/ach-memory.git        # OpenCode 2
+opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global   # OpenCode 1
 pi       install git:github.com/ackstorm/ach-memory
 ```
 
-opencode also installs straight from the service, with no git and no registry —
+OpenCode 1 also installs straight from the service, with no git and no registry —
 the endpoint serves the running release's own bundle:
 
 ```bash
