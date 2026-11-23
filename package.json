@@ -7,6 +7,9 @@
   "repository": "https://github.com/ackstorm/ach-memory",
   "homepage": "https://github.com/ackstorm/ach-memory",
   "main": ".opencode/plugins/ach-memory.js",
+  "exports": {
+    ".": "./.opencode/plugins/ach-memory.js"
+  },
   "keywords": [
     "pi-package",
     "opencode-plugin",

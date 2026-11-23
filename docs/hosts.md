@@ -12,9 +12,15 @@ claude   plugin install ach-memory@ach-memory
 codex    plugin marketplace add ackstorm/ach-memory
 codex    plugin add ach-memory@ach-memory
 
-opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global
+opencode plugin add ach-memory@git+https://github.com/ackstorm/ach-memory.git        # OpenCode 2
+opencode plugin ach-memory@git+https://github.com/ackstorm/ach-memory.git --global   # OpenCode 1
 pi       install git:github.com/ackstorm/ach-memory
 ```
+
+OpenCode 2's `plugin add` always installs globally and records the spec under
+`plugins` in `~/.config/opencode/opencode.json`. A plugin it cannot load is
+skipped without a word in the UI: `opencode run --standalone --print-logs "hi"`
+prints `loading plugin` for each one, or `failed to load plugin`.
 
 Re-running the install command does not update Claude Code or Codex: both keep
 their marketplace snapshot. Refresh it first:
@@ -24,7 +30,7 @@ claude plugin marketplace update ach-memory && claude plugin update ach-memory@a
 codex  plugin marketplace upgrade ach-memory && codex  plugin add ach-memory@ach-memory
 ```
 
-Re-running the install command is the update path for pi. opencode caches the git spec as an npm dependency and never re-resolves it, so
+Re-running the install command is the update path for pi. OpenCode 1 caches the git spec as an npm dependency and never re-resolves it, so
 its update is:
 
 ```bash
@@ -37,7 +43,10 @@ follow their marketplace or package source.
 
 ## Installing opencode from the service
 
-opencode accepts a URL as a plugin entry and hands it to bun, which expects an
+OpenCode 2's `plugin add` refuses a URL (`Plugin target must be an npm registry
+package or Git package specifier`), so this path is OpenCode 1 only.
+
+OpenCode 1 accepts a URL as a plugin entry and hands it to bun, which expects an
 `npm pack` tarball — the same mechanism as a git spec, over plain HTTPS. The
 service serves its own bundle at `/plugin`:
 
@@ -111,6 +120,10 @@ then stays quiet. Unset means `1800` (30 minutes).
 | Subagent activation | `SubagentStart` | `SubagentStart` | ❌ no subagent event | ❌ no subagent event |
 | Retain nudge before compaction | `PreCompact` | `PreCompact` | `session.compacting` | ❌ not wired |
 | Idle retain nudge | `UserPromptSubmit` | `UserPromptSubmit` | `chat.message` | `before_agent_start` → `message` |
+
+The opencode column names the OpenCode 1 hooks. On OpenCode 2 the same rows
+come from `mcp.transform`, `skill.transform` and the session hooks `context`,
+`compaction` and `prompt`.
 
 opencode and pi compute the standing context once, when the plugin loads, and
 add it to every system prompt; a compaction summarizes the messages, not the
