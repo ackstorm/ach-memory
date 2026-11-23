@@ -325,7 +325,10 @@ def test_codex_mcp_finds_its_plugin_root_itself():
     assert server["command"] == "sh" and server["args"][0] == "-c"
     assert f"/plugins/cache/*/ach-memory/{VERSION}" in server["args"][1]
     assert "cwd" not in server and "env" not in server
-    assert {"ACH_MEMORY_URL", "ACH_MEMORY_TOKEN_COMMAND", "ACH_MEMORY_API_KEY", "CODEX_HOME"} <= set(server["env_vars"])
+    # XDG_CONFIG_HOME: where `ach-cli token`, the usual token command, keeps its session.
+    assert {"ACH_MEMORY_URL", "ACH_MEMORY_TOKEN_COMMAND", "ACH_MEMORY_API_KEY", "CODEX_HOME", "XDG_CONFIG_HOME"} <= set(
+        server["env_vars"]
+    )
 
 
 def test_antigravity_hooks_run_real_scripts_from_the_plugin_folder():

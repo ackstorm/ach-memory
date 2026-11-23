@@ -14,7 +14,8 @@
         "ACH_MEMORY_HEADER",
         "ACH_MEMORY_TOKEN_COMMAND",
         "MEMORY_PROJECT",
-        "XDG_CACHE_HOME"
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME"
       ]
     }
   }
