@@ -268,7 +268,7 @@ console.log(JSON.stringify({ id: plugin.id, skills, servers, request, compaction
     assert system["type"] == "text"
     assert system["text"].startswith((ROOT / "hooks" / "activation.txt").read_text()[:40])
     first, second = out["request"]["messages"]
-    assert [part["text"] for part in first["content"]][0] == "hi"
+    assert first["content"][0]["text"] == "hi"
     assert first["content"][1]["text"].startswith("Before starting, run one ach-memory recall")
     assert second["content"] == [{"type": "text", "text": "again"}]
     (nudge,) = out["compaction"]["system"]
