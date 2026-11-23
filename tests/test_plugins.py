@@ -230,6 +230,47 @@ def run_opencode_plugin(tmp_path, body: str) -> dict:
     return json.loads(result.stdout)
 
 
+def test_pi_runs_one_copy_and_registers_its_server_for_the_session(tmp_path):
+    """pi loads a project and a global install side by side, project first. The first copy owns the
+    session; the server is registered, not written to the user-wide mcp.json, where an entry of the
+    same name would win over the registration."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    copies = []
+    for name in ("project", "global"):
+        extension = tmp_path / name / ".pi" / "extensions" / "ach-memory.js"
+        extension.parent.mkdir(parents=True)
+        shutil.copy(ROOT / ".pi" / "extensions" / "ach-memory.js", extension)
+        copies.append(extension)
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    legacy = {"command": "uvx", "args": ["--from", "/old/copy", "ach-memory", "mcp", "--url", "http://x/mcp/"]}
+    (agent / "mcp.json").write_text(json.dumps({"mcpServers": {"ach-memory": legacy, "other": {"url": "https://o"}}}))
+    script = tmp_path / "run.mjs"
+    script.write_text(
+        f'import first from "{copies[0]}";\nimport second from "{copies[1]}";\n'
+        """
+const fake = () => { const p = { servers: {}, events: [] };
+  p.registerMcpServer = (name, config) => { p.servers[name] = config; };
+  p.on = (event) => { p.events.push(event); }; return p; };
+const a = fake(), b = fake();
+first(a); second(b);
+console.log(JSON.stringify({ a, b }));
+"""
+    )
+    out = json.loads(subprocess.run(
+        [node, str(script)], capture_output=True, text=True, cwd=tmp_path, check=True,
+        env={**os.environ, "PI_CODING_AGENT_DIR": str(agent), "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+    ).stdout)
+    assert out["a"]["servers"] == {
+        "ach-memory": {"command": "uvx", "args": ["--from", str(tmp_path / "project"), "ach-memory", "mcp"]}
+    }
+    assert out["a"]["events"] == ["before_agent_start"]
+    assert out["b"] == {"servers": {}, "events": []}
+    assert json.loads((agent / "mcp.json").read_text())["mcpServers"] == {"other": {"url": "https://o"}}
+
+
 def test_opencode_2_setup_wires_skill_proxy_context_and_nudges(tmp_path):
     """OpenCode 2 loads only a default export with an `id` and a `setup`.
 

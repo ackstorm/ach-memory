@@ -3,9 +3,14 @@
 //   pi install git:github.com/ackstorm/ach-memory
 //
 // `pi.extensions` and `pi.skills` in package.json give pi this file and the
-// skill. MCP is not part of a pi package, so the extension writes the server
-// entry into pi's own mcp.json once, pointing at this checkout -- the same
-// no-pin arrangement the other three hosts get from their plugin root.
+// skill. MCP is not part of a pi package, so the extension registers the server
+// for the session, pointing at this checkout -- the same no-pin arrangement the
+// other hosts get from their plugin root. pi before `registerMcpServer` gets
+// the entry written into its user-wide mcp.json instead.
+//
+// pi loads every install it is given, a project's before the user's, so one
+// process can hold two copies of this file. The first one loaded runs; the
+// others do nothing, or the context would load twice and the server clash.
 //
 // `before_agent_start` carries the standing context and `agent_settled` is
 // pi's Stop. There is no PreCompact equivalent: `session_before_compact` can
@@ -30,20 +35,26 @@ function hook(script, ...args) {
   }
 }
 
-/** Idempotent: rewrites the entry only when it does not already match. */
-function ensureMcpServer() {
+const server = { command: "uvx", args: ["--from", root, "ach-memory", "mcp"] };
+
+/** Sets this extension's entry in pi's user-wide mcp.json; `null` removes one it wrote. */
+function writeMcpEntry(entry) {
   const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
   const file = path.join(agentDir, "mcp.json");
-  const entry = {
-    command: "uvx",
-    args: ["--from", root, "ach-memory", "mcp", "--url",
-           process.env.ACH_MEMORY_URL || "http://localhost:8000/mcp/"],
-  };
   try {
     const cfg = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
     cfg.mcpServers = cfg.mcpServers || {};
-    if (JSON.stringify(cfg.mcpServers["ach-memory"]) === JSON.stringify(entry)) return;
-    cfg.mcpServers["ach-memory"] = entry;
+    const current = cfg.mcpServers["ach-memory"];
+    if (JSON.stringify(current) === JSON.stringify(entry ?? undefined)) return;
+    if (entry) {
+      cfg.mcpServers["ach-memory"] = entry;
+    } else {
+      // Only an entry of this extension's shape: a hand-written one is the user's.
+      const ours = current?.command === "uvx" && current.args?.[0] === "--from"
+        && current.args[2] === "ach-memory" && current.args[3] === "mcp";
+      if (!ours) return;
+      delete cfg.mcpServers["ach-memory"];
+    }
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
   } catch {
@@ -51,8 +62,18 @@ function ensureMcpServer() {
   }
 }
 
+const loaded = Symbol.for("ach-memory.pi");
+
 export default function (pi) {
-  ensureMcpServer();
+  if (globalThis[loaded]) return;
+  globalThis[loaded] = root;
+  if (typeof pi?.registerMcpServer === "function") {
+    // An mcp.json entry of the same name wins over a registration.
+    writeMcpEntry(null);
+    pi.registerMcpServer("ach-memory", server);
+  } else {
+    writeMcpEntry(server);
+  }
   if (typeof pi?.on !== "function") return;
   // `before_agent_start` fires per user prompt: the standing context goes into
   // the system prompt once, and the idle nudge -- printed only when nothing was
