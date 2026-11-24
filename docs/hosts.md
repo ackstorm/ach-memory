@@ -157,12 +157,15 @@ per entry) and `mcp_config.json`, where it expands `${PLUGIN_ROOT}` and nothing
 else. It runs both in the plugin folder and names the session folder only in the
 hook's stdin, so `antigravity-session-start.sh` moves there before loading the
 context, and prints it as protojson (`{"injectSteps":[{"systemMessage":...}]}`):
-Antigravity ignores plain stdout. The MCP server names the project from the plugin
-folder's git origin, so it does so only when the plugin sits inside the workspace
-(`.agents/plugins/`, where `ach-cli` puts it). Installed for the user
-(`~/.gemini/config/plugins/`), it has no project: Antigravity advertises MCP roots
-but never answers `roots/list`. The standing context still arrives, and the agent
-passes `project_slug` itself.
+Antigravity ignores plain stdout. Antigravity starts the MCP server in the plugin
+folder and advertises MCP roots but never answers `roots/list`; it does pass down
+`PWD`, the folder agy was started in, so `mcp_config.json` runs `python -m
+memory.cli mcp --in-pwd`, which moves there before naming the project. A copy
+installed for the user (`~/.gemini/config/plugins/`) then names the session's
+project like one inside the workspace (`.agents/plugins/`). Neither a shell
+wrapper nor uv's `ach-memory` launcher can carry `PWD`: both run `sh`, which
+resets it to its own folder. `PWD` belongs to the agy process, so one process
+serving several workspaces would name the first for all of them.
 
 Claude Code and Codex share the three hook scripts under `hooks/scripts/` but
 need separate hook files, because each expands only its own plugin-root

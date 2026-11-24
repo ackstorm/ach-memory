@@ -46,6 +46,10 @@ def _parser() -> argparse.ArgumentParser:
 
     mcp_cmd = commands.add_parser("mcp", help="run the stdio MCP proxy")
     mcp_cmd.add_argument("--url", default=os.environ.get("ACH_MEMORY_URL"))
+    # Antigravity starts the server in the plugin folder but passes down the session's PWD.
+    # sh resets PWD to its own folder, and uv's `ach-memory` launcher is a sh trampoline,
+    # so the plugin runs `python -m memory.cli`.
+    mcp_cmd.add_argument("--in-pwd", action="store_true", help="run in $PWD, the folder the host passed down")
 
     context = commands.add_parser("context", help="load bounded standing context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
@@ -147,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.url:
             print("ach-memory: --url or ACH_MEMORY_URL is required", file=sys.stderr)
             return 1
+        if args.in_pwd and os.path.isdir(os.environ.get("PWD", "")):
+            os.chdir(os.environ["PWD"])
         asyncio.run(proxy.serve(args.url))
         return 0
 
@@ -168,3 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

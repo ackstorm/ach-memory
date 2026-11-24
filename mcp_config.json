@@ -2,7 +2,15 @@
   "mcpServers": {
     "ach-memory": {
       "command": "uvx",
-      "args": ["--from", "${PLUGIN_ROOT}", "ach-memory", "mcp"]
+      "args": [
+        "--from",
+        "${PLUGIN_ROOT}",
+        "python",
+        "-m",
+        "memory.cli",
+        "mcp",
+        "--in-pwd"
+      ]
     }
   }
 }

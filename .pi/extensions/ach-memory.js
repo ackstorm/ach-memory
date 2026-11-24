@@ -35,7 +35,7 @@ function hook(script, ...args) {
   }
 }
 
-const server = { command: "uvx", args: ["--from", root, "ach-memory", "mcp"] };
+const server = { command: "uvx", args: ["--from", root, "python", "-m", "memory.cli", "mcp"] };
 
 /** Sets this extension's entry in pi's user-wide mcp.json; `null` removes one it wrote. */
 function writeMcpEntry(entry) {
@@ -51,7 +51,7 @@ function writeMcpEntry(entry) {
     } else {
       // Only an entry of this extension's shape: a hand-written one is the user's.
       const ours = current?.command === "uvx" && current.args?.[0] === "--from"
-        && current.args[2] === "ach-memory" && current.args[3] === "mcp";
+        && ["ach-memory mcp", "python -m memory.cli mcp"].some((c) => `${current.args.slice(2).join(" ")} `.startsWith(`${c} `));
       if (!ours) return;
       delete cfg.mcpServers["ach-memory"];
     }

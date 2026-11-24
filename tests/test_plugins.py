@@ -9,8 +9,10 @@ nobody installed; nothing failed, because nothing asserted the wiring.
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -264,7 +266,7 @@ console.log(JSON.stringify({ a, b }));
         env={**os.environ, "PI_CODING_AGENT_DIR": str(agent), "PATH": f"{tmp_path}:{os.environ['PATH']}"},
     ).stdout)
     assert out["a"]["servers"] == {
-        "ach-memory": {"command": "uvx", "args": ["--from", str(tmp_path / "project"), "ach-memory", "mcp"]}
+        "ach-memory": {"command": "uvx", "args": ["--from", str(tmp_path / "project"), "python", "-m", "memory.cli", "mcp"]}
     }
     assert out["a"]["events"] == ["before_agent_start"]
     assert out["b"] == {"servers": {}, "events": []}
@@ -308,7 +310,7 @@ console.log(JSON.stringify({ id: plugin.id, skills, servers, request, compaction
     assert skill["content"].lstrip().startswith("# ach-memory")
     proxy = out["servers"]["ach-memory"]
     assert proxy["type"] == "local"
-    assert proxy["command"][:5] == ["uvx", "--from", str(ROOT), "ach-memory", "mcp"]
+    assert proxy["command"][:7] == ["uvx", "--from", str(ROOT), "python", "-m", "memory.cli", "mcp"]
     assert "environment" not in proxy
     (system,) = out["request"]["system"]
     assert system["type"] == "text"
@@ -356,6 +358,39 @@ def test_mcp_runs_the_proxy_from_the_plugin_root(relative, variable):
     args = load(relative)["mcpServers"]["ach-memory"]["args"]
     assert args[:2] == ["--from", f"${{{variable}}}"]
     assert not any("@v" in arg for arg in args)
+
+
+LAUNCHERS = (
+    "mcp.json", "mcp_config.json", "codex-mcp.json", ".opencode/plugins/ach-memory.js",
+    ".pi/extensions/ach-memory.js", "hooks/scripts/session-start.sh", "hooks/scripts/idle-nudge.sh",
+    "hooks/scripts/pre-compact.sh",
+)
+
+
+@pytest.mark.parametrize("relative", LAUNCHERS)
+def test_plugin_runs_the_module_not_the_launcher_script(relative):
+    """uv's `ach-memory` launcher is a sh trampoline, and sh resets PWD to its own folder:
+    every host starts `python -m memory.cli` the same way."""
+    text = (ROOT / relative).read_text()
+    assert "memory.cli" in text
+    assert not re.search(r'uvx[^\n]*\bach-memory\s+(mcp|context|hook)\b', text)
+    assert not re.search(r'"ach-memory",\s*"(mcp|context|hook)"', text)
+
+
+def test_antigravity_mcp_starts_in_the_session_folder(tmp_path):
+    """Antigravity starts the server in the plugin folder, which names no project for a copy
+    installed for the user; `--in-pwd` moves it to the session folder Antigravity passes down
+    in PWD. uv's `ach-memory` launcher is a sh trampoline, and sh resets PWD to its own folder,
+    so the server runs as a module."""
+    args = load("mcp_config.json")["mcpServers"]["ach-memory"]["args"]
+    assert args == ["--from", "${PLUGIN_ROOT}", "python", "-m", "memory.cli", "mcp", "--in-pwd"]
+    session = tmp_path / "session"
+    session.mkdir()
+    out = subprocess.run(
+        [sys.executable, "-c", "import os, runpy, sys; sys.argv = ['x', 'mcp', '--help']; runpy.run_module('memory.cli', run_name='__main__')"],
+        cwd=tmp_path, env={**os.environ, "PWD": str(session)}, capture_output=True, text=True, check=False,
+    )
+    assert "--in-pwd" in out.stdout
 
 
 def test_codex_mcp_finds_its_plugin_root_itself():
