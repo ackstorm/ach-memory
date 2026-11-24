@@ -1,6 +1,6 @@
 {
   "name": "ach-memory",
-  "version": "0.13.11",
+  "version": "0.13.12",
   "description": "Durable memory for Claude through the ach-memory service.",
   "author": {
     "name": "ackstorm"

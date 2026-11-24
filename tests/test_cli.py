@@ -1,6 +1,7 @@
 """The argument parser and the three subcommands' dispatch, with `proxy` stubbed out."""
 
 import asyncio
+import os
 
 from memory import cli
 
@@ -171,3 +172,22 @@ def test_project_init_refuses_the_home_folder_and_a_marker_directory(tmp_path, m
     monkeypatch.chdir(tmp_path / "work")
     assert cli.main(["project", "init", "notes"]) == 1
     assert not (tmp_path / ".ach-memory").exists()
+
+
+def test_main_mcp_in_pwd_serves_from_the_folder_the_host_passed_down(monkeypatch, tmp_path):
+    session, plugin = tmp_path / "session", tmp_path / "plugin"
+    session.mkdir()
+    plugin.mkdir()
+    monkeypatch.chdir(plugin)
+    monkeypatch.setenv("PWD", str(session))
+    seen = []
+
+    async def fake_serve(url):
+        seen.append(os.getcwd())
+
+    monkeypatch.setattr(cli.proxy, "serve", fake_serve)
+    assert cli.main(["mcp", "--url", "http://x/mcp"]) == 0
+    assert cli.main(["mcp", "--url", "http://x/mcp", "--in-pwd"]) == 0
+    monkeypatch.setenv("PWD", str(tmp_path / "gone"))
+    assert cli.main(["mcp", "--url", "http://x/mcp", "--in-pwd"]) == 0
+    assert seen == [str(plugin), str(session), str(session)]

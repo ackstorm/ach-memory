@@ -6,7 +6,9 @@
       "args": [
         "--from",
         "${CLAUDE_PLUGIN_ROOT}",
-        "ach-memory",
+        "python",
+        "-m",
+        "memory.cli",
         "mcp",
         "--url",
         "${ACH_MEMORY_URL:-http://localhost:8000/mcp/}"

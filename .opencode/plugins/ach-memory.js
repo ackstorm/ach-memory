@@ -38,7 +38,7 @@ function hook(script, ...args) {
 // startup as `MCP error -32000: Connection closed`. The spawned proxy inherits
 // opencode's own environment, which is where the credential is.
 function proxy() {
-  return ["uvx", "--from", root, "ach-memory", "mcp", "--url",
+  return ["uvx", "--from", root, "python", "-m", "memory.cli", "mcp", "--url",
           process.env.ACH_MEMORY_URL || "http://localhost:8000/mcp/"];
 }
 
