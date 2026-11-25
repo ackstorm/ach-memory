@@ -158,8 +158,10 @@ claude plugin marketplace update ach-memory && claude plugin update ach-memory@a
 codex  plugin marketplace upgrade ach-memory && codex  plugin add ach-memory@ach-memory
 ```
 
-The proxy reads its connection from the environment on every request. Put one of these in the
-shell profile (`~/.zshrc`, `~/.bashrc`), open a new terminal, and restart the host:
+With `ach-cli` installed and signed in (`ach-cli login`) there is nothing to set: the proxy uses
+the Hub of its default profile and `ach-cli token`. `ACH_MEMORY_URL` wins over that; with neither,
+the proxy tries `http://localhost:8000/mcp/`. To set the connection yourself, put one of these in
+the shell profile (`~/.zshrc`, `~/.bashrc`), open a new terminal, and restart the host:
 
 ```bash
 # A. ACH login, through the LiteLLM gateway (short-lived JWT, refreshed per request)
@@ -179,7 +181,7 @@ option A. Never write a token value into a file the user did not ask for, and ne
 Check from a repository: `uvx --from git+https://github.com/ackstorm/ach-memory ach-memory
 context load` prints the session start when everything works (a `### Memory index` section in a
 project with memories), and nothing where nothing is retained yet. When the tools
-answer `UNAUTHORIZED: missing or malformed credential`, no credential reached the service: the
-variables are unset in the host's environment, or `ACH_MEMORY_URL` bypasses the gateway that
-accepts the token. In Codex, remove any hand-written `[mcp_servers.ach-memory]` entry
+answer `UNAUTHORIZED: missing or malformed credential`, no credential reached the service:
+`ach-cli` is signed out, the variables are unset in the host's environment, or `ACH_MEMORY_URL`
+bypasses the gateway that accepts the token. In Codex, remove any hand-written `[mcp_servers.ach-memory]` entry
 (`codex mcp remove ach-memory`); the plugin brings its own.

@@ -112,11 +112,11 @@ def run_hook(script: str, payload: str, tmp_path: Path, **env: str) -> str:
 def test_session_start_says_when_no_context_was_loaded(tmp_path):
     """The activation text announces the purpose, pins and index; without them the agent must hear why."""
     unreachable = "ach-memory is not reachable in this session"
-    assert unreachable in run_hook("session-start.sh", "", tmp_path, ACH_MEMORY_API_KEY="", ACH_MEMORY_TOKEN_COMMAND="")
-    assert unreachable in run_hook("session-start.sh", "", tmp_path, ACH_MEMORY_API_KEY="k")  # uvx fails
+    assert unreachable in run_hook("session-start.sh", "", tmp_path)  # uvx fails
     (tmp_path / "uvx").write_text("#!/bin/sh\necho '### Project purpose'\n")
     loaded = subprocess.run([str(ROOT / "hooks" / "scripts" / "session-start.sh")], capture_output=True, text=True,
-                            env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "ACH_MEMORY_API_KEY": "k"},
+                            env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "ACH_MEMORY_API_KEY": "",
+                                 "ACH_MEMORY_TOKEN_COMMAND": ""},
                             check=True).stdout
     assert "### Project purpose" in loaded and unreachable not in loaded
 
@@ -375,6 +375,13 @@ def test_plugin_runs_the_module_not_the_launcher_script(relative):
     assert "memory.cli" in text
     assert not re.search(r'uvx[^\n]*\bach-memory\s+(mcp|context|hook)\b', text)
     assert not re.search(r'"ach-memory",\s*"(mcp|context|hook)"', text)
+
+
+@pytest.mark.parametrize("relative", LAUNCHERS)
+def test_no_launcher_picks_the_endpoint(relative):
+    """`memory.mcp.proxy.endpoint` decides where the service is, the same for every host."""
+    text = (ROOT / relative).read_text()
+    assert "--url" not in text and "localhost" not in text
 
 
 def test_antigravity_mcp_starts_in_the_session_folder(tmp_path):

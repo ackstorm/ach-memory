@@ -35,18 +35,17 @@ def test_main_with_no_command_exits_nonzero(capsys):
     assert cli.main([]) != 0
 
 
-def test_main_mcp_without_url_fails_without_starting_the_proxy(monkeypatch, capsys):
+def test_main_mcp_without_url_serves_the_endpoint_the_proxy_resolves(monkeypatch):
     monkeypatch.delenv("ACH_MEMORY_URL", raising=False)
-    called = False
+    seen = {}
 
     async def fake_serve(url):
-        nonlocal called
-        called = True
+        seen["url"] = url
 
     monkeypatch.setattr(cli.proxy, "serve", fake_serve)
-    assert cli.main(["mcp"]) == 1
-    assert not called
-    assert "url" in capsys.readouterr().err.lower()
+    monkeypatch.setattr(cli.proxy, "endpoint", lambda: "https://hub.example/mcp/ach-memory")
+    assert cli.main(["mcp"]) == 0
+    assert seen == {"url": "https://hub.example/mcp/ach-memory"}
 
 
 def test_main_mcp_runs_the_proxy_with_the_resolved_url(monkeypatch):

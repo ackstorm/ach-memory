@@ -41,13 +41,20 @@ with `uvx`) and the host CLI (`claude`, `codex`, `opencode`, `pi` or `agy`).
 
 ### 1. Connection
 
-The proxy reads its connection from the environment on every request, so it
-must be in the shell profile (`~/.zshrc`, `~/.bashrc`) every agent inherits.
-Pick one:
+The proxy looks for the service in this order, on every start:
+
+1. `ACH_MEMORY_URL`, with the credential variables below.
+2. With `ach-cli` installed and signed in, the Hub of its default profile
+   (`<hub>/mcp/ach-memory`) with `ach-cli token` as the credential: nothing to set.
+3. `http://localhost:8000/mcp/`, the compose stack.
+
+To set it yourself, put one of these in the shell profile (`~/.zshrc`,
+`~/.bashrc`) every agent inherits:
 
 ```bash
-# A. ACH login through the LiteLLM gateway (recommended at ACKstorm).
-#    `ach-cli token` prints a 60-minute JWT; the proxy runs it per request.
+# A. ACH login through the LiteLLM gateway, spelled out (e.g. for a Hub other than
+#    the default profile's). `ach-cli token` prints a 60-minute JWT; the proxy runs
+#    it per request.
 ach-cli login
 cat >> ~/.zshrc <<EOF
 export ACH_MEMORY_URL=https://api.ackstorm.ai/mcp/ach-memory

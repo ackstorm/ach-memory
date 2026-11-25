@@ -6,11 +6,14 @@ tool calls the caller left bare. Everything else forwards to
 the remote unchanged; the `mcp` SDK owns the protocol.
 """
 
+import json
 import os
+import shlex
 import subprocess
 import time
 import tomllib
 from pathlib import Path
+from shutil import which
 from uuid import uuid4
 
 import httpx2
@@ -26,6 +29,28 @@ from memory.slugs import collapse_slug, normalize_slug, repo_spellings, slug_fro
 
 #: Names the project of a folder with no git origin: one line, `project = "<slug>"`.
 MARKER = ".ach-memory"
+
+#: The compose stack's endpoint.
+LOCAL_URL = "http://localhost:8000/mcp/"
+
+
+def endpoint() -> str:
+    """Where the service is: `ACH_MEMORY_URL` when set; else, with `ach-cli` installed, the
+    Hub of its default profile, with `ach-cli token` as the credential; else the local stack."""
+    if url := os.environ.get("ACH_MEMORY_URL", "").strip():
+        return url
+    if cli := which("ach-cli"):
+        try:
+            shown = subprocess.run(
+                [cli, "profile", "show", "-o", "json"], capture_output=True, text=True, timeout=10, check=False
+            )
+            hub = json.loads(shown.stdout)["url"]
+        except (OSError, subprocess.SubprocessError, ValueError, LookupError, TypeError):
+            hub = ""
+        if hub:
+            os.environ["ACH_MEMORY_TOKEN_COMMAND"] = f"{shlex.quote(cli)} token"
+            return f"{hub.rstrip('/')}/mcp/ach-memory"
+    return LOCAL_URL
 
 
 def api_key() -> str:
