@@ -10,13 +10,13 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
-from pydantic import BaseModel, ValidationError, model_serializer
+from pydantic import BaseModel, Field, ValidationError, model_serializer
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -50,6 +50,8 @@ from memory.tags import Basis, MemoryType
 
 logger = logging.getLogger("memory.mcp")
 Scope = Literal["user", "project"]
+#: Declared in the schema only: the request model enforces it, so the refusal is `INVALID_REQUEST`.
+Title = Annotated[str, Field(json_schema_extra={"maxLength": 80})]
 
 
 class ToolResult(BaseModel):
@@ -246,7 +248,7 @@ def register(mcp: MCPServer) -> None:
     )
     def retain(
         scope: Scope,
-        title: str,
+        title: Title,
         content: str,
         memory_type: MemoryType,
         basis: Basis,
@@ -352,7 +354,7 @@ def register(mcp: MCPServer) -> None:
         ctx: Context,
         scope: Scope | None = None,
         project_slug: str | None = None,
-        title: str | None = None,
+        title: Title | None = None,
     ) -> ToolResult:
         with tool_session(ctx) as (principal, db):
             request = CorrectRequest(

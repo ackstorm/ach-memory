@@ -8,7 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "ach-memory"
-version = "0.13.13"
+version = "0.13.14"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
