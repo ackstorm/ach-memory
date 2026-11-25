@@ -137,6 +137,33 @@ def test_invalid_request_is_reported_as_such():
     asyncio.run(scenario())
 
 
+def test_the_title_limit_is_in_the_schema_and_still_refused_as_invalid_request():
+    async def scenario():
+        app = create_app()
+        async with app.router.lifespan_context(app), _session(app, _auth_headers()) as session:
+            schemas = {t.name: t.input_schema["properties"]["title"] for t in (await session.list_tools()).tools
+                       if t.name in ("retain", "correct")}
+            assert schemas["retain"]["maxLength"] == 80
+            assert {"type": "string", "maxLength": 80} in schemas["correct"]["anyOf"]
+
+            result = await session.call_tool(
+                "retain",
+                {
+                    "scope": "user", "title": "x" * 81,
+                    "content": "Deploy with make deploy.",
+                    "memory_type": "fact",
+                    "basis": "human_explicit",
+                    "operation_id": str(uuid4()),
+                },
+            )
+            assert result.is_error
+            assert _text(result).removeprefix("Error executing tool retain: ").startswith(
+                "INVALID_REQUEST: title:"
+            )
+
+    asyncio.run(scenario())
+
+
 def test_forget_then_list_invalid_memories_shows_it():
     async def scenario():
         app = create_app()
