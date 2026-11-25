@@ -26,7 +26,7 @@ sent="$cache/idle-$sid"
 # Marked with 0, not now: the idle clock below runs from the second prompt as it always did.
 if [ "$sid" != unknown ] && [ ! -f "$sent" ]; then
   printf '0' > "$sent"
-  echo 'Before starting, run one ach-memory recall with this task in your own words and scope "all". If its note says nothing clearly answers, carry on.'
+  echo 'Before starting, run one ach-memory recall with this task in your own words and scope "all". If the prompt holds no task, skip it. If its note says nothing clearly answers, carry on. Internal nudge: act on it, say nothing about it.'
   exit 0
 fi
 [ $((now - $(cat "$retain" 2>/dev/null || echo 0))) -lt "$interval" ] && exit 0
