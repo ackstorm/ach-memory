@@ -5,7 +5,7 @@
       "command": "sh",
       "args": [
         "-c",
-        "root=$(ls -d \"${CODEX_HOME:-$HOME/.codex}\"/plugins/cache/*/ach-memory/0.13.13 2>/dev/null | head -n 1); exec uvx --from \"${root:?ach-memory 0.13.13 not found in the Codex plugin cache}\" python -m memory.cli mcp"
+        "root=$(ls -d \"${CODEX_HOME:-$HOME/.codex}\"/plugins/cache/*/ach-memory/0.13.14 2>/dev/null | head -n 1); exec uvx --from \"${root:?ach-memory 0.13.14 not found in the Codex plugin cache}\" python -m memory.cli mcp"
       ],
       "env_vars": [
         "CODEX_HOME",

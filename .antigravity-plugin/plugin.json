@@ -1,6 +1,6 @@
 {
   "name": "ach-memory",
-  "version": "0.13.13",
+  "version": "0.13.14",
   "description": "Durable memory for Antigravity through the ach-memory service.",
   "author": "ackstorm",
   "homepage": "https://github.com/ackstorm/ach-memory",
