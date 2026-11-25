@@ -11,6 +11,7 @@ from mcp.client._memory import InMemoryTransport
 from mcp.client.session import ClientSession
 from mcp.server.lowlevel import Server
 
+from memory.mcp import proxy
 from memory.mcp.proxy import (
     TOOL_NAMES,
     FreshCredential,
@@ -74,6 +75,40 @@ def test_api_key_is_empty_when_the_token_command_fails(monkeypatch):
     """A failed helper must not fall back to a stale static key."""
     monkeypatch.setenv("ACH_MEMORY_API_KEY", "static")
     monkeypatch.setenv("ACH_MEMORY_TOKEN_COMMAND", "echo partial; exit 3")
+    assert api_key() == ""
+
+
+def _ach_cli(tmp_path, monkeypatch, profile_show: str) -> None:
+    cli = tmp_path / "ach-cli"
+    cli.write_text(f'#!/bin/sh\n[ "$1" = token ] && echo jwt-1 && exit 0\n{profile_show}\n')
+    cli.chmod(0o755)
+    monkeypatch.setattr(proxy, "which", lambda name: str(cli))
+    monkeypatch.setenv("ACH_MEMORY_TOKEN_COMMAND", "")  # restored after the test
+
+
+def test_endpoint_is_the_configured_url_even_with_ach_cli_installed(tmp_path, monkeypatch):
+    _ach_cli(tmp_path, monkeypatch, """echo '{"url": "https://hub.example"}'""")
+    monkeypatch.setenv("ACH_MEMORY_URL", "https://mine.example/mcp/")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "static")
+    assert proxy.endpoint() == "https://mine.example/mcp/"
+    assert api_key() == "static"
+
+
+def test_endpoint_without_a_url_is_the_hub_ach_cli_is_signed_in_to(tmp_path, monkeypatch):
+    """A plugin installed by ACH works with nothing in the environment: the Hub of ach-cli's
+    default profile, and `ach-cli token` as the credential."""
+    _ach_cli(tmp_path, monkeypatch, """echo '{"name": "default", "url": "https://hub.example/"}'""")
+    monkeypatch.setenv("ACH_MEMORY_URL", "")
+    monkeypatch.setenv("ACH_MEMORY_API_KEY", "static")
+    assert proxy.endpoint() == "https://hub.example/mcp/ach-memory"
+    assert api_key() == "jwt-1"
+
+
+def test_endpoint_without_a_url_or_an_ach_profile_is_the_local_stack(tmp_path, monkeypatch):
+    monkeypatch.delenv("ACH_MEMORY_URL", raising=False)
+    assert proxy.endpoint() == "http://localhost:8000/mcp/"
+    _ach_cli(tmp_path, monkeypatch, "echo 'no profile' >&2; exit 1")
+    assert proxy.endpoint() == "http://localhost:8000/mcp/"
     assert api_key() == ""
 
 

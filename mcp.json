@@ -9,11 +9,10 @@
         "python",
         "-m",
         "memory.cli",
-        "mcp",
-        "--url",
-        "${ACH_MEMORY_URL:-http://localhost:8000/mcp/}"
+        "mcp"
       ],
       "env": {
+        "ACH_MEMORY_URL": "${ACH_MEMORY_URL:-}",
         "ACH_MEMORY_API_KEY": "${ACH_MEMORY_API_KEY:-}",
         "ACH_MEMORY_HEADER": "${ACH_MEMORY_HEADER:-Authorization}",
         "ACH_MEMORY_TOKEN_COMMAND": "${ACH_MEMORY_TOKEN_COMMAND:-}"

@@ -74,7 +74,7 @@ Every host hands its plugin an absolute path to the checkout it installed: the
 plugin root. The stdio proxy is built from that same checkout —
 
 ```
-uvx --from "${CLAUDE_PLUGIN_ROOT}" ach-memory mcp --url "$ACH_MEMORY_URL"
+uvx --from "${CLAUDE_PLUGIN_ROOT}" python -m memory.cli mcp
 ```
 
 — so the proxy always matches the plugin, and updating the plugin updates the
@@ -82,9 +82,14 @@ proxy. Earlier releases pinned a git tag into the MCP config instead, which the
 host then froze at install time; that is how installs ended up stranded on
 0.3.1, and one on a tag that no longer existed.
 
-## Required environment
+## Connection
 
-Set these in your shell profile so every agent process inherits them:
+The stdio proxy and `ach-memory context load` look for the service in this order:
+`ACH_MEMORY_URL`; else, with `ach-cli` installed and signed in, the Hub of its default
+profile (`<hub>/mcp/ach-memory`) with `ach-cli token` as the credential; else
+`http://localhost:8000/mcp/`. No host config names an endpoint.
+
+To set it yourself, put these in your shell profile so every agent process inherits them:
 
 ```bash
 export ACH_MEMORY_URL=https://api.<domain>/ach-memory/mcp/
@@ -92,8 +97,7 @@ export ACH_MEMORY_API_KEY=<token from your identity provider>
 # export ACH_MEMORY_HEADER=Authorization   # only if a proxy blocks the default header
 ```
 
-`ACH_MEMORY_URL` is the MCP endpoint, used verbatim by both the stdio proxy and
-`ach-memory context load`. `ACH_MEMORY_API_KEY` is whatever credential your
+`ACH_MEMORY_URL` is the MCP endpoint, used verbatim. `ACH_MEMORY_API_KEY` is whatever credential your
 identity provider issues; the service mints none.
 
 A short-lived token cannot sit in a variable. Name the command that prints it

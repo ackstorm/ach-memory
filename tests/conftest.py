@@ -76,3 +76,11 @@ def _isolated_fake_backend():
     fake_backend.reset()
     yield
     get_backend.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_ach_cli(monkeypatch):
+    """A developer's own `ach-cli` names a real Hub: no test may find it."""
+    from memory.mcp import proxy
+
+    monkeypatch.setattr(proxy, "which", lambda name: None)

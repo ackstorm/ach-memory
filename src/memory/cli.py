@@ -78,7 +78,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _context_load(project: str | None) -> int:
     """Print standing context text. A failure prints nothing and exits 1: the hook says so."""
-    url = os.environ.get("ACH_MEMORY_URL", "")
+    url = proxy.endpoint()
     slug = project or proxy.resolve_project_context()
     try:
         text = asyncio.run(asyncio.wait_for(proxy.call_load_context(url, slug), _CONTEXT_LOAD_DEADLINE))
@@ -92,10 +92,10 @@ def _context_load(project: str | None) -> int:
 
 
 def _families(args: argparse.Namespace) -> int:
-    url = os.environ.get("ACH_MEMORY_URL", "")
+    url = proxy.endpoint()
     slug = args.project or proxy.resolve_project_context()
-    if not url or not slug:
-        print("ach-memory: needs ACH_MEMORY_URL and a project (--project or a git origin)", file=sys.stderr)
+    if not slug:
+        print("ach-memory: needs a project (--project or a git origin)", file=sys.stderr)
         return 1
     try:
         if args.families_command == "set":
@@ -148,12 +148,9 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code)
 
     if args.command == "mcp":
-        if not args.url:
-            print("ach-memory: --url or ACH_MEMORY_URL is required", file=sys.stderr)
-            return 1
         if args.in_pwd and os.path.isdir(os.environ.get("PWD", "")):
             os.chdir(os.environ["PWD"])
-        asyncio.run(proxy.serve(args.url))
+        asyncio.run(proxy.serve(args.url or proxy.endpoint()))
         return 0
 
     if args.command == "context" and args.context_command == "load":
