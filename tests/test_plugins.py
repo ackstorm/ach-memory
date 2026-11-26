@@ -308,6 +308,7 @@ console.log(JSON.stringify({ id: plugin.id, skills, servers, request, compaction
     assert skill["description"].startswith("Read this before the first")
     assert skill["path"] == str(ROOT / "skills" / "ach-memory" / "SKILL.md")
     assert skill["content"].lstrip().startswith("# ach-memory")
+    assert f"`{ROOT / 'skills' / 'ach-memory' / 'references' / 'setup.md'}`" in skill["content"]
     proxy = out["servers"]["ach-memory"]
     assert proxy["type"] == "local"
     assert proxy["command"][:7] == ["uvx", "--from", str(ROOT), "python", "-m", "memory.cli", "mcp"]
@@ -463,6 +464,14 @@ def test_the_skill_has_exactly_one_copy():
     assert [p.relative_to(ROOT) for p in ROOT.glob("**/SKILL.md") if ".venv" not in p.parts] == [
         Path("skills/ach-memory/SKILL.md")
     ]
+
+
+def test_every_reference_the_skill_names_exists():
+    skill = ROOT / "skills" / "ach-memory"
+    named = re.findall(r"`(references/[^`]+)`", (skill / "SKILL.md").read_text())
+    assert named
+    for relative in named:
+        assert (skill / relative).is_file(), relative
 
 
 def test_the_plugin_endpoint_reads_where_the_image_writes():

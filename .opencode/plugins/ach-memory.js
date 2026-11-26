@@ -41,14 +41,17 @@ function proxy() {
   return ["uvx", "--from", root, "python", "-m", "memory.cli", "mcp"];
 }
 
-// OpenCode 2 takes a skill as data, not as a directory to scan.
+// OpenCode 2 takes a skill as data, not as a directory to scan, so the model
+// never sees the skill's folder: `references/` links are made absolute.
 // ponytail: `name` and `description` are read as single-line frontmatter values;
 // use a YAML parser if SKILL.md ever needs more.
 function skill() {
-  const file = path.join(root, "skills", "ach-memory", "SKILL.md");
+  const dir = path.join(root, "skills", "ach-memory");
+  const file = path.join(dir, "SKILL.md");
   try {
-    const [, head, content] = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(fs.readFileSync(file, "utf8"));
+    const [, head, body] = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(fs.readFileSync(file, "utf8"));
     const field = (name) => new RegExp(`^${name}:[ \\t]*(.*)$`, "m").exec(head)?.[1].trim();
+    const content = body.replaceAll("`references/", "`" + path.join(dir, "references") + "/");
     return { id: "ach-memory", name: field("name") || "ach-memory", description: field("description"),
              path: file, content };
   } catch {
