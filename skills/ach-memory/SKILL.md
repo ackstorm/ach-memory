@@ -140,6 +140,10 @@ to find it here.
 
 The live tool schema is authoritative for fields, authorization and confirmation requirements.
 
+## Sharing
+
+Before sharing a project, or when the user asks who can see it, read `references/sharing.md`.
+
 ## Setup
 
 To install, update or connect ach-memory, or when its tools are missing or answer

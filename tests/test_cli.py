@@ -190,3 +190,54 @@ def test_main_mcp_in_pwd_serves_from_the_folder_the_host_passed_down(monkeypatch
     monkeypatch.setenv("PWD", str(tmp_path / "gone"))
     assert cli.main(["mcp", "--url", "http://x/mcp", "--in-pwd"]) == 0
     assert seen == [str(plugin), str(session), str(session)]
+
+
+def _record_calls(monkeypatch, answer):
+    calls = []
+
+    async def fake_call_tool(url, name, arguments, slug):
+        calls.append((name, arguments, slug))
+        return answer
+
+    monkeypatch.setattr(cli.proxy, "call_tool", fake_call_tool)
+    monkeypatch.setattr(cli.proxy, "endpoint", lambda: "http://memory.test/mcp/")
+    monkeypatch.setattr(cli.proxy, "resolve_project_context", lambda: "acme-1")
+    return calls
+
+
+def test_whoami_prints_subject_and_groups(monkeypatch, capsys):
+    calls = _record_calls(monkeypatch, {"subject": "juan@acme.test", "groups": ["default", "dream"],
+                                        "operator": False})
+
+    assert cli.main(["whoami"]) == 0
+    assert calls == [("whoami", {}, None)]
+    assert capsys.readouterr().out == "juan@acme.test\ngroups: default, dream\n"
+
+
+def test_share_without_arguments_lists_access(monkeypatch, capsys):
+    calls = _record_calls(monkeypatch, {"users": ["juan@acme.test"], "groups": ["dream"]})
+
+    assert cli.main(["share"]) == 0
+    assert calls == [("list_access", {}, "acme-1")]
+    assert capsys.readouterr().out == "user\tjuan@acme.test\ngroup\tdream\n"
+
+
+def test_share_and_unshare_send_users_or_groups(monkeypatch, capsys):
+    calls = _record_calls(monkeypatch, {"users": ["juan@acme.test"], "groups": []})
+
+    assert cli.main(["share", "user", "joan@acme.test", "ana@acme.test"]) == 0
+    assert cli.main(["unshare", "group", "dream", "--project", "other"]) == 0
+    assert calls == [("share_project", {"users": ["joan@acme.test", "ana@acme.test"]}, "acme-1"),
+                     ("unshare_project", {"groups": ["dream"]}, "other")]
+
+
+def test_share_user_without_a_name_and_a_server_refusal_exit_nonzero(monkeypatch, capsys):
+    _record_calls(monkeypatch, {})
+    assert cli.main(["share", "user"]) == 1
+
+    async def refuse(url, name, arguments, slug):
+        raise RuntimeError("INVALID_REQUEST: you are not in run")
+
+    monkeypatch.setattr(cli.proxy, "call_tool", refuse)
+    assert cli.main(["share", "group", "run"]) == 1
+    assert "you are not in run" in capsys.readouterr().err

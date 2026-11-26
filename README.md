@@ -24,9 +24,12 @@ ach-memory mcp  ── HTTPS/MCP ──▶│  auth → scope → service     �
 `retain` · `recall` · `reflect` · `forget` · `restore` · `correct` ·
 `delete_memory` · `pin` · `list_memories` · `get_memory` · `history` ·
 `load_context` · `list_families` · `set_families` · `list_projects` · `get_operation` ·
-`rename_project`.
+`rename_project` · `list_access` · `share_project` · `unshare_project` · `whoami`.
 A person edits a project's family list with `ach-memory families set <family>...
 [--rename old=new]`; `ach-memory families` shows it.
+`ach-memory share user <email>...` / `share group <team>...` share the current project (every
+user and group on it is a co-owner), `ach-memory unshare ...` removes, `ach-memory share`
+lists, `ach-memory whoami` shows your groups.
 One MCP endpoint (`/mcp/`), one health route (`/health`). No REST data plane.
 
 ## Install on a host
