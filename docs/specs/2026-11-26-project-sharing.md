@@ -18,10 +18,7 @@ first user on the list and can be removed like anyone else. Personal memory is n
 | Entry | Matched against | Source |
 |---|---|---|
 | user | `Principal.subject`, case-insensitive | JWT `sub`, the caller's email |
-| group | `Principal.groups`, exact | JWT `groups`: ACH team aliases the forwarder mints for Environments that grant ach-memory |
-
-A group reaches ach-memory only when its team is in the `authorizedTeams` of an Environment
-that grants ach-memory (gitops `grants`).
+| group | `Principal.groups`, exact | JWT `teams` (`MEMORY_AUTH_JWT_GROUPS_CLAIM`): every ACH team alias of the caller, minted when ach-memory's BackendIdentityPolicy sets `forwardTeams` |
 
 ## Storage
 
@@ -74,8 +71,7 @@ sharing a project or when the user asks who can see it"). It says:
   list it returns ("done: Joan Pau has access, with you and team dream").
 - A name without an email: look it up with a contacts tool if the host has one, else ask.
   Never guess an address.
-- A team: run `whoami`; the team must be in your groups. Not there → it does not reach
-  ach-memory yet: its team must be added to the `grants` Environment.
+- A team: run `whoami`; the team must be in your groups.
 - Whoever is shared with is a co-owner and can remove you; personal memory is never shared.
 - The CLI equivalents.
 
@@ -89,9 +85,9 @@ subject and groups. `tests/test_projects.py` and `tests/test_models.py` move fro
 
 ## Outside this repo
 
-- gitops: `dream` (and any team to share with) in `authorizedTeams` of the `grants`
-  Environment.
+- gitops: `forwardTeams: true` on ach-memory's BackendIdentityPolicy (ACH 1.3.7+) and
+  `config.auth.jwt.groupsClaim: teams` in its HelmRelease.
 - A team per Google group that has none (e.g. `operaciones`, today folded into `run`):
-  `LiteLLMTeam` plus a `teams.sso` entry plus `grants`.
+  `LiteLLMTeam` plus a `teams.sso` entry.
 - `scripts/rollout-0.12.py` reads `owner_type`/`owner_id`; it is a finished one-off rollout
   and stops working once they are dropped.
