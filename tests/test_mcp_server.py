@@ -10,8 +10,9 @@ from memory.mcp.server import create_app
 
 _EXPECTED_TOOLS = sorted([
     "correct", "delete_memory", "forget", "get_memory", "get_operation", "history",
-    "list_families", "list_memories", "list_projects", "load_context", "pin", "recall", "reflect",
-    "rename_project", "restore", "retain", "set_families",
+    "list_access", "list_families", "list_memories", "list_projects", "load_context", "pin", "recall",
+    "reflect", "rename_project", "restore", "retain", "set_families", "share_project", "unshare_project",
+    "whoami",
 ])
 
 

@@ -60,8 +60,8 @@ class Project(Base):
 
     # Internal. Public identity lives in ProjectSlug.
     internal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    owner_type: Mapped[str] = mapped_column(String(8))
-    owner_id: Mapped[str] = mapped_column(String(128))
+    # Who may do everything with the project: {"users": [subject, ...], "groups": [team, ...]}.
+    access: Mapped[dict] = mapped_column(JSON)
     bank_id: Mapped[str] = mapped_column(String(64), unique=True)
     # The closed family list a project retain must pick from; None until one is generated or set.
     families: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)

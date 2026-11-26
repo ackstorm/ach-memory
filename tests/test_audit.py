@@ -6,7 +6,7 @@ from memory.models import AuditEvent
 
 
 def _user(user_id: str, on_behalf_of: str | None = None) -> Principal:
-    return Principal(user_id=user_id, on_behalf_of=on_behalf_of)
+    return Principal(user_id=user_id, subject=f"{user_id}@acme.test", on_behalf_of=on_behalf_of)
 
 
 def test_record_carries_actor_and_on_behalf_of(db):

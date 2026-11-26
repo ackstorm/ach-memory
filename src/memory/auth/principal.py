@@ -18,7 +18,7 @@ class Principal:
     """Keyword-only so a wrong field never lands silently in the wrong slot."""
 
     user_id: str
-    subject: str = ""  # IdP-asserted identity; operators are configured by it, never by the minted user_id
+    subject: str  # IdP-asserted identity; operators are configured by it, never by the minted user_id
     groups: frozenset[str] = frozenset()
     issuer: str | None = None
     is_operator: bool = False

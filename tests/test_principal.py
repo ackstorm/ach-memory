@@ -137,7 +137,7 @@ def test_a_missing_platform_header_is_unauthorized(platform_enabled):
 
 def test_an_unset_master_config_grants_nobody():
     settings = Settings(master_users="", master_groups="")
-    assert not principal._is_operator(Principal(user_id="", groups=frozenset({""})), settings)
+    assert not principal._is_operator(Principal(user_id="", subject="", groups=frozenset({""})), settings)
 
 
 def test_a_configured_user_grants_operator():
@@ -149,10 +149,10 @@ def test_a_configured_user_grants_operator():
 def test_a_configured_group_grants_operator():
     settings = Settings(master_users="", master_groups="sre,platform")
     assert principal._is_operator(
-        Principal(user_id="x", groups=frozenset({"platform"})), settings
+        Principal(user_id="x", subject="x", groups=frozenset({"platform"})), settings
     )
     assert not principal._is_operator(
-        Principal(user_id="x", groups=frozenset({"devs"})), settings
+        Principal(user_id="x", subject="x", groups=frozenset({"devs"})), settings
     )
 
 
@@ -207,3 +207,8 @@ def test_on_behalf_of_absent_is_none_for_an_operator(monkeypatch, jwt_enabled):
 def test_a_principal_requires_a_user_id():
     with pytest.raises(TypeError):
         Principal()
+
+
+def test_a_principal_requires_a_subject():
+    with pytest.raises(TypeError):
+        Principal(user_id="usr_1")

@@ -29,6 +29,7 @@ Version: 0.1.0
 | Titles, families, pins | every memory has a title (≤80 chars) and, in a project, a family; a pin is optional. A project's family list is closed (≤12 plus `other`), drafted once by an LLM (`MEMORY_LLM_*`; unset, nothing is drafted and families stay optional) when the project first holds 30 valid memories, redrafted with the reason while a family is named after the project or holds over about a third of them, and editable by its owner. Pinned text is capped per bank (2,500 chars project, 2,000 user); a pin past the cap is refused with the list of what is pinned. Nothing is ever updated automatically by title, family or key |
 | Read log | every session-start load, recall, list and get: who, project, tool, query or family, result count, latency, recall's best `relevance`; `read_daily` view per day, project and tool |
 | Users, groups, `on_behalf_of` | identity model behind every mutation and read |
+| Project sharing | a project belongs to the users (subject, case-insensitive) and groups on its access list, every one a co-owner; `share` adds users and groups the caller belongs to, `unshare` removes any entry but never the last; personal memory is never shared |
 | MCP stdio proxy | runs on the SDK, on the host, resolves project and injects identity |
 | Project resolution from git origin | slug derived from the git remote; a hand-typed spelling of the current repository resolves to it on calls without a `memory_id`, so it cannot split the repository into a second project |
 | Project marker | a folder with no git origin names its project in `.ach-memory` (`project = "<slug>"`), found from the current directory upwards and never in or above the home directory; read only when there is no origin, so it cannot split a repository. `ach-memory project init <name>` writes it and refuses where an origin or a marker already names the project |
@@ -60,6 +61,7 @@ Version: 0.1.0
 | `list` | required | page memories, newest first, from ACH's own record: titles and ids, text on request; filter by family, type, pin, state; empty for a project nobody retained into | no |
 | `pin` | ACH-owned | pin or unpin one valid memory; refused past the bank's cap | yes |
 | `families` | ACH-owned | show a project's family list with counts; replace it (owner or operator), renaming families and moving their memories | yes (replace) |
+| `share` | ACH-owned | show a project's access list; add users and the caller's own groups; remove any entry but the last | yes (add, remove) |
 | `get` | required | fetch one memory by id | no |
 | `history` | ACH-owned | current view plus journal entries for one memory | no |
 | `context load` | ACH-owned | deliver bounded standing context, creates nothing | no |
@@ -202,7 +204,7 @@ The tools that address one memory by id (`forget`, `restore`, `correct`, `delete
 | `users` | id, created_at — the bank is `user_<id>`, derived, never stored |
 | `external_identities` | user_id, provider, subject |
 | `groups` | id, name — membership comes from the auth provider at request time |
-| `projects` | id, slug, bank_id, owner_user_id, owner_group_id (nullable), families (nullable), created_at |
+| `projects` | id, slug, bank_id, access (`users`, `groups`), families (nullable), created_at |
 | `memories` | memory_id, scope, owner_id, title, family, pinned, memory_type, state, chars, created_at — ACH's own record of each memory; the text stays in the engine |
 | `read_events` | actor, project (or the requested slug when it resolves to none), session_id (the host's, sent by the proxy), tool, scope, query (scrubbed like content; none for `MEMORY_WITHHOLD_QUERY_USERS`; cleared after 30 days), query_chars, family, results, relevance (a recall's best), latency_ms, created_at; view `read_daily` |
 | `project_slugs` | project_id, slug, retired_at |

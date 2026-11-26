@@ -180,9 +180,12 @@ def repo_slug_spellings(cwd: str | None = None) -> frozenset[str]:
 # given: the memory may live in a project split off under that spelling.
 _ROUTED_BY_SLUG = frozenset({
     "retain", "recall", "reflect", "list_memories", "load_context", "list_families", "set_families",
+    "list_access", "share_project", "unshare_project",
 })
 # Project tools without a `scope`: the slug is filled whenever the caller left it out.
-_UNSCOPED = frozenset({"load_context", "list_families", "set_families"})
+_UNSCOPED = frozenset({
+    "load_context", "list_families", "set_families", "list_access", "share_project", "unshare_project",
+})
 
 
 def fill_arguments(
@@ -264,7 +267,8 @@ def personal_tools(tools: list[types.Tool]) -> list[types.Tool]:
     `project_slug` leave the schemas, and the project-only tools disappear."""
     out = []
     for tool in tools:
-        if tool.name in ("rename_project", "list_families", "set_families"):
+        if tool.name in ("rename_project", "list_families", "set_families",
+                         "list_access", "share_project", "unshare_project"):
             continue
         schema = dict(tool.input_schema)
         schema["properties"] = {
@@ -303,8 +307,9 @@ def retain_stamp(cwd: str | None = None) -> Path:
 #: package, so it knows them; tests/test_proxy.py pins this to the live registry.
 TOOL_NAMES = frozenset({
     "correct", "delete_memory", "forget", "get_memory", "get_operation", "history",
-    "list_families", "list_memories", "list_projects", "load_context", "pin", "recall", "reflect",
-    "rename_project", "restore", "retain", "set_families",
+    "list_access", "list_families", "list_memories", "list_projects", "load_context", "pin", "recall",
+    "reflect", "rename_project", "restore", "retain", "set_families", "share_project", "unshare_project",
+    "whoami",
 })
 
 

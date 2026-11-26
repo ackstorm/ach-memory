@@ -64,6 +64,16 @@ def _parser() -> argparse.ArgumentParser:
     set_cmd.add_argument("--rename", action="append", default=[], metavar="OLD=NEW",
                          help="move OLD's memories to NEW (repeatable)")
 
+    commands.add_parser("whoami", help="who ach-memory sees you as, and your groups")
+    share = commands.add_parser("share", help="list who has access to the project, or share it")
+    share.add_argument("--project", default=None)
+    share.add_argument("kind", nargs="?", choices=("user", "group"))
+    share.add_argument("names", nargs="*", metavar="NAME")
+    unshare = commands.add_parser("unshare", help="stop sharing the project with users or groups")
+    unshare.add_argument("--project", default=None)
+    unshare.add_argument("kind", choices=("user", "group"))
+    unshare.add_argument("names", nargs="*", metavar="NAME")
+
     project = commands.add_parser("project", help="name the project of a folder with no git origin")
     project_sub = project.add_subparsers(dest="project_command", required=True)
     init = project_sub.add_parser("init", help=f"write {proxy.MARKER} here")
@@ -117,6 +127,45 @@ def _families(args: argparse.Namespace) -> int:
     return 0
 
 
+def _whoami() -> int:
+    try:
+        result = asyncio.run(proxy.call_tool(proxy.endpoint(), "whoami", {}, None))
+    except Exception as exc:  # noqa: BLE001 -- report the server's message, not a traceback
+        print(f"ach-memory: {exc}", file=sys.stderr)
+        return 1
+    print(result.get("subject") or "")
+    print(f"groups: {', '.join(result.get('groups') or []) or 'none'}")
+    if result.get("operator"):
+        print("operator")
+    return 0
+
+
+def _access(args: argparse.Namespace) -> int:
+    """`share` lists, `share user|group` adds, `unshare user|group` removes."""
+    slug = args.project or proxy.resolve_project_context()
+    if not slug:
+        print("ach-memory: needs a project (--project or a git origin)", file=sys.stderr)
+        return 1
+    if args.command == "share" and args.kind is None:
+        tool, arguments = "list_access", {}
+    elif not args.names:
+        print(f"ach-memory: name at least one {args.kind}", file=sys.stderr)
+        return 1
+    else:
+        tool = "share_project" if args.command == "share" else "unshare_project"
+        arguments = {f"{args.kind}s": args.names}
+    try:
+        result = asyncio.run(proxy.call_tool(proxy.endpoint(), tool, arguments, slug))
+    except Exception as exc:  # noqa: BLE001 -- report the server's message, not a traceback
+        print(f"ach-memory: {exc}", file=sys.stderr)
+        return 1
+    for user in result.get("users") or []:
+        print(f"user\t{user}")
+    for group in result.get("groups") or []:
+        print(f"group\t{group}")
+    return 0
+
+
 def _project_init(name: str) -> int:
     """Write the marker in the current folder; refused where a git origin or a marker (here or
     above) already names the project, so it never splits one that has memory."""
@@ -158,6 +207,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "families":
         return _families(args)
+
+    if args.command == "whoami":
+        return _whoami()
+
+    if args.command in ("share", "unshare"):
+        return _access(args)
 
     if args.command == "project" and args.project_command == "init":
         return _project_init(args.name)
