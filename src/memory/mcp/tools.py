@@ -560,3 +560,60 @@ def register(mcp: MCPServer) -> None:
                 details={"from": retired, "to": target},
             )
             return ToolResult(result={"project_slug": target, "previous_slug": retired})
+
+    @mcp.tool(
+        description=(
+            "Who you are to ach-memory: your subject (email), the groups your credential carries "
+            "(the only ones you can share a project with) and whether you are an operator."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True),
+    )
+    def whoami(ctx: Context) -> ToolResult:
+        with tool_session(ctx) as (principal, _db):
+            return ToolResult(result={"subject": principal.subject, "groups": sorted(principal.groups),
+                                      "operator": principal.is_operator})
+
+    @mcp.tool(
+        description=(
+            "Who may use this project's memory: `users` (emails) and `groups` (ACH teams). "
+            "Everyone listed is a co-owner."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True),
+    )
+    def list_access(project_slug: str, ctx: Context) -> ToolResult:
+        with tool_session(ctx) as (principal, db):
+            return ToolResult(result=projects.resolve(db, principal, project_slug, create=False).project.access)
+
+    @mcp.tool(
+        description=(
+            "Share this project's memory when the user asks to. `users` are emails; `groups` are "
+            "ACH teams you belong to (`whoami`). Whoever is added becomes a co-owner: they read, "
+            "write, share, unshare and rename, and can remove you. Personal memory is never "
+            "shared. Returns who has access now. Never call it on your own initiative."
+        ),
+    )
+    def share_project(
+        project_slug: str,
+        ctx: Context,
+        users: list[str] = [],  # noqa: B006 -- never mutated
+        groups: list[str] = [],  # noqa: B006 -- never mutated
+    ) -> ToolResult:
+        with tool_session(ctx) as (principal, db):
+            project = projects.resolve(db, principal, project_slug, create=False).project
+            return ToolResult(result=projects.share(db, principal, project, users, groups))
+
+    @mcp.tool(
+        description=(
+            "Stop sharing this project's memory with users or groups when the user asks to; "
+            "the last one cannot be removed. Returns who has access now."
+        ),
+    )
+    def unshare_project(
+        project_slug: str,
+        ctx: Context,
+        users: list[str] = [],  # noqa: B006 -- never mutated
+        groups: list[str] = [],  # noqa: B006 -- never mutated
+    ) -> ToolResult:
+        with tool_session(ctx) as (principal, db):
+            project = projects.resolve(db, principal, project_slug, create=False).project
+            return ToolResult(result=projects.unshare(db, principal, project, users, groups))

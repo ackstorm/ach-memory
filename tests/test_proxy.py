@@ -624,8 +624,15 @@ def test_memory_project_turns_spellings_off(tmp_path, monkeypatch):
 def test_personal_tools_drop_the_project_only_tools():
     schema = {"type": "object", "properties": {"project_slug": {}}}
     tools = [types.Tool(name=n, inputSchema=schema)
-             for n in ("list_families", "set_families", "rename_project", "load_context", "list_projects")]
-    assert [t.name for t in personal_tools(tools)] == ["load_context", "list_projects"]
+             for n in ("list_families", "set_families", "rename_project", "list_access", "share_project",
+                       "unshare_project", "load_context", "list_projects", "whoami")]
+    assert [t.name for t in personal_tools(tools)] == ["load_context", "list_projects", "whoami"]
+
+
+def test_the_sharing_tools_get_the_project_filled():
+    for name in ("list_access", "share_project", "unshare_project"):
+        assert fill_arguments(name, {"users": ["a@b.c"]}, "acme-api")["project_slug"] == "acme-api"
+    assert "project_slug" not in fill_arguments("whoami", {}, "acme-api")
 
 
 def test_without_a_project_list_projects_goes_out_bare_and_the_rest_as_user():
