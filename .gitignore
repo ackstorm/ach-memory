@@ -7,8 +7,5 @@ docs/plans/
 .worktrees/
 dist/
 .env
-.opencode/node_modules/
-.opencode/package.json
-.opencode/package-lock.json
 node_modules/
 .claude/

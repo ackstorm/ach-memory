@@ -183,7 +183,7 @@ def test_opencode_nudge_part_carries_the_ids_opencode_validates(tmp_path):
 
     script = tmp_path / "run.mjs"
     script.write_text(
-        f'import {{ AchMemoryPlugin }} from "{ROOT / ".opencode" / "plugins" / "ach-memory.js"}";\n'
+        f'import {{ AchMemoryPlugin }} from "{ROOT / "opencode.js"}";\n'
         "const plugin = await AchMemoryPlugin();\n"
         'const output = { message: { id: "msg_1", sessionID: "ses_1" }, parts: [] };\n'
         'await plugin["chat.message"]({ sessionID: "ses_1" }, output);\n'
@@ -219,7 +219,7 @@ def run_opencode_plugin(tmp_path, body: str) -> dict:
     stamp.write_text("0")  # nothing retained for ages: the nudge fires
 
     script = tmp_path / "run.mjs"
-    script.write_text(f'import plugin from "{ROOT / ".opencode" / "plugins" / "ach-memory.js"}";\n{body}')
+    script.write_text(f'import plugin from "{ROOT / "opencode.js"}";\n{body}')
     result = subprocess.run(
         [node, str(script)],
         capture_output=True,
@@ -362,7 +362,7 @@ def test_mcp_runs_the_proxy_from_the_plugin_root(relative, variable):
 
 
 LAUNCHERS = (
-    "mcp.json", "mcp_config.json", "codex-mcp.json", ".opencode/plugins/ach-memory.js",
+    "mcp.json", "mcp_config.json", "codex-mcp.json", "opencode.js",
     ".pi/extensions/ach-memory.js", "hooks/scripts/session-start.sh", "hooks/scripts/idle-nudge.sh",
     "hooks/scripts/pre-compact.sh",
 )
