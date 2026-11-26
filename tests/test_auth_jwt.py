@@ -59,6 +59,17 @@ def test_groups_come_from_the_token(db, signing_key):
     assert principal.groups == frozenset({"platform", "sre"})
 
 
+def test_groups_are_read_from_the_configured_claim(db, signing_key, monkeypatch):
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_AUTH_JWT_GROUPS_CLAIM", "teams")
+    get_settings.cache_clear()
+    principal = jwt_provider.authenticate(
+        _token(signing_key, teams=["default", "dream", "run"], groups=["default"]), db
+    )
+    assert principal.groups == frozenset({"default", "dream", "run"})
+
+
 def test_a_missing_groups_claim_is_no_groups_not_an_error(db, signing_key):
     principal = jwt_provider.authenticate(_token(signing_key), db)
     assert principal.groups == frozenset()
