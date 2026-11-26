@@ -15,7 +15,7 @@ def backend() -> FakeBackend:
 
 @pytest.fixture
 def principal() -> Principal:
-    return Principal(user_id="usr_juan")
+    return Principal(user_id="usr_juan", subject="juan@acme.test")
 
 
 def _seed(db, principal, backend, content: str, *, scope="user", project_slug=None, tags=()) -> str:
@@ -114,7 +114,7 @@ def test_forget_unknown_id_raises_memory_not_found(db, principal, backend):
 
 def test_non_owner_principal_is_forbidden_in_project_scope(db, principal, backend):
     memory_id = _seed(db, principal, backend, "Project fact.", scope="project", project_slug="widgets")
-    intruder = Principal(user_id="usr_intruder")
+    intruder = Principal(user_id="usr_intruder", subject="intruder@acme.test")
 
     with pytest.raises(Forbidden):
         curation.forget(
@@ -144,7 +144,7 @@ def test_curation_without_scope_infers_it_from_the_retain_journal(db, principal,
 
 def test_inferred_scope_never_reaches_another_users_memory(db, principal, backend):
     memory_id = _seed(db, principal, backend, "Mine.")
-    intruder = Principal(user_id="usr_intruder")
+    intruder = Principal(user_id="usr_intruder", subject="intruder@acme.test")
 
     with pytest.raises(MemoryNotFound):
         curation.forget(db, intruder, curation.CurationRequest(memory_id=memory_id, reason="steal"),

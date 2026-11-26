@@ -6,10 +6,14 @@ from uuid import uuid4
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from memory.auth.principal import Principal
+from memory import audit
+from memory.auth.principal import MAX_GROUP_ID, Principal
 from memory.errors import Forbidden, InvalidRequest, ProjectNotFound
+from memory.identifiers import has_control_character
 from memory.models import Project, ProjectSlug
 from memory.slugs import normalize_slug
+
+MAX_USER = 256
 
 
 @dataclass(frozen=True)
@@ -19,22 +23,18 @@ class Resolved:
 
 
 def authorized(principal: Principal, project: Project) -> bool:
-    """Whether `principal` may read and write `project`: its owner, a member of its owning
-    group, or an operator."""
+    """Whether `principal` may do everything with `project`: a user or a member of a group on
+    its access list, or an operator."""
     if principal.is_operator:
         return True
-    if project.owner_type == "user":
-        return project.owner_id == principal.user_id
-    if project.owner_type == "group":
-        return project.owner_id in principal.groups
-    return False
+    access = project.access
+    return principal.subject.lower() in access["users"] or bool(principal.groups & set(access["groups"]))
 
 
 def _create(db: Session, principal: Principal, slug: str) -> Project:
     project = Project(
         internal_id=f"prj_{uuid4().hex}",
-        owner_type="user",
-        owner_id=principal.user_id,
+        access={"users": [principal.subject.lower()], "groups": []},
         bank_id=f"project_{uuid4()}",
     )
     db.add(project)
@@ -42,6 +42,49 @@ def _create(db: Session, principal: Principal, slug: str) -> Project:
     db.add(ProjectSlug(slug=slug, project_internal_id=project.internal_id, is_canonical=True))
     db.flush()
     return project
+
+
+def _entries(values: list[str], limit: int) -> set[str]:
+    out = set()
+    for value in values:
+        value = value.strip()
+        if not value or len(value) > limit or has_control_character(value):
+            raise InvalidRequest(f"not a valid user or group: {value[:40]!r}")
+        out.add(value)
+    return out
+
+
+def _set_access(db: Session, principal: Principal, project: Project, action: str,
+                users: set[str], groups: set[str]) -> dict:
+    before = project.access
+    # A new dict, not an in-place edit: the JSON column only notices reassignment.
+    project.access = {"users": sorted(users), "groups": sorted(groups)}
+    audit.record(db, principal=principal, action=action, resource=project.internal_id,
+                 details={"before": before, "after": project.access})
+    db.flush()
+    return project.access
+
+
+def share(db: Session, principal: Principal, project: Project, users: list[str], groups: list[str]) -> dict:
+    """Add users and groups to the access list; a group must be one of the caller's own.
+    Caller has resolved the project and commits."""
+    added_users = {u.lower() for u in _entries(users, MAX_USER)}
+    added_groups = _entries(groups, MAX_GROUP_ID)
+    if foreign := sorted(added_groups - principal.groups):
+        raise InvalidRequest(f"you are not in {', '.join(foreign)}; `whoami` lists your groups")
+    return _set_access(db, principal, project, "project.share",
+                       set(project.access["users"]) | added_users,
+                       set(project.access["groups"]) | added_groups)
+
+
+def unshare(db: Session, principal: Principal, project: Project, users: list[str], groups: list[str]) -> dict:
+    """Remove users and groups from the access list, never the last one.
+    Caller has resolved the project and commits."""
+    left_users = set(project.access["users"]) - {u.lower() for u in _entries(users, MAX_USER)}
+    left_groups = set(project.access["groups"]) - _entries(groups, MAX_GROUP_ID)
+    if not left_users and not left_groups:
+        raise InvalidRequest("that would leave the project with nobody; share it with someone first")
+    return _set_access(db, principal, project, "project.unshare", left_users, left_groups)
 
 
 def resolve(db: Session, principal: Principal, slug: str, *, create: bool) -> Resolved:

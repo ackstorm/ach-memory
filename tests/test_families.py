@@ -17,7 +17,7 @@ def backend() -> FakeBackend:
 
 @pytest.fixture
 def principal() -> Principal:
-    return Principal(user_id="usr_juan")
+    return Principal(user_id="usr_juan", subject="juan@acme.test")
 
 
 def _retain(db, principal, backend, title="A title", *, content="Some durable claim.", family=None,

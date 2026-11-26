@@ -15,7 +15,7 @@ def backend() -> FakeBackend:
 
 @pytest.fixture
 def principal() -> Principal:
-    return Principal(user_id="usr_juan")
+    return Principal(user_id="usr_juan", subject="juan@acme.test")
 
 
 def _seed(db, principal, backend, content: str, memory_type: str = "fact") -> str:
@@ -157,7 +157,7 @@ def test_recall_scope_all_merges_both_banks_project_first_on_a_tie(db, principal
 
 
 def test_recall_scope_all_skips_a_project_the_caller_cannot_read(db, principal, backend):
-    _seed_project(db, Principal(user_id="usr_alice"), backend, "github.com-x-alpine", "alpine images")
+    _seed_project(db, Principal(user_id="usr_alice", subject="alice@acme.test"), backend, "github.com-x-alpine", "alpine images")
     own = _seed(db, principal, backend, "alpine images")
 
     response = read.recall(
@@ -170,7 +170,7 @@ def test_recall_scope_all_skips_a_project_the_caller_cannot_read(db, principal, 
 
 
 def test_recall_of_another_users_project_by_name_is_refused(db, principal, backend):
-    _seed_project(db, Principal(user_id="usr_alice"), backend, "github.com-x-alpine", "alpine images")
+    _seed_project(db, Principal(user_id="usr_alice", subject="alice@acme.test"), backend, "github.com-x-alpine", "alpine images")
 
     with pytest.raises(Forbidden):
         read.recall(

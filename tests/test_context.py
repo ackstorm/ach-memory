@@ -17,7 +17,7 @@ def backend() -> FakeBackend:
 
 @pytest.fixture
 def principal() -> Principal:
-    return Principal(user_id="usr_juan")
+    return Principal(user_id="usr_juan", subject="juan@acme.test")
 
 
 def _retain(db, principal, backend, title, *, scope="project", content=None, pin=False,
@@ -59,7 +59,7 @@ def test_without_a_project_the_user_part_is_delivered(db, principal, backend):
 def test_another_users_project_still_delivers_the_callers_own_memory(db, principal, backend):
     """The first person to retain into a slug owns the project. The next one opening the
     same repository still gets their own pins, and is told why the project part is absent."""
-    _retain(db, Principal(user_id="usr_alice"), backend, "Hers", pin=True)
+    _retain(db, Principal(user_id="usr_alice", subject="alice@acme.test"), backend, "Hers", pin=True)
     _retain(db, principal, backend, "Answer in English", scope="user", pin=True,
             content="Always answer in English.")
 
