@@ -10,9 +10,8 @@ who created it included. Personal memory is never shared.
 
 1. Find each person's email. Given only a name, look it up with a contacts or directory tool
    if the host has one; otherwise ask. Never guess an address.
-2. For a team, call `whoami`: you can only share with a group it lists. A team that is not
-   there does not reach ach-memory yet; tell the user it has to be added to the ACH `grants`
-   Environment first.
+2. For a team, call `whoami`: you can only share with a group it lists, which are the ACH
+   teams the user belongs to.
 3. Call `share_project` with `users` and/or `groups`.
 4. Answer from what it returns: "Done: Joan Pau now has access, with you and team dream."
 
