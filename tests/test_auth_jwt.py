@@ -70,6 +70,24 @@ def test_groups_are_read_from_the_configured_claim(db, signing_key, monkeypatch)
     assert principal.groups == frozenset({"default", "dream", "run"})
 
 
+def test_the_subject_is_read_from_the_configured_claim(db, signing_key, monkeypatch):
+    from memory.config import get_settings
+
+    monkeypatch.setenv("MEMORY_AUTH_JWT_USER_CLAIM", "email")
+    get_settings.cache_clear()
+    principal = jwt_provider.authenticate(
+        _token(signing_key, sub="8f14e45f", email="alice@example.com"), db
+    )
+    assert principal.subject == "alice@example.com"
+
+
+def test_a_token_without_the_configured_user_claim_is_refused(db, signing_key):
+    payload = {"iss": ISSUER, "aud": AUDIENCE, "exp": 4102444800, "email": "alice@example.com"}
+    token = pyjwt.encode(payload, signing_key, algorithm="EdDSA")
+    with pytest.raises(Unauthorized, match="subject"):
+        jwt_provider.authenticate(token, db)
+
+
 def test_a_missing_groups_claim_is_no_groups_not_an_error(db, signing_key):
     principal = jwt_provider.authenticate(_token(signing_key), db)
     assert principal.groups == frozenset()

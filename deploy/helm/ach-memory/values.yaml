@@ -70,6 +70,9 @@ config:
       # Comma-separated: one token may name this service under more than one aud.
       audience: ""
       verifyAudience: true
+      # Identities are keyed by issuer and this claim's value: changing it on a
+      # running deployment gives every user a new, empty personal bank.
+      userClaim: "sub"
       groupsClaim: "groups"
     platform:
       # Resolves a platform API key to an identity over HTTP.

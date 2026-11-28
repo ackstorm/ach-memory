@@ -81,7 +81,7 @@ def authenticate(token: str, db: Session) -> Principal:
         logger.warning("JWT validation failed: %s", exc)
         raise Unauthorized("token rejected") from None
 
-    subject = claims.get("sub") or claims.get("email")
+    subject = claims.get(settings.auth_jwt_user_claim)
     if not isinstance(subject, str) or not subject:
         raise Unauthorized("token carries no usable subject")
 
