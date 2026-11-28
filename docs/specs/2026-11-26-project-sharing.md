@@ -17,7 +17,7 @@ first user on the list and can be removed like anyone else. Personal memory is n
 
 | Entry | Matched against | Source |
 |---|---|---|
-| user | `Principal.subject`, case-insensitive | JWT `sub`, the caller's email |
+| user | `Principal.subject`, case-insensitive | JWT `sub` (`MEMORY_AUTH_JWT_USER_CLAIM`), the caller's email |
 | group | `Principal.groups`, exact | JWT `teams` (`MEMORY_AUTH_JWT_GROUPS_CLAIM`): every ACH team alias of the caller, minted when ach-memory's BackendIdentityPolicy sets `forwardTeams` |
 
 ## Storage

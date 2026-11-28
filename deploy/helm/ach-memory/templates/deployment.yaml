@@ -101,6 +101,8 @@ spec:
             {{- end }}
             - name: MEMORY_AUTH_JWT_VERIFY_AUDIENCE
               value: {{ .Values.config.auth.jwt.verifyAudience | quote }}
+            - name: MEMORY_AUTH_JWT_USER_CLAIM
+              value: {{ .Values.config.auth.jwt.userClaim | quote }}
             - name: MEMORY_AUTH_JWT_GROUPS_CLAIM
               value: {{ .Values.config.auth.jwt.groupsClaim | quote }}
             {{- end }}

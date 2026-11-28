@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     auth_jwt_jwks_uri: str = ""
     auth_jwt_audience: str = ""
     auth_jwt_verify_audience: bool = True
+    auth_jwt_user_claim: str = "sub"
     auth_jwt_groups_claim: str = "groups"
 
     auth_platform_enabled: bool = False
